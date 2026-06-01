@@ -1,0 +1,392 @@
+import type {
+  ColumnFiltersState,
+  SortingState,
+  VisibilityState,
+} from '@tanstack/react-table';
+import { useCallback, useMemo } from 'react';
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+// Interface for table preferences
+export interface TablePreferences {
+  columnOrder: string[];
+  columnVisibility: VisibilityState;
+  columnWidths?: Record<string, number>;
+  pinnedColumns?: {
+    left: string[];
+    right: string[];
+  };
+  pagination?: {
+    pageSize: number;
+    pageIndex: number;
+  };
+  viewMode?: 'table' | 'cards';
+  sorting?: SortingState;
+  columnFilters?: ColumnFiltersState;
+  /** Bag for widget-specific state that lives next to a table but isn't a
+   *  built-in tanstack-table feature (e.g. an "Open vs Closed" segment toggle
+   *  rendered above the table, a custom non-column filter dropdown, etc).
+   *  Consumers read/write via `useTableCustomState(tableId, key, default)`. */
+  customState?: Record<string, unknown>;
+}
+
+// Store state interface
+interface TablePreferencesState {
+  // Table preferences by table ID
+  preferences: Record<string, TablePreferences>;
+
+  // Actions
+  setColumnOrder: (tableId: string, columnOrder: string[]) => void;
+  setColumnVisibility: (
+    tableId: string,
+    columnVisibility: VisibilityState
+  ) => void;
+  setColumnWidths: (
+    tableId: string,
+    columnWidths: Record<string, number>
+  ) => void;
+  setPinnedColumns: (
+    tableId: string,
+    pinnedColumns: { left: string[]; right: string[] }
+  ) => void;
+  setPagination: (
+    tableId: string,
+    pagination: { pageSize: number; pageIndex: number }
+  ) => void;
+  setViewMode: (tableId: string, viewMode: 'table' | 'cards') => void;
+  setSorting: (tableId: string, sorting: SortingState) => void;
+  setColumnFilters: (
+    tableId: string,
+    columnFilters: ColumnFiltersState
+  ) => void;
+  setCustomState: (tableId: string, key: string, value: unknown) => void;
+  getPreferences: (tableId: string) => TablePreferences | undefined;
+  resetPreferences: (tableId: string) => void;
+  resetAllPreferences: () => void;
+}
+
+// Create the store with persistence
+export const useTablePreferencesStore = create<TablePreferencesState>()(
+  persist(
+    (set, get) => ({
+      preferences: {},
+
+      setColumnOrder: (tableId: string, columnOrder: string[]) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              columnOrder,
+            },
+          },
+        }));
+      },
+
+      setColumnVisibility: (
+        tableId: string,
+        columnVisibility: VisibilityState
+      ) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              columnVisibility,
+            },
+          },
+        }));
+      },
+
+      setColumnWidths: (
+        tableId: string,
+        columnWidths: Record<string, number>
+      ) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              columnWidths,
+            },
+          },
+        }));
+      },
+
+      setPinnedColumns: (
+        tableId: string,
+        pinnedColumns: { left: string[]; right: string[] }
+      ) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              pinnedColumns,
+            },
+          },
+        }));
+      },
+
+      setPagination: (
+        tableId: string,
+        pagination: { pageSize: number; pageIndex: number }
+      ) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              pagination,
+            },
+          },
+        }));
+      },
+
+      setViewMode: (tableId: string, viewMode: 'table' | 'cards') => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              viewMode,
+            },
+          },
+        }));
+      },
+
+      setSorting: (tableId: string, sorting: SortingState) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              sorting,
+            },
+          },
+        }));
+      },
+
+      setColumnFilters: (
+        tableId: string,
+        columnFilters: ColumnFiltersState
+      ) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              columnFilters,
+            },
+          },
+        }));
+      },
+
+      setCustomState: (tableId: string, key: string, value: unknown) => {
+        set((state) => ({
+          preferences: {
+            ...state.preferences,
+            [tableId]: {
+              ...state.preferences[tableId],
+              customState: {
+                ...state.preferences[tableId]?.customState,
+                [key]: value,
+              },
+            },
+          },
+        }));
+      },
+
+      getPreferences: (tableId: string) => {
+        return get().preferences[tableId];
+      },
+
+      resetPreferences: (tableId: string) => {
+        set((state) => {
+          const newPreferences = { ...state.preferences };
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete newPreferences[tableId];
+          return { preferences: newPreferences };
+        });
+      },
+
+      resetAllPreferences: () => {
+        set({ preferences: {} });
+      },
+    }),
+    {
+      name: 'table-preferences-storage',
+      version: 1,
+    }
+  )
+);
+
+/**
+ * Read/write a single piece of widget-specific state that should be persisted
+ * alongside a table's prefs (e.g. an Open/Closed segment toggle above the
+ * table). Returns a `[value, setValue]` tuple in the style of useState.
+ *
+ * The state is stored under `preferences[tableId].customState[key]`, so reuse
+ * the same `tableId` you'd pass to `<DataTable tableId={...} />` and a stable
+ * `key` per piece of state.
+ */
+export function useTableCustomState<T>(
+  tableId: string,
+  key: string,
+  defaultValue: T
+): [T, (value: T) => void] {
+  const value = useTablePreferencesStore(
+    (state) => state.preferences[tableId]?.customState?.[key] as T | undefined
+  );
+  const setCustomState = useTablePreferencesStore(
+    (state) => state.setCustomState
+  );
+
+  const setValue = useCallback(
+    (next: T) => setCustomState(tableId, key, next),
+    [setCustomState, tableId, key]
+  );
+
+  return [value === undefined ? defaultValue : value, setValue];
+}
+
+// Hook to get table preferences with defaults
+export const useTablePreferences = (
+  tableId: string,
+  defaultColumnOrder: string[],
+  defaultColumnVisibility: VisibilityState,
+  defaultPageSize: number,
+  defaultViewMode: 'table' | 'cards',
+  defaultPinnedColumns?: { left: string[]; right: string[] },
+  defaultSorting?: SortingState,
+  defaultColumnFilters?: ColumnFiltersState
+) => {
+  const {
+    preferences,
+    setColumnOrder,
+    setColumnVisibility,
+    setColumnWidths,
+    setPinnedColumns,
+    setPagination,
+    setViewMode,
+    setSorting,
+    setColumnFilters,
+    resetPreferences,
+  } = useTablePreferencesStore();
+
+  const tablePreferences = useMemo(
+    () => preferences[tableId],
+    [preferences, tableId]
+  );
+
+  const defOrder = useMemo(
+    () => defaultColumnOrder ?? [],
+    [defaultColumnOrder]
+  );
+
+  const defPagination = useMemo(
+    () => ({ pageSize: defaultPageSize, pageIndex: 0 }),
+    [defaultPageSize]
+  );
+
+  const defColumnWidth: Record<string, number> = useMemo(() => ({}), []);
+
+  const defVisibility = useMemo(
+    () => defaultColumnVisibility ?? {},
+    [defaultColumnVisibility]
+  );
+
+  const defPinnedColumns = useMemo(
+    () =>
+      defaultPinnedColumns ?? {
+        left: [],
+        right: [],
+      },
+    [defaultPinnedColumns]
+  );
+
+  const defViewMode = useMemo(
+    () => defaultViewMode ?? 'table',
+    [defaultViewMode]
+  );
+
+  const defSorting = useMemo(() => defaultSorting ?? [], [defaultSorting]);
+  const defFilters = useMemo(
+    () => defaultColumnFilters ?? [],
+    [defaultColumnFilters]
+  );
+
+  // Merge persisted pins with defaults: any column the call site marks as
+  // default-pinned should still take effect if it's not already pinned in
+  // persisted state (left or right). Without this, users with stale
+  // localStorage from before a `defaultPinnedColumns` was added would never
+  // see the default pin (e.g. the actions column staying mid-table).
+  const mergedPinnedColumns = useMemo(() => {
+    const persisted = tablePreferences?.pinnedColumns;
+    if (!persisted) return defPinnedColumns;
+    const known = new Set([...persisted.left, ...persisted.right]);
+    const extraLeft = defPinnedColumns.left.filter((id) => !known.has(id));
+    const extraRight = defPinnedColumns.right.filter((id) => !known.has(id));
+    if (extraLeft.length === 0 && extraRight.length === 0) return persisted;
+    return {
+      left: [...persisted.left, ...extraLeft],
+      right: [...persisted.right, ...extraRight],
+    };
+  }, [tablePreferences?.pinnedColumns, defPinnedColumns]);
+
+  const result = useMemo(
+    () => ({
+      columnOrder: tablePreferences?.columnOrder ?? defOrder,
+      columnVisibility: tablePreferences?.columnVisibility ?? defVisibility,
+      columnWidths: tablePreferences?.columnWidths ?? defColumnWidth,
+      pinnedColumns: mergedPinnedColumns,
+      pagination: tablePreferences?.pagination ?? defPagination,
+      viewMode: tablePreferences?.viewMode ?? defViewMode,
+      sorting: tablePreferences?.sorting ?? defSorting,
+      columnFilters: tablePreferences?.columnFilters ?? defFilters,
+      setColumnOrder: (order: string[]) => setColumnOrder(tableId, order),
+      setColumnVisibility: (visibility: VisibilityState) =>
+        setColumnVisibility(tableId, visibility),
+      setColumnWidths: (widths: Record<string, number>) =>
+        setColumnWidths(tableId, widths),
+      setPinnedColumns: (pinned: { left: string[]; right: string[] }) =>
+        setPinnedColumns(tableId, pinned),
+      setPagination: (pagination: { pageSize: number; pageIndex: number }) =>
+        setPagination(tableId, pagination),
+      setViewMode: (mode: 'table' | 'cards') => setViewMode(tableId, mode),
+      setSorting: (sorting: SortingState) => setSorting(tableId, sorting),
+      setColumnFilters: (filters: ColumnFiltersState) =>
+        setColumnFilters(tableId, filters),
+      resetPreferences: () => resetPreferences(tableId),
+    }),
+    [
+      tableId,
+      defOrder,
+      defColumnWidth,
+      defFilters,
+      defPagination,
+      defViewMode,
+      mergedPinnedColumns,
+      defSorting,
+      defVisibility,
+      setColumnOrder,
+      setColumnVisibility,
+      setColumnWidths,
+      setPinnedColumns,
+      setPagination,
+      setViewMode,
+      setSorting,
+      setColumnFilters,
+      tablePreferences?.columnOrder,
+      tablePreferences?.columnVisibility,
+      tablePreferences?.pagination,
+      tablePreferences?.viewMode,
+      tablePreferences?.sorting,
+      tablePreferences?.columnFilters,
+      tablePreferences?.columnWidths,
+      resetPreferences,
+    ]
+  );
+
+  return result;
+};

@@ -1,0 +1,1619 @@
+import {
+  BotOrderSideEnum,
+  BotStartTypeEnum,
+  BotTypesEnum,
+  CloseConditionEnum,
+  CloseDCATypeEnum,
+  DCAConditionEnum,
+  DCAOrderTypeEnum,
+  ScaleDcaTypeEnum,
+  StartConditionEnum,
+  StrategyEnum,
+  type AvgPrice,
+  type BotStatus,
+  type DCABot,
+  type DCADeals,
+} from '@/types';
+/* import type { DrawerBot } from '@/types/bots/drawer'; */
+import { formatOrderForDisplay, useBotOrders } from '@/hooks/useBotOrders';
+import { indicatorStore } from '@/stores/indicatorStore';
+import { useDealStore } from '@/stores/live/dealStore';
+import type { ViewOrder } from '@/types/bots';
+import type { DrawerBot } from '@/types/bots/drawer';
+import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import { buildBotEditRoute } from '@/utils/bots/navigation';
+import {
+  getActionPastTense,
+  getTargetStatus,
+  isBotActive,
+} from '@/utils/botStatusUtils';
+import { getOrderTypeLabel } from '@/utils/mapOrderName';
+import { motion } from 'framer-motion';
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  MoreVertical,
+  Share2,
+  X,
+} from 'lucide-react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { TradeDetailContent } from '../../components/trades/TradeDetailContent';
+import { ShareBotDialog } from '../../features/bots/shared/runtime/dialogs/ShareBotDialog';
+import { useBotViewTracking } from '../../hooks/useBotAnalytics';
+import {
+  useBotClone,
+  useBotDelete,
+  useBotRestart,
+  useBotStatusToggle,
+} from '../../hooks/useBotMutations';
+import { useAuthStore } from '../../stores/authStore';
+/* import { useCacheKey } from '../../hooks/useCacheKey'; */
+/* import { useCacheStatus } from '../../hooks/useCacheStatus'; */
+import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { toast } from '../../lib/toast';
+import type { BotType } from '../../stores/drawerPanelWidthsStore';
+import {
+  BotActionsMenuItems,
+  type BotStatusType,
+  type BotTypeId,
+} from '../bots/BotActionsMenuItems';
+import { DealEditDrawer } from '../deals/DealEditDrawer';
+import {
+  BotStatusConfirmationModal,
+  DeleteConfirmationModal,
+  SuccessFeedbackModal,
+} from '../modals';
+import { Button } from '../ui/button';
+import { StatusChip } from '../ui/chip';
+import {
+  DetailDrawer,
+  DetailDrawerBody,
+  DetailDrawerContent,
+  DetailDrawerHeader,
+  DetailDrawerTitle,
+  DetailDrawerTrigger,
+} from '../ui/detail-drawer';
+import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
+import DrawerWidgetRenderer from '../widgets/bots/drawer/DrawerWidgetRenderer';
+import StaleIndicator from '../widgets/shared/StaleIndicator';
+import { getDrawerWidgetsForBot } from './drawerWidgetConfig';
+import { UnfoldingChartPanel } from './panels/contents';
+
+export interface TradeDetails {
+  id: string;
+  type: 'DCA' | 'Combo' | 'Hedge DCA' | 'Hedge Combo' | 'Grid' | 'Terminal';
+  symbol:
+    | string
+    | {
+        symbol: string;
+        baseAsset: string;
+        quoteAsset: string;
+      };
+  strategy: string;
+  status: string;
+  exchange: string;
+  exchangeUUID?: string;
+  botName?: string | undefined;
+  currentBalance: {
+    base: number;
+    quote: number;
+  };
+  usage: {
+    current: {
+      base: number;
+      quote: number;
+    };
+    currentUsd?: number;
+    max?: {
+      base: number;
+      quote: number;
+    };
+    maxUsd?: number;
+  };
+  profit?:
+    | {
+        total: number;
+        totalUsd: number;
+        pureBase: number;
+        pureQuote: number;
+      }
+    | undefined;
+  unrealizedProfit?: number | undefined;
+  avgPrice?: number | undefined;
+  levels: {
+    complete: number;
+    all: number;
+  };
+  created?: number | undefined;
+  botId?: string;
+  pair?: string;
+}
+
+interface BotDetailsDrawerProps {
+  bot: DrawerBot;
+  type: BotTypesEnum;
+  children: React.ReactNode;
+  open?: boolean;
+  privacyMode?: boolean;
+  onEdit?: (botId: string) => void;
+  onClone?: (botId: string) => void;
+  onToggleStatus?: (botId: string, newStatus: BotStatus) => void;
+  onClose?: () => void;
+  /**
+   * Hedge wrapper id — when the drawer is mounted for a hedge bot the
+   * `bot` prop is the leg (since the drawer's queries / widgets are
+   * shaped around DCA/Combo bots), but the user-facing "Bot ID" and the
+   * Events widget should reference the parent hedge wrapper. Optional
+   * everywhere else.
+   */
+  parentBotId?: string;
+  /**
+   * Optional UI rendered above the tabs row. Used by hedge lists to
+   * inject a Long / Short leg switcher so the same drawer surface can
+   * display either leg's data without remounting.
+   */
+  legSwitcher?: React.ReactNode;
+  /**
+   * Read-only mode — true for share-link visitors and for logged-in
+   * users viewing a bot they don't own. Hides edit / start-stop / clone
+   * / delete actions. Mirrors main-dash useDCAPage.ts:1031.
+   */
+  viewOnly?: boolean;
+  /**
+   * Owner-only id (the bot's userId). When this matches the logged-in
+   * user the drawer renders a Share button next to the actions menu.
+   */
+  ownerUserId?: string;
+  /**
+   * Stretch the drawer + chart panel to the full viewport width. Used
+   * in the share-link view where the drawer is the entire page surface
+   * and shouldn't leave empty backdrop space to the left.
+   */
+  fullWidth?: boolean;
+}
+
+// Map DrawerBotType to BotType for storage
+const mapDrawerBotTypeToBotType = (type: BotTypesEnum): BotType => {
+  const mapping: Record<BotTypesEnum, BotType> = {
+    dca: 'dca',
+    combo: 'combo',
+    grid: 'grid',
+    hedgeDca: 'hedge-dca',
+    hedgeCombo: 'hedge-combo',
+    terminal: 'dca',
+  };
+  return mapping[type] || 'dca';
+};
+
+const statusNew = { status: 'NEW', autoPaginate: true };
+const statusFilled = { status: 'FILLED', autoPaginate: true };
+type BotTab = 'deals' | 'performance' | 'events' | 'settings' | 'webhook';
+
+export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
+  ({
+    bot,
+    type,
+    children,
+    open,
+    privacyMode: _privacyMode,
+    onEdit,
+    onClone,
+    //onToggleStatus,
+    onClose,
+    parentBotId,
+    legSwitcher,
+    viewOnly = false,
+    ownerUserId,
+    fullWidth = false,
+  }) => {
+    const privacyMode = useMemo(() => _privacyMode ?? false, [_privacyMode]);
+    const isGrid = useMemo(() => type === BotTypesEnum.grid, [type]);
+    // View state: 'bot' or 'trade' or 'edit-deal'
+    type ViewMode = 'bot' | 'trade' | 'edit-deal';
+    const [viewMode, setViewMode] = useState<ViewMode>('bot');
+    const [selectedTrade, setSelectedTrade] = useState<TradeDetails | null>(
+      null
+    );
+    const [editingTrade, setEditingTrade] = useState<DCADeals[] | null>(null);
+    const [chartTrade, setChartTrade] = useState<TradeDetails | null>(null);
+
+    // Hedge bots reuse this drawer with `legSwitcher` swapping the `bot`
+    // prop between the long and short leg (different `_id`s). When that
+    // happens, the previously-selected trade / chartTrade belong to the
+    // outgoing leg — keeping them around hides the new leg's orders
+    // because the order list is filtered by `selectedTrade.dealId`,
+    // which never matches a deal on the other leg's bot. Reset trade /
+    // view state on bot id change so leg switch lands back on the
+    // overview of the new leg.
+    useEffect(() => {
+      setViewMode('bot');
+      setSelectedTrade(null);
+      setEditingTrade(null);
+      setChartTrade(null);
+    }, [bot._id]);
+
+    // Get bot type for persistence
+    const botType = useMemo(() => mapDrawerBotTypeToBotType(type), [type]);
+
+    // Tab state for bot view - synced with URL parameters via Tabs component
+
+    const [searchParams, setSearchParams] = useSearchParams();
+
+    // Get tab from URL or default to 'deals'
+    const tabParam = useMemo(() => searchParams.get('tab'), [searchParams]);
+    const validTabs: BotTab[] = useMemo(
+      () =>
+        (
+          ['performance', 'deals', 'events', 'settings', 'webhook'] as BotTab[]
+        ).filter((t) => (isGrid ? t !== 'deals' && t !== 'webhook' : true)),
+      [isGrid]
+    );
+    const activeTab: BotTab = useMemo(
+      () =>
+        tabParam && validTabs.includes(tabParam as BotTab)
+          ? (tabParam as BotTab)
+          : validTabs[0],
+      [tabParam, validTabs]
+    );
+
+    // Tabs component will handle URL syncing via paramKey="tab"
+    const handleTabChange = useCallback((_tab: string) => {
+      // No manual URL update needed - Tabs component handles it
+    }, []);
+
+    // Modal state
+    const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+    const [successModalOpen, setSuccessModalOpen] = useState(false);
+    const [statusModalOpen, setStatusModalOpen] = useState(false);
+    const [shareDialogOpen, setShareDialogOpen] = useState(false);
+    const [successData, setSuccessData] = useState<{
+      type: 'clone' | 'delete';
+      newItemId?: string;
+      botTypeId?: string;
+    } | null>(null);
+
+    // Owner-only Share entry point. We resolve the owner via the
+    // `ownerUserId` prop (which the list page derives from either the
+    // list query result or the shared-bot fetch), falling back to the
+    // raw `bot.userId` so list-mode flows keep working without the
+    // caller having to thread the prop through.
+    const currentUserId = useAuthStore((s) => s.user?.id);
+    const resolvedOwnerId =
+      ownerUserId ?? (bot as DCABot & { userId?: string }).userId ?? null;
+    const isOwner =
+      !viewOnly && !!currentUserId && resolvedOwnerId === currentUserId;
+
+    // Mutations
+    const deleteMutation = useBotDelete();
+    const cloneMutation = useBotClone();
+    const restartMutation = useBotRestart();
+
+    const statusToggleMutation = useBotStatusToggle(type);
+
+    // Track bot pageview when drawer opens
+    const location = useLocation();
+    useBotViewTracking(open ? bot._id : null, location.pathname, {
+      bot_status: bot.status,
+      exchange: bot.exchange,
+      pair: [bot.settings.pair].flat()[0],
+      strategy: 'strategy' in bot.settings ? bot.settings.strategy : '',
+      is_multi_pair: 'useMulti' in bot.settings ? bot.settings.useMulti : false,
+    });
+
+    const drawerWidgets = useMemo(() => getDrawerWidgetsForBot(bot), [bot]);
+
+    /* // Register cache keys and status for this bot's detail drawer so the StaleIndicator can show correct freshness
+    const dealsOpenCacheKey = useCacheKey('getBotDeals', {
+      id: bot._id,
+      status: 'open',
+      page: 0,
+      pageSize: 50,
+    });
+    const dealsClosedCacheKey = useCacheKey('getBotDeals', {
+      id: bot._id,
+      status: 'closed',
+      page: 0,
+      pageSize: 50,
+    });
+    const eventsCacheKey = useCacheKey('getBotEvents', {
+      botId: bot._id,
+      page: 0,
+      pageSize: 20,
+    });
+    const ordersCacheKey = useCacheKey('getBotOrders', {
+      id: bot._id,
+      status: '',
+      page: 0,
+      pageSize: 50,
+    });
+    const transactionsCacheKey = useCacheKey('getBotTransactions', {
+      id: bot._id,
+      page: 0,
+    });
+    const dcaBacktestsCacheKey = useCacheKey('getBacktests', {
+      pageSize: 10,
+      page: 0,
+    });
+    const comboBacktestsCacheKey = useCacheKey('getComboBacktests', {
+      pageSize: 10,
+      page: 0,
+    });
+    const gridBacktestsCacheKey = useCacheKey('getGridBacktests', {
+      pageSize: 10,
+      page: 0,
+    });
+
+    // Also register the list queries for the corresponding bot types so the drawer reflects list freshness
+    const comboListCacheKey = useCacheKey('comboBotList', {
+      input: {
+        all: true,
+        status: ['open', 'range', 'monitoring', 'error', 'closed'],
+      },
+    });
+    const gridListCacheKey = useCacheKey('botList', {
+      input: { status: ['open', 'range', 'monitoring'] },
+    });
+    const dcaListCacheKey = useCacheKey('dcaBotList', { input: { all: true } });
+
+    const extraListKeys: unknown[][] = [];
+    const extraQueryNames: string[] = [];
+
+    if (type === 'combo') {
+      extraListKeys.push(comboListCacheKey);
+      extraQueryNames.push('comboBotList');
+    } else if (type === 'grid') {
+      extraListKeys.push(gridListCacheKey);
+      extraQueryNames.push('botList');
+    } else if (type === 'dca' || type === 'hedgeDca') {
+      extraListKeys.push(dcaListCacheKey);
+      extraQueryNames.push('dcaBotList');
+    }
+
+    useCacheStatus(
+      `bot-details-${bot._id}`,
+      [
+        ...extraListKeys,
+        dealsOpenCacheKey,
+        dealsClosedCacheKey,
+        eventsCacheKey,
+        ordersCacheKey,
+        transactionsCacheKey,
+        dcaBacktestsCacheKey,
+        comboBacktestsCacheKey,
+        gridBacktestsCacheKey,
+      ],
+      [
+        ...extraQueryNames,
+        'getBotDeals',
+        'getBotEvents',
+        'getBotOrders',
+        'getBotTransactions',
+        'getBacktests',
+        'getComboBacktests',
+        'getGridBacktests',
+      ]
+    ); */
+
+    // Removed advanced mode preference saving
+
+    const navigate = useNavigate();
+
+    const isControlled = typeof open === 'boolean';
+    const [internalOpen, setInternalOpen] = useState(false);
+    const actualOpen = isControlled ? (open as boolean) : internalOpen;
+
+    // Left attached panel (Unfolding Chart) collapsed state with persistence
+    // Store per-botType and fall back to the old global key for migration
+    const leftPanelStorageKeyGlobal = `gainium:drawer:leftPanelCollapsed:global`;
+    const leftPanelStorageKey = `gainium:drawer:leftPanelCollapsed:${botType}`;
+    const [isLeftPanelCollapsed, setIsLeftPanelCollapsed] = useState<boolean>(
+      () => {
+        try {
+          // Prefer per-botType key if present, otherwise fall back to global key
+          const per = window.localStorage.getItem(leftPanelStorageKey);
+          if (per !== null) return per === '1';
+          const global = window.localStorage.getItem(leftPanelStorageKeyGlobal);
+          return global === '1';
+        } catch {
+          return false;
+        }
+      }
+    );
+
+    const setLeftPanelCollapsed = (collapsed: boolean) => {
+      setIsLeftPanelCollapsed(collapsed);
+      try {
+        window.localStorage.setItem(leftPanelStorageKey, collapsed ? '1' : '0');
+      } catch {
+        // ignore
+      }
+    };
+
+    const handleDrawerOpenChange = (nextOpen: boolean) => {
+      if (!isControlled) {
+        setInternalOpen(nextOpen);
+      }
+
+      if (!nextOpen) {
+        // Reset to bot view and default tab when closing
+        setViewMode('bot');
+        setSelectedTrade(null);
+        setEditingTrade(null);
+        setChartTrade(null);
+
+        // Clear tab parameter from URL
+        const newParams = new URLSearchParams(searchParams);
+        newParams.delete('tab');
+        newParams.delete('editDealId');
+        newParams.delete('chartDealId');
+        newParams.delete('dealId');
+        setSearchParams(newParams, { replace: true });
+
+        if (onClose) {
+          onClose();
+        }
+      }
+    };
+
+    // Deep-link: capture the `?dealId=` present when the drawer first opened,
+    // exactly once. Auto-opening it is a one-shot — once consumed,
+    // `autoOpenDealId` goes null so it can't re-fire and hijack Back/Close when
+    // the deals list remounts. This ref/flag lives here (BotDetailsDrawer stays
+    // mounted across the bot↔trade view toggle), not in the remounting list.
+    const initialDeepLinkDealIdRef = useRef<string | null>(
+      searchParams.get('dealId')
+    );
+    const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+    const autoOpenDealId = deepLinkConsumed
+      ? null
+      : initialDeepLinkDealIdRef.current;
+    const handleAutoOpenHandled = useCallback(() => {
+      setDeepLinkConsumed(true);
+    }, []);
+
+    // Handler for when a trade is clicked in the deals table
+    const handleTradeSelect = useCallback(
+      (trade: TradeDetails) => {
+        setSelectedTrade(trade);
+        setViewMode('trade');
+        setChartTrade(null);
+        // Reflect the open deal in the URL so it's deep-linkable / shareable.
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.set('tab', 'deals');
+            next.set('dealId', trade.id);
+            return next;
+          },
+          { replace: true }
+        );
+      },
+      [setSearchParams]
+    );
+
+    // Handler to go back to bot view
+    const handleBackToBot = () => {
+      setViewMode('bot');
+      setSelectedTrade(null);
+      setEditingTrade(null);
+      setChartTrade(null);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('dealId');
+          return next;
+        },
+        { replace: true }
+      );
+    };
+
+    // Handler for when edit deal is clicked in the deals table
+    const handleEditDeal = useCallback((deal: DCADeals[]) => {
+      setEditingTrade(deal);
+      setViewMode('edit-deal');
+      setChartTrade(null);
+    }, []);
+
+    // Bot status management
+    const isActive = isBotActive(bot.status);
+
+    // For hedge bots, the drawer renders a leg's transformed bot — its
+    // `_id` is the leg's id, while the menu actions (edit / clone /
+    // delete / start-stop / restart / view backtests) need to operate on
+    // the hedge wrapper. The caller passes that wrapper id via
+    // `parentBotId`; everywhere we'd otherwise use `bot._id` for an
+    // action that targets the bot identity, prefer the parent id when
+    // it's set. The `type` prop is already the wrapper type
+    // (`hedgeDca` / `hedgeCombo`) for hedge bots.
+    const actionBotId = parentBotId ?? bot._id;
+
+    // Event handlers
+    const handleEdit = () => {
+      const editPath = buildBotEditRoute(type, actionBotId);
+      if (onEdit) {
+        onEdit(actionBotId);
+      } else {
+        navigate(editPath);
+      }
+    };
+
+    const handleClone = () => {
+      if (onClone) {
+        onClone(actionBotId);
+      } else if (type === BotTypesEnum.dca) {
+        navigate(`/bot/new?load=${actionBotId}`);
+      } else {
+        cloneMutation.mutate(
+          {
+            id: actionBotId,
+            name: `${bot.settings.name} (Clone)`,
+            type,
+            // Note: No botData provided - will use query cache fallback
+          },
+          {
+            onSuccess: (data) => {
+              // Show success modal with clone feedback
+              setSuccessData({
+                type: 'clone',
+                newItemId: data?._id || `clone_${Date.now()}`,
+                botTypeId: type,
+              });
+              setSuccessModalOpen(true);
+            },
+          }
+        );
+      }
+    };
+
+    const handleStatusToggle = () => {
+      setStatusModalOpen(true);
+    };
+
+    const handleConfirmStatusChange = (closeType?: string) => {
+      const newStatus = getTargetStatus(bot.status);
+
+      // Use the mutation directly with callbacks for modal close and toast
+      statusToggleMutation.mutate(
+        {
+          id: actionBotId,
+          status: newStatus,
+          closeType: closeType as CloseDCATypeEnum | undefined,
+        },
+        {
+          onSuccess: () => {
+            setStatusModalOpen(false);
+            toast.success(`Bot ${getActionPastTense(bot.status)} successfully`);
+            // Note: Don't call onToggleStatus here as it would trigger another mutation
+            // The parent will receive updates through React Query cache invalidation
+          },
+          onError: (error) => {
+            console.error('Failed to change bot status:', error);
+            toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
+          },
+        }
+      );
+    };
+
+    const handleDelete = () => {
+      setDeleteModalOpen(true);
+    };
+
+    const handleRestart = () => {
+      restartMutation.mutate(
+        {
+          id: actionBotId,
+          type,
+        },
+        {
+          onSuccess: () => {
+            toast.success('Bot restarted successfully');
+          },
+          onError: () => {
+            toast.error('Failed to restart bot');
+          },
+        }
+      );
+    };
+
+    const handleConfirmDelete = async () => {
+      try {
+        await deleteMutation.mutateAsync({ id: actionBotId, type });
+        setSuccessData({ type: 'delete' });
+        setSuccessModalOpen(true);
+      } catch (error) {
+        console.error('Failed to delete bot:', error);
+        // Error handling is done by the mutation
+      }
+    };
+
+    const handleViewBacktests = () => {
+      navigate(`/backtests?botId=${actionBotId}`);
+    };
+
+    const handleDrawerClose = () => {
+      handleDrawerOpenChange(false);
+    };
+
+    const [dealSymbol, setDealSymbol] = useState<string | null>(null);
+    const isMobile = useMediaQuery('(max-width: 767px)');
+    const dealWidget = useMemo(
+      () => drawerWidgets.filter((w) => w.type === 'drawer-deals-table'),
+      [drawerWidgets]
+    );
+    const {
+      orders: pendingBotOrders,
+      isLoading: pendingOrdersLoading,
+      hasValidResponse: hasPendingResponse,
+    } = useBotOrders(bot._id, type, statusNew);
+
+    const {
+      orders: completedBotOrders,
+      isLoading: completedOrdersLoading,
+      hasValidResponse: hasCompletedResponse,
+    } = useBotOrders(bot._id, type, statusFilled);
+
+    const transformOrders = useMemo(() => {
+      return (backendOrders: typeof pendingBotOrders): ViewOrder[] => {
+        return backendOrders.map((order) => {
+          const formatted = formatOrderForDisplay(order);
+
+          const executedQty = parseFloat(order.executedQty);
+          const origQty = parseFloat(order.origQty);
+          const executedPrice =
+            executedQty > 0
+              ? formatted.price * (executedQty / origQty)
+              : formatted.price;
+
+          // Determine the proper order type label (with DCA/add funds/reduce funds annotations)
+          const orderTypeLabel = getOrderTypeLabel(
+            order.typeOrder || 'regular',
+            order.sl || false,
+            order.clientOrderId,
+            order.reduceFundsId,
+            true // Real orders
+          );
+
+          return {
+            id: formatted.id,
+            dealId: formatted.dealId,
+            type: formatted.side, // Now correctly maps to 'buy' | 'sell'
+            status: formatted.status,
+            symbol: formatted.symbol,
+            baseAsset: formatted.baseAsset,
+            quoteAsset: formatted.quoteAsset,
+            amount: formatted.quantity,
+            price: formatted.price,
+            filled: formatted.executedQuantity,
+            remaining: formatted.quantity - formatted.executedQuantity,
+            total: formatted.price * formatted.quantity,
+            createTime: new Date(formatted.time).toISOString(),
+            ...(formatted.updateTime && {
+              updateTime: new Date(formatted.updateTime).toISOString(),
+            }),
+            side: formatted.side, // 'buy' | 'sell'
+            exchange: formatted.exchange || bot.exchange || 'Unknown',
+            executedQuantity: formatted.executedQuantity,
+            executedPrice: executedPrice,
+            orderType: orderTypeLabel, // Use the full label with DCA/add funds/reduce funds annotations
+            origQty: order.origQty,
+            typeOrder: order.typeOrder,
+            sl: order.sl,
+            clientOrderId: order.clientOrderId,
+            reduceFundsId: order.reduceFundsId,
+            time: order.updateTime,
+            executedQty: order.executedQty,
+          };
+        });
+      };
+    }, [bot.exchange]);
+
+    // Get pending and completed orders for this deal
+    const pendingOrders = useMemo(() => {
+      return hasPendingResponse ? transformOrders(pendingBotOrders) : [];
+    }, [hasPendingResponse, pendingBotOrders, transformOrders]);
+
+    const completedOrders = useMemo(() => {
+      return hasCompletedResponse ? transformOrders(completedBotOrders) : [];
+    }, [hasCompletedResponse, completedBotOrders, transformOrders]);
+
+    const isLoadingOrders = useMemo(
+      () => pendingOrdersLoading || completedOrdersLoading,
+      [pendingOrdersLoading, completedOrdersLoading]
+    );
+
+    // Raw deal carries pendingAddFunds/pendingReduceFunds so DealOrdersSection
+    // can route a manual add/reduce-funds cancel through the correct mutation.
+    const rawDeal = useDealStore((s) =>
+      selectedTrade?.id ? (s.deals[bot._id]?.[selectedTrade.id] ?? null) : null
+    );
+
+    // Auto-select the most recent deal so TP/SL lines show on chart immediately
+    const hasAutoSelectedDeal = useRef(false);
+    useEffect(() => {
+      if (hasAutoSelectedDeal.current || isGrid || isLoadingOrders) {
+        return;
+      }
+      // Need at least some orders to find a deal
+      const allOrders = [...pendingOrders, ...completedOrders];
+      if (allOrders.length === 0) return;
+      // Don't auto-select if a URL-based selection is pending
+      if (searchParams.get('chartDealId') || searchParams.get('editDealId')) {
+        return;
+      }
+      // Find the deal with the most recent order
+      const dealMap = new Map<
+        string,
+        { id: string; symbol: string; time: number }
+      >();
+      for (const o of allOrders) {
+        if (!o.dealId) continue;
+        const existing = dealMap.get(o.dealId);
+        if (
+          !existing ||
+          (o.time && (!existing.time || o.time > existing.time))
+        ) {
+          dealMap.set(o.dealId, {
+            id: o.dealId,
+            symbol: o.symbol,
+            time: o.time,
+          });
+        }
+      }
+      if (dealMap.size === 0) return;
+
+      // Pick the deal with the most recent order time
+      let mostRecent: { id: string; symbol: string; time: number } | null =
+        null;
+      for (const entry of dealMap.values()) {
+        if (!mostRecent || entry.time > mostRecent.time) {
+          mostRecent = entry;
+        }
+      }
+      if (!mostRecent) return;
+
+      hasAutoSelectedDeal.current = true;
+      // Set the chart trade with minimal info (only id is used for order filtering)
+      setChartTrade({ id: mostRecent.id } as TradeDetails);
+      setDealSymbol(mostRecent.symbol);
+    }, [isGrid, isLoadingOrders, pendingOrders, completedOrders, searchParams]);
+
+    // Reset auto-select flag when drawer closes
+    useEffect(() => {
+      if (!actualOpen) {
+        hasAutoSelectedDeal.current = false;
+      }
+    }, [actualOpen]);
+
+    const onTradeChartSelect = useCallback((trade: TradeDetails) => {
+      setChartTrade(trade);
+    }, []);
+    const dealWidgetWithProps = useMemo(() => {
+      if (dealWidget.length === 0) return dealWidget;
+      return dealWidget.map((widget) => ({
+        ...widget,
+        props: {
+          ...widget.props,
+          symbol: dealSymbol,
+          setSymbol: setDealSymbol,
+          completedOrders,
+          pendingOrders,
+          onTradeChartSelect,
+          onEditDeal: handleEditDeal,
+          externalSelectedDealId: chartTrade?.id ?? null,
+          autoOpenDealId,
+          onAutoOpenHandled: handleAutoOpenHandled,
+        },
+      }));
+    }, [
+      dealSymbol,
+      dealWidget,
+      setDealSymbol,
+      completedOrders,
+      pendingOrders,
+      onTradeChartSelect,
+      handleEditDeal,
+      chartTrade?.id,
+      autoOpenDealId,
+      handleAutoOpenHandled,
+    ]);
+
+    const chartOrders = useMemo(
+      () =>
+        [...pendingOrders]
+          .filter((o) => {
+            // Grid bots don't have deals — show all orders on the chart
+            if (isGrid) return true;
+            return chartTrade?.id
+              ? o.dealId === chartTrade.id
+              : o.dealId === selectedTrade?.id;
+          })
+          .map((o) => ({
+            qty: +o.origQty,
+            price: +o.price,
+            side:
+              o.side === 'buy' ? BotOrderSideEnum.buy : BotOrderSideEnum.sell,
+            id: o.id,
+            type: o.typeOrder as DCAOrderTypeEnum,
+            pair: o.symbol,
+            strategy: StrategyEnum.long,
+            label: isGrid
+              ? o.side === 'buy'
+                ? 'Grid Buy'
+                : 'Grid Sell'
+              : getOrderTypeLabel(
+                  o.typeOrder ?? 'regular',
+                  !!o.sl,
+                  o.clientOrderId,
+                  o.reduceFundsId,
+                  false
+                ), // false = not real order for display
+          })),
+      [pendingOrders, selectedTrade?.id, chartTrade?.id, isGrid]
+    );
+
+    const chartTransactions = useMemo(
+      () =>
+        [...completedOrders]
+          .filter((o) => {
+            // Grid bots don't have deals — show all transactions on the chart
+            if (isGrid) return true;
+            return chartTrade?.id
+              ? o.dealId === chartTrade.id
+              : o.dealId === selectedTrade?.id;
+          })
+          .map((o) => ({
+            price: +o.price,
+            side:
+              o.side === 'buy' ? BotOrderSideEnum.buy : BotOrderSideEnum.sell,
+            id: o.id,
+            time: o.time,
+          })),
+      [completedOrders, selectedTrade?.id, chartTrade?.id, isGrid]
+    );
+
+    // Breakeven line for the selected deal. Grid bots use their own
+    // avg-price overlay through `gridPageContext`, so we leave them
+    // alone here.
+    const chartAvgPrices = useMemo<AvgPrice[]>(() => {
+      if (isGrid) return [];
+      const target = chartTrade ?? selectedTrade;
+      if (!target?.avgPrice || target.avgPrice <= 0) return [];
+      const symbol =
+        typeof target.symbol === 'string'
+          ? target.symbol
+          : target.symbol.symbol;
+      return [
+        {
+          price: target.avgPrice,
+          label: 'Breakeven',
+          symbol,
+        },
+      ];
+    }, [isGrid, chartTrade, selectedTrade]);
+
+    useEffect(() => {
+      if (isGrid || chartTrade || selectedTrade) {
+        exampleOrdersStore.setOrders(chartOrders);
+        exampleOrdersStore.setTransactions(chartTransactions);
+        exampleOrdersStore.setAvgPrices(chartAvgPrices);
+      } else {
+        exampleOrdersStore.setOrders([]);
+        exampleOrdersStore.setTransactions([]);
+        exampleOrdersStore.setAvgPrices([]);
+      }
+      return () => {
+        exampleOrdersStore.setOrders([]);
+        exampleOrdersStore.setTransactions([]);
+        exampleOrdersStore.setAvgPrices([]);
+      };
+    }, [
+      isGrid,
+      chartTrade,
+      selectedTrade,
+      chartOrders,
+      chartTransactions,
+      chartAvgPrices,
+    ]);
+
+    useEffect(() => {
+      if (isGrid) {
+        return;
+      }
+      indicatorStore.setIndicators((bot as DCABot).settings.indicators);
+    }, [isGrid, bot]);
+
+    useEffect(() => {
+      if (bot?.type === BotTypesEnum.grid) {
+        return;
+      }
+      const b = bot as DCABot;
+      const scaleAr =
+        (b.settings.dcaCondition === DCAConditionEnum.percentage ||
+          !b.settings.dcaCondition) &&
+        [ScaleDcaTypeEnum.adr, ScaleDcaTypeEnum.atr].includes(
+          b.settings.scaleDcaType ?? ScaleDcaTypeEnum.percentage
+        ) &&
+        b.settings.useDca;
+      const tpAr =
+        b.settings.dealCloseCondition === CloseConditionEnum.dynamicAr &&
+        b.settings.useTp;
+      const slAr =
+        b.settings.dealCloseConditionSL === CloseConditionEnum.dynamicAr &&
+        b.settings.useSl;
+      indicatorStore.setChartIndicatorsContext({
+        scaleAr,
+        tpAr,
+        slAr,
+        strategy: b?.settings.strategy,
+        indicatorGroupsToUse: b?.settings.indicatorGroups
+          .filter(
+            (ig) =>
+              b.settings.indicators.filter((i) => i.groupId === ig.id).length >
+              0
+          )
+          .map((ig) => ig.id),
+        useCloseIndicators:
+          (b.settings.dealCloseCondition === CloseConditionEnum.techInd &&
+            (!b.settings.useRiskReward ||
+              (b.settings.useRiskReward && !b.settings.riskUseTpRatio))) ||
+          (b.settings.dealCloseConditionSL === CloseConditionEnum.techInd &&
+            !b.settings.useRiskReward) ||
+          tpAr ||
+          slAr,
+        useStartDealIndicators:
+          b.settings.startCondition === StartConditionEnum.ti,
+        useStartDCAIndicators:
+          (b.settings.dcaCondition === DCAConditionEnum.indicators &&
+            b.settings.useDca) ||
+          scaleAr,
+        useStopBotIndicators:
+          b.settings.botStart === BotStartTypeEnum.indicators &&
+          b.settings.useBotController,
+        useStartBotIndicators:
+          b.settings.botActualStart === BotStartTypeEnum.indicators &&
+          b.settings.useBotController,
+        useRiskRewardIndicators: b.settings.useRiskReward,
+      });
+    }, [bot]);
+
+    const leftPanel = useMemo(
+      () =>
+        isLeftPanelCollapsed ? null : (
+          <div className="h-full w-full">
+            <UnfoldingChartPanel
+              botId={bot._id}
+              bot={bot}
+              enabled
+              className="h-full"
+              overrideSymbol={dealSymbol}
+            />
+          </div>
+        ),
+      [isLeftPanelCollapsed, bot, dealSymbol]
+    );
+
+    const leftPanelClassName = useMemo(
+      () => (isLeftPanelCollapsed ? '' : 'hidden md:block w-[640px]'),
+      [isLeftPanelCollapsed]
+    );
+
+    return (
+      <DetailDrawer open={actualOpen} onOpenChange={handleDrawerOpenChange}>
+        <DetailDrawerTrigger asChild>{children}</DetailDrawerTrigger>
+
+        <DetailDrawerContent
+          className="w-full max-w-none"
+          showCloseButton={false}
+          onClose={handleDrawerClose}
+          botType={botType}
+          leftPanel={leftPanel}
+          leftPanelClassName={leftPanelClassName}
+          fullWidth={fullWidth}
+        >
+          {viewMode === 'bot' ? (
+            <Tabs
+              value={activeTab}
+              onValueChange={handleTabChange}
+              paramKey="tab"
+              paramSync={true}
+              className="flex flex-col h-full"
+            >
+              <DetailDrawerHeader className="relative">
+                <div className="flex w-full flex-col gap-md">
+                  {/* Top row: Title and actions */}
+                  <div className="flex w-full items-center justify-between gap-md">
+                    <div className="flex flex-1 min-w-0 items-center gap-2 pr-4">
+                      <StatusChip
+                        status={bot.status}
+                        size="md"
+                        chipStyle="solid"
+                        dotOnly
+                        className="shrink-0"
+                      />
+                      <DetailDrawerTitle className="text-balance text-2xl leading-tight sm:text-3xl min-w-0 truncate">
+                        {bot.settings.name}
+                      </DetailDrawerTitle>
+                      <StaleIndicator
+                        componentId={`bot-details-${bot._id}`}
+                        className="ml-2 shrink-0"
+                      />
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-xs sm:gap-sm">
+                      {/* Toggle left-attached panel (desktop only) */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted hidden md:inline-flex"
+                        aria-label={
+                          isLeftPanelCollapsed
+                            ? 'Show chart panel'
+                            : 'Hide chart panel'
+                        }
+                        onClick={() =>
+                          setLeftPanelCollapsed(!isLeftPanelCollapsed)
+                        }
+                      >
+                        {isLeftPanelCollapsed ? (
+                          <ChevronLeft className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                      {isOwner && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted"
+                          aria-label="Share bot"
+                          title="Share bot"
+                          onClick={() => setShareDialogOpen(true)}
+                        >
+                          <Share2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted"
+                            aria-label="Bot actions"
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <BotActionsMenuItems
+                          align="end"
+                          className="w-56 z-50"
+                          viewOnly={viewOnly}
+                          bot={{
+                            id: bot._id,
+                            name: bot.settings.name,
+                            type: type as BotTypeId,
+                            status: bot.status as BotStatusType,
+                          }}
+                          pending={{
+                            statusToggle: statusToggleMutation.isPending,
+                            restart: restartMutation.isPending,
+                            clone: cloneMutation.isPending,
+                            delete: deleteMutation.isPending,
+                          }}
+                          onToggleStatus={() => handleStatusToggle()}
+                          onRestart={() => handleRestart()}
+                          onEdit={() => handleEdit()}
+                          onClone={() => handleClone()}
+                          onViewBacktests={() => handleViewBacktests()}
+                          onViewClosedTrades={() =>
+                            navigate(`/trades?botId=${bot._id}`)
+                          }
+                          onShareConfig={async () => {
+                            try {
+                              await navigator.clipboard.writeText(
+                                JSON.stringify(bot, null, 2)
+                              );
+                              toast.success(
+                                'Configuration copied to clipboard'
+                              );
+                            } catch (error) {
+                              console.error(
+                                'Failed to copy configuration:',
+                                error
+                              );
+                              toast.error('Failed to copy configuration');
+                            }
+                          }}
+                          onCopyToLive={() => {
+                            const botConfig = {
+                              name: `${bot.settings.name} (Live)`,
+                              type: type,
+                              exchange: bot.exchange,
+                              symbol: bot.symbol,
+                              settings: bot.settings,
+                            };
+                            try {
+                              sessionStorage.setItem(
+                                'botConfig',
+                                JSON.stringify(botConfig)
+                              );
+                              navigate('/bot/new');
+                            } catch (error) {
+                              console.error(
+                                'Failed to stage config for live trading:',
+                                error
+                              );
+                              toast.error('Failed to stage configuration');
+                            }
+                          }}
+                          onDelete={() => handleDelete()}
+                        />
+                      </DropdownMenu>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted"
+                        aria-label="Close drawer"
+                        onClick={handleDrawerClose}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Optional leg switcher — supplied by the hedge list
+                      pages so the same drawer can flip between long /
+                      short leg data without remounting. */}
+                  {legSwitcher && (
+                    <div className="mb-sm flex items-center">{legSwitcher}</div>
+                  )}
+
+                  {/* Tabs (only in bot view) - Responsive tabs that convert to dropdown on mobile */}
+                  <div className="flex items-center">
+                    <TabsList
+                      className="grid w-full grid-cols-5"
+                      breakpoint={640}
+                      value={activeTab}
+                      onValueChange={handleTabChange}
+                    >
+                      <TabsTrigger value="performance">Overview</TabsTrigger>
+                      {!isGrid && (
+                        <TabsTrigger value="deals">Deals</TabsTrigger>
+                      )}
+                      <TabsTrigger value="events">Events</TabsTrigger>
+                      <TabsTrigger value="settings">Settings</TabsTrigger>
+                      {!isGrid && (
+                        <TabsTrigger value="webhook">Webhook</TabsTrigger>
+                      )}
+                    </TabsList>
+                  </div>
+                </div>
+              </DetailDrawerHeader>
+
+              <DetailDrawerBody className="px-4 py-5 sm:px-6 sm:py-6">
+                <TabsContent
+                  value="deals"
+                  className="mt-0 flex-1 overflow-hidden"
+                >
+                  <motion.div
+                    key="deals-tab"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="h-full"
+                  >
+                    {/* Deals widget */}
+                    <DrawerWidgetRenderer
+                      botId={bot._id}
+                      bot={bot}
+                      privacyMode={privacyMode}
+                      widgets={dealWidgetWithProps}
+                      onTradeSelect={handleTradeSelect}
+                    />
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="performance" className="mt-0">
+                  <motion.div
+                    key="performance-tab"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="space-y-5 sm:space-y-lg"
+                  >
+                    {/* Performance widgets */}
+                    <DrawerWidgetRenderer
+                      botId={bot._id}
+                      bot={bot}
+                      privacyMode={privacyMode}
+                      widgets={drawerWidgets.filter(
+                        (w) =>
+                          ![
+                            'drawer-bot-events',
+                            'drawer-webhook-info',
+                            'drawer-bot-settings',
+                            'drawer-deals-table',
+                            'drawer-orders-table',
+                            'drawer-backtest-results',
+                            'drawer-additional-details',
+                          ].includes(w.type)
+                      )}
+                      onTradeSelect={handleTradeSelect}
+                    />
+
+                    {/* Bot ID — parent (hedge wrapper) takes precedence so
+                        the user sees the id that owns the bot card / list
+                        row, not the leg's nested id. */}
+                    <div className="flex items-center justify-between rounded-lg bg-muted p-sm">
+                      <div>
+                        <span className="text-xs text-muted-foreground">
+                          Bot ID
+                        </span>
+                        <div className="font-mono text-xs">
+                          {parentBotId ?? bot._id}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(
+                              parentBotId ?? bot._id
+                            );
+                            toast.success('Bot ID copied');
+                          } catch {
+                            toast.error('Failed to copy');
+                          }
+                        }}
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="events" className="mt-0">
+                  <motion.div
+                    key="events-tab"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="space-y-5 sm:space-y-lg"
+                  >
+                    {/* Events widget — for hedge bots events live on the
+                        wrapper id (the worker emits hedge-level lifecycle
+                        events), so prefer the parent id when supplied. */}
+                    <DrawerWidgetRenderer
+                      botId={parentBotId ?? bot._id}
+                      bot={bot}
+                      privacyMode={privacyMode}
+                      widgets={drawerWidgets.filter(
+                        (w) => w.type === 'drawer-bot-events'
+                      )}
+                      onTradeSelect={handleTradeSelect}
+                    />
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="settings" className="mt-0">
+                  <motion.div
+                    key="settings-tab"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="-mt-5 sm:-mt-6"
+                  >
+                    {/* Bot Settings widget */}
+                    <DrawerWidgetRenderer
+                      botId={bot._id}
+                      bot={bot}
+                      privacyMode={privacyMode}
+                      widgets={[
+                        { type: 'drawer-bot-settings', botId: bot._id },
+                      ]}
+                      onTradeSelect={handleTradeSelect}
+                    />
+                  </motion.div>
+                </TabsContent>
+
+                <TabsContent value="webhook" className="mt-0">
+                  <motion.div
+                    key="webhook-tab"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                    className="space-y-5 sm:space-y-lg"
+                  >
+                    {/* Webhook config widget */}
+                    <DrawerWidgetRenderer
+                      botId={bot._id}
+                      bot={bot}
+                      privacyMode={privacyMode}
+                      widgets={drawerWidgets.filter(
+                        (w) => w.type === 'drawer-webhook-info'
+                      )}
+                      onTradeSelect={handleTradeSelect}
+                    />
+                  </motion.div>
+                </TabsContent>
+              </DetailDrawerBody>
+            </Tabs>
+          ) : viewMode === 'edit-deal' && editingTrade ? (
+            <>
+              <DetailDrawerHeader className="relative">
+                <div className="flex w-full flex-col gap-md">
+                  <div className="flex w-full items-center justify-between gap-md">
+                    <div className="flex flex-1 min-w-0 items-center gap-sm pr-4">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="shrink-0 -ml-2"
+                        onClick={handleBackToBot}
+                      >
+                        <ArrowLeft className="h-4 w-4 mr-2" />
+                        Back
+                      </Button>
+                      <DetailDrawerTitle className="text-balance text-2xl leading-tight sm:text-3xl">
+                        Edit Deal
+                      </DetailDrawerTitle>
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-xs sm:gap-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted"
+                        aria-label="Close drawer"
+                        onClick={handleDrawerClose}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </DetailDrawerHeader>
+
+              <DetailDrawerBody className="px-0 py-0">
+                <DealEditDrawer
+                  open
+                  onClose={handleBackToBot}
+                  trade={editingTrade}
+                  inline
+                >
+                  <div />
+                </DealEditDrawer>
+              </DetailDrawerBody>
+            </>
+          ) : (
+            <>
+              <DetailDrawerHeader className="relative">
+                <div className="flex w-full flex-col gap-md">
+                  <div className="flex w-full items-center justify-between gap-md">
+                    <div className="flex flex-1 min-w-0 items-center gap-sm pr-4">
+                      {selectedTrade && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="shrink-0 -ml-2"
+                          onClick={handleBackToBot}
+                        >
+                          <ArrowLeft className="h-4 w-4 mr-2" />
+                          Back
+                        </Button>
+                      )}
+                      <DetailDrawerTitle className="text-balance text-2xl leading-tight sm:text-3xl">
+                        {selectedTrade
+                          ? typeof selectedTrade.symbol === 'string'
+                            ? selectedTrade.symbol
+                            : selectedTrade.symbol.symbol
+                          : bot.settings.name}
+                      </DetailDrawerTitle>
+                      {!selectedTrade && (
+                        <StaleIndicator
+                          componentId={`bot-details-${bot._id}`}
+                          className="ml-2"
+                        />
+                      )}
+                      {selectedTrade && (
+                        <StatusChip
+                          status={selectedTrade.status}
+                          size="xs"
+                          chipStyle="soft"
+                        />
+                      )}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-xs sm:gap-sm">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground hover:bg-muted"
+                        aria-label="Close drawer"
+                        onClick={handleDrawerClose}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </DetailDrawerHeader>
+
+              {isMobile && selectedTrade ? (
+                <Tabs
+                  defaultValue="details"
+                  className="flex flex-col flex-1 min-h-0 overflow-hidden"
+                >
+                  <div className="px-4 pt-3 pb-2 shrink-0">
+                    <TabsList>
+                      <TabsTrigger value="details">Details</TabsTrigger>
+                      <TabsTrigger value="chart">Chart</TabsTrigger>
+                    </TabsList>
+                  </div>
+                  <TabsContent
+                    value="details"
+                    className="flex-1 min-h-0 overflow-auto px-4 py-5 custom-scrollbar mt-0"
+                  >
+                    <motion.div
+                      key="trade-view"
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      transition={{ duration: 0.2 }}
+                      className="space-y-5"
+                    >
+                      <TradeDetailContent
+                        trade={selectedTrade}
+                        completedOrders={completedOrders}
+                        pendingOrders={pendingOrders}
+                        isLoadingOrders={isLoadingOrders}
+                        chartOrders={chartOrders}
+                        chartTransactions={chartTransactions}
+                        {...(rawDeal?.pendingAddFunds && {
+                          pendingAddFunds: rawDeal.pendingAddFunds,
+                        })}
+                        {...(rawDeal?.pendingReduceFunds && {
+                          pendingReduceFunds: rawDeal.pendingReduceFunds,
+                        })}
+                      />
+                    </motion.div>
+                    {/* Spacer so the last item clears the floating bottom nav. */}
+                    <div
+                      aria-hidden="true"
+                      className="h-[calc(4.5rem+env(safe-area-inset-bottom,0px))]"
+                    />
+                  </TabsContent>
+                  <TabsContent
+                    value="chart"
+                    className="flex-1 min-h-0 mt-0 pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))]"
+                  >
+                    <UnfoldingChartPanel
+                      botId={bot._id}
+                      bot={bot}
+                      enabled
+                      className="h-full"
+                      overrideSymbol={dealSymbol}
+                    />
+                  </TabsContent>
+                </Tabs>
+              ) : (
+                <DetailDrawerBody className="px-4 py-5 sm:px-6 sm:py-6">
+                  {selectedTrade && (
+                    <motion.div
+                      key="trade-view"
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      transition={{ duration: 0.2 }}
+                      className="space-y-5 sm:space-y-lg"
+                    >
+                      <TradeDetailContent
+                        trade={selectedTrade}
+                        completedOrders={completedOrders}
+                        pendingOrders={pendingOrders}
+                        isLoadingOrders={isLoadingOrders}
+                        chartOrders={chartOrders}
+                        chartTransactions={chartTransactions}
+                        {...(rawDeal?.pendingAddFunds && {
+                          pendingAddFunds: rawDeal.pendingAddFunds,
+                        })}
+                        {...(rawDeal?.pendingReduceFunds && {
+                          pendingReduceFunds: rawDeal.pendingReduceFunds,
+                        })}
+                      />
+                    </motion.div>
+                  )}
+                </DetailDrawerBody>
+              )}
+            </>
+          )}
+
+          {/* Footer removed - all actions moved to header 3-dot menu */}
+        </DetailDrawerContent>
+
+        {/* Modals */}
+        <BotStatusConfirmationModal
+          open={statusModalOpen}
+          onOpenChange={setStatusModalOpen}
+          onConfirm={handleConfirmStatusChange}
+          botName={bot.settings.name}
+          currentStatus={bot.status}
+          targetStatus={getTargetStatus(bot.status)}
+          hasActiveDeals={((bot as DCABot)?.dealsInBot?.active || 0) > 0}
+          isLoading={statusToggleMutation.isPending}
+        />
+
+        <DeleteConfirmationModal
+          open={deleteModalOpen}
+          onOpenChange={setDeleteModalOpen}
+          onConfirm={handleConfirmDelete}
+          title="Delete Bot"
+          description="Are you sure you want to delete this bot? This action cannot be undone."
+          itemName={bot.settings.name}
+          itemType="bot"
+          additionalInfo={{
+            activeDeals: (bot as DCABot)?.dealsInBot?.active || 0,
+            totalValue: (bot as DCABot)?.usage?.current?.quote || 0,
+            currency: Array.isArray((bot as DCABot)?.symbol)
+              ? (bot as DCABot).symbol[0]?.value?.quoteAsset || 'USDT'
+              : 'USDT',
+            lastActivity: bot.created || 'Unknown',
+          }}
+          isLoading={deleteMutation.isPending}
+          requireConfirmation={false}
+        />
+
+        <SuccessFeedbackModal
+          open={successModalOpen}
+          onOpenChange={setSuccessModalOpen}
+          type={successData?.type || 'clone'}
+          itemName={bot.settings.name}
+          itemType="bot"
+          newItemId={successData?.newItemId || undefined}
+          details={
+            successData?.type === 'clone'
+              ? {
+                  originalName: bot.settings.name,
+                  newName: `${bot.settings.name} (Clone)`,
+                  botTypeId: successData?.botTypeId ?? type,
+                }
+              : undefined
+          }
+        />
+
+        {/* Share dialog — only mounted for the bot's owner.
+            ShareBotDialog handles the toggle mutation + URL build. */}
+        {isOwner && (
+          <ShareBotDialog
+            open={shareDialogOpen}
+            onOpenChange={setShareDialogOpen}
+            botId={actionBotId}
+            botName={bot.settings.name}
+            botType={type}
+            initialShareEnabled={
+              (bot as DCABot & { share?: boolean }).share ?? false
+            }
+            initialShareId={
+              (bot as DCABot & { shareId?: string | null }).shareId ?? null
+            }
+          />
+        )}
+      </DetailDrawer>
+    );
+  }
+);

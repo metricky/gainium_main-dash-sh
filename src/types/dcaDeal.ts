@@ -1,0 +1,468 @@
+import { findUSDRate } from '@/lib/utils/unrealizedPnL';
+import {
+  calculateDealCost,
+  calculateDealSize,
+  calculateDealValue,
+  isLongStrategy,
+} from '@/lib/utils/tradingMetrics';
+import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
+import {
+  BotTypesEnum,
+  ComboTpBase,
+  DCADealStatusEnum,
+  DCATypeEnum,
+  ExchangeEnum,
+  StrategyEnum,
+  type AllFees,
+  type ComboDeals,
+  type DCADeals,
+  type Prices,
+} from '.';
+import type { DrawerBot } from './bots/drawer';
+import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
+
+export type TradeChartPoint = {
+  time: string;
+  price: number;
+};
+
+export type TransformedTrade = {
+  active: boolean;
+  id: string;
+  type: 'DCA' | 'Combo' | 'Hedge DCA' | 'Hedge Combo' | 'Grid' | 'Terminal';
+  symbol:
+    | string
+    | {
+        symbol: string;
+        baseAsset: string;
+        quoteAsset: string;
+      };
+  strategy: string;
+  status: string;
+  exchange: string;
+  exchangeUUID?: string | undefined;
+  botId?: string | undefined; // Added to support orders fetching
+  botName?: string | undefined;
+  currentBalance: {
+    base: number;
+    quote: number;
+  };
+  usage: {
+    current: {
+      base: number;
+      quote: number;
+    };
+    currentUsd?: number;
+    max?: {
+      base: number;
+      quote: number;
+    };
+    maxUsd?: number;
+  };
+  profit?:
+    | {
+        total: number;
+        totalUsd: number;
+        pureBase: number;
+        pureQuote: number;
+      }
+    | undefined;
+  unrealizedProfit?: number | undefined;
+  avgPrice?: number | undefined;
+  levels: {
+    complete: number;
+    all: number;
+  };
+  created?: number | undefined;
+  // Enhanced properties for advanced cards
+  initialPrice?: number | undefined;
+  notes?: string;
+  pair?: string;
+  dealType?: string;
+  side?: 'BUY' | 'SELL';
+  orders?: number;
+  entryPrice?: number;
+  pnl?: number;
+  cost?: number;
+  value?: number;
+  size?: number;
+  usagePercentage?: number;
+  createdTime?: Date;
+  workingTime?: string;
+  drawdown?: number;
+  runUp?: number;
+  timeInLoss?: string;
+  timeInProfit?: string;
+  takeProfitConfig?: string;
+  stopLossConfig?: string;
+  // Gauge properties
+  outerGaugePercent?: number;
+  centerText?: string;
+  showInnerGauge?: boolean;
+  // Chart data (real values provided by API)
+  chartData?: TradeChartPoint[];
+  takeProfitPrice?: number;
+  stopLossPrice?: number;
+  // Additional fields for old dashboard parity
+  initialBalances?: {
+    base: number;
+    quote: number;
+  };
+  currentBalances?: {
+    base: number;
+    quote: number;
+  };
+  closeTrigger?: string;
+  closePrice?: number;
+  gridProfit?: number;
+  gridProfitUsd?: number;
+  transactionsBuy?: number;
+  transactionsSell?: number;
+  transactionsTotal?: number;
+  updateTime?: string;
+  closeTime?: string;
+  trailingMode?: string;
+  exitPrice?: number;
+};
+
+export const transformDealToTrade = (
+  deal: DCADeals | ComboDeals,
+  allFees: AllFees,
+  latestPrices: Prices,
+  bot?: DrawerBot
+): TransformedTrade => {
+  const useLiveStats = latestPrices.length === 0;
+
+  const createTime = deal.createTime ? +new Date(deal.createTime) : +new Date();
+
+  const profit = deal.profit || { totalUsd: 0 };
+  const usage = deal.usage || {
+    current: { quote: 0 },
+    max: { quote: 0 },
+  };
+  const levels = deal.levels || { complete: 0, all: 0 };
+  const combo = bot?.type === BotTypesEnum.combo;
+  // Derive futures/coinm at the function level so they're available in the
+  // return statement for cost/value/size helpers.
+  const futures =
+    `${deal.settings.futures}` !== 'null'
+      ? deal.settings.futures
+      : isFuturesExchange(deal.exchange ?? ExchangeEnum.binance);
+  const coinm =
+    `${deal.settings.coinm}` !== 'null'
+      ? deal.settings.coinm
+      : isCoinmExchange(deal.exchange ?? ExchangeEnum.binance);
+  // Usage is tracked on the quote side for LONG spot / USD-M futures and on the
+  // BASE side for SHORT spot / COIN-M futures. Reading only the quote side made
+  // short combos (and coin-m deals) report 0% usage.
+  const usesBaseSide = futures ? coinm : !isLongStrategy(deal.strategy);
+  const usageCurrentBase =
+    'base' in usage.current ? usage.current.base || 0 : 0;
+  const usageMaxBase =
+    usage.max && 'base' in usage.max ? usage.max.base || 0 : 0;
+  const usagePercentage = usesBaseSide
+    ? usageMaxBase
+      ? (usageCurrentBase / usageMaxBase) * 100
+      : 0
+    : usage.max?.quote
+      ? (usage.current.quote / usage.max.quote) * 100
+      : 0;
+  // Determine type based on bot configuration
+  let dealType:
+    | 'DCA'
+    | 'Combo'
+    | 'Hedge DCA'
+    | 'Hedge Combo'
+    | 'Grid'
+    | 'Terminal' = 'DCA';
+  if (bot?.type === BotTypesEnum.hedgeDca) dealType = 'Hedge DCA';
+  else if (bot?.type === BotTypesEnum.hedgeCombo) dealType = 'Hedge Combo';
+  else if (combo) dealType = 'Combo';
+  else if (deal.type === DCATypeEnum.terminal) dealType = 'Terminal';
+
+  // Determine botId from deal or component prop
+  const resolvedBotId = deal.botId;
+
+  // Calculate working time
+  const now = Date.now();
+  const created = deal.createTime ? new Date(deal.createTime).getTime() : now;
+  const workingMs = now - created;
+  const workingDays = Math.floor(workingMs / (1000 * 60 * 60 * 24));
+  const workingHours = Math.floor(
+    (workingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
+  );
+  const workingTime =
+    workingDays > 0
+      ? `${workingDays}days ${workingHours}h`
+      : `${workingHours}h`;
+
+  let unrealizedPnL = useLiveStats ? deal.stats.unrealizedProfit : undefined;
+
+  if (!useLiveStats) {
+    const long = deal.strategy === StrategyEnum.long;
+    const price = latestPrices.find(
+      (p) => p.symbol === deal.symbol.symbol && p.exchange === deal.exchange
+    )?.price;
+
+    // Legacy parity: for spot deals the formula result is always in quote
+    // terms, so we convert quoteAsset → USD for both LONG and SHORT.
+    // For futures: COIN-M uses baseAsset, USD-M uses quoteAsset.
+    const usdRate = deal.settings.futures
+      ? deal.settings.coinm
+        ? findUSDRate(deal.symbol.baseAsset, latestPrices, deal.exchange)
+        : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange)
+      : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange);
+    unrealizedPnL =
+      deal.strategy && price && usdRate
+        ? (long
+            ? deal.currentBalances.base * price +
+              deal.currentBalances.quote -
+              deal.initialBalances.quote
+            : deal.currentBalances.quote -
+              (deal.initialBalances.base - deal.currentBalances.base) * price) *
+          usdRate
+        : undefined;
+    const fee = allFees.find(
+      (f) => f.exchange === deal.exchangeUUID && f.symbol === deal.symbol.symbol
+    )?.fee;
+    const { comboTpBase } = deal.settings;
+    const comboBasedOn =
+      !comboTpBase || comboTpBase === ComboTpBase.full
+        ? ComboTpBase.full
+        : ComboTpBase.filled;
+    const usageBase =
+      comboBasedOn === ComboTpBase.full
+        ? deal.usage.max.base
+        : deal.usage.current.base;
+    const usageQuote =
+      comboBasedOn === ComboTpBase.full
+        ? deal.usage.max.quote
+        : deal.usage.current.quote;
+    const reduceFundsBase = (deal.reduceFunds ?? []).reduce(
+      (acc, r) => acc + r.qty,
+      0
+    );
+    const reduceFundsQuote = (deal.reduceFunds ?? []).reduce(
+      (acc, r) => acc + r.qty * r.price,
+      0
+    );
+    const usage =
+      usdRate && price
+        ? futures
+          ? coinm
+            ? (combo ? usageBase : deal.usage.current.base + reduceFundsBase) *
+              price *
+              usdRate
+            : (combo
+                ? usageQuote
+                : deal.usage.current.quote + reduceFundsQuote) * usdRate
+          : long
+            ? (combo
+                ? usageQuote
+                : deal.usage.current.quote + reduceFundsQuote) * usdRate
+            : (combo ? usageBase : deal.usage.current.base + reduceFundsBase) *
+              price *
+              usdRate
+        : undefined;
+    const feeAmount = fee !== undefined ? (usage ?? 0) * fee * 2 : undefined;
+
+    unrealizedPnL =
+      unrealizedPnL && feeAmount !== undefined
+        ? unrealizedPnL - feeAmount
+        : undefined;
+    if (
+      combo &&
+      price !== undefined &&
+      fee !== undefined &&
+      usdRate !== undefined
+    ) {
+      const profitBase =
+        (futures && coinm) ||
+        (!futures && deal?.settings.profitCurrency === 'base');
+      const qty = long
+        ? deal.currentBalances.base
+        : deal.initialBalances.base - deal.currentBalances.base;
+      let quote =
+        (long
+          ? deal.initialBalances.quote - deal.currentBalances.quote
+          : deal.currentBalances.quote) +
+        (profitBase ? 0 : deal.profit.total * (long ? 1 : -1));
+      const quoteTp = qty * price;
+      let base =
+        quote / price + (profitBase ? deal.profit.total * (long ? 1 : -1) : 0);
+      let commission = profitBase ? qty * fee : qty * price * fee;
+      let total =
+        (deal.profit.total +
+          (profitBase ? qty - base : quoteTp - quote) * (long ? 1 : -1) -
+          commission) *
+        usdRate *
+        (profitBase ? price : 1);
+      if (
+        typeof deal.profit.pureBase !== 'undefined' &&
+        typeof deal.profit.pureQuote !== 'undefined' &&
+        typeof deal.feePaid !== 'undefined' &&
+        `${deal.feePaid}` !== 'null' &&
+        `${deal.profit.pureBase}` !== 'null' &&
+        `${deal.profit.pureQuote}` !== 'null' &&
+        deal.currentBalances.quote >= 0 &&
+        deal.currentBalances.base >= 0
+      ) {
+        quote = long
+          ? deal.initialBalances.quote - deal.currentBalances.quote
+          : deal.currentBalances.quote;
+        base = quote / price;
+        commission = profitBase
+          ? deal.feePaid
+            ? (deal.feePaid.base ?? 0) +
+              (deal.feePaid.quote ?? 0) / deal.avgPrice
+            : 0
+          : deal.feePaid
+            ? (deal.feePaid.base ?? 0) * deal.avgPrice +
+              (deal.feePaid.quote ?? 0)
+            : 0;
+        total =
+          (+(profitBase ? qty - base : quoteTp - quote) * (long ? 1 : -1) -
+            commission) *
+          usdRate *
+          (profitBase ? price : 1);
+      }
+
+      unrealizedPnL = total;
+    }
+  }
+
+  return {
+    id: deal._id,
+    active:
+      deal.status === DCADealStatusEnum.open ||
+      deal.status === DCADealStatusEnum.error ||
+      deal.status === DCADealStatusEnum.start,
+    type: dealType,
+    symbol: deal.symbol,
+    strategy: deal.strategy || '',
+    status: String(deal.status),
+    exchange: deal.exchange || '',
+    exchangeUUID: deal.exchangeUUID || '',
+    botName: bot?.name || '',
+    botId: resolvedBotId,
+    pair:
+      deal.symbol?.symbol ||
+      (typeof deal.symbol === 'string' ? deal.symbol : deal.symbol?.symbol),
+    currentBalance: {
+      base: deal.currentBalances?.base || 0,
+      quote: deal.currentBalances?.quote || 0,
+    },
+    usage: {
+      current: {
+        base: ('base' in usage.current ? usage.current.base : 0) || 0,
+        quote: usage.current.quote || 0,
+      },
+      currentUsd: usage.current.quote,
+      max: {
+        base: (usage.max && 'base' in usage.max ? usage.max.base : 0) || 0,
+        quote: usage.max?.quote || 0,
+      },
+      maxUsd: usage.max?.quote,
+    },
+    profit: {
+      total: ('pureBase' in profit ? profit.pureBase : 0) || 0,
+      totalUsd: profit.totalUsd || 0,
+      pureBase: ('pureBase' in profit ? profit.pureBase : 0) || 0,
+      pureQuote: ('pureQuote' in profit ? profit.pureQuote : 0) || 0,
+    },
+    avgPrice: deal.avgPrice || 0,
+    levels,
+    created: createTime,
+    initialPrice: deal.initialPrice || 0,
+    entryPrice: deal.initialPrice || deal.avgPrice || 0,
+    pnl: profit.totalUsd || 0,
+    cost: calculateDealCost({
+      strategy: deal.strategy,
+      status: deal.status,
+      avgPrice: deal.avgPrice,
+      usage: {
+        current: {
+          base:
+            usage.current.quote !== undefined
+              ? ('base' in usage.current ? usage.current.base : 0) || 0
+              : 0,
+          quote: usage.current.quote || 0,
+        },
+      },
+      futures,
+      coinm,
+    }),
+    value: calculateDealValue({
+      strategy: deal.strategy,
+      status: deal.status,
+      avgPrice: deal.avgPrice,
+      usage: {
+        current: {
+          base: ('base' in usage.current ? usage.current.base : 0) || 0,
+          quote: usage.current.quote || 0,
+        },
+      },
+      futures,
+      coinm,
+    }),
+    size: calculateDealSize({
+      strategy: deal.strategy,
+      status: deal.status,
+      avgPrice: deal.avgPrice,
+      usage: {
+        current: {
+          base: ('base' in usage.current ? usage.current.base : 0) || 0,
+          quote: usage.current.quote || 0,
+        },
+      },
+      currentBalances: deal.currentBalances,
+      initialBalances: deal.initialBalances,
+      futures,
+      coinm,
+    }),
+    usagePercentage,
+    outerGaugePercent: usagePercentage,
+    centerText: `${Math.round(usagePercentage)}%`,
+    showInnerGauge: false,
+    unrealizedProfit: unrealizedPnL,
+    side: deal.strategy === 'SHORT' ? 'SELL' : 'BUY',
+    drawdown: deal.stats?.drawdownPercent
+      ? deal.stats.drawdownPercent * 100
+      : 0,
+    runUp: deal.stats?.runUpPercent ? deal.stats.runUpPercent * 100 : 0,
+    timeInLoss:
+      deal.stats?.timeInLoss && deal.stats?.trackTime
+        ? `${((deal.stats.timeInLoss / deal.stats.trackTime) * 100).toFixed(1)}%`
+        : '-',
+    timeInProfit:
+      deal.stats?.timeInProfit && deal.stats?.trackTime
+        ? `${((deal.stats.timeInProfit / deal.stats.trackTime) * 100).toFixed(1)}%`
+        : '-',
+    workingTime,
+    // Additional fields for old dashboard parity
+    initialBalances: deal.initialBalances,
+    currentBalances: deal.currentBalances,
+    closeTrigger: deal.closeTrigger,
+    closePrice: deal.lastPrice,
+    gridProfit: deal.profit?.gridProfit,
+    gridProfitUsd: deal.profit?.gridProfitUsd,
+    transactionsBuy: deal.transactions?.buy ?? 0,
+    transactionsSell: deal.transactions?.sell ?? 0,
+    transactionsTotal:
+      (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
+    updateTime: deal.updateTime
+      ? new Date(deal.updateTime).toISOString()
+      : undefined,
+    closeTime: (deal.closeTime as number | undefined)
+      ? new Date(deal.closeTime as number).toISOString()
+      : undefined,
+    trailingMode: deal.trailingMode,
+    takeProfitConfig: (deal as DCADeals).settings
+      ? tpSLConfig((deal as DCADeals).settings, 'tp', combo)
+      : '-',
+    stopLossConfig: (deal as DCADeals).settings
+      ? tpSLConfig((deal as DCADeals).settings, 'sl', combo)
+      : '-',
+    exitPrice: deal.lastPrice,
+  };
+};

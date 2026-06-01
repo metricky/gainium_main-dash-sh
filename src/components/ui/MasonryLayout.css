@@ -1,0 +1,88 @@
+/* Masonry Layout Styles */
+.masonry-grid {
+  display: flex;
+  margin-left: calc(-16px / 2); /* Half gap on each side */
+  margin-right: calc(-16px / 2);
+  width: calc(100% + 16px); /* Compensate for negative margins */
+  height: auto;
+  min-height: 0;
+  flex-wrap: wrap;
+}
+
+.masonry-grid-column {
+  padding-left: calc(16px / 2); /* Half gap on each side */
+  padding-right: calc(16px / 2);
+  background-clip: padding-box;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+.masonry-grid-column > * {
+  margin-bottom: 16px; /* Fallback for gap */
+}
+
+/* Dynamic gap support */
+.masonry-grid[style*='--gap'] {
+  margin-left: calc(-1 * var(--gap) / 2);
+  margin-right: calc(-1 * var(--gap) / 2);
+  width: calc(100% + var(--gap));
+}
+
+.masonry-grid[style*='--gap'] .masonry-grid-column {
+  padding-left: calc(var(--gap) / 2);
+  padding-right: calc(var(--gap) / 2);
+}
+
+.masonry-grid[style*='--gap'] .masonry-grid-column > * {
+  margin-bottom: var(--gap);
+}
+
+@media (max-width: 639px) {
+  .masonry-grid {
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
+  }
+
+  .masonry-grid-column {
+    padding-left: 0;
+    padding-right: 0;
+    max-width: 100%;
+  }
+
+  .masonry-grid-column > * {
+    width: 100%;
+    margin-bottom: var(--gap, 16px);
+  }
+}
+
+/* macOS Chrome specific fixes */
+@supports (-webkit-appearance: none) {
+  .masonry-grid {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .masonry-grid-column {
+    height: auto !important;
+    min-height: 0 !important;
+  }
+}
+
+/* Cross-browser height fixes */
+.masonry-grid {
+  contain: layout style;
+}
+
+.masonry-grid-column {
+  contain: layout style;
+}
+
+/* Ensure proper height inheritance */
+.masonry-grid,
+.masonry-grid-column {
+  box-sizing: border-box;
+}

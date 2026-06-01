@@ -1,0 +1,476 @@
+import { IdMutex } from '@/utils/mutex';
+import logger from '../loggerInstance';
+
+export interface GraphQLHttpErrorDetails {
+  status: number;
+  statusText: string;
+  endpoint: string;
+  responseBody?: string;
+  graphQLErrors?: string[];
+  querySnippet?: string;
+  variables?: unknown;
+}
+
+export class GraphQLHttpError extends Error {
+  readonly details: GraphQLHttpErrorDetails;
+
+  constructor(message: string, details: GraphQLHttpErrorDetails) {
+    super(message);
+    this.name = 'GraphQLHttpError';
+    this.details = details;
+  }
+}
+
+// Global request deduplication system
+const requestMutex = new IdMutex();
+const requestCache = new Map<
+  string,
+  { result: unknown; timestamp: number; refCount: number }
+>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL for request cache
+
+// Helper function to create request signature
+function createRequestSignature(
+  query: string,
+  variables?: unknown,
+  headers?: Record<string, string>
+): string {
+  const normalizedQuery = query.replace(/\s+/g, ' ').trim();
+  const keyData = {
+    query: normalizedQuery,
+    variables: variables || {},
+    // Include relevant headers that affect the response
+    token: headers?.['token'],
+    paperContext: headers?.['paper-context'],
+    demoContext: headers?.['demo-context'],
+  };
+
+  const keyString = JSON.stringify(keyData);
+  // Use a simple hash function for browser compatibility
+  let hash = 0;
+  for (let i = 0; i < keyString.length; i++) {
+    const char = keyString.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return Math.abs(hash).toString(36);
+}
+
+// Cleanup expired cache entries
+function cleanupExpiredCache() {
+  const now = Date.now();
+  for (const [key, entry] of requestCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL_MS && entry.refCount === 0) {
+      requestCache.delete(key);
+      logger.debug('Cleaned up expired cache entry:', {
+        key: key.substring(0, 8),
+      });
+    }
+  }
+}
+
+// Run cleanup every 2 minutes
+if (typeof window !== 'undefined') {
+  setInterval(cleanupExpiredCache, 2 * 60 * 1000);
+}
+
+// TODO: Authentication will be handled through context-based token injection
+
+export interface GraphQLError {
+  message: string;
+  locations?: Array<{
+    line: number;
+    column: number;
+  }>;
+  path?: string[];
+}
+
+export interface GraphQLResponse<T> {
+  data?: T;
+  errors?: GraphQLError[];
+}
+
+const parseResponseBodyAsJson = (rawBody: string): unknown | null => {
+  if (!rawBody.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return null;
+  }
+};
+
+const extractGraphQLErrorMessages = (rawBody: string): string[] => {
+  const parsed = parseResponseBodyAsJson(rawBody) as {
+    errors?: Array<{ message?: unknown }>;
+    error?: unknown;
+  } | null;
+
+  const messages: string[] = [];
+
+  if (parsed?.errors && Array.isArray(parsed.errors)) {
+    for (const entry of parsed.errors) {
+      if (typeof entry?.message === 'string') {
+        const trimmed = entry.message.trim();
+        if (trimmed) messages.push(trimmed);
+      }
+    }
+  }
+
+  // Some gateway/auth error responses use the non-standard `{"error": "..."}`
+  // shape (e.g. changePassword returns this on validation failure). Surface it
+  // so callers don't fall back to the generic "HTTP error! status: 4xx".
+  if (messages.length === 0 && typeof parsed?.error === 'string') {
+    const trimmed = parsed.error.trim();
+    if (trimmed) messages.push(trimmed);
+  }
+
+  return messages;
+};
+
+export class GraphQLClient {
+  private endpoint: string;
+  private token: string | null | undefined;
+  private paperContext: boolean | undefined;
+  private shareId: string | undefined;
+
+  constructor(
+    endpoint: string,
+    token?: string | null,
+    paperContext?: boolean,
+    shareId?: string
+  ) {
+    this.endpoint = endpoint;
+    this.token = token;
+    this.paperContext = paperContext;
+    this.shareId = shareId;
+  }
+
+  async request<T>(query: string, variables?: unknown): Promise<T> {
+    // Check if we're in mock mode and should skip GraphQL requests
+    const useMockAuth =
+      import.meta.env.MODE === 'development' &&
+      import.meta.env.VITE_USE_MOCK_AUTH !== 'false' &&
+      import.meta.env.VITE_USE_REAL_AUTH !== 'true';
+
+    if (useMockAuth && this.endpoint.includes('localhost:7500')) {
+      // Return mock data for common queries
+      return this.getMockResponse<T>(query, variables);
+    }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Treat 'demo' as a sentinel token meaning "shared/anonymous viewer".
+    // Same logic applies when no token is set but a shareId is present —
+    // backend reads `shareId` from variables and returns public share data.
+    const isDemoMode =
+      this.token === 'demo' || (!this.token && !!this.shareId);
+
+    if (isDemoMode) {
+      // Backend recognizes the literal string 'demo' in the `token` header as
+      // a public-share request and pairs it with the `shareId` in variables.
+      // Matches main-dash/fetch/index.ts which passes through 'demo' verbatim.
+      headers['token'] = 'demo';
+      logger.debug('Demo mode: sending token=demo header');
+    } else if (this.token) {
+      headers['token'] = `${this.token}`;
+      logger.debug('Using provided token');
+    } else {
+      logger.debug('No authentication token provided');
+    }
+
+    // Add demo context header to explicitly mark demo requests
+    // This prevents demo data from being cached as regular paper mode data
+    if (isDemoMode) {
+      headers['demo-context'] = 'true';
+      logger.debug('Demo mode enabled, adding demo-context header');
+    }
+
+    // Add paper context header if specified
+    // In demo mode, this will be true but demo-context header takes precedence
+    if (this.paperContext !== undefined) {
+      headers['paper-context'] = String(this.paperContext);
+      logger.debug('Using paper context', { paperContext: this.paperContext });
+    }
+
+    // Create request signature for deduplication
+    const requestSignature = createRequestSignature(query, variables, headers);
+    logger.debug('Request signature created:', {
+      signature: requestSignature.substring(0, 8),
+    });
+
+    // Increment reference count BEFORE acquiring lock to prevent cleanup
+    let cachedEntry = requestCache.get(requestSignature);
+    if (cachedEntry) {
+      cachedEntry.refCount++;
+      logger.debug('Incremented ref count for existing entry:', {
+        signature: requestSignature.substring(0, 8),
+        refCount: cachedEntry.refCount,
+      });
+    } else {
+      // Create new cache entry for this request
+      cachedEntry = {
+        result: null,
+        timestamp: Date.now(),
+        refCount: 1,
+      };
+      requestCache.set(requestSignature, cachedEntry);
+      logger.debug('Created new cache entry:', {
+        signature: requestSignature.substring(0, 8),
+      });
+    }
+
+    // Use mutex to queue requests with same signature
+    await requestMutex.lock(requestSignature);
+
+    try {
+      // Check cache after acquiring lock - only return if we have actual data (not null)
+      const currentEntry = requestCache.get(requestSignature);
+      if (
+        currentEntry &&
+        currentEntry.result !== null &&
+        Date.now() - currentEntry.timestamp < CACHE_TTL_MS
+      ) {
+        logger.debug('Returning cached result after lock:', {
+          signature: requestSignature.substring(0, 8),
+        });
+        return JSON.parse(JSON.stringify(currentEntry.result)) as T;
+      }
+
+      // If result is still null, we need to make the actual request
+      if (currentEntry && currentEntry.result === null) {
+        logger.debug('Making request for entry with null result:', {
+          signature: requestSignature.substring(0, 8),
+        });
+      }
+
+      logger.debug('Making actual GraphQL request:', {
+        signature: requestSignature.substring(0, 8),
+      });
+      const result = await this.makeActualRequest<T>(query, variables, headers);
+
+      // Cache the successful result
+      const cacheEntry = requestCache.get(requestSignature);
+      if (cacheEntry) {
+        cacheEntry.result = result;
+        cacheEntry.timestamp = Date.now();
+        logger.debug('Cached successful result:', {
+          signature: requestSignature.substring(0, 8),
+        });
+      }
+
+      return result;
+    } finally {
+      // Decrement ref count and potentially clean up
+      const cacheEntry = requestCache.get(requestSignature);
+      logger.debug('[GraphQLClient] Finalizing request for signature', {
+        requestSignature,
+        cacheEntry,
+      });
+      if (cacheEntry) {
+        cacheEntry.refCount = Math.max(0, cacheEntry.refCount - 1);
+        // If no more references and result is old, remove from cache
+        if (cacheEntry.refCount === 0) {
+          requestCache.delete(requestSignature);
+          logger.debug('Removed unreferenced cache entry:', {
+            signature: requestSignature.substring(0, 8),
+          });
+        }
+      }
+
+      requestMutex.release(requestSignature);
+    }
+  }
+
+  private async makeActualRequest<T>(
+    query: string,
+    variables?: unknown,
+    headers?: Record<string, string>
+  ): Promise<T> {
+    if (!headers) {
+      throw new Error('Headers not provided to makeActualRequest');
+    }
+
+    const body = JSON.stringify({
+      query,
+      variables,
+    });
+
+    logger.debug('Making GraphQL request', {
+      endpoint: this.endpoint,
+      query: query.substring(0, 200) + '...', // Log first 200 chars of query
+      hasVariables: !!variables,
+    });
+
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST',
+        headers,
+        body,
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        // Try to get the response body for more details
+        let responseBody = '';
+        try {
+          responseBody = await response.text();
+        } catch (_e) {
+          // Ignore if we can't read the response
+        }
+
+        const graphQLErrors = extractGraphQLErrorMessages(responseBody);
+        const errorMessageBase = `HTTP error! status: ${response.status}`;
+        const errorMessage =
+          graphQLErrors.length > 0
+            ? `${errorMessageBase} - ${graphQLErrors.join('; ')}`
+            : errorMessageBase;
+
+        const errorDetails: GraphQLHttpErrorDetails = {
+          status: response.status,
+          statusText: response.statusText,
+          endpoint: this.endpoint,
+          responseBody: responseBody.substring(0, 500), // First 500 chars
+          graphQLErrors,
+          querySnippet: query.substring(0, 200),
+          variables,
+        };
+
+        logger.error('[GraphQLClient] HTTP error', errorDetails);
+
+        // Log to logger in development for easier debugging
+        if (import.meta.env.DEV) {
+          logger.error('[GraphQLClient] HTTP error full payload', {
+            ...errorDetails,
+            responseBody,
+            query,
+          });
+        }
+
+        throw new GraphQLHttpError(errorMessage, errorDetails);
+      }
+
+      let result: GraphQLResponse<T>;
+      try {
+        result = await response.json();
+      } catch (parseError) {
+        logger.error('GraphQL response parsing error', {
+          parseError: parseError,
+          responseStatus: response.status,
+          responseStatusText: response.statusText,
+          endpoint: this.endpoint,
+        });
+        throw new Error(`Failed to parse GraphQL response: ${parseError}`);
+      }
+
+      if (
+        result.errors &&
+        Array.isArray(result.errors) &&
+        result.errors.length > 0 &&
+        !result.data
+      ) {
+        logger.error('GraphQL query errors', {
+          errors: result.errors,
+          query: query.substring(0, 200) + '...',
+        });
+        throw new Error(
+          `GraphQL errors: ${result.errors.map((e) => e.message).join(', ')}`
+        );
+      }
+
+      if (!result.data) {
+        logger.error('GraphQL response missing data', { result });
+        throw new Error('GraphQL response missing data');
+      }
+
+      logger.debug('GraphQL request successful', {
+        hasData: !!result.data,
+      });
+
+      // Log successful requests in development for notifications debugging
+      if (import.meta.env.DEV && query.includes('getMessageBot')) {
+        logger.info('✅ [GRAPHQL SUCCESS] getMessageBot request successful:', {
+          hasData: !!result.data,
+          dataKeys: result.data ? Object.keys(result.data) : [],
+        });
+      }
+
+      return result.data;
+    } catch (error) {
+      logger.error('GraphQL request failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        endpoint: this.endpoint,
+        query: query.substring(0, 200) + '...',
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Generate mock responses for common GraphQL queries in development mode
+   */
+  private getMockResponse<T>(query: string, _variables?: unknown): T {
+    logger.debug('Generating mock GraphQL response', {
+      query: query.substring(0, 100) + '...',
+    });
+
+    // Mock user query response
+    if (query.includes('query user') || query.includes('user {')) {
+      return {
+        user: {
+          status: 'success',
+          reason: null,
+          data: {
+            _id: '6279d23c6bf516d657d1ad0c',
+            username: 'demo@gainium.io',
+            name: 'Demo User',
+            lastName: 'Test',
+            picture:
+              'https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y',
+            timezone: 'UTC',
+            balance: 1000,
+            hasExchanges: true,
+            hasPaperExchanges: true,
+            hasLiveExchanges: false,
+            subscription: {
+              subscriptionPlanName: 'Demo',
+              status: 'active',
+              type: 'monthly',
+            },
+          },
+        },
+      } as T;
+    }
+
+    // Mock other common queries
+    if (query.includes('getBalances') || query.includes('balances')) {
+      return {
+        getBalances: {
+          status: 'success',
+          reason: null,
+          data: [],
+        },
+      } as T;
+    }
+
+    // Default mock response
+    return {
+      data: null,
+      status: 'success',
+      reason: 'Mock response - no real data available in development mode',
+    } as T;
+  }
+}
+
+// Create default instance using environment configuration
+const endpoint =
+  import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+// Gainium API doesn't use /graphql suffix - it's just the base URL
+const graphqlEndpoint = endpoint; /* .includes('gainium.io')
+  ? endpoint
+  : `${endpoint}/graphql` */
+export const graphQLClient = new GraphQLClient(graphqlEndpoint);

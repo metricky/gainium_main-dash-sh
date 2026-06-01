@@ -1,0 +1,620 @@
+import React, { useEffect, useMemo, useState } from 'react';
+
+import getLatestPrices, { getLocalPrices } from '@/helper/price';
+//import { usePriceStream } from '@/hooks/usePriceStream';
+import type { TradingPair } from '@/hooks/useTradingPairs';
+import { useBalanceStore } from '@/stores/live/balanceStore';
+import type { BotFormData } from '@/types/bots/form';
+import type { DcaBot } from '@/types/dcaBot';
+import {
+  resolveDcaRanges,
+  type DcaDerivedRanges,
+  type RangeBounds,
+} from '@/utils/bots/dca/ranges';
+
+import type { AggregatedBalanceSnapshot } from '@/utils/bots/dca/base-order-context';
+export { resolveBaseOrderContext } from '@/utils/bots/dca/base-order-context';
+export type { AggregatedBalanceSnapshot } from '@/utils/bots/dca/base-order-context';
+
+import { useBotFormSelector, type BotFormMode } from '@/features/bots';
+import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
+import { findUSDRate } from '@/lib/utils/unrealizedPnL';
+import {
+  MAX_DCA_ORDERS,
+  MAX_DCA_STEP_SCALE,
+  MAX_DCA_VOLUME_SCALE,
+  MIN_DCA_ORDERS,
+  MIN_DCA_STEP_SCALE,
+  MIN_DCA_TP,
+  MIN_DCA_TP_NEW,
+  MIN_DCA_VOLUME_SCALE,
+  OrderTypeEnum,
+  type Prices,
+} from '@/types';
+import { normalizePairKey } from '@/utils/bots/dca/basic-settings';
+import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+
+interface BalanceSnapshot {
+  free: number;
+  locked: number;
+  total: number;
+  usdValue?: number;
+}
+
+export interface DcaTradingContext {
+  selectedPairs: TradingPair[];
+  activePair?: TradingPair;
+  baseAsset?: string;
+  quoteAsset?: string;
+  aggregatedBalances: {
+    base: AggregatedBalanceSnapshot;
+    quote: AggregatedBalanceSnapshot;
+  };
+  /**
+   * Effective reference price used for $-based inputs (TP, SL, DCA, R:R etc.).
+   * When a limit order is active and a limit price exists, this will be the limit price,
+   * otherwise it will be the live market price.
+   */
+  latestPrice?: number;
+  /** Raw market price from price feeds (unchanged) */
+  marketPrice?: number;
+  /** Limit price taken from form or settings (if any) */
+  limitPrice?: number;
+  fallbackLimitPrice?: number;
+  /** Whether limit price should be used as reference */
+  shouldUseLimitPrice?: boolean;
+  ranges: DcaDerivedRanges;
+}
+
+interface UseDcaTradingContextOptions {
+  bot?: DcaBot | null;
+  mode?: BotFormMode;
+}
+
+const buildDefaultRange = ({
+  min,
+  max,
+  baseValue,
+}: {
+  min: number;
+  max: number | null;
+  baseValue?: number;
+}): RangeBounds => ({
+  min,
+  max,
+  source: 'default',
+  appliedOverrides: [],
+  base: {
+    value: baseValue ?? min,
+    source: 'default',
+    min,
+    max,
+  },
+});
+
+const DEFAULT_TP_RANGE = (formData: BotFormData): RangeBounds => {
+  const isCombo = formData.type === 'combo';
+  const isHedge =
+    formData.type === 'hedgeCombo' || formData.type === 'hedgeDca';
+  const baseMin = (isCombo || isHedge ? MIN_DCA_TP_NEW : MIN_DCA_TP) * 100;
+
+  return {
+    ...buildDefaultRange({ min: baseMin, max: null }),
+    base: {
+      value: baseMin,
+      source: isCombo ? 'combo-default' : isHedge ? 'hedge-default' : 'default',
+      min: baseMin,
+      max: null,
+    },
+  };
+};
+
+const DEFAULT_ORDERS_RANGE = buildDefaultRange({
+  min: MIN_DCA_ORDERS,
+  max: MAX_DCA_ORDERS,
+});
+
+const DEFAULT_STEP_RANGE = buildDefaultRange({
+  min: 0.1,
+  max: 10,
+});
+
+const DEFAULT_STEP_SCALE_RANGE = buildDefaultRange({
+  min: MIN_DCA_STEP_SCALE,
+  max: MAX_DCA_STEP_SCALE,
+});
+
+const DEFAULT_VOLUME_SCALE_RANGE = buildDefaultRange({
+  min: MIN_DCA_VOLUME_SCALE,
+  max: MAX_DCA_VOLUME_SCALE,
+});
+
+const DEFAULT_SMART_ORDERS_RANGE = buildDefaultRange({
+  min: MIN_DCA_ORDERS,
+  max: MAX_DCA_ORDERS,
+});
+
+const ensureRangeBounds = (
+  range: RangeBounds | undefined,
+  fallback: RangeBounds
+): RangeBounds => {
+  if (!range) {
+    return fallback;
+  }
+
+  const min = Number.isFinite(range.min) ? range.min : fallback.min;
+  const max =
+    range.max === null || range.max === undefined
+      ? fallback.max
+      : Number.isFinite(range.max)
+        ? range.max
+        : fallback.max;
+
+  const fallbackBaseMin = fallback.base.min ?? fallback.min;
+  const fallbackBaseMax =
+    fallback.base.max === undefined ? fallback.max : fallback.base.max;
+
+  const resolvedBaseMin = Number.isFinite(range.base?.min as number)
+    ? (range.base?.min as number)
+    : (fallbackBaseMin ?? min);
+
+  const rawBaseMax = range.base?.max;
+  const resolvedBaseMax =
+    rawBaseMax === null || rawBaseMax === undefined
+      ? (fallbackBaseMax ?? max ?? null)
+      : Number.isFinite(rawBaseMax as number)
+        ? (rawBaseMax as number)
+        : (fallbackBaseMax ?? max ?? null);
+
+  return {
+    ...fallback,
+    ...range,
+    min,
+    max,
+    appliedOverrides: Array.isArray(range.appliedOverrides)
+      ? range.appliedOverrides
+      : fallback.appliedOverrides,
+    base: {
+      ...fallback.base,
+      ...(range.base ?? {}),
+      value: Number.isFinite(range.base?.value)
+        ? (range.base?.value as number)
+        : fallback.base.value,
+      min: resolvedBaseMin,
+      max: resolvedBaseMax,
+      source: range.base?.source ?? fallback.base.source,
+    },
+  };
+};
+
+const buildAggregatedSnapshot = (
+  assetSymbols: Set<string>,
+  balanceMap: Map<string, BalanceSnapshot>
+): AggregatedBalanceSnapshot => {
+  let free = 0;
+  let total = 0;
+  let usd = 0;
+
+  assetSymbols.forEach((symbol) => {
+    const balance = balanceMap.get(symbol);
+    if (balance) {
+      free += Number(balance.free) || 0;
+      total += Number(balance.total) || 0;
+      usd += Number(balance.usdValue) || 0;
+    }
+  });
+
+  return {
+    free,
+    total,
+    usd,
+  };
+};
+
+const normalizeAsset = (asset?: string) =>
+  asset?.toUpperCase?.().trim() || undefined;
+
+const normalizePriceInput = (value: unknown): number | undefined => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const parsed = Number.parseFloat(trimmed.replace(',', '.'));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+};
+
+export const useDcaTradingContext = (
+  formData: BotFormData,
+  options?: UseDcaTradingContextOptions
+): DcaTradingContext => {
+  const balances = useBalanceStore((state) => state.balances);
+  const { currentExchange } = useBotFormQuery();
+  const botSettings = options?.bot?.settings;
+  const selectedPairs = React.useMemo(() => {
+    const metadataRecord = formData.pairMetadata ?? {};
+    const metadataValues = Object.values(metadataRecord);
+    const rawPairs = Array.isArray(formData.pair) ? formData.pair : [];
+
+    const unique = new Map<string, TradingPair>();
+    rawPairs.forEach((pairKey) => {
+      if (typeof pairKey !== 'string' || pairKey.length === 0) {
+        return;
+      }
+      // `pairMetadata.byPair` is keyed by the concatenated `${base}${quote}`
+      // form (e.g. `BTCUSDT`), but `formData.pair` is often the selection
+      // symbol form (`BTC-USDT`) set by the pair picker. Mirror the pair
+      // selector's normalization (`normalizePairKey`) so the lookup
+      // succeeds for either format — without this, freshly onboarded
+      // bots render with `selectedPairs = []` and the manual tab shows
+      // "BAL 0 QUOTE" because `quoteAsset` resolves to undefined.
+      const normalized = normalizePairKey(pairKey);
+      const pairMeta =
+        metadataRecord[normalized] ??
+        metadataRecord[pairKey] ??
+        metadataValues.find((meta) => meta.pair === pairKey);
+      if (!pairMeta) {
+        return;
+      }
+      const identifier = `${pairMeta.exchange}_${pairMeta.pair}`;
+      if (!unique.has(identifier)) {
+        unique.set(identifier, pairMeta);
+      }
+    });
+
+    return Array.from(unique.values());
+  }, [formData.pairMetadata, formData.pair]);
+
+  /* const { prices } = usePriceStream(selectedPairs, {
+    enableStream: selectedPairs.length > 0,
+  }); */
+
+  const [prices, setPrices] = useState<Prices>([]);
+
+  useEffect(() => {
+    const unsubscribe = getLatestPrices((d) => setPrices(d.data ?? []), false);
+    return () => {
+      unsubscribe();
+    };
+  }, [setPrices]);
+
+  const fallbackSymbol = React.useMemo(() => {
+    const symbol = options?.bot?.symbol?.[0]?.value as
+      | { baseAsset?: string; quoteAsset?: string }
+      | undefined;
+
+    if (!symbol) {
+      return undefined;
+    }
+
+    return {
+      baseAsset: normalizeAsset(symbol.baseAsset),
+      quoteAsset: normalizeAsset(symbol.quoteAsset),
+    };
+  }, [options?.bot?.symbol]);
+
+  const activePair = useMemo(() => selectedPairs[0], [selectedPairs]);
+
+  const baseAsset = React.useMemo(() => {
+    const asset =
+      normalizeAsset(activePair?.baseAsset?.name) || fallbackSymbol?.baseAsset;
+    return asset || undefined;
+  }, [activePair?.baseAsset?.name, fallbackSymbol?.baseAsset]);
+
+  const quoteAsset = React.useMemo(() => {
+    const asset =
+      normalizeAsset(activePair?.quoteAsset?.name) ||
+      fallbackSymbol?.quoteAsset;
+    return asset || undefined;
+  }, [activePair?.quoteAsset?.name, fallbackSymbol?.quoteAsset]);
+
+  const balanceMap = React.useMemo(() => {
+    const map = new Map<string, BalanceSnapshot>();
+    balances
+      .filter((balance) => balance.exchangeUUID === formData.exchangeUUID)
+      .forEach((balance) => {
+        if (!balance?.asset) {
+          return;
+        }
+        const key = balance.asset.toUpperCase();
+        const usdValue =
+          typeof balance.usdValue === 'number' ? balance.usdValue : undefined;
+        map.set(key, {
+          free: Number(balance.free) || 0,
+          locked: Number(balance.locked) || 0,
+          total: Number(balance.total) || 0,
+          ...(usdValue !== undefined ? { usdValue } : {}),
+        });
+      });
+    return map;
+  }, [balances, formData.exchangeUUID]);
+  const isDealEdit = useMemo(
+    () => options?.mode === 'deal-edit' || options?.mode === 'deal-mass-edit',
+    [options?.mode]
+  );
+  const isSettingsReadonly = useMemo(
+    () => options?.mode === 'settings-readonly',
+    [options?.mode]
+  );
+  const isSkipExampleOrders = useMemo(
+    () => isSettingsReadonly || isDealEdit,
+    [isDealEdit, isSettingsReadonly]
+  );
+  useEffect(() => {
+    if (isSkipExampleOrders) {
+      return;
+    }
+    exampleOrdersStore.setContext({
+      balances: [...balanceMap.entries()].map(([asset, data]) => ({
+        asset,
+        free: `${data.free}`,
+        locked: `${data.locked}`,
+      })),
+    });
+  }, [balanceMap, isSkipExampleOrders]);
+
+  const aggregatedBalances = React.useMemo(() => {
+    const baseSymbols = new Set<string>();
+    const quoteSymbols = new Set<string>();
+
+    selectedPairs.forEach((pair) => {
+      const base = normalizeAsset(pair.baseAsset?.name);
+      const quote = normalizeAsset(pair.quoteAsset?.name);
+      if (base) {
+        baseSymbols.add(base);
+      }
+      if (quote) {
+        quoteSymbols.add(quote);
+      }
+    });
+
+    if (baseAsset) {
+      baseSymbols.add(baseAsset);
+    }
+    if (quoteAsset) {
+      quoteSymbols.add(quoteAsset);
+    }
+
+    const result = {
+      base: buildAggregatedSnapshot(baseSymbols, balanceMap),
+      quote: buildAggregatedSnapshot(quoteSymbols, balanceMap),
+    };
+
+    // Fallback when the aggregation produced 0 — covers two loading
+    // races that the Quick tab papers over via useQuickBalance:
+    //   1. Balance store hasn't hydrated for the active exchange yet
+    //      (right after onboarding creates one and lands on /bot/new).
+    //   2. Pair metadata hasn't resolved the active pair yet, so
+    //      `quoteSymbols` is empty and the sum is 0 even though the
+    //      store has a matching entry — the symptom is "BAL 0 QUOTE"
+    //      where the QUOTE placeholder is itself the giveaway.
+    // In both cases, currentExchange.balance (the exchange's total USD
+    // field) is a safe upper-bound for what the user can deploy.
+    const exchangeTotal = Number(currentExchange?.balance);
+    if (
+      result.quote.free <= 0 &&
+      Number.isFinite(exchangeTotal) &&
+      exchangeTotal > 0
+    ) {
+      result.quote = {
+        free: exchangeTotal,
+        total: exchangeTotal,
+        usd: exchangeTotal,
+      };
+    }
+
+    return result;
+  }, [
+    selectedPairs,
+    balanceMap,
+    baseAsset,
+    quoteAsset,
+    currentExchange?.balance,
+  ]);
+
+  const ranges = React.useMemo((): DcaDerivedRanges => {
+    const resolved = resolveDcaRanges(formData);
+    const defaultTp = DEFAULT_TP_RANGE(formData);
+
+    return {
+      tpPerc: ensureRangeBounds(resolved.tpPerc, defaultTp),
+      ordersCount: ensureRangeBounds(
+        resolved.ordersCount,
+        DEFAULT_ORDERS_RANGE
+      ),
+      step: ensureRangeBounds(resolved.step, DEFAULT_STEP_RANGE),
+      stepScale: ensureRangeBounds(
+        resolved.stepScale,
+        DEFAULT_STEP_SCALE_RANGE
+      ),
+      volumeScale: ensureRangeBounds(
+        resolved.volumeScale,
+        DEFAULT_VOLUME_SCALE_RANGE
+      ),
+      smartOrders: ensureRangeBounds(
+        resolved.smartOrders,
+        DEFAULT_SMART_ORDERS_RANGE
+      ),
+    };
+  }, [formData]);
+
+  /*   const activePriceKey = React.useMemo(() => {
+    if (!activePair) {
+      return undefined;
+    }
+    return `${activePair.pair}_${activePair.exchange}`;
+  }, [activePair]); */
+
+  const fallbackPrice = React.useMemo(() => {
+    if (!activePair) {
+      return undefined;
+    }
+
+    try {
+      const localPrices = getLocalPrices();
+      const targetSymbol = activePair.pair?.toUpperCase?.();
+      if (!Array.isArray(localPrices) || !targetSymbol) {
+        return undefined;
+      }
+
+      const match = localPrices.find((price) => {
+        const symbolMatches = price.symbol?.toUpperCase?.() === targetSymbol;
+        const exchangeMatches = price.exchange
+          ? price.exchange === activePair.exchange
+          : true;
+        return symbolMatches && exchangeMatches;
+      });
+
+      return match?.price;
+    } catch {
+      return undefined;
+    }
+  }, [activePair]);
+
+  const latestPrice = React.useMemo(() => {
+    if (!activePair) {
+      return fallbackPrice;
+    }
+
+    const update = prices.find(
+      (p) =>
+        p.symbol === activePair?.pair && p.exchange === activePair?.exchange
+    );
+    return typeof update?.price === 'number' ? update.price : fallbackPrice;
+  }, [activePair, prices, fallbackPrice]);
+
+  const usdPrice = React.useMemo(
+    () => findUSDRate(quoteAsset || 'USDT', prices ?? [], activePair?.exchange),
+    [quoteAsset, prices, activePair?.exchange]
+  );
+
+  useEffect(() => {
+    if (isSkipExampleOrders) {
+      return;
+    }
+    exampleOrdersStore.setContext({ inputLatestPrice: latestPrice });
+  }, [latestPrice, isSkipExampleOrders]);
+
+  useEffect(() => {
+    if (isSkipExampleOrders) {
+      return;
+    }
+    exampleOrdersStore.setContext({ usdPrice: usdPrice });
+  }, [usdPrice, isSkipExampleOrders]);
+
+  const startOrderType = useBotFormSelector('startOrderType');
+  const useLimitPrice = useBotFormSelector('useLimitPrice');
+  const baseOrderPrice = useBotFormSelector('baseOrderPrice');
+  const startBotPriceValue = useBotFormSelector('startPrice');
+
+  const shouldUseLimitPrice = React.useMemo(() => {
+    if (startOrderType === OrderTypeEnum.limit || useLimitPrice) {
+      return true;
+    }
+
+    const sot = botSettings?.startOrderType;
+    if (typeof sot === 'string' && sot.toLowerCase() === 'limit') {
+      return true;
+    }
+
+    if (botSettings?.useLimitPrice) {
+      return true;
+    }
+
+    return false;
+  }, [
+    startOrderType,
+    useLimitPrice,
+    botSettings?.startOrderType,
+    botSettings?.useLimitPrice,
+  ]);
+
+  const limitPriceCandidates = React.useMemo(() => {
+    const values: number[] = [];
+
+    const pushCandidate = (candidate: unknown) => {
+      const normalized = normalizePriceInput(candidate);
+      if (typeof normalized === 'number' && !values.includes(normalized)) {
+        values.push(normalized);
+      }
+    };
+
+    pushCandidate(baseOrderPrice);
+    pushCandidate(startBotPriceValue);
+    pushCandidate(botSettings?.baseOrderPrice);
+    pushCandidate(botSettings?.startPrice);
+
+    return values;
+  }, [
+    baseOrderPrice,
+    startBotPriceValue,
+    botSettings?.baseOrderPrice,
+    botSettings?.startPrice,
+  ]);
+
+  const primaryLimitPrice = limitPriceCandidates[0];
+  const secondaryLimitPrice = limitPriceCandidates
+    .slice(1)
+    .find((candidate) => candidate !== primaryLimitPrice);
+
+  // Preserve the raw market price separately
+  const marketPrice = latestPrice;
+
+  // Determine an effective reference price: prefer limit price when configured
+  const referencePrice = React.useMemo(() => {
+    if (
+      shouldUseLimitPrice &&
+      typeof primaryLimitPrice === 'number' &&
+      primaryLimitPrice > 0
+    ) {
+      return primaryLimitPrice;
+    }
+    return marketPrice;
+  }, [shouldUseLimitPrice, primaryLimitPrice, marketPrice]);
+
+  const context: DcaTradingContext = {
+    selectedPairs,
+    aggregatedBalances,
+    ranges,
+    shouldUseLimitPrice,
+  };
+
+  if (activePair) {
+    context.activePair = activePair;
+  }
+  if (baseAsset) {
+    context.baseAsset = baseAsset;
+  }
+  if (quoteAsset) {
+    context.quoteAsset = quoteAsset;
+  }
+
+  // latestPrice is the effective reference price used across the form
+  if (typeof referencePrice === 'number') {
+    context.latestPrice = referencePrice;
+  }
+
+  // Expose raw market price separately for components that need it
+  if (typeof marketPrice === 'number') {
+    context.marketPrice = marketPrice;
+  }
+
+  if (typeof primaryLimitPrice === 'number') {
+    context.limitPrice = primaryLimitPrice;
+  }
+  if (typeof secondaryLimitPrice === 'number') {
+    context.fallbackLimitPrice = secondaryLimitPrice;
+  }
+
+  return context;
+};

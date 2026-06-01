@@ -1,0 +1,127 @@
+/* TradingView custom theme overrides for dark mode */
+/* .theme-dark:root {
+  --tv-color-platform-background: #ff0000;
+  --tv-color-pane-background: #005eff;
+  --tv-color-toolbar-button-background-hover: #28f100;
+  --tv-color-toolbar-button-background-expanded: #2f5eaf;
+  --tv-color-toolbar-button-background-active: #3a5e21;
+  --tv-color-toolbar-button-background-active-hover: #444753;
+  --tv-color-toolbar-button-text: #ffffff;
+  --tv-color-toolbar-button-text-hover: #f8fafc;
+  --tv-color-toolbar-button-text-active: #ffffff;
+  --tv-color-toolbar-button-text-active-hover: #ffffff;
+  --tv-color-item-active-text: #ffffff;
+  --tv-color-toolbar-toggle-button-background-active: #3a3d46;
+  --tv-color-toolbar-toggle-button-background-active-hover: #444753;
+  --tv-color-toolbar-divider-background: #239871;
+  --tv-color-toolbar-save-layout-loader: #f97316;
+} */
+
+/* Order line dragging enhancements */
+.chart-markup-table .order-line {
+  cursor: ns-resize !important;
+}
+
+.chart-markup-table .order-line:hover {
+  cursor: ns-resize !important;
+}
+
+/* Order line drag handle styling */
+.chart-markup-table .order-line .line-end-circle,
+.chart-markup-table .order-line .line-start-circle {
+  cursor: ns-resize !important;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+
+.chart-markup-table .order-line:hover .line-end-circle,
+.chart-markup-table .order-line:hover .line-start-circle {
+  opacity: 1;
+  cursor: ns-resize !important;
+}
+
+/* Order line body hover effects */
+.chart-markup-table .order-line .line-tool-order-line-body {
+  cursor: ns-resize !important;
+  transition: box-shadow 0.2s ease;
+}
+
+.chart-markup-table .order-line:hover .line-tool-order-line-body {
+  cursor: ns-resize !important;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.2) !important;
+}
+
+/* More specific selectors for order lines */
+[data-name='order-line'],
+[class*='order-line'],
+.line-tool-order-line {
+  cursor: ns-resize !important;
+}
+
+[data-name='order-line']:hover,
+[class*='order-line']:hover,
+.line-tool-order-line:hover {
+  cursor: ns-resize !important;
+}
+
+/* Generic line tool cursor improvements */
+.chart-markup-table [class*='line-tool'] {
+  cursor: move !important;
+}
+
+.chart-markup-table [class*='line-tool']:hover {
+  cursor: move !important;
+}
+
+/* Smooth dragging improvements */
+.chart-markup-table .order-line,
+.chart-markup-table [class*='line-tool'] {
+  transition: none !important; /* Remove transitions during drag for smoothness */
+}
+
+/* Add visual feedback when dragging */
+.chart-markup-table .order-line:active,
+.chart-markup-table [class*='line-tool']:active {
+  opacity: 0.9 !important;
+  filter: brightness(1.1) !important;
+}
+
+/* Ensure order line elements are interactive */
+.chart-markup-table .order-line * {
+  pointer-events: auto !important;
+}
+
+/* TradingView-specific order line improvements */
+.tv-lightweight-charts .pane [class*='order-line'],
+.tv-lightweight-charts .pane [data-name*='order'] {
+  cursor: ns-resize !important;
+}
+
+.tv-lightweight-charts .pane [class*='order-line']:hover,
+.tv-lightweight-charts .pane [data-name*='order']:hover {
+  cursor: ns-resize !important;
+}
+
+/* Blind Mode: Hide time and price axes when body has the class */
+body.blind-mode-active .time-axis,
+body.blind-mode-active .price-axis {
+  opacity: 0 !important;
+}
+
+/* Blind Mode: Hide OHLC values in the chart legend */
+body.blind-mode-active
+  [class*='valuesWrapper']
+  [class*='valueItem']
+  [class*='valueValue'],
+body.blind-mode-active
+  [class*='valuesWrapper']
+  [class*='valueItem']
+  [class*='valueTitle'] {
+  visibility: hidden !important;
+}
+
+/* Keep the structure but hide the content */
+body.blind-mode-active [class*='valuesWrapper'] [class*='valueItem'] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

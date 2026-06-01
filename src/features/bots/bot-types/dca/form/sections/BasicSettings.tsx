@@ -1,0 +1,313 @@
+import { Label } from '@/components/ui/label';
+import { MasonryLayout } from '@/components/ui/MasonryLayout';
+import { Switch } from '@/components/ui/switch';
+import CoinPair from '@/components/widgets/shared/CoinPair';
+import { CoinFilter } from '@/components/widgets/shared/CoinSelect';
+import SettingsRow from '@/components/widgets/shared/SettingsRow';
+import {
+  useBotFormSelector,
+  useBotFormState,
+  type BotFormMode,
+  type BotFormUpdateValue,
+  type Fields,
+} from '@/contexts/bots/form/BotFormProvider';
+import { NameInput } from '@/features/bots/shared/components/NameInput';
+import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
+import { BotTypesEnum, type ExchangeInUser } from '@/types';
+import type { BotFormData, BotFormErrors } from '@/types/bots/form';
+import React, { useMemo, useState } from 'react';
+import ExchangeSelector from '../components/exchangeSelector';
+import { useBasicSettingsTab } from '../hooks/useBasicSettingsTab';
+
+export interface BasicSettingsProps {
+  currentExchange: ExchangeInUser | null;
+  formData: BotFormData;
+  updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
+  errors: BotFormErrors;
+  exchangesData?: ExchangeInUser[] | undefined;
+  exchangesLoading?: boolean;
+  onUpdateBalances?: () => void;
+  mode: BotFormMode;
+  isFieldLocked?: (field: Fields) => boolean;
+  /**
+   * Hide the bot name input. Used by Quick mode, which auto-generates
+   * the name from the selected pair + preset and doesn't need the user
+   * to set it manually.
+   */
+  hideName?: boolean;
+}
+
+export const BasicSettings: React.FC<BasicSettingsProps> = ({
+  currentExchange,
+  formData,
+  updateFormData,
+  //errors,
+  exchangesData,
+  exchangesLoading,
+  mode,
+  isFieldLocked,
+  hideName = false,
+}) => {
+  const {
+    pairError,
+    exchangeProvider,
+    multiToggleState,
+    multiToggleMessage,
+    pairLockState,
+    limitReached,
+    planLimitMessage,
+    formattedMissingPairs,
+    missingPairsExchangeLabel,
+    splitPair,
+    quickSelectOptions,
+    activeQuickSelectOption,
+    handleCoinToggle,
+    handlePairsPaste,
+    handleSelectAllMatching,
+    handleClearPairs,
+    handleRemovePair,
+    isExchangeLocked,
+    pairs,
+    selectedPairSymbols,
+  } = useBasicSettingsTab({
+    currentExchange,
+    formData,
+    updateFormData,
+    exchangesLoading,
+    mode,
+    isFieldLocked,
+  });
+
+  useDcaTradingContext(formData);
+
+  const useMulti = useBotFormSelector('useMulti');
+  const { alerts } = useBotFormState();
+  const missingPairsMessage =
+    formattedMissingPairs && formattedMissingPairs.length > 0
+      ? `Some saved pairs are no longer available on ${missingPairsExchangeLabel}: ${formattedMissingPairs.join(', ')}`
+      : undefined;
+
+  const pairAlerts = [
+    ...(missingPairsMessage
+      ? [
+          {
+            variant: 'error',
+            message: missingPairsMessage,
+            title: missingPairsMessage,
+            navId: 'pair',
+          },
+        ]
+      : []),
+    ...(pairError
+      ? [
+          {
+            variant: 'error',
+            message: pairError,
+            title: pairError,
+            navId: 'pair',
+          },
+        ]
+      : []),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ...((alerts?.pair ?? []) as any[]),
+  ];
+
+  const isComboBot = useMemo(
+    () => formData.type === BotTypesEnum.combo,
+    [formData.type]
+  );
+
+  const PAIRS_PREVIEW_LIMIT = 10;
+  const [showAllLockedPairs, setShowAllLockedPairs] = useState(false);
+
+  return (
+    <>
+      <MasonryLayout
+        gap={8}
+        containerBreakpoints={{
+          default: 1,
+          640: 2,
+          1024: 3,
+        }}
+      >
+        {!hideName && <NameInput />}
+
+        <div data-tour="botForm.exchange">
+          <ExchangeSelector
+            isExchangeLocked={isExchangeLocked}
+            currentExchange={currentExchange}
+            formData={formData}
+            updateFormData={updateFormData}
+            exchangesLoading={exchangesLoading}
+            exchangesData={exchangesData}
+            tooltip="Select the exchange account to use for this bot"
+            mode={mode}
+          />
+        </div>
+        <div data-tour="botForm.pair">
+        <SettingsRow
+          name="Trading Pairs"
+          tooltip="Configure the trading pairs used by this bot. Toggle between single and multiple pair modes."
+          alerts={pairAlerts}
+          navId="pair"
+          trailing={
+            isComboBot ? null : (
+              <div className="flex items-center gap-xs">
+                <Label
+                  htmlFor="multi-pair-switch"
+                  className="text-xs text-muted-foreground"
+                >
+                  {useMulti ? 'Multiple' : 'Single'}
+                </Label>
+                <Switch
+                  id="multi-pair-switch"
+                  size="sm"
+                  checked={Boolean(useMulti)}
+                  onCheckedChange={(checked) => {
+                    if (multiToggleState.disabled) {
+                      return;
+                    }
+                    updateFormData('useMulti', checked);
+                  }}
+                  disabled={multiToggleState.disabled || pairs.length > 1}
+                />
+              </div>
+            )
+          }
+        >
+          <div className="space-y-xs">
+            {multiToggleMessage && (
+              <p className="text-xs text-muted-foreground/75">
+                {multiToggleMessage}
+              </p>
+            )}
+            {pairLockState.locked ? (
+              <div className="space-y-sm rounded-lg border border-border bg-muted/30 p-sm">
+                {pairs.length > 0 ? (
+                  <>
+                    <div className="flex flex-wrap gap-xs">
+                      {(showAllLockedPairs
+                        ? pairs
+                        : pairs.slice(0, PAIRS_PREVIEW_LIMIT)
+                      ).map((pair, index) => {
+                        const [baseAsset, quoteAsset] = splitPair(pair);
+                        return (
+                          <div
+                            key={`${pair}-${index}`}
+                            className="flex min-w-0 items-center gap-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm"
+                          >
+                            <CoinPair
+                              baseAsset={baseAsset}
+                              quoteAsset={quoteAsset}
+                              iconSize="sm"
+                              showText={false}
+                            />
+                            <span className="truncate">
+                              {baseAsset}/{quoteAsset}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {pairs.length > PAIRS_PREVIEW_LIMIT && (
+                      <button
+                        type="button"
+                        onClick={() => setShowAllLockedPairs((v) => !v)}
+                        className="text-xs text-muted-foreground underline transition-colors hover:text-foreground"
+                      >
+                        {showAllLockedPairs
+                          ? 'Show less'
+                          : `+ Load all (${pairs.length - PAIRS_PREVIEW_LIMIT} more)`}
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex items-center gap-xs text-sm text-muted-foreground">
+                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-muted">
+                      <span className="text-xs">?</span>
+                    </div>
+                    <span>No pairs configured</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <CoinFilter
+                  selectedCoins={selectedPairSymbols}
+                  onCoinToggle={handleCoinToggle}
+                  onRemoveCoin={handleRemovePair}
+                  mode="pairs"
+                  {...(exchangeProvider ? { exchangeProvider } : {})}
+                  onPairsPaste={handlePairsPaste}
+                  {...(quickSelectOptions.length
+                    ? {
+                        helperTokens: quickSelectOptions.map(
+                          ({ token, label, description }) => ({
+                            token,
+                            label,
+                            description,
+                          })
+                        ),
+                      }
+                    : {})}
+                  shouldShowAddButton={!isComboBot}
+                  showAllOption={!isComboBot && useMulti}
+                />
+                {useMulti && (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-xs text-xs text-muted-foreground">
+                      <button
+                        type="button"
+                        onClick={handleSelectAllMatching}
+                        className="underline transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={!activeQuickSelectOption}
+                      >
+                        {activeQuickSelectOption
+                          ? activeQuickSelectOption.label
+                          : 'Select all matching pairs'}
+                      </button>
+                      {activeQuickSelectOption && (
+                        <span
+                          aria-hidden="true"
+                          className="text-muted-foreground/60"
+                        >
+                          •
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleClearPairs}
+                        className="underline transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={!pairs.length}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground/70">
+                      {activeQuickSelectOption
+                        ? `${activeQuickSelectOption.description} Shortcut: ${activeQuickSelectOption.token}.`
+                        : 'Add a seed pair to enable quick-select helpers or paste multiple pairs at once.'}
+                    </p>
+                  </div>
+                )}
+
+                {planLimitMessage && (
+                  <p
+                    className={`text-xs ${
+                      limitReached
+                        ? 'text-destructive'
+                        : 'text-muted-foreground'
+                    }`}
+                  >
+                    {planLimitMessage}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        </SettingsRow>
+        </div>
+      </MasonryLayout>
+    </>
+  );
+};

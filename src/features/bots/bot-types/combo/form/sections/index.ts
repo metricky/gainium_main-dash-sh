@@ -1,0 +1,10 @@
+export { BasicSettings } from '@/features/bots/bot-types/dca/form/sections/BasicSettings';
+export { DealStartSettings } from '@/features/bots/bot-types/dca/form/sections/DealStartSettings';
+export { DCASettings } from '@/features/bots/bot-types/dca/form/sections/DCASettings';
+export { RiskRewardSettings } from '@/features/bots/bot-types/dca/form/sections/RiskRewardSettings';
+export { BotControllerSettings } from '@/features/bots/bot-types/dca/form/sections/BotControllerSettings';
+export { ExperimentalFeatures } from '@/features/bots/bot-types/dca/form/sections/ExperimentalFeatures';
+export { AdvancedSettings } from '@/features/bots/shared/sections/AdvancedSettings';
+export { StrategySettings } from '@/features/bots/shared/sections/StrategySettings';
+export { TakeProfitSettings } from '@/features/bots/shared/sections/TakeProfitSettings';
+export { StopLossSettings } from '@/features/bots/shared/sections/StopLossSettings';

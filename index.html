@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en" translate="no">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gainium App V2</title>
+
+    <!-- Disable browser translation site-wide. Google Translate / Chrome
+         / Edge / Yandex rewrite text nodes after React has rendered;
+         React's next reconciliation then crashes with
+         `insertBefore … is not a child of this node` (mostly inside
+         numeric / chip components like ProfitAndPerc, MetricCard, the
+         drawer profit panels). Trading data shouldn't be machine
+         translated anyway — tickers, USDT, BTC, percentages, etc. all
+         lose meaning. Matches what we did at the HTML level in the
+         legacy dashboard. -->
+    <meta name="google" content="notranslate" />
+    <meta http-equiv="Content-Language" content="en" />
+
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#1f2937" />
+    <meta
+      name="description"
+      content="Gainium cryptocurrency trading dashboard with offline support"
+    />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Apple specific meta tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="Gainium" />
+    <link rel="apple-touch-icon" href="/images/apple-touch-icon.svg" />
+
+    <!-- Microsoft specific meta tags -->
+    <meta name="msapplication-TileColor" content="#1f2937" />
+    <meta name="msapplication-config" content="/browserconfig.xml" />
+
+    <!-- Additional PWA optimizations -->
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!-- Cache control to prevent stale app shells -->
+    <meta
+      http-equiv="Cache-Control"
+      content="no-cache, no-store, must-revalidate"
+    />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+  </head>
+  <body>
+    <!-- Polyfill Node.js globals for browser compatibility (needed for PouchDB) -->
+    <script>
+      // Polyfill global for Node.js libraries used in browser
+      window.global = window;
+      window.process = window.process || { env: { NODE_ENV: 'production' } };
+      window.Buffer = window.Buffer || undefined;
+    </script>
+
+    <!-- Initialize font size from localStorage to prevent FOUC (Flash of Unstyled Content) -->
+    <script>
+      try {
+        const stored = localStorage.getItem('visual-settings-store');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          // Handle both direct state and nested state structure
+          const fontSize = parsed.state?.fontSize || parsed.fontSize;
+          if (fontSize && typeof fontSize === 'number') {
+            document.documentElement.style.setProperty(
+              '--base-font-size',
+              fontSize + 'px'
+            );
+          }
+        }
+      } catch (e) {
+        // Silently fail - default CSS variable will be used
+      }
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,221 @@
+import GraphQlQuery from '@/lib/api/GraphQLQueries';
+import logger from '@/lib/loggerInstance';
+import {
+  convertToFlatPairsByExchange,
+  useTradingPairsDataStore,
+} from '@/stores/tradingPairsDataStore';
+import { useUIStore } from '@/stores/uiStore';
+import type { ExchangeEnum } from '@/types';
+import { useCallback, useEffect, useMemo } from 'react';
+import { useGraphQL } from './useGraphQL';
+
+export interface TradingPair {
+  pair: string;
+  exchange: ExchangeEnum;
+  baseAsset: {
+    name: string;
+    minAmount: number;
+    maxAmount: number;
+    step: number;
+  };
+  quoteAsset: {
+    name: string;
+    minAmount: number;
+  };
+  priceAssetPrecision: number;
+  crossAvailable: boolean;
+  // Exchange-native symbol identifiers used by WebSocket streamers
+  // (Kraken spot uses `wsCode` like "BTC/USDT", Hyperliquid / Kraken
+  // futures use `code` like "PI_XBTUSD"). Optional because most
+  // exchanges derive their WS symbol from `pair` directly.
+  code?: string;
+  wsCode?: string;
+}
+
+export interface GetAllPairsResponse {
+  result: TradingPair[];
+}
+
+export interface TradingPairsByExchange {
+  [exchangeName: string]: TradingPair[];
+}
+
+// Maximum time (ms) the store can stay in isLoading before we force-reset it.
+// Acts as a safety-net against the loading-state deadlock.
+const LOADING_TIMEOUT_MS = 30_000;
+
+export function useTradingPairs() {
+  const {
+    pairsByProvider,
+    setPairs,
+    setLoading,
+    isLoading,
+    setError,
+    error,
+    initialLoaded,
+    markStale,
+    _hasHydrated,
+  } = useTradingPairsDataStore();
+  const tradingMode = useUIStore((s) => s.tradingMode);
+  const { query } = GraphQlQuery.getAllPairs();
+
+  // When the trading context changes (live/paper/demo), mark pairs as stale so
+  // that we re-fetch with the correct `paper-context` header.  This mirrors
+  // what useExchanges does with its own `markStale()` call.
+  useEffect(() => {
+    logger.info(
+      `[useTradingPairs] Trading mode changed to ${tradingMode}, marking pairs stale`
+    );
+    markStale();
+  }, [tradingMode, markStale]);
+
+  // Only fetch if we haven't loaded yet (timer will clear expired data automatically).
+  // Wait for IDB rehydration to finish first — otherwise we'd fire a network
+  // request even when cached pairs are about to arrive from IndexedDB, and the
+  // brief pre-hydration empty state would leak into UI consumers.
+  const shouldFetch = useMemo(() => {
+    return _hasHydrated && !initialLoaded && !isLoading;
+  }, [_hasHydrated, initialLoaded, isLoading]);
+
+  // Use GraphQL hook with conditional fetching
+  const apiResult = useGraphQL<GetAllPairsResponse>(
+    'getAllPairs',
+    {
+      query,
+    },
+    {
+      enabled: shouldFetch,
+    }
+  );
+
+  // Update store when API data arrives
+  useEffect(() => {
+    if (
+      apiResult.data?.data?.result &&
+      !apiResult.isLoading &&
+      !apiResult.error
+    ) {
+      logger.info(
+        `[useTradingPairs] API returned ${apiResult.data.data.result.length} trading pairs, updating store`
+      );
+      setPairs(apiResult.data.data.result);
+      // Explicitly clear loading — avoids relying on a separate effect that
+      // could be skipped when shouldFetch flips before the next render.
+      setLoading(false);
+    }
+  }, [
+    apiResult.data,
+    apiResult.isLoading,
+    apiResult.error,
+    setPairs,
+    setLoading,
+  ]);
+
+  // Update store loading state.
+  // IMPORTANT: Do NOT gate this on `shouldFetch` — when the query finishes or
+  // errors, `shouldFetch` may have already flipped to false (because isLoading
+  // is true in the store), which would prevent the loading flag from being
+  // cleared and cause a permanent "Loading pairs…" state.
+  useEffect(() => {
+    if (shouldFetch && apiResult.isLoading) {
+      // The query just started — propagate loading=true to the store.
+      setLoading(true);
+    } else if (!apiResult.isLoading && isLoading && !shouldFetch) {
+      // The query finished (or was never started because it's disabled) but
+      // the store is still marked as loading — clear it to break the deadlock.
+      logger.info(
+        '[useTradingPairs] Clearing stuck loading state (apiResult done, store still loading)'
+      );
+      setLoading(false);
+    }
+  }, [apiResult.isLoading, shouldFetch, isLoading, setLoading]);
+
+  // Update store error state — also make sure isLoading is cleared on error
+  useEffect(() => {
+    if (apiResult.error) {
+      logger.error('[useTradingPairs] API error:', apiResult.error);
+      setError(apiResult.error.message || 'Failed to fetch trading pairs');
+      // Always clear loading on error so the UI can show an error/retry state
+      // instead of spinning forever.
+      if (isLoading) {
+        setLoading(false);
+      }
+    } else if (error && !apiResult.isLoading) {
+      // Clear previous error when a subsequent request succeeds
+      setError(null);
+    }
+  }, [
+    apiResult.error,
+    apiResult.isLoading,
+    setError,
+    error,
+    isLoading,
+    setLoading,
+  ]);
+
+  // Safety-net: force-reset a stuck loading state after LOADING_TIMEOUT_MS.
+  // This covers edge-cases where effects don't fire in the expected order
+  // (e.g. HMR, suspended renders, React StrictMode double-mounts).
+  useEffect(() => {
+    if (!isLoading) return;
+
+    const timer = setTimeout(() => {
+      const state = useTradingPairsDataStore.getState();
+      if (state.isLoading) {
+        logger.warn(
+          `[useTradingPairs] Loading state stuck for >${LOADING_TIMEOUT_MS / 1000}s – force-resetting`
+        );
+        state.setLoading(false);
+        if (!state.error) {
+          state.setError('Trading pairs request timed out. Please try again.');
+        }
+      }
+    }, LOADING_TIMEOUT_MS);
+
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  // Transform pairs into exchange-organized structure for backward compatibility
+  const pairsByExchange = useMemo(() => {
+    return convertToFlatPairsByExchange(pairsByProvider);
+  }, [pairsByProvider]);
+
+  // Refresh function for manual refresh
+  const refresh = useCallback(async () => {
+    logger.info('[useTradingPairs] Manual refresh requested');
+    // Clear data first so that shouldFetch becomes true on the next render,
+    // re-enabling the query.
+    useTradingPairsDataStore.getState().clearAll();
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (apiResult.refetch) {
+        await apiResult.refetch();
+      }
+    } catch (err) {
+      logger.error('[useTradingPairs] Manual refresh failed:', err);
+      setError(err instanceof Error ? err.message : 'Refresh failed');
+      setLoading(false);
+    }
+  }, [apiResult, setError, setLoading]);
+
+  // Return backward compatible structure.
+  // Report pre-hydration as loading so consumers don't render an empty state
+  // (e.g. PairSelector's "No available pairs to add") during the IDB read
+  // window on hard refresh / HMR.
+  const result = useMemo(
+    () => ({
+      isLoading: isLoading || !_hasHydrated,
+      error: error ? new Error(error) : null,
+
+      // Existing pairsByExchange for backward compatibility
+      pairsByExchange,
+
+      // New methods
+      refresh,
+    }),
+    [isLoading, _hasHydrated, error, pairsByExchange, refresh]
+  );
+  return result;
+}

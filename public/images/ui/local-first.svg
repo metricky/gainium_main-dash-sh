@@ -1,0 +1,53 @@
+<svg viewBox="0 0 400 225" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    :root {
+      --accent-color: var(--color-primary, #f97316);
+      --bg-color: var(--color-background, #0f0f0f);
+      --muted-fg: var(--color-muted-foreground, #64748b);
+    }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    @keyframes glow { 0%, 100% { filter: drop-shadow(0 0 10px rgba(16, 185, 129, 0.27)); } 50% { filter: drop-shadow(0 0 25px rgba(16, 185, 129, 0.53)); } }
+    @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+    .badge { animation: scaleIn 0.5s ease-out both, pulse 2s ease-in-out 0.5s infinite; transform-origin: center; }
+    .coin { animation: float 3s ease-in-out infinite; }
+    .coin-delay { animation: float 3s ease-in-out 0.5s infinite; }
+    .glow { animation: glow 2s ease-in-out infinite; }
+  </style>
+  <rect width="400" height="225" fill="var(--bg-color, #0f0f0f)"/>
+
+  <!-- Large $0 badge -->
+  <g class="badge">
+    <circle cx="200" cy="95" r="70" fill="#10b981" opacity="0.1" stroke="#10b981" stroke-width="3" class="glow"/>
+    <circle cx="200" cy="95" r="55" fill="#10b981" opacity="0.15"/>
+    <text x="200" y="105" font-family="system-ui, sans-serif" font-size="48" font-weight="800" fill="#10b981" text-anchor="middle">$0</text>
+    <text x="200" y="130" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="#10b981" opacity="0.8" text-anchor="middle">FREE</text>
+  </g>
+
+  <!-- Floating coins -->
+  <g class="coin">
+    <circle cx="80" cy="60" r="20" fill="var(--accent-color, #f97316)" opacity="0.2" stroke="var(--accent-color, #f97316)" stroke-width="2"/>
+    <text x="80" y="66" font-family="system-ui, sans-serif" font-size="16" font-weight="700" fill="var(--accent-color, #f97316)" text-anchor="middle">$</text>
+  </g>
+
+  <g class="coin-delay">
+    <circle cx="320" cy="70" r="18" fill="var(--accent-color, #f97316)" opacity="0.2" stroke="var(--accent-color, #f97316)" stroke-width="2"/>
+    <text x="320" y="76" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="var(--accent-color, #f97316)" text-anchor="middle">$</text>
+  </g>
+
+  <g class="coin">
+    <circle cx="90" cy="150" r="15" fill="var(--accent-color, #f97316)" opacity="0.15" stroke="var(--accent-color, #f97316)" stroke-width="1.5"/>
+    <text x="90" y="155" font-family="system-ui, sans-serif" font-size="12" font-weight="700" fill="var(--accent-color, #f97316)" text-anchor="middle">$</text>
+  </g>
+
+  <g class="coin-delay">
+    <circle cx="310" cy="140" r="16" fill="var(--accent-color, #f97316)" opacity="0.15" stroke="var(--accent-color, #f97316)" stroke-width="1.5"/>
+    <text x="310" y="146" font-family="system-ui, sans-serif" font-size="13" font-weight="700" fill="var(--accent-color, #f97316)" text-anchor="middle">$</text>
+  </g>
+
+  <!-- Strikethrough price -->
+  <g opacity="0.4">
+    <text x="200" y="200" font-family="system-ui, sans-serif" font-size="20" font-weight="600" fill="var(--muted-fg, #64748b)" text-anchor="middle">$29/mo</text>
+    <line x1="155" y1="195" x2="245" y2="195" stroke="#ef4444" stroke-width="2"/>
+  </g>
+</svg>

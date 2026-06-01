@@ -1,0 +1,263 @@
+import type { StoreBacktest, StoreHedgeBacktest } from '@/types';
+import DB, { handleError } from '../indexedDb';
+
+export const DBCredentials = {
+  version: 1,
+  store: 'BacktestData',
+  dbName: 'GainiumBacktest',
+} as const;
+
+export const DBHedgeCredentials = {
+  version: 1,
+  store: 'BacktestData',
+  dbName: 'GainiumHedgeBacktest',
+} as const;
+
+const initDb = async () => {
+  const db = new DB<StoreBacktest>(
+    DBCredentials,
+    async (database, _oldVersion, _newVersion, tx, _ev, he) => {
+      database.onerror = (event) =>
+        he(
+          // @ts-expect-error – IndexedDB typings expose a very loose event target
+          `Error updating DB ${(event?.target?.error as Error)?.message ?? ''}`
+        );
+      tx.onerror = (event) => {
+        he(
+          // @ts-expect-error – IndexedDB typings expose a very loose event target
+          `Backtest TX upgrade error ${(event?.target?.error as Error)?.message ?? ''}`
+        );
+      };
+      const stores = database.objectStoreNames;
+      if (!stores.contains(DBCredentials.store)) {
+        database.createObjectStore(DBCredentials.store, {
+          keyPath: 'id',
+        });
+      }
+      await tx.done;
+    }
+  );
+  return db;
+};
+
+const initHedgeDb = async () => {
+  const db = new DB<StoreHedgeBacktest>(
+    DBHedgeCredentials,
+    async (database, _oldVersion, _newVersion, tx, _ev, he) => {
+      database.onerror = (event) =>
+        he(
+          // @ts-expect-error – IndexedDB typings expose a very loose event target
+          `Error updating hedge DB ${(event?.target?.error as Error)?.message ?? ''}`
+        );
+      tx.onerror = (event) => {
+        he(
+          // @ts-expect-error – IndexedDB typings expose a very loose event target
+          `Hedge TX upgrade error ${(event?.target?.error as Error)?.message ?? ''}`
+        );
+      };
+      const stores = database.objectStoreNames;
+      if (!stores.contains(DBHedgeCredentials.store)) {
+        database.createObjectStore(DBHedgeCredentials.store, {
+          keyPath: 'id',
+        });
+      }
+      await tx.done;
+    }
+  );
+  return db;
+};
+
+export const getAll = async (): Promise<StoreBacktest[]> => {
+  try {
+    const db = await initDb();
+    return await db.getAll();
+  } catch (e) {
+    handleError(
+      `Catch error in get all ${(e as Error).message}`,
+      DBCredentials.store
+    );
+    return [];
+  }
+};
+
+// Returns all local backtests with full `data` payload. By default `db.getAll()`
+// masks the `data` property to an empty string to avoid expensive copies.
+// This helper fetches each entry by id with `full=true` to return the full
+// serialized backtest payloads so that pages that need to parse the result can
+// do so.
+export const getAllFull = async (): Promise<StoreBacktest[]> => {
+  try {
+    const db = await initDb();
+    const all = await db.getAll();
+    const fullEntries: StoreBacktest[] = [];
+    for (const entry of all) {
+      // Ensure we try to fetch the full entry by id; fall back to the entry we
+      // already have if the request fails for any reason.
+      try {
+        const full = await db.getById(entry.id, true);
+        fullEntries.push((full as StoreBacktest) ?? entry);
+      } catch {
+        fullEntries.push(entry);
+      }
+    }
+    return fullEntries;
+  } catch (e) {
+    handleError(
+      `Catch error in get all full ${(e as Error).message}`,
+      DBCredentials.store
+    );
+    return [];
+  }
+};
+
+export const getHedgeAll = async (): Promise<StoreHedgeBacktest[]> => {
+  try {
+    const db = await initHedgeDb();
+    return await db.getAll();
+  } catch (e) {
+    handleError(
+      `Catch error in hedge get all ${(e as Error).message}`,
+      DBHedgeCredentials.store
+    );
+    return [];
+  }
+};
+
+// Returns all hedge backtest entries with full `data` payloads
+export const getHedgeAllFull = async (): Promise<StoreHedgeBacktest[]> => {
+  try {
+    const db = await initHedgeDb();
+    const all = await db.getAll();
+    const fullEntries: StoreHedgeBacktest[] = [];
+    for (const entry of all) {
+      try {
+        const full = await db.getById(entry.id, true);
+        fullEntries.push((full as StoreHedgeBacktest) ?? entry);
+      } catch {
+        fullEntries.push(entry);
+      }
+    }
+    return fullEntries;
+  } catch (e) {
+    handleError(
+      `Catch error in hedge get all full ${(e as Error).message}`,
+      DBHedgeCredentials.store
+    );
+    return [];
+  }
+};
+
+export const getById = async (
+  id: string,
+  full = false
+): Promise<StoreBacktest | undefined | null> => {
+  try {
+    const db = await initDb();
+    return await db.getById(id, full);
+  } catch (e) {
+    handleError(
+      `Catch error in get by id ${(e as Error).message}`,
+      DBCredentials.store
+    );
+    return null;
+  }
+};
+
+export const getHedgeById = async (
+  id: string,
+  full = false
+): Promise<StoreHedgeBacktest | undefined | null> => {
+  try {
+    const db = await initHedgeDb();
+    return await db.getById(id, full);
+  } catch (e) {
+    handleError(
+      `Catch error in hedge get by id ${(e as Error).message}`,
+      DBHedgeCredentials.store
+    );
+    return null;
+  }
+};
+
+export const removeId = async (id: string): Promise<StoreBacktest[]> => {
+  try {
+    const db = await initDb();
+    return await db.removeId(id);
+  } catch (e) {
+    handleError(
+      `Catch error in remove id ${(e as Error).message}. ID: ${id}`,
+      DBCredentials.store
+    );
+    return [];
+  }
+};
+
+export const removeAll = async (): Promise<StoreBacktest[]> => {
+  try {
+    const db = await initDb();
+    return await db.removeAll();
+  } catch (e) {
+    handleError(
+      `Catch error in remove all ${(e as Error).message}`,
+      DBCredentials.store
+    );
+    return [];
+  }
+};
+
+export const removeHedgeId = async (
+  id: string
+): Promise<StoreHedgeBacktest[]> => {
+  try {
+    const db = await initHedgeDb();
+    return await db.removeId(id);
+  } catch (e) {
+    handleError(
+      `Catch error in hedge remove id ${(e as Error).message}. ID: ${id}`,
+      DBHedgeCredentials.store
+    );
+    return [];
+  }
+};
+
+export const removeHedgeAll = async (): Promise<StoreHedgeBacktest[]> => {
+  try {
+    const db = await initHedgeDb();
+    return await db.removeAll();
+  } catch (e) {
+    handleError(
+      `Catch error in hedge remove all ${(e as Error).message}`,
+      DBHedgeCredentials.store
+    );
+    return [];
+  }
+};
+
+export const save = async (data: StoreBacktest): Promise<boolean> => {
+  try {
+    const db = await initDb();
+    return await db.save(data);
+  } catch (e) {
+    const error = (e as Error)?.message || `${e}`;
+    if (error && `${error}` !== 'QuotaExceededError') {
+      handleError(`Catch error in save ${error}`, DBCredentials.store);
+    }
+    return false;
+  }
+};
+
+export const saveHedge = async (data: StoreHedgeBacktest): Promise<boolean> => {
+  try {
+    const db = await initHedgeDb();
+    return await db.save(data);
+  } catch (e) {
+    const error = (e as Error)?.message || `${e}`;
+    if (error && `${error}` !== 'QuotaExceededError') {
+      handleError(
+        `Catch error in save hedge ${error}`,
+        DBHedgeCredentials.store
+      );
+    }
+    return false;
+  }
+};

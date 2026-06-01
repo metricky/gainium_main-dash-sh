@@ -1,0 +1,85 @@
+import { useMemo } from 'react';
+import { botQueries } from '../lib/api/GraphQLQueries-bot-queries';
+import type { ReturnResult } from '../lib/api/types';
+import { useGraphQL } from './useGraphQL';
+import { BotTypesEnum } from '../types';
+
+/**
+ * Profit data point from the getProfitByBot GraphQL query.
+ * Matches the legacy main-dash Profit type from types/index.ts.
+ */
+export interface GridProfitEntry {
+  profitUsd: number;
+  quote: number;
+  base: number;
+  date: string;
+}
+
+export interface UseGridBotProfitOptions {
+  botId: string;
+  timezone?: string;
+  /** Timeframe: 0 = Daily, 1 = Weekly, 2 = Monthly, 3 = Total */
+  timeframe?: number;
+  enabled?: boolean;
+}
+
+export interface UseGridBotProfitResult {
+  data: ReturnResult<{ result: GridProfitEntry[] }> | null;
+  profitEntries: GridProfitEntry[];
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  refetch: () => Promise<unknown>;
+}
+
+/**
+ * Hook to fetch grid bot profit data using the getProfitByBot GraphQL query.
+ * This mirrors the legacy main-dash approach (components/gridbot/index.tsx).
+ *
+ * The backend returns an array of { profitUsd, quote, base, date } entries,
+ * one per period (day/week/month), which is then used to render the profit
+ * bar chart — identical to the legacy TotalProfit component.
+ */
+export function useGridBotProfit(
+  options: UseGridBotProfitOptions
+): UseGridBotProfitResult {
+  const { botId, timezone, timeframe = 0, enabled = true } = options;
+
+  const input = useMemo(
+    () => ({
+      botId,
+      timezone,
+      timeframe,
+      botType: BotTypesEnum.grid,
+    }),
+    [botId, timezone, timeframe]
+  );
+
+  const { query, variables } = botQueries.getProfitByBot(input);
+
+  const queryResult = useGraphQL<{ result: GridProfitEntry[] }>(
+    'getProfitByBot',
+    { query, variables },
+    { enabled: enabled && !!botId }
+  );
+
+  const profitEntries = useMemo(() => {
+    if (
+      !queryResult.data ||
+      queryResult.data.status !== 'OK' ||
+      !queryResult.data.data?.result
+    ) {
+      return [];
+    }
+    return queryResult.data.data.result;
+  }, [queryResult.data]);
+
+  return {
+    data: queryResult.data || null,
+    profitEntries,
+    isLoading: queryResult.isLoading,
+    isError: queryResult.isError,
+    error: queryResult.error,
+    refetch: queryResult.refetch,
+  };
+}

@@ -1,0 +1,63 @@
+<svg viewBox="0 0 400 225" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    :root {
+      --accent-color: var(--color-primary, #f97316);
+      --bg-color: var(--color-background, #0f0f0f);
+      --card-color: var(--color-card, #1a1a1a);
+      --muted-color: var(--color-muted, #2a2a2a);
+      --muted-fg: var(--color-muted-foreground, #a0a0a0);
+      --text-color: var(--color-foreground, #e0e0e0);
+    }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .panel { animation: scaleIn 0.3s ease-out both; transform-origin: center; }
+    .row1 { animation: slideUp 0.3s ease-out 0.1s both; }
+    .row2 { animation: slideUp 0.3s ease-out 0.15s both; }
+    .row3 { animation: slideUp 0.3s ease-out 0.2s both; }
+    .row4 { animation: slideUp 0.3s ease-out 0.25s both; }
+    .row5 { animation: slideUp 0.3s ease-out 0.3s both; }
+  </style>
+  <rect width="400" height="225" fill="var(--bg-color, #0f0f0f)"/>
+
+  <!-- Panel -->
+  <rect class="panel" x="10" y="10" width="380" height="205" rx="10" fill="var(--card-color, #1a1a1a)" stroke="var(--accent-color, #f97316)" stroke-width="2"/>
+
+  <!-- Header -->
+  <rect x="10" y="10" width="380" height="36" rx="10" fill="var(--accent-color, #f97316)" opacity="0.15"/>
+  <text x="200" y="34" font-family="system-ui, sans-serif" font-size="14" font-weight="600" fill="var(--accent-color, #f97316)" text-anchor="middle">⌨️ Keyboard Shortcuts</text>
+
+  <!-- Row 1 -->
+  <g class="row1">
+    <text x="30" y="70" font-family="system-ui, sans-serif" font-size="12" fill="var(--text-color, #e0e0e0)">Global Search</text>
+    <rect x="310" y="55" width="60" height="22" rx="4" fill="var(--muted-color, #2a2a2a)" stroke="var(--muted-color, #3a3a3a)" stroke-width="1"/>
+    <text x="340" y="70" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="var(--accent-color, #f97316)" text-anchor="middle">⌘ K</text>
+  </g>
+
+  <!-- Row 2 -->
+  <g class="row2">
+    <text x="30" y="100" font-family="system-ui, sans-serif" font-size="12" fill="var(--text-color, #e0e0e0)">Create New Bot</text>
+    <rect x="310" y="85" width="60" height="22" rx="4" fill="var(--muted-color, #2a2a2a)" stroke="var(--muted-color, #3a3a3a)" stroke-width="1"/>
+    <text x="340" y="100" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="var(--muted-fg, #a0a0a0)" text-anchor="middle">⌘ N</text>
+  </g>
+
+  <!-- Row 3 -->
+  <g class="row3">
+    <text x="30" y="130" font-family="system-ui, sans-serif" font-size="12" fill="var(--text-color, #e0e0e0)">Toggle Sidebar</text>
+    <rect x="310" y="115" width="60" height="22" rx="4" fill="var(--muted-color, #2a2a2a)" stroke="var(--muted-color, #3a3a3a)" stroke-width="1"/>
+    <text x="340" y="130" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="var(--muted-fg, #a0a0a0)" text-anchor="middle">⌘ B</text>
+  </g>
+
+  <!-- Row 4 -->
+  <g class="row4">
+    <text x="30" y="160" font-family="system-ui, sans-serif" font-size="12" fill="var(--text-color, #e0e0e0)">Quick Actions</text>
+    <rect x="310" y="145" width="60" height="22" rx="4" fill="var(--muted-color, #2a2a2a)" stroke="var(--muted-color, #3a3a3a)" stroke-width="1"/>
+    <text x="340" y="160" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="var(--muted-fg, #a0a0a0)" text-anchor="middle">⌘ P</text>
+  </g>
+
+  <!-- Row 5 -->
+  <g class="row5">
+    <text x="30" y="190" font-family="system-ui, sans-serif" font-size="12" fill="var(--text-color, #e0e0e0)">View Shortcuts</text>
+    <rect x="295" y="175" width="75" height="22" rx="4" fill="var(--accent-color, #f97316)" opacity="0.2" stroke="var(--accent-color, #f97316)" stroke-width="1"/>
+    <text x="332" y="190" font-family="system-ui, sans-serif" font-size="11" font-weight="500" fill="var(--accent-color, #f97316)" text-anchor="middle">⌘ ⇧ /</text>
+  </g>
+</svg>
