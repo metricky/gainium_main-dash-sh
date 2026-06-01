@@ -235,7 +235,6 @@ export const HedgeBotActionsCell: React.FC<HedgeBotActionsCellProps> = ({
           onRestart={handleRestart}
           onEdit={() => navigate(editPath)}
           onClone={() => navigate(clonePath)}
-          onViewBacktests={() => navigate(`/backtests?botId=${bot._id}`)}
           onShareConfig={handleShareConfig}
           onArchive={handleArchive}
           onDelete={() => setDeleteModalOpen(true)}

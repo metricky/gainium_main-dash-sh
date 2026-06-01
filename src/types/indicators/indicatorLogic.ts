@@ -16,6 +16,7 @@ import type {
 } from './indicatorParams';
 import {
   DCValueEnum,
+  ExchangeEnum,
   ExchangeIntervals,
   IndicatorAction,
   IndicatorEnum,
@@ -25,6 +26,7 @@ import {
   ppValueTypeEnum,
   type SettingsIndicators,
 } from '..';
+import type { IndicatorFieldOption } from './indicatorTypes';
 
 const collectFields = (
   definition: IndicatorDefinition
@@ -230,6 +232,266 @@ export const validateIndicatorParams = (
   }
 
   return Array.from(new Set(errors));
+};
+
+// --- Exchange-based interval filtering (ported from legacy main-dash) ---
+//
+// Legacy `filterIndicatorIntervalsByExchange` (main-dash
+// components/dcabot/components/utils.tsx:203) restricts the indicator
+// interval select to the candle intervals each exchange actually
+// supports. The per-exchange supported sets mirror legacy
+// constants.ts (binanceSupported, bitgetSupported, …). When no exchange
+// is selected the full interval list is returned unchanged.
+
+const binanceSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.threeM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.eightH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const bitgetSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const bybitSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.threeM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const kucoinSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.threeM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.eightH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const kucoinFuturesSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.eightH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const okxSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.threeM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const coinbaseSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.twoH,
+  ExchangeIntervals.oneD,
+];
+
+const mexcSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+const krakenSupported: ExchangeIntervals[] = [
+  ExchangeIntervals.oneM,
+  ExchangeIntervals.fiveM,
+  ExchangeIntervals.fifteenM,
+  ExchangeIntervals.thirtyM,
+  ExchangeIntervals.oneH,
+  ExchangeIntervals.fourH,
+  ExchangeIntervals.oneD,
+  ExchangeIntervals.oneW,
+];
+
+// Ported from legacy main-dash helper/utils.ts `removePaperFormExchangeName`
+// (the `demo` branch). Maps a paper-trading exchange id back to its live
+// counterpart so the supported-interval lookup matches.
+const removePaperFormExchangeName = (exchange: ExchangeEnum): ExchangeEnum => {
+  switch (exchange) {
+    case ExchangeEnum.paperBinance:
+      return ExchangeEnum.binance;
+    case ExchangeEnum.paperBybit:
+      return ExchangeEnum.bybit;
+    case ExchangeEnum.paperKucoin:
+      return ExchangeEnum.kucoin;
+    case ExchangeEnum.paperKucoinLinear:
+      return ExchangeEnum.kucoinLinear;
+    case ExchangeEnum.paperKucoinInverse:
+      return ExchangeEnum.kucoinInverse;
+    case ExchangeEnum.paperBinanceCoinm:
+      return ExchangeEnum.binanceCoinm;
+    case ExchangeEnum.paperBinanceUsdm:
+      return ExchangeEnum.binanceUsdm;
+    case ExchangeEnum.paperBybitCoinm:
+      return ExchangeEnum.bybitCoinm;
+    case ExchangeEnum.paperBybitUsdm:
+      return ExchangeEnum.bybitUsdm;
+    case ExchangeEnum.paperOkx:
+      return ExchangeEnum.okx;
+    case ExchangeEnum.paperOkxInverse:
+      return ExchangeEnum.okxInverse;
+    case ExchangeEnum.paperOkxLinear:
+      return ExchangeEnum.okxLinear;
+    case ExchangeEnum.paperCoinbase:
+      return ExchangeEnum.coinbase;
+    case ExchangeEnum.paperBitget:
+      return ExchangeEnum.bitget;
+    case ExchangeEnum.paperBitgetCoinm:
+      return ExchangeEnum.bitgetCoinm;
+    case ExchangeEnum.paperBitgetUsdm:
+      return ExchangeEnum.bitgetUsdm;
+    case ExchangeEnum.paperMexc:
+      return ExchangeEnum.mexc;
+    case ExchangeEnum.paperHyperliquid:
+      return ExchangeEnum.hyperliquid;
+    case ExchangeEnum.paperHyperliquidLinear:
+      return ExchangeEnum.hyperliquidLinear;
+    case ExchangeEnum.paperKraken:
+      return ExchangeEnum.kraken;
+    case ExchangeEnum.paperKrakenUsdm:
+      return ExchangeEnum.krakenUsdm;
+    default:
+      return exchange;
+  }
+};
+
+/**
+ * Restrict a list of candle intervals to those the given exchange supports.
+ * Ports legacy `filterIndicatorIntervalsByExchange`. Exchanges with no
+ * special-cased list (e.g. hyperliquid) fall through and keep the full set.
+ */
+export const filterIntervalsByExchange = (
+  intervals: ExchangeIntervals[],
+  rawExchange: ExchangeEnum
+): ExchangeIntervals[] => {
+  const exchange = removePaperFormExchangeName(rawExchange);
+
+  if (
+    [
+      ExchangeEnum.binance,
+      ExchangeEnum.binanceCoinm,
+      ExchangeEnum.binanceUsdm,
+    ].includes(exchange)
+  ) {
+    return intervals.filter((i) => binanceSupported.includes(i));
+  }
+  if (
+    [
+      ExchangeEnum.bitget,
+      ExchangeEnum.bitgetCoinm,
+      ExchangeEnum.bitgetUsdm,
+    ].includes(exchange)
+  ) {
+    return intervals.filter((i) => bitgetSupported.includes(i));
+  }
+  if (
+    [
+      ExchangeEnum.bybit,
+      ExchangeEnum.bybitCoinm,
+      ExchangeEnum.bybitUsdm,
+    ].includes(exchange)
+  ) {
+    return intervals.filter((i) => bybitSupported.includes(i));
+  }
+  if (
+    [ExchangeEnum.kucoinInverse, ExchangeEnum.kucoinLinear].includes(exchange)
+  ) {
+    return intervals.filter((i) => kucoinFuturesSupported.includes(i));
+  }
+  if ([ExchangeEnum.kucoin].includes(exchange)) {
+    return intervals.filter((i) => kucoinSupported.includes(i));
+  }
+  if (
+    [
+      ExchangeEnum.okx,
+      ExchangeEnum.okxLinear,
+      ExchangeEnum.okxInverse,
+    ].includes(exchange)
+  ) {
+    return intervals.filter((i) => okxSupported.includes(i));
+  }
+  if ([ExchangeEnum.coinbase].includes(exchange)) {
+    return intervals.filter((i) => coinbaseSupported.includes(i));
+  }
+  if ([ExchangeEnum.mexc].includes(exchange)) {
+    return intervals.filter((i) => mexcSupported.includes(i));
+  }
+  if ([ExchangeEnum.kraken, ExchangeEnum.krakenUsdm].includes(exchange)) {
+    return intervals.filter((i) => krakenSupported.includes(i));
+  }
+  return intervals;
+};
+
+/**
+ * Filter a select field's interval options to those supported by the
+ * selected exchange. No-op (returns the original list) when no exchange is
+ * provided, matching legacy where the exchange filter only applies when an
+ * exchange is set. Option order is preserved.
+ */
+export const filterIntervalOptionsByExchange = (
+  options: IndicatorFieldOption[] | undefined,
+  exchange: ExchangeEnum | undefined | null
+): IndicatorFieldOption[] | undefined => {
+  if (!options || !exchange) {
+    return options;
+  }
+  const allowed = new Set<string>(
+    filterIntervalsByExchange(
+      options.map((o) => o.value as ExchangeIntervals),
+      exchange
+    )
+  );
+  return options.filter((o) => allowed.has(o.value as string));
 };
 
 export const resolveIndicatorActionScope = (

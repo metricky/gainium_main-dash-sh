@@ -637,27 +637,35 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
       return useBase ? amount / price : amount * price; // quote↔base via price
     };
 
-    const grandTotal = toDisplay(summary.totalPerBot * mult);
+    // "Capital required" is the margin actually committed, not the notional
+    // exposure: for leveraged (futures) bots that's notional / leverage. The
+    // % required and overspend checks already use the cost figures, so the
+    // displayed total and its breakdown must divide by leverage too to stay
+    // consistent (spot bots have leverage 1, so this is a no-op there).
+    const lev = summary.leverage > 0 ? summary.leverage : 1;
+    const grandTotal = toDisplay((summary.totalPerBot * mult) / lev);
     if (grandTotal == null || !Number.isFinite(grandTotal) || grandTotal <= 0) {
       return null;
     }
-    const baseOrders = toDisplay(summary.baseOrderSize * summary.maxDeals * mult);
+    const baseOrders = toDisplay(
+      (summary.baseOrderSize * summary.maxDeals * mult) / lev
+    );
     const safetyPerDeal = Math.max(
       0,
       summary.totalPerDeal - summary.baseOrderSize
     );
-    const safetyOrders = toDisplay(safetyPerDeal * summary.maxDeals * mult);
+    const safetyOrders = toDisplay((safetyPerDeal * summary.maxDeals * mult) / lev);
 
     const rows: ChipRow[] = [];
     if (baseOrders != null && baseOrders > 0) {
       rows.push({
-        label: `Base orders (×${summary.maxDeals})`,
+        label: `Base orders (×${summary.maxDeals} deals)`,
         value: fmtCurrency(baseOrders, displayCurrency, useBase),
       });
     }
     if (safetyOrders != null && safetyOrders > 0) {
       rows.push({
-        label: 'Safety orders',
+        label: `DCA orders (×${summary.maxDeals} deals)`,
         value: fmtCurrency(safetyOrders, displayCurrency, useBase),
       });
     }

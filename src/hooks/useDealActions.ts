@@ -4,8 +4,9 @@ import { GraphQLClient } from '../lib/api';
 import { logger } from '../lib/loggerInstance';
 import {
   BotTypesEnum,
+  CloseDCATypeEnum,
+  DCADealStatusEnum,
   type AddFundsSettings,
-  type CloseDCATypeEnum,
   type DCADealsSettings,
 } from '@/types';
 import { dealQueries } from '@/lib/api/GraphQLQueries-deal-queries';
@@ -44,6 +45,39 @@ interface MoveDealToTerminalInput {
   dealId: string;
   botId: string;
   combo: boolean;
+}
+
+/**
+ * Optimistically reflect a close/cancel in the deal store so the deal leaves
+ * the active list immediately, rather than waiting for a `bot deal update`
+ * websocket event that may be delayed or dropped (there is no polling
+ * fallback for deals). Mirrors the legacy dashboard, which updates local
+ * state on close.
+ *
+ * `closeByLimit` is intentionally left untouched: the deal stays open with a
+ * pending close order until it fills, so it's correctly still active.
+ * A later websocket update / refetch reconciles the precise final status.
+ */
+function optimisticallyMarkDealClosed(
+  botId: string,
+  dealId: string,
+  type: CloseDCATypeEnum
+) {
+  const newStatus =
+    type === CloseDCATypeEnum.cancel
+      ? DCADealStatusEnum.canceled
+      : type === CloseDCATypeEnum.leave ||
+          type === CloseDCATypeEnum.closeByMarket
+        ? DCADealStatusEnum.closed
+        : null;
+  if (!newStatus || !botId || !dealId) {
+    return;
+  }
+  const store = useDealStore.getState();
+  const existing = store.getDeal(botId, dealId);
+  if (existing) {
+    store.updateDeal(botId, { ...existing, status: newStatus }, existing.dealType);
+  }
 }
 
 // Hook for closing DCA deals
@@ -85,6 +119,11 @@ export function useCloseDCADeal() {
         type: variables.type,
         response: data,
       });
+      optimisticallyMarkDealClosed(
+        variables.botId,
+        variables.dealId,
+        variables.type
+      );
     },
     onError: (error, variables) => {
       logger.error('[useCloseDCADeal] Failed to close DCA deal:', {
@@ -203,6 +242,11 @@ export function useCloseComboDeal() {
         type: variables.type,
         response: data,
       });
+      optimisticallyMarkDealClosed(
+        variables.botId,
+        variables.dealId,
+        variables.type
+      );
     },
     onError: (error, variables) => {
       logger.error('[useCloseComboDeal] Failed to close combo deal:', {
@@ -260,6 +304,11 @@ export function useCloseMultiPairDeal() {
           response: data,
         }
       );
+      optimisticallyMarkDealClosed(
+        variables.botId,
+        variables.dealId,
+        variables.type
+      );
     },
     onError: (error, variables) => {
       logger.error('[useCloseMultiPairDeal] Failed to close multi-pair deal:', {
@@ -315,6 +364,9 @@ export function useMoveDealToTerminal() {
         botId: variables.botId,
         response: data,
       });
+      // The deal is no longer one of this bot's deals (it now lives under
+      // terminal), so drop it from the bot's list immediately.
+      useDealStore.getState().removeDeal(variables.botId, variables.dealId);
     },
     onError: (error, variables) => {
       logger.error('[useMoveDealToTerminal] Failed to move deal to terminal', {

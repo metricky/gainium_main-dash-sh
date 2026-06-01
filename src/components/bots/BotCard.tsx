@@ -486,10 +486,6 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
     }
   };
 
-  const handleViewBacktests = () => {
-    navigate(`/backtests?botId=${bot.id}`);
-  };
-
   const currentValue = useMemo(
     () => +((type === BotTypesEnum.grid ? bot.value : bot.unPnl) || 0),
     [bot.unPnl, bot.value, type]
@@ -641,7 +637,6 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   onRestart={() => handleRestart()}
                   onEdit={() => handleEdit()}
                   onClone={() => handleClone()}
-                  onViewBacktests={() => handleViewBacktests()}
                   onViewClosedTrades={() => navigate(`/trades?botId=${bot.id}`)}
                   onShareConfig={async () => {
                     try {

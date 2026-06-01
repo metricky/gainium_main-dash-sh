@@ -351,7 +351,9 @@ export const useFormHandlers = (
           strategy: botStrategy,
         });
 
-        toast.success('Bot created successfully!');
+        toast.success(
+          terminal ? 'Deal created successfully!' : 'Bot created successfully!'
+        );
         options.onCreateSuccess?.(createdBot);
         setErrors({});
         setIsDirty(false);

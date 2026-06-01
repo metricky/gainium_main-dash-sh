@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.4] - 2026-06-01
+
+### Fixed
+- Closing or canceling a deal now removes it from the active list immediately
+  instead of waiting on a websocket update (there is no polling fallback):
+  close/cancel/move optimistically update the deal store (cancel → canceled,
+  leave/market-close → closed, move → dropped from the bot), and the deals
+  list no longer resurrects a just-closed deal from its last-fetch snapshot.
+
+### Changed
+- Indicator configuration parity pass: interval-type fields filter their
+  options to the selected exchange's supported candle intervals; STOCH band
+  fields resolve the correct param key from `stochRange`; related bot-form
+  section, indicator-dialog, and bot-card refactors.
+
 ## [2.7.3] - 2026-06-01
 
 ### Added

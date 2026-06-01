@@ -31,6 +31,7 @@ import {
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
+import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
 import useBotVarBinding, {
   type MultipleTPVarBindingPath,
@@ -118,6 +119,10 @@ import MultiTarget from '../components/MultiTarget';
 
 const MAX_MULTI_TP_TARGETS = 10;
 const MAX_TOTAL_PERCENTAGE = 100;
+// Upper bound for the single take-profit %. Kept high (not 50) so cross-margin
+// / high-leverage users can target large gains, matching the open input in the
+// legacy dashboard. See StopLossSettings MAX_TP_SL_PERCENT for the SL twin.
+const MAX_TP_SL_PERCENT = 250;
 const TRAILING_TP_MIN = 0;
 const TRAILING_TP_MAX = 10;
 type TakeProfitBindableField =
@@ -249,6 +254,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
     botVars = { list: [], paths: [] },
   } = useBotFormState();
   const { coordinates, setCoordinates } = useTradingTerminalUtils();
+  const { currentExchange } = useBotFormQuery();
   const startOrderType = useBotFormSelector('startOrderType');
   const useLimitPrice = useBotFormSelector('useLimitPrice');
   const baseOrderPrice = useBotFormSelector('baseOrderPrice');
@@ -1698,27 +1704,22 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
       return;
     }
 
-    launchCloseIndicatorSelector({
-      title: 'Select closing indicator',
-      onSelect: (type) => {
-        const defaults = getIndicatorDefaultParams(
-          type,
-          IndicatorAction.closeDeal
-        );
-        const sanitizedParams = sanitizeIndicatorParams(
-          (defaults ?? {}) as IndicatorParamsState
-        );
+    // Load a default RSI indicator straight away; the type can be changed
+    // afterwards via the card's change-indicator control.
+    const type = IndicatorEnum.rsi;
+    const defaults = getIndicatorDefaultParams(type, IndicatorAction.closeDeal);
+    const sanitizedParams = sanitizeIndicatorParams(
+      (defaults ?? {}) as IndicatorParamsState
+    );
 
-        const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
-          uuid: createCloseIndicatorId(),
-        });
-
-        updateFormData('indicators', [
-          ...indicators,
-          { ...newIndicator, ...sanitizedParams },
-        ]);
-      },
+    const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
+      uuid: createCloseIndicatorId(),
     });
+
+    updateFormData('indicators', [
+      ...indicators,
+      { ...newIndicator, ...sanitizedParams },
+    ]);
   }, [
     dynamicArAllowedTypes,
     indicatorLimitReached,
@@ -1910,35 +1911,24 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
         return;
       }
 
-      launchCloseIndicatorSelector({
-        title: 'Select closing indicator',
-        onSelect: (type) => {
-          const defaults = getIndicatorDefaultParams(
-            type,
-            IndicatorAction.closeDeal
-          );
-          const sanitizedParams = sanitizeIndicatorParams(
-            (defaults ?? {}) as IndicatorParamsState
-          );
+      // Default to RSI immediately; type is swappable on the card afterwards.
+      const type = IndicatorEnum.rsi;
+      const defaults = getIndicatorDefaultParams(type, IndicatorAction.closeDeal);
+      const sanitizedParams = sanitizeIndicatorParams(
+        (defaults ?? {}) as IndicatorParamsState
+      );
 
-          const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
-            uuid: createCloseIndicatorId(),
-            indicatorAction: IndicatorAction.closeDeal,
-          });
-
-          updateFormData('indicators', [
-            ...indicators,
-            { ...newIndicator, groupId: groupId },
-          ]);
-        },
+      const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
+        uuid: createCloseIndicatorId(),
+        indicatorAction: IndicatorAction.closeDeal,
       });
+
+      updateFormData('indicators', [
+        ...indicators,
+        { ...newIndicator, groupId: groupId },
+      ]);
     },
-    [
-      closeIndicatorGroups,
-      launchCloseIndicatorSelector,
-      updateFormData,
-      indicators,
-    ]
+    [closeIndicatorGroups, updateFormData, indicators]
   );
 
   const handleChangeIndicatorParamsInCloseGroup = useCallback(
@@ -1982,10 +1972,14 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
             uuid: indicator.uuid,
           });
 
-          updateFormData('indicators', [
-            ...indicators,
-            { ...nextIndicator, groupId: groupId },
-          ]);
+          updateFormData(
+            'indicators',
+            indicators.map((candidate) =>
+              candidate.uuid === indicator.uuid
+                ? { ...nextIndicator, groupId: candidate.groupId ?? groupId }
+                : candidate
+            )
+          );
         },
       });
     },
@@ -2002,15 +1996,17 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
       if (!indicator) {
         return;
       }
-      const findGroupsLength = indicatorGroups.filter(
-        (group) => group.id === groupId
+      // Only drop the group when removing its LAST indicator — otherwise
+      // deleting one indicator would orphan the rest of the group.
+      const indicatorsInGroup = indicators.filter(
+        (ind) => ind.groupId === groupId
       ).length;
 
       updateFormData(
         'indicators',
         indicators.filter((ind) => ind.uuid !== indicatorId)
       );
-      if (findGroupsLength === 1) {
+      if (indicatorsInGroup === 1) {
         updateFormData(
           'indicatorGroups',
           indicatorGroups.filter((group) => group.id !== groupId)
@@ -2059,6 +2055,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
               definition={definition}
               params={params}
               indicatorUuid={indicator.uuid}
+              exchange={currentExchange?.provider}
               onChange={(next) =>
                 handleChangeIndicatorParams(indicator.uuid, next)
               }
@@ -2271,7 +2268,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
     return validateTpTarget(
       tpPerc ?? String(minTpToUse),
       minTpToUse,
-      50,
+      MAX_TP_SL_PERCENT,
       Boolean(isTpPercBound)
     );
   }, [tpPerc, minTpToUse, isTpPercBound]);
@@ -2368,7 +2365,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
                 value={parseFloat(tpPerc) || minTpToUse}
                 onChange={handleSliderChange}
                 min={minTpToUse}
-                max={50}
+                max={MAX_TP_SL_PERCENT}
                 step={0.1}
                 className="w-full"
                 disabled={isTpPercBound}
@@ -2393,7 +2390,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
                   value={tpPerc}
                   onChange={(value) => updateFormData('tpPerc', value)}
                   min={minTpToUse}
-                  max={50}
+                  max={MAX_TP_SL_PERCENT}
                   step={0.1}
                   precision={3}
                   className={`w-full${
@@ -2811,6 +2808,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
                     errorMessage={closeIndicatorErrorMessage}
                     totalIndicatorsAcrossBot={totalIndicatorsAcrossBot}
                     indicatorAction={IndicatorAction.closeDeal}
+                    exchange={currentExchange?.provider}
                     emptyStateMessage="No indicator groups configured yet. Add a group to start building your close conditions."
                     emptyIndicatorsAlertTitle="No close indicators yet"
                     emptyIndicatorsAlertDescription="Add at least one indicator inside a group to allow the bot to confirm exits automatically."

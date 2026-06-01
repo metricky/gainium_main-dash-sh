@@ -124,7 +124,7 @@ const MultiTarget = ({
       <InputButtonsSlider
         value={target.target}
         onChange={(value) => handleTargetPercentageChange(index, value)}
-        min={isStopLoss ? -50 : minSlToUse}
+        min={isStopLoss ? -250 : minSlToUse}
         max={isStopLoss ? -minSlToUse : 50}
         step={0.1}
         precision={3}
@@ -134,7 +134,7 @@ const MultiTarget = ({
         isInvalid={!validation.isValid}
         showSlider={!isTargetPercentageBound}
         sliderMin={isStopLoss ? minSlToUse : minSlToUse}
-        sliderMax={isStopLoss ? 50 : 50}
+        sliderMax={isStopLoss ? 250 : 50}
         sliderStep={0.1}
         sliderValue={
           isStopLoss

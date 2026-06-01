@@ -207,10 +207,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     }
   };
 
-  const handleViewBacktests = () => {
-    navigate(`/backtests?botId=${bot.id}`);
-  };
-
   const handleArchive = () => {
     const isArchived = bot.status.toLowerCase() === 'archived';
     archiveMutation.mutate({
@@ -253,7 +249,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
           onRestart={() => handleRestart()}
           onEdit={() => handleEdit()}
           onClone={() => handleClone()}
-          onViewBacktests={() => handleViewBacktests()}
           onViewClosedTrades={() => navigate(`/trades?botId=${bot.id}`)}
           onShareConfig={async () => {
             try {

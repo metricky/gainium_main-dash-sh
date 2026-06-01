@@ -6,7 +6,6 @@ import type { GridBot } from '@/types/gridBot';
 import { buildBotEditRoute } from '@/utils/bots/navigation';
 import { extractPairAssets } from '@/utils/pairs';
 import {
-  BarChart3,
   Copy,
   Edit,
   Grid3X3,
@@ -172,10 +171,6 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
     }
   };
 
-  const handleViewBacktests = () => {
-    navigate(`/backtests?botId=${bot.id}`);
-  };
-
   const { baseAsset, quoteAsset } = extractPairAssets(bot.pair);
 
   return (
@@ -263,16 +258,6 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
               >
                 <Copy className="w-4 h-4 mr-2" />
                 Clone
-              </DropdownMenuItem>
-
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleViewBacktests();
-                }}
-              >
-                <BarChart3 className="w-4 h-4 mr-2" />
-                View Backtests
               </DropdownMenuItem>
 
               <DropdownMenuSeparator />

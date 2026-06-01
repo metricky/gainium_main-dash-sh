@@ -792,9 +792,9 @@ export const hotValidateDcaFormData = ({
   if (
     useSl &&
     ((futures && marginType !== BotMarginTypeEnum.cross) || !futures) &&
-    slPerc < -0.99
+    slPerc < -2.5
   ) {
-    errors['slPerc'] = `Stop loss % must be more than ${-0.99 * 100}%`;
+    errors['slPerc'] = `Stop loss % must be more than ${-2.5 * 100}%`;
   }
   if (
     useSl &&

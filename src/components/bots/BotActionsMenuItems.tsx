@@ -12,7 +12,6 @@ import {
 } from '@/utils/botStatusUtils';
 import {
   Archive,
-  BarChart3,
   Copy,
   Edit,
   /* History, */
@@ -55,7 +54,6 @@ export interface BotActionsMenuItemsProps {
   onRestart?: () => void;
   onEdit?: () => void;
   onClone?: () => void;
-  onViewBacktests?: () => void;
   onViewClosedTrades?: () => void;
   onShareConfig?: () => void;
   onCopyToLive?: () => void;
@@ -79,7 +77,6 @@ export const BotActionsMenuItems: React.FC<BotActionsMenuItemsProps> = ({
   onRestart,
   onEdit,
   onClone,
-  onViewBacktests,
   /* onViewClosedTrades, */
   onShareConfig,
   onCopyToLive,
@@ -191,19 +188,6 @@ export const BotActionsMenuItems: React.FC<BotActionsMenuItemsProps> = ({
           </>
         )}
       </DropdownMenuItem>
-
-      <DropdownMenuSeparator />
-
-      {/* View/Navigation Actions */}
-      <DropdownMenuItem onClick={onViewBacktests}>
-        <BarChart3 className="w-4 h-4 mr-2" />
-        View Backtests
-      </DropdownMenuItem>
-
-      {/* <DropdownMenuItem onClick={onViewClosedTrades}>
-        <History className="w-4 h-4 mr-2" />
-        View Closed Trades
-      </DropdownMenuItem> */}
 
       <DropdownMenuSeparator />
 

@@ -2904,6 +2904,7 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
   const orderSizeReference = formData.orderSizeReference || 'notional';
   const futures = useBotFormSelector('futures');
   const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
+  const { currentExchange } = useBotFormQuery();
   const minPercError =
     errors[`dcaIndicators.${indicator.uuid}.minPercFromLast`] ?? null;
 
@@ -3024,6 +3025,7 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
       definition={indicatorDefinition}
       params={indicatorParams}
       indicatorUuid={indicator.uuid}
+      exchange={currentExchange?.provider}
       onChange={(newParams) => onUpdateIndicatorParams(indicator, newParams)}
       className="space-y-sm"
     />

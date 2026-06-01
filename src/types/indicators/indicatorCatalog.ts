@@ -15,6 +15,7 @@ import {
   ppValueEnum,
   ppValueTypeEnum,
   RangeType,
+  rsiValueEnum,
   rsiValue2Enum,
   rsiValue2Enum2,
   SRCrossingEnum,
@@ -22,6 +23,7 @@ import {
   StochRangeEnum,
   TradingviewAnalysisConditionEnum,
   TradingviewAnalysisSignalEnum,
+  TrendFilterOperatorEnum,
   LWConditionEnum,
 } from '..';
 import {
@@ -59,7 +61,7 @@ const makeNumberField = (
 const makeIntervalField = (
   def: Omit<IndicatorFieldDefinition, 'type'>
 ): IndicatorFieldDefinition => ({
-  type: 'select',
+  type: 'interval',
   ...def,
   options: def.options ?? INTERVAL_OPTIONS,
 });
@@ -68,7 +70,7 @@ const INDICATOR_CONDITION_OPTIONS = [
   { value: IndicatorStartConditionEnum.cd, label: 'Crossing down' },
   { value: IndicatorStartConditionEnum.cu, label: 'Crossing up' },
   { value: IndicatorStartConditionEnum.gt, label: 'Greater than' },
-  { value: IndicatorStartConditionEnum.lt, label: 'Less than' },
+  { value: IndicatorStartConditionEnum.lt, label: 'Lower than' },
 ];
 
 // MA indicator swaps condition labels (the stored value is the inverse of the
@@ -81,6 +83,21 @@ const MA_INDICATOR_CONDITION_OPTIONS = [
   { value: IndicatorStartConditionEnum.lt, label: 'Greater than' },
 ];
 
+const SR_CONDITION_OPTIONS = [
+  { value: IndicatorStartConditionEnum.cd, label: 'Price crossing down' },
+  { value: IndicatorStartConditionEnum.cu, label: 'Price crossing up' },
+];
+
+// Legacy renders the condition for the [bb, kc, sr, psar, pp] group with a
+// `Price ` prefix (indicators.tsx:1813-1822). The full four-option variant is
+// used by kc.
+const PRICE_CONDITION_OPTIONS = [
+  { value: IndicatorStartConditionEnum.cd, label: 'Price crossing down' },
+  { value: IndicatorStartConditionEnum.cu, label: 'Price crossing up' },
+  { value: IndicatorStartConditionEnum.gt, label: 'Price greater than' },
+  { value: IndicatorStartConditionEnum.lt, label: 'Price lower than' },
+];
+
 const ST_CONDITION_OPTIONS = [
   { value: STConditionEnum.up, label: 'Up trend' },
   { value: STConditionEnum.down, label: 'Down trend' },
@@ -89,13 +106,13 @@ const ST_CONDITION_OPTIONS = [
 ];
 
 const PRICE_SOURCE_OPTIONS = [
-  { value: 'close', label: 'Close' },
-  { value: 'open', label: 'Open' },
-  { value: 'high', label: 'High' },
-  { value: 'low', label: 'Low' },
-  { value: 'hl2', label: 'HL2 (High+Low)/2' },
-  { value: 'hlc3', label: 'HLC3 (High+Low+Close)/3' },
-  { value: 'ohlc4', label: 'OHLC4' },
+  { value: 'open', label: 'open' },
+  { value: 'high', label: 'high' },
+  { value: 'low', label: 'low' },
+  { value: 'close', label: 'close' },
+  { value: 'hl2', label: 'hl2' },
+  { value: 'hlc3', label: 'hlc3' },
+  { value: 'ohlc4', label: 'ohlc4' },
 ];
 
 const MA_TYPE_OPTIONS = [
@@ -132,21 +149,42 @@ const KC_MA_OPTIONS = MA_TYPE_OPTIONS.filter((option) =>
   [MAEnum.sma, MAEnum.ema].includes(option.value as MAEnum)
 );
 
+// Legacy `rsiValueCondition = [rsiValueEnum.d, rsiValueEnum.k]` (constants.ts:648),
+// labels rsiValueConditionMap {d:'D', k:'K'} (constants.ts:650-653).
 const STOCH_PRIMARY_OPTIONS = [
-  { value: rsiValue2Enum.k, label: 'K line' },
-  { value: rsiValue2Enum.d, label: 'D line' },
+  { value: rsiValueEnum.d, label: 'D' },
+  { value: rsiValueEnum.k, label: 'K' },
 ];
 
-const STOCH_SECONDARY_OPTIONS = [
-  { value: rsiValue2Enum.d, label: 'D line' },
-  { value: rsiValue2Enum2.k, label: 'K line' },
-  { value: rsiValue2Enum2.custom, label: 'Custom value' },
+// Legacy Second Variable options depend on the primary line (rsiValue):
+//   rsiValue === k -> rsiValue2Condition  = [d, custom]   (constants.ts:655)
+//   rsiValue === d -> rsiValue2aCondition = [k, custom]   (constants.ts:657)
+// The currently-selected primary line is always excluded so K-vs-K / D-vs-D is
+// impossible. Labels rsiValue2ConditionMap {d:'D', k:'K', custom:'Add Custom Value'}.
+const STOCH_SECONDARY_OPTIONS_WHEN_K = [
+  { value: rsiValue2Enum.d, label: 'D' },
+  { value: rsiValue2Enum.custom, label: 'Add Custom Value' },
 ];
 
+const STOCH_SECONDARY_OPTIONS_WHEN_D = [
+  { value: rsiValue2Enum2.k, label: 'K' },
+  { value: rsiValue2Enum2.custom, label: 'Add Custom Value' },
+];
+
+// Stoch/StochRSI lowercase the condition labels (indicators.tsx:1823-1827 renders
+// `indicatorConditionsMap[c].toLowerCase()`); lt label is legacy 'Lower than'.
+const STOCH_CONDITION_OPTIONS = [
+  { value: IndicatorStartConditionEnum.cd, label: 'crossing down' },
+  { value: IndicatorStartConditionEnum.cu, label: 'crossing up' },
+  { value: IndicatorStartConditionEnum.gt, label: 'greater than' },
+  { value: IndicatorStartConditionEnum.lt, label: 'lower than' },
+];
+
+// Legacy stochRangeName (constants.ts:634-639), order stochRanges [lower,upper,both,none].
 const STOCH_RANGE_OPTIONS = [
-  { value: StochRangeEnum.lower, label: 'Lower zone' },
-  { value: StochRangeEnum.upper, label: 'Upper zone' },
-  { value: StochRangeEnum.both, label: 'Both zones' },
+  { value: StochRangeEnum.lower, label: 'Lower' },
+  { value: StochRangeEnum.upper, label: 'Upper' },
+  { value: StochRangeEnum.both, label: 'Lower&Upper' },
   { value: StochRangeEnum.none, label: 'Anywhere' },
 ];
 
@@ -179,16 +217,23 @@ const DIV_TYPE_OPTIONS = [
   { value: DivTypeEnum.hbull, label: 'Hidden Bullish' },
 ];
 
+// Legacy `defDivergenceOscillators` sorts the members by their enum string
+// VALUE (IndicatorEnum.x === uppercase code) via localeCompare, and renders
+// each label with `getLabel` (the full indicator name from `labels`). Order:
+// AO, CCI, MACD, MFI, MOM, RSI, Stoch, UO, WR.
 const DIV_OSCILLATOR_OPTIONS = [
-  { value: IndicatorEnum.rsi, label: 'RSI' },
-  { value: IndicatorEnum.mfi, label: 'MFI' },
-  { value: IndicatorEnum.cci, label: 'CCI' },
-  { value: IndicatorEnum.wr, label: 'Williams %R' },
-  { value: IndicatorEnum.macd, label: 'MACD' },
-  { value: IndicatorEnum.uo, label: 'Ultimate Oscillator' },
   { value: IndicatorEnum.ao, label: 'Awesome Oscillator' },
+  { value: IndicatorEnum.cci, label: 'Commodity Channel Index (CCI)' },
+  {
+    value: IndicatorEnum.macd,
+    label: 'Moving Average Convergence Divergence (MACD)',
+  },
+  { value: IndicatorEnum.mfi, label: 'Money Flow Index (MFI)' },
   { value: IndicatorEnum.mom, label: 'Momentum' },
-  { value: IndicatorEnum.stoch, label: 'Stochastic Oscillator' },
+  { value: IndicatorEnum.rsi, label: 'Relative Strength Index (RSI)' },
+  { value: IndicatorEnum.stoch, label: 'Stochastic Oscillator (Stoch)' },
+  { value: IndicatorEnum.uo, label: 'Ultimate Oscillator' },
+  { value: IndicatorEnum.wr, label: 'Williams Percent Range (Williams %R)' },
 ];
 
 const XO_OSCILLATOR_OPTIONS = [
@@ -199,14 +244,14 @@ const XO_OSCILLATOR_OPTIONS = [
 ];
 
 const SR_CROSSING_OPTIONS = [
-  { value: SRCrossingEnum.support, label: 'Support' },
   { value: SRCrossingEnum.resistance, label: 'Resistance' },
+  { value: SRCrossingEnum.support, label: 'Support' },
 ];
 
 const ECD_TRIGGER_OPTIONS = [
-  { value: ECDTriggerEnum.both, label: 'Bullish or Bearish' },
-  { value: ECDTriggerEnum.bullish, label: 'Bullish' },
+  { value: ECDTriggerEnum.both, label: 'Both' },
   { value: ECDTriggerEnum.bearish, label: 'Bearish' },
+  { value: ECDTriggerEnum.bullish, label: 'Bullish' },
 ];
 
 const KC_VALUE_OPTIONS = [
@@ -217,16 +262,20 @@ const KC_VALUE_OPTIONS = [
 
 const DC_VALUE_OPTIONS = [
   { value: DCValueEnum.basis, label: 'Basis' },
-  { value: DCValueEnum.lower, label: 'Lower band' },
-  { value: DCValueEnum.upper, label: 'Upper band' },
+  { value: DCValueEnum.lower, label: 'Lower' },
+  { value: DCValueEnum.upper, label: 'Upper' },
 ];
 
+// Market Structure trigger type — legacy `ppValueCondition` order (event,
+// market, price) with the raw enum-value labels legacy renders verbatim.
 const PP_TYPE_OPTIONS = [
-  { value: ppValueTypeEnum.price, label: 'Price based' },
-  { value: ppValueTypeEnum.event, label: 'Event based' },
-  { value: ppValueTypeEnum.market, label: 'Market based' },
+  { value: ppValueTypeEnum.event, label: 'Event Based' },
+  { value: ppValueTypeEnum.market, label: 'Market Based' },
+  { value: ppValueTypeEnum.price, label: 'Price Based' },
 ];
 
+// Price-pivot values shown when trigger type is Price (legacy `ppCrossPrice`,
+// bare `ppCrossName` labels).
 const PP_PRICE_VALUE_OPTIONS = [
   { value: ppValueEnum.hh, label: 'Higher High' },
   { value: ppValueEnum.lh, label: 'Lower High' },
@@ -234,12 +283,17 @@ const PP_PRICE_VALUE_OPTIONS = [
   { value: ppValueEnum.ll, label: 'Lower Low' },
   { value: ppValueEnum.anyH, label: 'Any Pivot High' },
   { value: ppValueEnum.anyL, label: 'Any Pivot Low' },
-  { value: ppValueEnum.sh, label: 'Strong High' },
+];
+
+// Strong/Weak pivot values — legacy only surfaces these in risk/reward mode
+// (legacy `ppSW` order, bare `ppCrossName` labels).
+const PP_SW_VALUE_OPTIONS = [
   { value: ppValueEnum.sl, label: 'Strong Low' },
-  { value: ppValueEnum.wh, label: 'Weak High' },
   { value: ppValueEnum.wl, label: 'Weak Low' },
-  { value: ppValueEnum.anyH, label: 'Any High (Weak/Strong)' },
-  { value: ppValueEnum.anyL, label: 'Any Low (Weak/Strong)' },
+  { value: ppValueEnum.anySWL, label: 'Any Low' },
+  { value: ppValueEnum.sh, label: 'Strong High' },
+  { value: ppValueEnum.wh, label: 'Weak High' },
+  { value: ppValueEnum.anySWH, label: 'Any High' },
 ];
 
 const PP_MARKET_VALUE_OPTIONS = [
@@ -247,34 +301,36 @@ const PP_MARKET_VALUE_OPTIONS = [
   { value: ppValueEnum.bearMarket, label: 'Bearish Market Structure' },
 ];
 
+// Event values shown when trigger type is Event (legacy `ppEvent` order).
 const PP_EVENT_VALUE_OPTIONS = [
   { value: ppValueEnum.sBullBoS, label: 'Swing Bullish Break of Structure' },
-  { value: ppValueEnum.sBearBoS, label: 'Swing Bearish Break of Structure' },
   { value: ppValueEnum.sBullCHoCH, label: 'Swing Bullish Change of Character' },
-  { value: ppValueEnum.sBearCHoCH, label: 'Swing Bearish Change of Character' },
   { value: ppValueEnum.SanyBull, label: 'Swing Any Bullish' },
+  { value: ppValueEnum.sBearBoS, label: 'Swing Bearish Break of Structure' },
+  { value: ppValueEnum.sBearCHoCH, label: 'Swing Bearish Change of Character' },
   { value: ppValueEnum.SanyBear, label: 'Swing Any Bearish' },
   { value: ppValueEnum.iBullBoS, label: 'Internal Bullish Break of Structure' },
-  { value: ppValueEnum.iBearBoS, label: 'Internal Bearish Break of Structure' },
   {
     value: ppValueEnum.iBullCHoCH,
     label: 'Internal Bullish Change of Character',
   },
+  { value: ppValueEnum.IanyBull, label: 'Internal Any Bullish' },
+  { value: ppValueEnum.iBearBoS, label: 'Internal Bearish Break of Structure' },
   {
     value: ppValueEnum.iBearCHoCH,
     label: 'Internal Bearish Change of Character',
   },
-  { value: ppValueEnum.IanyBull, label: 'Internal Any Bullish' },
   { value: ppValueEnum.IanyBear, label: 'Internal Any Bearish' },
   { value: ppValueEnum.bullAnyBoS, label: 'Any Bullish Break of Structure' },
-  { value: ppValueEnum.bearAnyBoS, label: 'Any Bearish Break of Structure' },
   { value: ppValueEnum.bullAnyCHoCH, label: 'Any Bullish Change of Character' },
+  { value: ppValueEnum.bearAnyBoS, label: 'Any Bearish Break of Structure' },
   { value: ppValueEnum.bearAnyCHoCH, label: 'Any Bearish Change of Character' },
 ];
 
+// Legacy `obfvgValues` order (constants.ts): bearish, bullish, any.
 const OBFVG_VALUE_OPTIONS = [
-  { value: OBFVGValueEnum.bullish, label: 'Bullish' },
   { value: OBFVGValueEnum.bearish, label: 'Bearish' },
+  { value: OBFVGValueEnum.bullish, label: 'Bullish' },
   { value: OBFVGValueEnum.any, label: 'Any' },
 ];
 
@@ -282,21 +338,6 @@ const OBFVG_REF_OPTIONS = [
   { value: OBFVGRefEnum.high, label: 'High' },
   { value: OBFVGRefEnum.low, label: 'Low' },
   { value: OBFVGRefEnum.middle, label: 'Middle' },
-];
-
-const prefixLabel = (
-  prefix: string,
-  options: { value: string; label: string }[]
-) =>
-  options.map((option) => ({
-    value: option.value,
-    label: `${prefix} · ${option.label}`,
-  }));
-
-const PP_VALUE_OPTIONS = [
-  ...prefixLabel('Price', PP_PRICE_VALUE_OPTIONS),
-  ...prefixLabel('Event', PP_EVENT_VALUE_OPTIONS),
-  ...prefixLabel('Market', PP_MARKET_VALUE_OPTIONS),
 ];
 
 export const INDICATOR_DOCUMENTATION_URLS = {
@@ -339,7 +380,13 @@ export const INDICATOR_DOCUMENTATION_URLS = {
 } satisfies Partial<Record<IndicatorEnum, string>>;
 
 export const MARKET_STRUCTURE_VALUE_GROUPS = {
-  price: new Set(PP_PRICE_VALUE_OPTIONS.map((option) => option.value)),
+  // Price accepts pivots AND strong/weak: the latter are valid under price in
+  // risk/reward mode even though the standard dropdown only lists the pivots.
+  price: new Set(
+    [...PP_PRICE_VALUE_OPTIONS, ...PP_SW_VALUE_OPTIONS].map(
+      (option) => option.value
+    )
+  ),
   event: new Set(PP_EVENT_VALUE_OPTIONS.map((option) => option.value)),
   market: new Set(PP_MARKET_VALUE_OPTIONS.map((option) => option.value)),
 } as const;
@@ -369,28 +416,70 @@ const INDICATOR_ACTIONS_EXCEPT_RISK_REWARD =
 const percentileFields: IndicatorDefinition['fields'] = [
   makeBooleanField({
     key: 'percentile',
-    label: 'Use Percentile',
+    label: 'Use percentile',
     defaultValue: false,
     tooltip: 'Enable percentile mode.',
     tooltipURL: '/help/indicator-percentiles',
   }),
   makeNumberField({
     key: 'percentileLookback',
-    label: 'Percentile lookback',
+    label: 'Lookback',
     defaultValue: 150,
-    min: 0,
-    max: 1000,
     step: 1,
+    allowVariables: true,
     hiddenWhen: [{ field: 'percentile', equals: false }],
   }),
   makeNumberField({
     key: 'percentilePercentage',
-    label: 'Percentile Threshold (%)',
+    label: 'Percentile',
     defaultValue: 90,
-    min: 0,
-    max: 100,
     step: 1,
+    allowVariables: true,
     hiddenWhen: [{ field: 'percentile', equals: false }],
+  }),
+];
+
+// Trend filter — legacy "Use Trend Filter" block, only exposed on MAR
+// (the sole entry in the legacy `trendIndicators` list). When enabled it
+// gates entries on the recent trend of the indicator over its own lookback.
+const TREND_FILTER_OPERATOR_OPTIONS = [
+  { value: TrendFilterOperatorEnum.lower, label: 'Lower or equal to' },
+  { value: TrendFilterOperatorEnum.higher, label: 'Higher or equal to' },
+  { value: TrendFilterOperatorEnum.between, label: 'Between values' },
+];
+
+const trendFilterFields: IndicatorDefinition['fields'] = [
+  makeBooleanField({
+    key: 'trendFilter',
+    label: 'Use Trend Filter',
+    defaultValue: false,
+    tooltip:
+      'Only allow entries when the indicator has moved by the configured amount over the trend filter lookback. Independent of the percentile setting.',
+  }),
+  makeNumberField({
+    key: 'trendFilterLookback',
+    label: 'Trend filter lookback',
+    defaultValue: 10,
+    min: 1,
+    max: 1000,
+    step: 1,
+    allowVariables: true,
+    hiddenWhen: [{ field: 'trendFilter', equals: false }],
+  }),
+  makeSelectField({
+    key: 'trendFilterType',
+    label: 'Operator',
+    defaultValue: TrendFilterOperatorEnum.lower,
+    options: TREND_FILTER_OPERATOR_OPTIONS,
+    hiddenWhen: [{ field: 'trendFilter', equals: false }],
+  }),
+  makeNumberField({
+    key: 'trendFilterValue',
+    label: 'Value, %',
+    defaultValue: 2,
+    step: 1,
+    allowVariables: true,
+    hiddenWhen: [{ field: 'trendFilter', equals: false }],
   }),
 ];
 
@@ -399,7 +488,6 @@ const keepConditionBarsField: IndicatorFieldDefinition = makeNumberField({
   label: 'Keep true',
   defaultValue: 0,
   min: 0,
-  max: 1000,
   step: 1,
   allowVariables: true,
   tooltip:
@@ -420,28 +508,12 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
         defaultValue: 14,
-        min: 1,
-        max: 1000,
         step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.gt,
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Threshold',
-        defaultValue: 25,
-        min: 0,
-        max: 100,
-        step: 0.1,
         allowVariables: true,
       }),
       makeIntervalField({
@@ -449,7 +521,20 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 20,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -463,30 +548,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     supportedActions: ALL_INDICATOR_SUPPORTED_ACTIONS,
     fields: [
       makeSelectField({
-        key: 'maType',
-        label: 'MA Type',
-        defaultValue: MAEnum.sma,
-        options: MA_TYPE_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Length',
-        defaultValue: 20,
-        min: 1,
-        max: 1000,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
         key: 'maCrossingValue',
-        label: 'Relative to',
+        label: 'Reference',
         defaultValue: MAEnum.price,
         options: MA_REFERENCE_OPTIONS,
       }),
       makeNumberField({
         key: 'maCrossingLength',
         label: 'Comparison length',
-        defaultValue: 50,
+        defaultValue: 20,
         min: 1,
         max: 1000,
         step: 1,
@@ -501,15 +571,30 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [{ field: 'maCrossingValue', equals: MAEnum.price }],
       }),
       makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.gt,
-        options: MA_INDICATOR_CONDITION_OPTIONS,
+        key: 'maType',
+        label: 'Relative to',
+        defaultValue: MAEnum.ema,
+        options: MA_TYPE_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorLength',
+        label: 'Length',
+        defaultValue: 20,
+        min: 1,
+        max: 1000,
+        step: 1,
+        allowVariables: true,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: MA_INDICATOR_CONDITION_OPTIONS,
       }),
       keepConditionBarsField,
     ],
@@ -524,21 +609,19 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
       makeNumberField({
+        key: 'factor',
+        label: 'Multiplier',
+        defaultValue: 3,
+        step: 1,
+        allowVariables: true,
+      }),
+      makeNumberField({
         key: 'atrLength',
         label: 'ATR Length',
         defaultValue: 10,
         min: 1,
         max: 200,
         step: 1,
-        allowVariables: true,
-      }),
-      makeNumberField({
-        key: 'factor',
-        label: 'Multiplier',
-        defaultValue: 3,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
         allowVariables: true,
       }),
       makeSelectField({
@@ -568,8 +651,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'psarStart',
         label: 'Start',
         defaultValue: 0.02,
-        min: 0.001,
-        max: 1,
         step: 0.001,
         allowVariables: true,
       }),
@@ -577,8 +658,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'psarInc',
         label: 'Increment',
         defaultValue: 0.02,
-        min: 0.001,
-        max: 1,
         step: 0.001,
         allowVariables: true,
       }),
@@ -586,21 +665,19 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'psarMax',
         label: 'Maximum',
         defaultValue: 0.2,
-        min: 0.01,
-        max: 1,
         step: 0.01,
         allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.cd,
-        options: INDICATOR_CONDITION_OPTIONS,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: PRICE_CONDITION_OPTIONS,
       }),
       keepConditionBarsField,
     ],
@@ -613,6 +690,21 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Volatility bands plotted above and below a moving average.',
     supportedActions: ALL_INDICATOR_SUPPORTED_ACTIONS,
     fields: [
+      makeSelectField({
+        key: 'bbwMa',
+        label: 'MA type',
+        defaultValue: MAEnum.sma,
+        options: MA_TYPE_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'bbwMaLength',
+        label: 'SMA Length',
+        defaultValue: 20,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+      }),
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
@@ -622,50 +714,33 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'bbwMa',
-        label: 'MA Type',
-        defaultValue: MAEnum.sma,
-        options: MA_TYPE_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'bbwMaLength',
-        label: 'MA Length',
-        defaultValue: 20,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
-      }),
       makeNumberField({
         key: 'bbwMult',
-        label: 'Standard deviations',
+        label: 'Standard Deviations',
         defaultValue: 2,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
+        step: 1,
         allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'bbCrossingValue',
-        label: 'Band reference',
-        defaultValue: 'lower',
-        options: [
-          { value: BBCrossingEnum.lower, label: 'Lower Band' },
-          { value: BBCrossingEnum.middle, label: 'Middle Band' },
-          { value: BBCrossingEnum.upper, label: 'Upper Band' },
-        ],
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'crossUp',
-        options: INDICATOR_CONDITION_OPTIONS,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cu,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeSelectField({
+        key: 'bbCrossingValue',
+        label: 'Value',
+        defaultValue: 'lower',
+        options: [
+          { value: BBCrossingEnum.lower, label: 'Lower' },
+          { value: BBCrossingEnum.upper, label: 'Upper' },
+          { value: BBCrossingEnum.middle, label: 'Middle' },
+        ],
       }),
       keepConditionBarsField,
     ],
@@ -679,24 +754,25 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Measures the distance between upper and lower Bollinger Bands to gauge volatility.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Length',
-        defaultValue: 14,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
-      }),
+      ...percentileFields,
       makeSelectField({
         key: 'bbwMa',
-        label: 'MA Type',
+        label: 'MA type',
         defaultValue: 'sma',
         options: MA_TYPE_OPTIONS,
       }),
       makeNumberField({
         key: 'bbwMaLength',
-        label: 'MA Length',
+        label: 'SMA Length',
+        defaultValue: 20,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+      }),
+      makeNumberField({
+        key: 'indicatorLength',
+        label: 'Length',
         defaultValue: 20,
         min: 1,
         max: 500,
@@ -705,24 +781,9 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'bbwMult',
-        label: 'Std Dev',
+        label: 'Standard Deviations',
         defaultValue: 2,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 0.05,
-        step: 0.01,
+        step: 1,
         allowVariables: true,
       }),
       makeIntervalField({
@@ -730,7 +791,20 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0.05,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -743,9 +817,19 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Compares short and long moving averages with a signal line to highlight momentum shifts.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
+      makeNumberField({
+        key: 'indicatorLength',
+        label: 'Signal length',
+        defaultValue: 9,
+        min: 1,
+        max: 200,
+        step: 1,
+        allowVariables: true,
+      }),
       makeNumberField({
         key: 'macdFast',
-        label: 'Fast Length',
+        label: 'Fast length',
         defaultValue: 12,
         min: 1,
         max: 200,
@@ -754,17 +838,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'macdSlow',
-        label: 'Slow Length',
+        label: 'Slow length',
         defaultValue: 26,
-        min: 1,
-        max: 200,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Signal Length',
-        defaultValue: 9,
         min: 1,
         max: 200,
         step: 1,
@@ -774,35 +849,34 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'macdMaSource',
         label: 'Oscillator MA Type',
         defaultValue: MAEnum.ema,
-        options: MA_TYPE_OPTIONS,
+        options: KC_MA_OPTIONS,
       }),
       makeSelectField({
         key: 'macdMaSignal',
         label: 'Signal Line MA type',
         defaultValue: MAEnum.ema,
-        options: MA_TYPE_OPTIONS,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.cu,
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 0,
-        min: -1000,
-        max: 1000,
-        step: 0.1,
-        allowVariables: true,
+        options: KC_MA_OPTIONS,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0,
+        // Legacy: varType "int", no min/max clamp (indicators.tsx:2713).
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -815,27 +889,13 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Momentum oscillator measuring the speed and change of price movements.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
-        defaultValue: 14,
+        defaultValue: 7,
         min: 1,
         max: 1000,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'lt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 30,
-        min: 0,
-        max: 100,
         step: 1,
         allowVariables: true,
       }),
@@ -844,7 +904,22 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 70,
+        min: 0,
+        max: 100,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -856,6 +931,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Shows how far price has diverged from its statistical mean.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
@@ -865,27 +941,27 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 100,
-        min: -1000,
-        max: 1000,
-        step: 1,
-        allowVariables: true,
-      }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 100,
+        min: -1000,
+        max: 1000,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -898,6 +974,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Volume-weighted momentum oscillator highlighting buying and selling pressure.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
@@ -907,27 +984,27 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'lt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 20,
-        min: 0,
-        max: 100,
-        step: 1,
-        allowVariables: true,
-      }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 70,
+        min: 0,
+        max: 100,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -940,27 +1017,11 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Highlights the difference between short- and long-term volume trends to spot momentum shifts.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 0,
-        min: -1000,
-        max: 1000,
-        step: 0.1,
-        allowVariables: true,
-      }),
+      ...percentileFields,
       makeNumberField({
         key: 'voShort',
         label: 'Short length',
         defaultValue: 5,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
       }),
@@ -968,8 +1029,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'voLong',
         label: 'Long length',
         defaultValue: 10,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
       }),
@@ -978,7 +1037,20 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1000,28 +1072,37 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
       makeSelectField({
         key: 'rsiValue',
-        label: 'Primary line',
-        defaultValue: rsiValue2Enum.k,
+        label: 'First Variable',
+        defaultValue: rsiValueEnum.k,
         options: STOCH_PRIMARY_OPTIONS,
       }),
       makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: 'cd',
+        options: STOCH_CONDITION_OPTIONS,
+      }),
+      makeSelectField({
         key: 'rsiValue2',
-        label: 'Secondary line',
+        label: 'Second Variable',
         defaultValue: rsiValue2Enum.d,
-        options: STOCH_SECONDARY_OPTIONS,
+        options: STOCH_SECONDARY_OPTIONS_WHEN_K,
+        optionsWhen: [
+          { field: 'rsiValue', equals: rsiValueEnum.d, options: STOCH_SECONDARY_OPTIONS_WHEN_D },
+        ],
       }),
       makeNumberField({
         key: 'valueInsteadof',
-        label: 'Custom comparison value',
+        label: 'Enter Value',
         defaultValue: 1,
-        min: 0,
-        max: 100,
-        step: 0.1,
         allowVariables: true,
-        description:
-          'Only applied when the secondary line is set to “Custom value”.',
         hiddenWhen: [
           { field: 'rsiValue2', equals: rsiValue2Enum.k },
           {
@@ -1031,21 +1112,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         ],
       }),
       makeNumberField({
-        key: 'stochSmoothK',
-        label: '%K Smoothing',
-        defaultValue: 1,
-        min: 1,
-        max: 50,
-        step: 1,
+        key: 'stochSmoothD',
+        label: 'Smooth D',
+        defaultValue: 3,
         allowVariables: true,
       }),
       makeNumberField({
-        key: 'stochSmoothD',
-        label: '%D Smoothing',
-        defaultValue: 3,
-        min: 1,
-        max: 50,
-        step: 1,
+        key: 'stochSmoothK',
+        label: 'Smooth K',
+        defaultValue: 1,
         allowVariables: true,
       }),
       makeSelectField({
@@ -1053,43 +1128,58 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Zone',
         defaultValue: StochRangeEnum.lower,
         options: STOCH_RANGE_OPTIONS,
+        tooltip: 'This is the area where the condition must be met',
+        hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
       }),
+      // Legacy "Lower band" (indicators.tsx:2452-2498): shows when stochRange is
+      // lower or both. Storage key swaps with stochRange — stochRange===lower
+      // writes stochUpper (default '80'); otherwise (both) writes stochLower
+      // (default '20').
       makeNumberField({
         key: 'stochLower',
         label: 'Lower band',
-        defaultValue: 20,
-        min: 0,
-        max: 100,
-        step: 1,
+        defaultValue: '20',
         allowVariables: true,
+        tooltip:
+          'Define the lower band range where the condition must be met',
+        keyWhen: [
+          {
+            field: 'stochRange',
+            equals: StochRangeEnum.lower,
+            key: 'stochUpper',
+            defaultValue: '80',
+          },
+        ],
         hiddenWhen: [
           { field: 'stochRange', equals: StochRangeEnum.upper },
           { field: 'stochRange', equals: StochRangeEnum.none },
+          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
         ],
       }),
+      // Legacy "Upper band" (indicators.tsx:2502-2547): shows when stochRange is
+      // upper or both. Storage key swaps with stochRange — stochRange===upper
+      // writes stochLower (default '80'); otherwise (both) writes stochUpper
+      // (default '20').
       makeNumberField({
         key: 'stochUpper',
         label: 'Upper band',
-        defaultValue: 80,
-        min: 0,
-        max: 100,
-        step: 1,
+        defaultValue: '20',
         allowVariables: true,
+        tooltip:
+          'Define the upper band range where the condition must be met',
+        keyWhen: [
+          {
+            field: 'stochRange',
+            equals: StochRangeEnum.upper,
+            key: 'stochLower',
+            defaultValue: '80',
+          },
+        ],
         hiddenWhen: [
           { field: 'stochRange', equals: StochRangeEnum.lower },
           { field: 'stochRange', equals: StochRangeEnum.none },
+          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
         ],
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'cd',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
       }),
       keepConditionBarsField,
     ],
@@ -1120,28 +1210,37 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
       makeSelectField({
         key: 'rsiValue',
-        label: 'Primary line',
-        defaultValue: rsiValue2Enum.k,
+        label: 'First Variable',
+        defaultValue: rsiValueEnum.k,
         options: STOCH_PRIMARY_OPTIONS,
       }),
       makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: 'cd',
+        options: STOCH_CONDITION_OPTIONS,
+      }),
+      makeSelectField({
         key: 'rsiValue2',
-        label: 'Secondary line',
+        label: 'Second Variable',
         defaultValue: rsiValue2Enum.d,
-        options: STOCH_SECONDARY_OPTIONS,
+        options: STOCH_SECONDARY_OPTIONS_WHEN_K,
+        optionsWhen: [
+          { field: 'rsiValue', equals: rsiValueEnum.d, options: STOCH_SECONDARY_OPTIONS_WHEN_D },
+        ],
       }),
       makeNumberField({
         key: 'valueInsteadof',
-        label: 'Custom comparison value',
+        label: 'Enter Value',
         defaultValue: 1,
-        min: 0,
-        max: 100,
-        step: 0.1,
         allowVariables: true,
-        description:
-          'Only applied when the secondary line is set to “Custom value”.',
         hiddenWhen: [
           { field: 'rsiValue2', equals: rsiValue2Enum.k },
           {
@@ -1151,21 +1250,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         ],
       }),
       makeNumberField({
-        key: 'stochSmoothK',
-        label: '%K Smoothing',
+        key: 'stochSmoothD',
+        label: 'Smooth D',
         defaultValue: 3,
-        min: 1,
-        max: 50,
-        step: 1,
         allowVariables: true,
       }),
       makeNumberField({
-        key: 'stochSmoothD',
-        label: '%D Smoothing',
+        key: 'stochSmoothK',
+        label: 'Smooth K',
         defaultValue: 3,
-        min: 1,
-        max: 50,
-        step: 1,
         allowVariables: true,
       }),
       makeSelectField({
@@ -1173,43 +1266,54 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Zone',
         defaultValue: StochRangeEnum.lower,
         options: STOCH_RANGE_OPTIONS,
+        tooltip: 'This is the area where the condition must be met',
+        hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
       }),
+      // Legacy "Lower band" key-swap (see stoch entry above): stochRange===lower
+      // writes stochUpper (default '80'); otherwise (both) writes stochLower ('20').
       makeNumberField({
         key: 'stochLower',
         label: 'Lower band',
-        defaultValue: 20,
-        min: 0,
-        max: 100,
-        step: 1,
+        defaultValue: '20',
         allowVariables: true,
+        tooltip:
+          'Define the lower band range where the condition must be met',
+        keyWhen: [
+          {
+            field: 'stochRange',
+            equals: StochRangeEnum.lower,
+            key: 'stochUpper',
+            defaultValue: '80',
+          },
+        ],
         hiddenWhen: [
           { field: 'stochRange', equals: StochRangeEnum.upper },
           { field: 'stochRange', equals: StochRangeEnum.none },
+          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
         ],
       }),
+      // Legacy "Upper band" key-swap: stochRange===upper writes stochLower
+      // (default '80'); otherwise (both) writes stochUpper (default '20').
       makeNumberField({
         key: 'stochUpper',
         label: 'Upper band',
-        defaultValue: 80,
-        min: 0,
-        max: 100,
-        step: 1,
+        defaultValue: '20',
         allowVariables: true,
+        tooltip:
+          'Define the upper band range where the condition must be met',
+        keyWhen: [
+          {
+            field: 'stochRange',
+            equals: StochRangeEnum.upper,
+            key: 'stochLower',
+            defaultValue: '80',
+          },
+        ],
         hiddenWhen: [
           { field: 'stochRange', equals: StochRangeEnum.lower },
           { field: 'stochRange', equals: StochRangeEnum.none },
+          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
         ],
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'cd',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
       }),
       keepConditionBarsField,
     ],
@@ -1224,10 +1328,12 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     fields: [
       makeNumberField({
         key: 'pcValue',
-        label: 'Percent change %',
+        label: '% change',
         defaultValue: 5,
         step: 0.1,
         allowVariables: true,
+        tooltip:
+          'The minimum price increase or decrease in the previous candle. Use a positive number for an increase and a negative number for a decrease.',
       }),
       makeIntervalField({
         key: 'indicatorInterval',
@@ -1250,23 +1356,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorLength',
         label: 'Length',
         defaultValue: 14,
-        min: 1,
-        max: 200,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'lt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 70,
-        min: 0,
-        max: 100,
         step: 1,
         allowVariables: true,
       }),
@@ -1274,6 +1363,19 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 70,
+        step: 1,
+        allowVariables: true,
       }),
       keepConditionBarsField,
     ],
@@ -1289,32 +1391,31 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     fields: [
       makeNumberField({
         key: 'indicatorLength',
-        label: 'Lookback days',
+        label: 'Length',
         defaultValue: 14,
-        min: 1,
-        max: 365,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'lt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 0,
-        min: 0,
-        max: 100,
         step: 1,
         allowVariables: true,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
-        defaultValue: ExchangeIntervals.oneD,
+        defaultValue: ExchangeIntervals.oneH,
+        // Legacy permanently disables ADR's interval select
+        // (indicators.tsx:1402 `disabled={... || i.type === IndicatorEnum.adr}`).
+        disabled: true,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0,
+        step: 1,
+        allowVariables: true,
       }),
       keepConditionBarsField,
     ],
@@ -1334,14 +1435,17 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 'gt',
         options: [
           { value: IndicatorStartConditionEnum.gt, label: 'Greater than' },
-          { value: IndicatorStartConditionEnum.lt, label: 'Less than' },
+          { value: IndicatorStartConditionEnum.lt, label: 'Lower than' },
         ],
       }),
       makeNumberField({
         key: 'unpnlValue',
         label: 'Unrealized PnL %',
         defaultValue: 2,
-        step: 0.1,
+        // Legacy: varType "int", endAdornment "%", no min/max/step
+        // (indicators.tsx:214-227).
+        step: 1,
+        suffix: '%',
         allowVariables: true,
       }),
     ],
@@ -1407,7 +1511,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorCondition',
         label: 'Condition',
         defaultValue: IndicatorStartConditionEnum.cu,
-        options: INDICATOR_CONDITION_OPTIONS,
+        options: PRICE_CONDITION_OPTIONS,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
@@ -1425,29 +1529,12 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Position of price relative to Keltner Channel boundaries.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Length',
-        defaultValue: 20,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
-      }),
+      ...percentileFields,
       makeSelectField({
         key: 'kcMa',
         label: 'MA Type',
         defaultValue: MAEnum.ema,
         options: KC_MA_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'bbwMult',
-        label: 'ATR Multiplier',
-        defaultValue: 2,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
-        allowVariables: true,
       }),
       makeSelectField({
         key: 'kcRange',
@@ -1458,7 +1545,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'kcRangeLength',
         label: 'Range length',
-        defaultValue: 10,
+        defaultValue: 20,
         min: 1,
         max: 200,
         step: 1,
@@ -1469,26 +1556,42 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         ],
       }),
       makeNumberField({
-        key: 'indicatorValue',
-        label: 'Value',
-        defaultValue: 0.05,
-        min: 0,
-        max: 1,
-        step: 0.01,
+        key: 'indicatorLength',
+        label: 'Length',
+        defaultValue: 7,
+        min: 1,
+        max: 500,
+        step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
+      makeNumberField({
+        key: 'bbwMult',
+        label: 'ATR Multiplier',
+        defaultValue: 2,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        allowVariables: true,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 80,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1500,6 +1603,22 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Normalises price location within Bollinger Bands.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
+      makeSelectField({
+        key: 'bbwMa',
+        label: 'MA type',
+        defaultValue: 'sma',
+        options: MA_TYPE_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'bbwMaLength',
+        label: 'SMA Length',
+        defaultValue: 20,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+      }),
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
@@ -1509,51 +1628,32 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'bbwMa',
-        label: 'MA Type',
-        defaultValue: 'sma',
-        options: MA_TYPE_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'bbwMaLength',
-        label: 'MA Length',
-        defaultValue: 20,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
-      }),
       makeNumberField({
         key: 'bbwMult',
-        label: 'Standard deviations',
+        label: 'Standard Deviations',
         defaultValue: 2,
-        min: 0.1,
-        max: 10,
-        step: 0.1,
+        step: 1,
         allowVariables: true,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Value',
-        defaultValue: 0.5,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0.05,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1566,42 +1666,10 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Ratio between moving averages or current price for trend strength.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Lookback',
-        defaultValue: 7,
-        min: 1,
-        max: 200,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Ratio threshold',
-        defaultValue: 0.99,
-        min: 0,
-        max: 5,
-        step: 0.01,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'mar1type',
-        label: 'Base MA type',
-        defaultValue: MAEnum.ema,
-        options: MA_TYPE_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'mar1length',
-        label: 'Base MA length',
-        defaultValue: 20,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
-      }),
+      ...percentileFields,
       makeSelectField({
         key: 'mar2type',
-        label: 'Compare against',
+        label: 'Reference',
         defaultValue: MAEnum.price,
         options: MA_REFERENCE_OPTIONS,
       }),
@@ -1616,18 +1684,41 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [{ field: 'mar2type', equals: MAEnum.price }],
       }),
       makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.lt,
-        options: INDICATOR_CONDITION_OPTIONS,
+        key: 'mar1type',
+        label: 'Relative to',
+        defaultValue: MAEnum.ema,
+        options: MA_TYPE_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'mar1length',
+        label: 'Base MA length',
+        defaultValue: 10,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
       }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 80,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
+      ...trendFilterFields,
     ],
   },
   [IndicatorEnum.ao]: {
@@ -1639,27 +1730,26 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Difference between two SMAs (34 and 5 period) to gauge momentum.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 0,
-        min: -1000,
-        max: 1000,
-        step: 0.1,
-        allowVariables: true,
-      }),
+      ...percentileFields,
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 0,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1671,27 +1761,11 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Momentum oscillator comparing close to high-low range.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
         defaultValue: 14,
-        min: 1,
-        max: 200,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'lt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: -40,
-        min: -100,
-        max: 0,
         step: 1,
         allowVariables: true,
       }),
@@ -1700,7 +1774,20 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: -40,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1713,12 +1800,11 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Combines 3 timeframes of price momentum into a single oscillator.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      ...percentileFields,
       makeNumberField({
         key: 'uoFast',
         label: 'Fast length',
         defaultValue: 7,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
       }),
@@ -1726,8 +1812,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'uoMiddle',
         label: 'Middle length',
         defaultValue: 14,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
       }),
@@ -1735,23 +1819,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'uoSlow',
         label: 'Slow length',
         defaultValue: 28,
-        min: 1,
-        max: 200,
-        step: 1,
-        allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'gt',
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Level',
-        defaultValue: 70,
-        min: 0,
-        max: 100,
         step: 1,
         allowVariables: true,
       }),
@@ -1760,7 +1827,20 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...percentileFields,
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Level',
+        defaultValue: 70,
+        step: 1,
+        allowVariables: true,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
+      }),
       keepConditionBarsField,
     ],
   },
@@ -1788,25 +1868,24 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 'close',
         options: PRICE_SOURCE_OPTIONS,
       }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
-        defaultValue: 'gt',
+        defaultValue: IndicatorStartConditionEnum.cd,
         options: INDICATOR_CONDITION_OPTIONS,
       }),
       makeNumberField({
         key: 'indicatorValue',
         label: 'Level',
         defaultValue: 70,
-        min: -1000,
-        max: 1000,
         step: 1,
         allowVariables: true,
-      }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
+        hiddenWhen: [{ field: 'percentile', equals: true }],
       }),
       ...percentileFields,
       keepConditionBarsField,
@@ -1828,6 +1907,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         max: 500,
         step: 1,
         allowVariables: true,
+        tooltip:
+          'Number of periods to look for a low that may form a new base. The more periods used the more significant the bases will be, but the less frequent the entries will happen.',
       }),
       makeNumberField({
         key: 'pumpPeriods',
@@ -1837,24 +1918,25 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         max: 200,
         step: 1,
         allowVariables: true,
+        tooltip: 'Number of periods pump is above the low to confirm a new base.',
       }),
       makeNumberField({
         key: 'pump',
         label: 'Pump from base (%)',
         defaultValue: 3,
-        min: 0,
-        max: 100,
-        step: 0.1,
+        step: 1,
         allowVariables: true,
+        tooltip:
+          'Buys are marked when the price has bounced x% above the base (Pump from base) and then fallen y% below the base (Base Crack).',
       }),
       makeNumberField({
         key: 'baseCrack',
         label: 'Base crack (%)',
         defaultValue: 3,
-        min: 0,
-        max: 100,
-        step: 0.1,
+        step: 1,
         allowVariables: true,
+        tooltip:
+          'Buys are marked when the price has bounced x% above the base (Pump from base) and then fallen y% below the base (Base Crack).',
       }),
       makeIntervalField({
         key: 'indicatorInterval',
@@ -1873,10 +1955,21 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'Detects support and resistance levels for breakout/reversal strategies.',
     supportedActions: ALL_INDICATOR_SUPPORTED_ACTIONS,
     fields: [
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: SR_CONDITION_OPTIONS,
+      }),
       makeSelectField({
         key: 'srCrossingValue',
-        label: 'Level',
-        defaultValue: SRCrossingEnum.support,
+        label: 'Value',
+        defaultValue: SRCrossingEnum.resistance,
         options: SR_CROSSING_OPTIONS,
       }),
       makeNumberField({
@@ -1896,17 +1989,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         max: 200,
         step: 1,
         allowVariables: true,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.gt,
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
       }),
       keepConditionBarsField,
     ],
@@ -1981,7 +2063,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeSelectField({
         key: 'xOscillator1',
         label: 'Primary oscillator',
-        defaultValue: IndicatorEnum.mfi,
+        defaultValue: IndicatorEnum.rsi,
         options: XO_OSCILLATOR_OPTIONS,
       }),
       makeIntervalField({
@@ -1992,9 +2074,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'indicatorLength',
         label: 'Primary length',
-        defaultValue: 14,
-        min: 1,
-        max: 200,
+        defaultValue: 7,
         step: 1,
         allowVariables: true,
         hiddenWhen: [{ field: 'xOscillator1', equals: IndicatorEnum.vo }],
@@ -2003,29 +2083,31 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'voShort',
         label: 'Volume oscillator short length',
         defaultValue: 5,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
         hiddenWhen: [
-          { field: 'xOscillator2', equals: IndicatorEnum.rsi },
-          { field: 'xOscillator2', equals: IndicatorEnum.mfi },
-          { field: 'xOscillator2', equals: IndicatorEnum.cci },
+          { field: 'xOscillator1', equals: IndicatorEnum.rsi },
+          { field: 'xOscillator1', equals: IndicatorEnum.mfi },
+          { field: 'xOscillator1', equals: IndicatorEnum.cci },
         ],
       }),
       makeNumberField({
         key: 'voLong',
         label: 'Volume oscillator long length',
         defaultValue: 10,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
         hiddenWhen: [
-          { field: 'xOscillator2', equals: IndicatorEnum.rsi },
-          { field: 'xOscillator2', equals: IndicatorEnum.mfi },
-          { field: 'xOscillator2', equals: IndicatorEnum.cci },
+          { field: 'xOscillator1', equals: IndicatorEnum.rsi },
+          { field: 'xOscillator1', equals: IndicatorEnum.mfi },
+          { field: 'xOscillator1', equals: IndicatorEnum.cci },
         ],
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
       }),
       makeSelectField({
         key: 'xOscillator2',
@@ -2042,8 +2124,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'xOscillator2length',
         label: 'Secondary length',
         defaultValue: 14,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
         hiddenWhen: [{ field: 'xOscillator2', equals: IndicatorEnum.vo }],
@@ -2052,8 +2132,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'xOscillator2voShort',
         label: 'Volume oscillator short length',
         defaultValue: 5,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
         hiddenWhen: [
@@ -2066,8 +2144,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'xOscillator2voLong',
         label: 'Volume oscillator long length',
         defaultValue: 10,
-        min: 1,
-        max: 200,
         step: 1,
         allowVariables: true,
         hiddenWhen: [
@@ -2075,12 +2151,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
           { field: 'xOscillator2', equals: IndicatorEnum.mfi },
           { field: 'xOscillator2', equals: IndicatorEnum.cci },
         ],
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: 'crossUp',
-        options: INDICATOR_CONDITION_OPTIONS,
       }),
       keepConditionBarsField,
     ],
@@ -2095,7 +2165,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     fields: [
       makeNumberField({
         key: 'divMinCount',
-        label: 'Minimum divergences',
+        label: 'Min number of divergences',
         defaultValue: 2,
         min: 1,
         max: 10,
@@ -2104,14 +2174,16 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeSelectField({
         key: 'divType',
-        label: 'Type',
+        label: 'Type of divergence',
         defaultValue: DivTypeEnum.abear,
         options: DIV_TYPE_OPTIONS,
       }),
       makeSelectField({
         key: 'divOscillators',
-        label: 'Oscillator',
-        defaultValue: [IndicatorEnum.rsi],
+        label: 'Oscillators',
+        defaultValue: DIV_OSCILLATOR_OPTIONS.map(
+          (option) => option.value as IndicatorEnum
+        ),
         options: DIV_OSCILLATOR_OPTIONS,
       }),
       makeIntervalField({
@@ -2141,7 +2213,26 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'ppValue',
         label: 'Structure signal',
         defaultValue: ppValueEnum.anyL,
-        options: PP_VALUE_OPTIONS,
+        // Options depend on the trigger type, mirroring legacy (price -> pivots,
+        // event -> structure events, market -> market structure).
+        options: PP_PRICE_VALUE_OPTIONS,
+        optionsWhen: [
+          {
+            field: 'ppType',
+            equals: ppValueTypeEnum.price,
+            options: PP_PRICE_VALUE_OPTIONS,
+          },
+          {
+            field: 'ppType',
+            equals: ppValueTypeEnum.event,
+            options: PP_EVENT_VALUE_OPTIONS,
+          },
+          {
+            field: 'ppType',
+            equals: ppValueTypeEnum.market,
+            options: PP_MARKET_VALUE_OPTIONS,
+          },
+        ],
       }),
       makeNumberField({
         key: 'ppHighLeft',
@@ -2154,6 +2245,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [
           { field: 'ppType', equals: ppValueTypeEnum.event },
           { field: 'ppType', equals: ppValueTypeEnum.market },
+          { field: 'ppValue', equals: ppValueEnum.anyL },
+          { field: 'ppValue', equals: ppValueEnum.hl },
+          { field: 'ppValue', equals: ppValueEnum.ll },
+          { field: 'ppValue', equals: ppValueEnum.sl },
+          { field: 'ppValue', equals: ppValueEnum.wl },
+          { field: 'ppValue', equals: ppValueEnum.anySWL },
+          { field: 'ppValue', equals: ppValueEnum.sh },
+          { field: 'ppValue', equals: ppValueEnum.wh },
+          { field: 'ppValue', equals: ppValueEnum.anySWH },
         ],
       }),
       makeNumberField({
@@ -2167,6 +2267,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [
           { field: 'ppType', equals: ppValueTypeEnum.event },
           { field: 'ppType', equals: ppValueTypeEnum.market },
+          { field: 'ppValue', equals: ppValueEnum.anyL },
+          { field: 'ppValue', equals: ppValueEnum.hl },
+          { field: 'ppValue', equals: ppValueEnum.ll },
+          { field: 'ppValue', equals: ppValueEnum.sl },
+          { field: 'ppValue', equals: ppValueEnum.wl },
+          { field: 'ppValue', equals: ppValueEnum.anySWL },
+          { field: 'ppValue', equals: ppValueEnum.sh },
+          { field: 'ppValue', equals: ppValueEnum.wh },
+          { field: 'ppValue', equals: ppValueEnum.anySWH },
         ],
       }),
       makeNumberField({
@@ -2180,6 +2289,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [
           { field: 'ppType', equals: ppValueTypeEnum.event },
           { field: 'ppType', equals: ppValueTypeEnum.market },
+          { field: 'ppValue', equals: ppValueEnum.anyH },
+          { field: 'ppValue', equals: ppValueEnum.hh },
+          { field: 'ppValue', equals: ppValueEnum.lh },
+          { field: 'ppValue', equals: ppValueEnum.sh },
+          { field: 'ppValue', equals: ppValueEnum.wh },
+          { field: 'ppValue', equals: ppValueEnum.anySWH },
+          { field: 'ppValue', equals: ppValueEnum.sl },
+          { field: 'ppValue', equals: ppValueEnum.wl },
+          { field: 'ppValue', equals: ppValueEnum.anySWL },
         ],
       }),
       makeNumberField({
@@ -2193,15 +2311,22 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [
           { field: 'ppType', equals: ppValueTypeEnum.event },
           { field: 'ppType', equals: ppValueTypeEnum.market },
+          { field: 'ppValue', equals: ppValueEnum.anyH },
+          { field: 'ppValue', equals: ppValueEnum.hh },
+          { field: 'ppValue', equals: ppValueEnum.lh },
+          { field: 'ppValue', equals: ppValueEnum.sh },
+          { field: 'ppValue', equals: ppValueEnum.wh },
+          { field: 'ppValue', equals: ppValueEnum.anySWH },
+          { field: 'ppValue', equals: ppValueEnum.sl },
+          { field: 'ppValue', equals: ppValueEnum.wl },
+          { field: 'ppValue', equals: ppValueEnum.anySWL },
         ],
       }),
       makeNumberField({
         key: 'ppMult',
         label: 'Multiplier',
         defaultValue: 1,
-        min: 0,
-        max: 10,
-        step: 0.1,
+        step: 1,
         allowVariables: true,
         hiddenWhen: [
           { field: 'ppType', equals: ppValueTypeEnum.event },
@@ -2238,21 +2363,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     fields: [
       makeNumberField({
         key: 'athLookback',
-        label: 'Lookback candles',
+        label: 'Lookback',
         defaultValue: 100,
-        min: 1,
-        max: 1000,
         step: 1,
         allowVariables: true,
       }),
-      makeNumberField({
-        key: 'indicatorValue',
-        label: 'Drawdown threshold %',
-        defaultValue: 10,
-        min: 0,
-        max: 100,
-        step: 0.1,
-        allowVariables: true,
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
       }),
       makeSelectField({
         key: 'indicatorCondition',
@@ -2260,10 +2379,12 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 'cd',
         options: INDICATOR_CONDITION_OPTIONS,
       }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 10,
+        step: 1,
+        allowVariables: true,
       }),
       keepConditionBarsField,
     ],
@@ -2285,22 +2406,22 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'dcValue',
-        label: 'Band reference',
-        defaultValue: DCValueEnum.basis,
-        options: DC_VALUE_OPTIONS,
-      }),
-      makeSelectField({
-        key: 'indicatorCondition',
-        label: 'Condition',
-        defaultValue: IndicatorStartConditionEnum.cu,
-        options: INDICATOR_CONDITION_OPTIONS,
-      }),
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
+      makeSelectField({
+        key: 'dcValue',
+        label: 'Value',
+        defaultValue: DCValueEnum.basis,
+        options: DC_VALUE_OPTIONS,
       }),
       keepConditionBarsField,
     ],
@@ -2314,9 +2435,22 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       'A fair value gap (FVG) is an imbalance on a financial chart where aggressive buying or selling leaves a price range with little to no trading activity, creating a "void" in the price chart.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      // Legacy render order (indicators.tsx): Interval (1386) -> Condition
+      // (1774) -> Section=obfvgValue (1876) -> Value=obfvgRef (1903) -> Keep.
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: INDICATOR_CONDITION_OPTIONS,
+      }),
       makeSelectField({
         key: 'obfvgValue',
-        label: 'Sector',
+        label: 'Section',
         defaultValue: OBFVGValueEnum.bullish,
         options: OBFVG_VALUE_OPTIONS,
       }),
@@ -2326,11 +2460,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: OBFVGRefEnum.middle,
         options: OBFVG_REF_OPTIONS,
       }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
-      }),
+      keepConditionBarsField,
     ],
   },
   [IndicatorEnum.bbwp]: {
@@ -2349,6 +2479,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         options: PRICE_SOURCE_OPTIONS,
       }),
       makeNumberField({
+        key: 'indicatorLength',
+        label: 'Length',
+        defaultValue: 13,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+      }),
+      makeNumberField({
         key: 'bbwpLookback',
         label: 'Lookback',
         defaultValue: 252,
@@ -2357,14 +2496,10 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeNumberField({
-        key: 'indicatorLength',
-        label: 'Length',
-        defaultValue: 13,
-        min: 1,
-        max: 500,
-        step: 1,
-        allowVariables: true,
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
       }),
       makeSelectField({
         key: 'indicatorCondition',
@@ -2381,12 +2516,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 1,
         allowVariables: true,
       }),
-      makeIntervalField({
-        key: 'indicatorInterval',
-        label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
-      }),
-      ...percentileFields,
       keepConditionBarsField,
     ],
   },
@@ -2436,19 +2565,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     fields: [
       makeNumberField({
         key: 'lwThreshold',
-        label: 'Wick Threshold',
+        label: 'Threshold',
         defaultValue: 2,
-        min: 0.25,
-        max: 100,
-        step: 0.25,
+        step: 1,
         allowVariables: true,
       }),
       makeNumberField({
         key: 'lwMaxDuration',
         label: 'Max Duration',
         defaultValue: 1000,
-        min: 10,
-        max: 10000,
         step: 1,
         allowVariables: true,
       }),
@@ -2467,8 +2592,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Condition',
         defaultValue: LWConditionEnum.during,
         options: [
-          { value: LWConditionEnum.onStart, label: 'On Start' },
-          { value: LWConditionEnum.during, label: 'During' },
+          { value: LWConditionEnum.during, label: 'During the signal' },
+          { value: LWConditionEnum.onStart, label: 'On signal start' },
         ],
       }),
       makeIntervalField({
@@ -2476,6 +2601,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      keepConditionBarsField,
     ],
   },
 };

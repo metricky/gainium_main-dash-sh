@@ -174,6 +174,7 @@ interface DealStartSettingsProps {
 }
 
 export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
+  currentExchange,
   formData,
   updateFormData,
   errors,
@@ -668,12 +669,8 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
     [startIndicatorGroups, syncStartIndicatorsGroups]
   );
 
-  const {
-    favorites: favoriteIndicators,
-    toggleFavorite,
-    isMutating: favoritesMutating,
-    isIndicatorMutating,
-  } = useFavoriteIndicators();
+  const { favorites: favoriteIndicators, toggleFavorite } =
+    useFavoriteIndicators();
 
   const handleToggleFavorite = React.useCallback(
     (type: IndicatorEnum, next: boolean) => {
@@ -701,40 +698,24 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
         return;
       }
 
-      openSelector({
-        allowedActions: [IndicatorAction.startDeal],
-        favorites: favoriteIndicators,
-        onToggleFavorite: handleToggleFavorite,
-        favoritesMutating,
-        isFavoriteMutating: isIndicatorMutating,
-        title: 'Select start indicator',
-        onSelect: (type) => {
-          const defaultParams = getIndicatorDefaultParams(
-            type,
-            IndicatorAction.startDeal
-          );
-          const newIndicator = buildIndicatorConfig(type, defaultParams, {
-            keepConditionBars: '0',
-          });
-
-          updateFormData('indicators', [
-            ...indicators,
-            { ...newIndicator, groupId: groupId },
-          ]);
-        },
+      // Add a default RSI indicator immediately instead of forcing the user
+      // through the selector first. They can swap the type afterwards via the
+      // card's "change indicator" control (handleSelectIndicatorTypeInGroup).
+      const type = IndicatorEnum.rsi;
+      const defaultParams = getIndicatorDefaultParams(
+        type,
+        IndicatorAction.startDeal
+      );
+      const newIndicator = buildIndicatorConfig(type, defaultParams, {
+        keepConditionBars: '0',
       });
+
+      updateFormData('indicators', [
+        ...indicators,
+        { ...newIndicator, groupId: groupId },
+      ]);
     },
-    [
-      favoriteIndicators,
-      favoritesMutating,
-      handleToggleFavorite,
-      isIndicatorMutating,
-      openSelector,
-      startIndicatorGroups,
-      totalIndicators,
-      updateFormData,
-      indicators,
-    ]
+    [startIndicatorGroups, totalIndicators, indicatorsLimit, updateFormData, indicators]
   );
 
   const handleChangeIndicatorParamsInGroup = React.useCallback(
@@ -1085,6 +1066,7 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
                   errorMessage={startIndicatorErrorMessage}
                   totalIndicatorsAcrossBot={totalIndicators}
                   indicatorAction={IndicatorAction.startDeal}
+                  exchange={currentExchange?.provider}
                   globalLogicLabel="Group logic"
                   globalLogicOptions={[
                     {

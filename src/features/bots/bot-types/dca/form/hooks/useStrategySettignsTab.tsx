@@ -951,12 +951,8 @@ export const useStrategySettingsTab = ({
     (isFieldLocked?.('reinvestValue') ?? false) || activeDealsCount > 0;
   const enterMarketTimeoutLocked = isFieldLocked?.('limitTimeout') ?? false;
   const skipBalanceCheckLocked = isFieldLocked?.('skipBalanceCheck') ?? false;
-  const skipBalanceCheckDisabled =
-    skipBalanceCheckLocked || activeDealsCount > 0;
-  const skipBalanceCheckDisabledMessage =
-    activeDealsCount > 0
-      ? 'Skip balance check is locked while this bot has active deals.'
-      : '';
+  const skipBalanceCheckDisabled = skipBalanceCheckLocked;
+  const skipBalanceCheckDisabledMessage = '';
 
   const directionDisabled =
     directionLocked ||

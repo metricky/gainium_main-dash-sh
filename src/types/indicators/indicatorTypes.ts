@@ -48,11 +48,48 @@ export interface IndicatorFieldDefinition {
   min?: number;
   max?: number;
   step?: number;
+  /**
+   * Trailing unit shown inside number inputs (legacy `endAdornment`), e.g. the
+   * "%" on UNPNL's value field (indicators.tsx:223). Cosmetic; no payload impact.
+   */
+  suffix?: string;
   placeholder?: string;
   options?: IndicatorFieldOption[];
+  /**
+   * Conditional option sets: when another field equals a given value, the
+   * select renders this option list instead of `options`. First match wins;
+   * falls back to `options` when nothing matches. Ports the legacy pattern
+   * where e.g. Market Structure's value dropdown changes with the trigger type.
+   */
+  optionsWhen?: Array<{
+    field: keyof SettingsIndicators;
+    equals: unknown;
+    options: IndicatorFieldOption[];
+  }>;
+  /**
+   * Conditional storage-key remapping: when another field equals a given
+   * value, this field reads/writes a DIFFERENT param key (and optionally a
+   * different default) than its static `key`. First match wins; falls back to
+   * `key` / `defaultValue` when nothing matches. Ports the legacy STOCH band
+   * swap where the band the user edits binds stochLower vs stochUpper
+   * depending on stochRange (indicators.tsx ~2447-2548).
+   */
+  keyWhen?: Array<{
+    field: keyof SettingsIndicators;
+    equals: unknown;
+    key: keyof SettingsIndicators;
+    defaultValue?: string | number | boolean | string[];
+  }>;
   multiple?: boolean;
   hiddenWhen?: ConditionalDirective[];
   disabledWhen?: ConditionalDirective[];
+  /**
+   * Statically (always) disable this field's control. Ports legacy fields that
+   * are permanently read-only regardless of other params — e.g. ADR's interval
+   * (indicators.tsx:1402 `disabled={... || i.type === IndicatorEnum.adr}`).
+   * ORed with any `disabledWhen` match.
+   */
+  disabled?: boolean;
 }
 
 export interface IndicatorDefinition {

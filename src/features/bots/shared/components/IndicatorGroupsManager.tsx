@@ -17,6 +17,7 @@ import {
   indicatorsLimit,
   IndicatorsLogicEnum,
 } from '@/types';
+import type { ExchangeEnum } from '@/types';
 import type { IndicatorConfig, IndicatorGroup } from '@/types/indicators';
 import {
   getIndicatorDefaultParams,
@@ -42,6 +43,12 @@ export interface IndicatorGroupsManagerProps {
   indicatorAction: IndicatorAction;
   /** Optional section to filter by (e.g., sl for stop-loss) */
   indicatorSection?: IndicatorSection;
+  /**
+   * Selected bot exchange. When provided, indicator interval selects filter
+   * their options to the candle intervals the exchange supports (legacy
+   * parity). Omitted = no interval filtering.
+   */
+  exchange?: ExchangeEnum | undefined;
   /** Maximum number of groups allowed */
   maxGroups?: number;
   /** Maximum indicators per group */
@@ -85,6 +92,7 @@ export const IndicatorGroupsManager: React.FC<IndicatorGroupsManagerProps> = ({
   totalIndicatorsAcrossBot,
   indicatorAction,
   indicatorSection,
+  exchange,
   maxGroups,
   maxIndicatorsPerGroup,
   globalLogicLabel = 'Group logic',
@@ -299,6 +307,7 @@ export const IndicatorGroupsManager: React.FC<IndicatorGroupsManagerProps> = ({
                           definition={definition}
                           params={params}
                           indicatorUuid={indicator.uuid}
+                          exchange={exchange}
                           onChange={(next) =>
                             onChangeIndicatorParams(
                               group.id,

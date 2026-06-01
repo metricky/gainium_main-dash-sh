@@ -289,9 +289,20 @@ export function useBotSpecificDeals(
     [filter.status]
   );
   const mergedDeals = useMemo(() => {
+    // Ids the store currently tracks for this bot, regardless of status. The
+    // snapshot may only backfill deals the store has *fully dropped* (e.g.
+    // closed deals wiped by the list page's open-only replace) — it must never
+    // resurrect a stale-status copy of a deal the store still tracks (e.g. one
+    // just optimistically marked closed/canceled on close), or that deal would
+    // linger in the Active tab after being closed.
+    const storeIds = new Set(
+      Object.values(allDealsRecord[filter.botId] ?? {}).map((d) => d._id)
+    );
     const byId = new Map<string, DealWithType>();
     committedDeals.forEach((d) => {
-      if (d._id) byId.set(d._id, { ...d, dealType } as DealWithType);
+      if (d._id && !storeIds.has(d._id)) {
+        byId.set(d._id, { ...d, dealType } as DealWithType);
+      }
     });
     dealsFromStore.forEach((d) => {
       if (d._id) byId.set(d._id, d);
@@ -299,7 +310,14 @@ export function useBotSpecificDeals(
     return Array.from(byId.values()).filter(
       (d) => d.dealType === dealType && matchesRequestedStatus(d.status)
     );
-  }, [committedDeals, dealsFromStore, dealType, matchesRequestedStatus]);
+  }, [
+    committedDeals,
+    dealsFromStore,
+    allDealsRecord,
+    filter.botId,
+    dealType,
+    matchesRequestedStatus,
+  ]);
 
   // Only show loading on initial load (when store data is empty) or during
   // auto-loading. Also treat pre-hydration as loading so the table doesn't

@@ -104,7 +104,7 @@ export const RiskRewardSettings: React.FC<RiskRewardSettingsProps> = ({
   // Use the risk/reward hook for live calculations
   const riskRewardData = useRiskReward_hook(formData);
   const { resetRuntime, updateRuntime } = useRiskRewardRuntime();
-  const { botId: contextBotId, bot } = useBotFormQuery();
+  const { botId: contextBotId, bot, currentExchange } = useBotFormQuery();
   const { openSelector, selector } = useIndicatorSelector();
   const isTerminal = useMemo(() => !!formData.terminal, [formData.terminal]);
   const { alerts } = useBotFormState();
@@ -1231,6 +1231,7 @@ export const RiskRewardSettings: React.FC<RiskRewardSettingsProps> = ({
                       definition={definition}
                       params={params}
                       indicatorUuid={indicator.uuid}
+                      exchange={currentExchange?.provider}
                       onChange={(next) =>
                         handleChangeIndicatorParams(indicator.uuid, next)
                       }

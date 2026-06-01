@@ -23,7 +23,7 @@ import {
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
-// useBotFormQuery not needed in controller settings
+import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { useFavoriteIndicators } from '@/hooks/useFavoriteIndicators';
 import { useIndicatorSelector } from '@/hooks/useIndicatorSelector';
 // webhook payloads handled in BotWebhookSettings
@@ -218,6 +218,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
   updateFormData,
 }) => {
   const { openSelector, selector } = useIndicatorSelector();
+  const { currentExchange } = useBotFormQuery();
 
   React.useEffect(() => {
     return () => {};
@@ -575,6 +576,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
             definition={definition}
             params={params}
             indicatorUuid={indicator.uuid}
+            exchange={currentExchange?.provider}
             onChange={(next) =>
               handleChangeIndicatorParams(
                 /* kind, groupId,  */ indicator.uuid,
@@ -592,7 +594,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
         );
       }
     },
-    [handleChangeIndicatorParams]
+    [handleChangeIndicatorParams, currentExchange?.provider]
   );
 
   // webhook section removed; BotWebhookSettings handles webhook UI

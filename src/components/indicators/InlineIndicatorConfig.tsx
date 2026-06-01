@@ -22,7 +22,8 @@ import type {
   IndicatorParamPrimitive,
   IndicatorParamsState,
 } from '@/types/indicators/indicatorParams';
-import type { VarToSearchType } from '@/types';
+import { filterIntervalOptionsByExchange } from '@/types/indicators/indicatorLogic';
+import type { ExchangeEnum, VarToSearchType } from '@/types';
 
 interface InlineIndicatorConfigProps {
   definition: IndicatorDefinition;
@@ -34,6 +35,10 @@ interface InlineIndicatorConfigProps {
   // a uuid (e.g. configuring a freshly-added indicator that hasn't been
   // assigned an id yet) the binding UI is suppressed.
   indicatorUuid?: string;
+  // Selected bot exchange. When provided, interval-type fields filter their
+  // options to the candle intervals the exchange supports (legacy parity:
+  // `filterIndicatorIntervalsByExchange`). Omitted/undefined = no filtering.
+  exchange?: ExchangeEnum | undefined;
 }
 
 // Global variables are typed `int` | `float` | `text`. We infer numeric
@@ -49,6 +54,27 @@ const inferNumericVarType = (
   return 'int';
 };
 
+// Legacy STOCH bands bind a DIFFERENT param key depending on another field
+// (stochRange). Resolve the effective storage key + default from `keyWhen`.
+// First match wins; falls back to the static `key` / `defaultValue`.
+const resolveFieldKey = (
+  field: IndicatorFieldDefinition,
+  params: IndicatorParamsState | null
+): {
+  key: IndicatorFieldDefinition['key'];
+  defaultValue: IndicatorFieldDefinition['defaultValue'];
+} => {
+  if (field.keyWhen && params) {
+    const match = field.keyWhen.find(
+      (entry) => params[entry.field] === entry.equals
+    );
+    if (match) {
+      return { key: match.key, defaultValue: match.defaultValue };
+    }
+  }
+  return { key: field.key, defaultValue: field.defaultValue };
+};
+
 const shouldHideField = (
   field: IndicatorFieldDefinition,
   params: IndicatorParamsState | null
@@ -59,9 +85,36 @@ const shouldHideField = (
   if (!field.hiddenWhen) {
     return false;
   }
-  return field.hiddenWhen.some(
-    ({ field: key, equals }) =>
-      typeof params[key] === 'undefined' || params[key] === equals
+  // Legacy gated on truthiness, so an UNSET gating field is treated as falsy.
+  // That only matches an `equals: false` directive (legacy `parent && (child)`
+  // hides the child when the parent is falsy/undefined). For `equals: true` or
+  // a concrete enum value, an undefined param must NOT match — legacy
+  // `!parent && (field)` / `param === value` keeps the field visible when the
+  // gate is unset. Mirrors IndicatorConfigurationModal.
+  return field.hiddenWhen.some(({ field: key, equals }) =>
+    equals === false
+      ? typeof params[key] === 'undefined' || params[key] === false
+      : params[key] === equals
+  );
+};
+
+// Mirror of the modal's shouldDisableField: a static `disabled` flag always
+// disables (legacy ADR interval), otherwise match a `disabledWhen` directive.
+const shouldDisableField = (
+  field: IndicatorFieldDefinition,
+  params: IndicatorParamsState | null
+): boolean => {
+  if (field.disabled) {
+    return true;
+  }
+  if (!params) {
+    return false;
+  }
+  if (!field.disabledWhen) {
+    return false;
+  }
+  return field.disabledWhen.some(
+    ({ field: key, equals }) => params[key] === equals
   );
 };
 
@@ -71,17 +124,61 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
   onChange,
   className,
   indicatorUuid,
+  exchange,
 }) => {
   const updateParam = (key: string, value: IndicatorParamPrimitive) => {
-    onChange({ ...params, [key]: value });
+    const next: IndicatorParamsState = { ...params, [key]: value };
+    // When a field that drives another field's conditional options changes,
+    // reset the dependent select to a valid default (its defaultValue if still
+    // valid, otherwise the first available option) so it never shows an empty
+    // or stale selection — e.g. the Market Structure value when the trigger
+    // type switches from Price to Event/Market.
+    const allFields = [
+      ...definition.fields,
+      ...(definition.advancedFields ?? []),
+    ];
+    for (const f of allFields) {
+      if (!f.optionsWhen?.some((e) => e.field === key)) continue;
+      const opts =
+        f.optionsWhen.find((e) => next[e.field] === e.equals)?.options ??
+        f.options;
+      const valid = opts?.map((o) => o.value);
+      if (valid && !valid.includes(next[f.key] as IndicatorFieldOption['value'])) {
+        (next as Record<string, IndicatorParamPrimitive>)[f.key as string] =
+          f.defaultValue !== undefined &&
+          valid.includes(f.defaultValue as IndicatorFieldOption['value'])
+            ? (f.defaultValue as IndicatorParamPrimitive)
+            : (opts?.[0]?.value as IndicatorParamPrimitive);
+      }
+    }
+    onChange(next);
   };
 
   const renderField = (field: IndicatorFieldDefinition) => {
-    const value = params[field.key] ?? field.defaultValue;
+    // Effective storage key may differ from `field.key` (legacy STOCH band swap).
+    const { key: storageKey, defaultValue: effectiveDefault } = resolveFieldKey(
+      field,
+      params
+    );
+    const value = params[storageKey] ?? effectiveDefault;
 
     if (shouldHideField(field, params)) {
       return null;
     }
+
+    const disabled = shouldDisableField(field, params);
+
+    // Conditional option sets (e.g. Market Structure value list depends on the
+    // selected trigger type). First matching directive wins; else fall back.
+    // Interval-type fields additionally filter to the exchange's supported
+    // intervals when a bot exchange is selected (legacy parity).
+    const baseOptions =
+      field.optionsWhen?.find((entry) => params[entry.field] === entry.equals)
+        ?.options ?? field.options;
+    const resolvedOptions =
+      field.type === 'interval'
+        ? filterIntervalOptionsByExchange(baseOptions, exchange)
+        : baseOptions;
 
     switch (field.type) {
       case 'number': {
@@ -93,18 +190,20 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
             }
             onChange={(newValue) =>
               updateParam(
-                field.key,
+                storageKey,
                 typeof newValue === 'string' ? newValue : newValue.toString()
               )
             }
             {...(field.min !== undefined && { min: field.min })}
             {...(field.max !== undefined && { max: field.max })}
             {...(field.step !== undefined && { step: field.step })}
+            {...(field.suffix !== undefined && { endAdornment: field.suffix })}
+            disabled={disabled}
           />
         );
         const canBind = Boolean(field.allowVariables && indicatorUuid);
         const bindingPath = canBind
-          ? (`indicators.${indicatorUuid}.${field.key}` as VarBindingPath)
+          ? (`indicators.${indicatorUuid}.${storageKey}` as VarBindingPath)
           : null;
         return (
           <div key={field.key} className="space-y-xs">
@@ -136,6 +235,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
         );
       }
 
+      case 'interval':
       case 'select': {
         if (field.multiple) {
           const raw = Array.isArray(value)
@@ -155,7 +255,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
                 ) : null}
               </div>
               <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                {field.options?.map((option: IndicatorFieldOption) => {
+                {resolvedOptions?.map((option: IndicatorFieldOption) => {
                   const numVal = Number(option.value);
                   const checked = selectedValues.includes(numVal);
                   return (
@@ -166,6 +266,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
                       <Checkbox
                         id={`${field.key}-${option.value}`}
                         checked={checked}
+                        disabled={disabled}
                         onCheckedChange={(c) => {
                           const next = c
                             ? [...selectedValues, numVal].sort(
@@ -201,6 +302,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
             <Select
               value={value?.toString() ?? ''}
               onValueChange={(newValue) => updateParam(field.key, newValue)}
+              disabled={disabled}
             >
               <SelectTrigger>
                 <SelectValue
@@ -208,7 +310,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
                 />
               </SelectTrigger>
               <SelectContent>
-                {field.options?.map((option: IndicatorFieldOption) => (
+                {resolvedOptions?.map((option: IndicatorFieldOption) => (
                   <SelectItem
                     key={option.value.toString()}
                     value={option.value.toString()}
@@ -234,6 +336,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
               <Switch
                 id={field.key}
                 checked={Boolean(value)}
+                disabled={disabled}
                 onCheckedChange={(checked) => updateParam(field.key, checked)}
               />
               <Label htmlFor={field.key}>{field.label}</Label>
@@ -262,12 +365,15 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
 
   return (
     <div className={className}>
-      <div className="space-y-md">
+      <div className="@container space-y-md">
         <div className="text-sm font-medium text-muted-foreground">
           {definition.label} Configuration
         </div>
         {definition.fields.length > 0 ? (
-          <div className="grid gap-md md:grid-cols-2 lg:grid-cols-3">
+          // Column count keys off the card's own width (container query), not
+          // the viewport — when the form panel is narrowed the fields wrap to
+          // fewer columns instead of compressing into overlapping labels.
+          <div className="grid gap-md @[26rem]:grid-cols-2 @[40rem]:grid-cols-3">
             {definition.fields.map((field) => renderField(field))}
           </div>
         ) : null}

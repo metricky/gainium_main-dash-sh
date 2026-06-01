@@ -169,6 +169,7 @@ export const deriveCapitalSummary = ({
     ? formData.combo.activeOrdersCount
     : formData.dca.activeOrdersCount;
   const useMulti = isComboBot ? formData.combo.useMulti : formData.dca.useMulti;
+  const useDca = isComboBot ? formData.combo.useDca : formData.dca.useDca;
   const strategy = isComboBot ? formData.combo.strategy : formData.dca.strategy;
   const isCustomDca = dcaCondition === DCAConditionEnum.custom;
   const customOrders = Array.isArray(dcaCustom)
@@ -188,7 +189,13 @@ export const deriveCapitalSummary = ({
   let percentageMode =
     orderSizeType === 'percFree' || orderSizeType === 'percTotal';
 
-  if (isCustomDca && customOrders.length > 0) {
+  if (!useDca) {
+    // DCA averaging is turned off — the bot fires only the base order, so no
+    // safety/DCA orders should be counted toward per-deal or per-bot capital.
+    perOrderSeries = [];
+    plannedDeviation = 0;
+    ordersCount = 0;
+  } else if (isCustomDca && customOrders.length > 0) {
     perOrderSeries = customOrders.map((order) =>
       Math.max(0, toNumber(order.size, 0))
     );

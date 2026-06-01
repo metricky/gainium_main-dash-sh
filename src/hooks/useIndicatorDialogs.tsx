@@ -12,7 +12,12 @@ import type { IndicatorParamsState } from '@/types/indicators/indicatorParams';
 import { getIndicatorDefinition } from '@/types/indicators/indicatorLogic';
 import type { IndicatorDefinition } from '@/types/indicators/indicatorTypes';
 import type { IndicatorConfig } from '@/types/indicators/indicators';
-import type { IndicatorAction, IndicatorEnum, IndicatorSection } from '@/types';
+import type {
+  ExchangeEnum,
+  IndicatorAction,
+  IndicatorEnum,
+  IndicatorSection,
+} from '@/types';
 
 type SelectorClosedState = { open: false };
 
@@ -89,9 +94,13 @@ export interface IndicatorDialogController {
 export const useIndicatorDialogs = ({
   action,
   section,
+  exchange,
 }: {
   action: IndicatorAction;
   section: IndicatorSection;
+  // Optional bot exchange; threaded to the config modal so interval selects
+  // filter to the exchange's supported intervals (legacy parity).
+  exchange?: ExchangeEnum | undefined;
 }): IndicatorDialogController => {
   const [selectorState, setSelectorState] = React.useState<SelectorState>({
     open: false,
@@ -305,6 +314,7 @@ export const useIndicatorDialogs = ({
           }}
           action={action}
           section={section}
+          exchange={exchange}
           {...(configState.initialParams !== undefined
             ? { initialParams: configState.initialParams }
             : {})}

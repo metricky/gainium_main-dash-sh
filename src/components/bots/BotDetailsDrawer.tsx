@@ -636,10 +636,6 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       }
     };
 
-    const handleViewBacktests = () => {
-      navigate(`/backtests?botId=${actionBotId}`);
-    };
-
     const handleDrawerClose = () => {
       handleDrawerOpenChange(false);
     };
@@ -1113,7 +1109,6 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
                           onRestart={() => handleRestart()}
                           onEdit={() => handleEdit()}
                           onClone={() => handleClone()}
-                          onViewBacktests={() => handleViewBacktests()}
                           onViewClosedTrades={() =>
                             navigate(`/trades?botId=${bot._id}`)
                           }

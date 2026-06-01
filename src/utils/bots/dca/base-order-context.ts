@@ -74,11 +74,35 @@ export const resolveBaseOrderContext = (
       : quoteSnapshot;
   const balanceAmount = safeNumber(balanceSnapshot.free);
 
+  // The deposit side is what the bot actually spends: quote for a long
+  // (buying base with quote), base for a short. The order size, however, is
+  // entered in `currencyReference` units. To validate "value exceeds the
+  // available balance" the available figure must be expressed in the SAME
+  // unit as the entered value — otherwise a long bot priced in base wrongly
+  // checks the (empty) base wallet instead of the quote it will spend.
+  const depositIsBase = futures ? coinm : isShort;
+  const price = safeNumber(latestPrice);
+  // Available balance, converted from the deposit currency into the reference
+  // currency. When the reference matches the deposit side, no conversion. When
+  // price is unknown (no pair selected yet) we fall back to the raw deposit
+  // amount, which errs toward NOT raising a false "exceeds balance" error.
+  const availableInReference = (referenceIsBase: boolean): number => {
+    if (referenceIsBase === depositIsBase) {
+      return balanceAmount;
+    }
+    if (!price || price <= 0) {
+      return balanceAmount;
+    }
+    // deposit quote → reference base: divide by price (max base affordable)
+    // deposit base → reference quote: multiply by price
+    return referenceIsBase ? balanceAmount / price : balanceAmount * price;
+  };
+
   switch (normalizedReference) {
     case 'base': {
       return {
         currencyLabel: baseAsset ?? 'BASE',
-        availableBalance: safeNumber(baseSnapshot.free),
+        availableBalance: availableInReference(true),
         balanceCurrency,
         balanceAmount,
       };
@@ -86,7 +110,7 @@ export const resolveBaseOrderContext = (
     case 'quote': {
       return {
         currencyLabel: quoteAsset ?? 'QUOTE',
-        availableBalance: safeNumber(quoteSnapshot.free),
+        availableBalance: availableInReference(false),
         balanceCurrency,
         balanceAmount,
       };

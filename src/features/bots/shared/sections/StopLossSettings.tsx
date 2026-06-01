@@ -84,6 +84,10 @@ import { IndicatorGroupsManager } from '../components/IndicatorGroupsManager';
 import MultiTarget from '../components/MultiTarget';
 
 const MAX_MULTI_SL_TARGETS = 10;
+// Upper bound for the SL magnitude (% loss). Kept high (not ~100) so
+// cross-margin / high-leverage users can set deep stops. Twin of
+// TakeProfitSettings' MAX_TP_SL_PERCENT.
+const MAX_TP_SL_PERCENT = 250;
 const MAX_SL_INDICATOR_GROUPS = 5;
 const MAX_SL_INDICATORS_PER_GROUP = 10;
 
@@ -153,6 +157,9 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
   } = useBotFormState();
   const isDealEdit = mode === 'deal-edit' || mode === 'deal-mass-edit';
   const minSlToUse = MIN_DCA_TP_NEW; // Minimum percentage for SL
+  // Upper bound for the SL magnitude. Kept high (not ~100) so cross-margin /
+  // high-leverage users can set deep stops, matching the legacy dashboard.
+  const maxSlToUse = MAX_TP_SL_PERCENT;
 
   // Track the last single target percentage for seeding new targets
   const lastSingleTargetPercentageRef = useRef<string | null>(null);
@@ -385,8 +392,11 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
       };
     }
 
-    if (abs > 100) {
-      return { isValid: false, message: 'Stop loss % must not exceed 100%' };
+    if (abs > maxSlToUse) {
+      return {
+        isValid: false,
+        message: `Stop loss % must not exceed ${maxSlToUse}%`,
+      };
     }
 
     // Validate against current price using consistent convention:
@@ -426,7 +436,7 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
     }
 
     return { isValid: true, message: '' };
-  }, [slPerc, minSlToUse, currentPrice, isShort, isDealEdit]);
+  }, [slPerc, minSlToUse, maxSlToUse, currentPrice, isShort, isDealEdit]);
 
   // Compose the most appropriate single-target error message and register
   // it with the form context so it surfaces in the footer alert summary.
@@ -1298,7 +1308,7 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
             value={Math.abs(parseFloat(slPerc) || 0)}
             onChange={(value) => handleSliderChange(value)}
             min={minSlToUse}
-            max={50}
+            max={maxSlToUse}
             step={0.1}
             className="w-full"
           />
@@ -1308,7 +1318,7 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
               <NumberInput
                 value={slPerc}
                 onChange={(value) => updateFormData('slPerc', value)}
-                min={-50}
+                min={-maxSlToUse}
                 max={-minSlToUse}
                 step={0.1}
                 precision={3}
@@ -1532,6 +1542,7 @@ const IndicatorsSL: React.FC<
   Omit<StopLossSettingsProps, 'fomData'> & { stopLossLocked?: boolean }
 > = ({
   //formData,
+  currentExchange,
   updateFormData,
   errors,
   stopLossLocked = false,
@@ -1662,42 +1673,30 @@ const IndicatorsSL: React.FC<
         return;
       }
 
-      openSelector({
-        allowedActions: [IndicatorAction.closeDeal],
-        favorites: favoriteIndicators,
-        onToggleFavorite: handleToggleFavorite,
-        favoritesMutating,
-        isFavoriteMutating: isIndicatorMutating,
-        title: 'Select stop loss indicator',
-        onSelect: (type) => {
-          const defaultParams = getIndicatorDefaultParams(
-            type,
-            IndicatorAction.closeDeal,
-            IndicatorSection.sl
-          );
-          const sanitizedParams = sanitizeIndicatorParams(
-            (defaultParams ?? {}) as IndicatorParamsState
-          );
-          const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
-            uuid: createSlIndicatorId(),
-            keepConditionBars: '0',
-            indicatorAction: IndicatorAction.closeDeal,
-            section: IndicatorSection.sl,
-          });
-
-          updateFormData('indicators', [
-            ...indicators,
-            { ...newIndicator, groupId: groupId },
-          ]);
-        },
+      // Load a default RSI indicator immediately; type is swappable on the
+      // card afterwards (handleSelectIndicatorTypeInStopLossGroup).
+      const type = IndicatorEnum.rsi;
+      const defaultParams = getIndicatorDefaultParams(
+        type,
+        IndicatorAction.closeDeal,
+        IndicatorSection.sl
+      );
+      const sanitizedParams = sanitizeIndicatorParams(
+        (defaultParams ?? {}) as IndicatorParamsState
+      );
+      const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
+        uuid: createSlIndicatorId(),
+        keepConditionBars: '0',
+        indicatorAction: IndicatorAction.closeDeal,
+        section: IndicatorSection.sl,
       });
+
+      updateFormData('indicators', [
+        ...indicators,
+        { ...newIndicator, groupId: groupId },
+      ]);
     },
     [
-      favoriteIndicators,
-      favoritesMutating,
-      handleToggleFavorite,
-      isIndicatorMutating,
-      openSelector,
       stopLossIndicatorGroups,
       updateFormData,
       indicators,
@@ -1710,15 +1709,17 @@ const IndicatorsSL: React.FC<
       if (!indicator) {
         return;
       }
-      const findGroupsLength = indicatorGroups.filter(
-        (group) => group.id === groupId
+      // Only drop the group when removing its LAST indicator — otherwise
+      // deleting one indicator would orphan the rest of the group.
+      const indicatorsInGroup = indicators.filter(
+        (ind) => ind.groupId === groupId
       ).length;
 
       updateFormData(
         'indicators',
         indicators.filter((ind) => ind.uuid !== indicatorId)
       );
-      if (findGroupsLength === 1) {
+      if (indicatorsInGroup === 1) {
         updateFormData(
           'indicatorGroups',
           indicatorGroups.filter((group) => group.id !== groupId)
@@ -1777,10 +1778,14 @@ const IndicatorsSL: React.FC<
             section: IndicatorSection.sl,
           });
 
-          updateFormData('indicators', [
-            ...indicators,
-            { ...nextIndicator, groupId: groupId },
-          ]);
+          updateFormData(
+            'indicators',
+            indicators.map((candidate) =>
+              candidate.uuid === indicator.uuid
+                ? { ...nextIndicator, groupId: candidate.groupId ?? groupId }
+                : candidate
+            )
+          );
         },
       });
     },
@@ -1825,6 +1830,7 @@ const IndicatorsSL: React.FC<
           totalIndicatorsAcrossBot={totalIndicatorsAcrossBot}
           indicatorAction={IndicatorAction.closeDeal}
           indicatorSection={IndicatorSection.sl}
+          exchange={currentExchange?.provider}
           topTrailingContent={
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Info className="h-4 w-4" />

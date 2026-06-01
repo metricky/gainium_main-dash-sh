@@ -23,7 +23,7 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
   onRemove,
   emptyState,
   renderExtras,
-  //onSelectType,
+  onSelectType,
 }) => {
   const [helpSlug, setHelpSlug] = React.useState<string | null>(null);
   if (!indicators.length) {
@@ -80,23 +80,30 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
                 ) : null}
               </div>
 
-              {onRemove ? (
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  onClick={() => onRemove(indicator.uuid)}
-                  aria-label="Remove indicator"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              ) : null}
-            </div>
-
-            <div className="flex flex-wrap items-start gap-sm">
-              {onEdit ? (
-                <div className="ml-auto flex items-center gap-xs">
+              <div className="flex shrink-0 flex-col items-end gap-xs">
+                {onRemove ? (
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => onRemove(indicator.uuid)}
+                    aria-label="Remove indicator"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                ) : null}
+                {onSelectType ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => onSelectType(indicator)}
+                  >
+                    Change indicator
+                  </Button>
+                ) : null}
+                {onEdit ? (
                   <Button
                     type="button"
                     size="sm"
@@ -105,8 +112,8 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
                   >
                     Edit indicator
                   </Button>
-                </div>
-              ) : null}
+                ) : null}
+              </div>
             </div>
 
             {renderExtras ? (

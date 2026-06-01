@@ -482,7 +482,6 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
                 onRestart={handleRestart}
                 onEdit={() => navigate(editPath)}
                 onClone={handleClone}
-                onViewBacktests={() => navigate(`/backtests?botId=${bot._id}`)}
                 onShareConfig={handleShareConfig}
                 onArchive={handleArchive}
                 onDelete={() => setDeleteModalOpen(true)}
