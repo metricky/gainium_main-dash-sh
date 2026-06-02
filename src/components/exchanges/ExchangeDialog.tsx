@@ -1,7 +1,6 @@
-import { paidPlans } from '@/constants/subscription';
-import { useUserProfile } from '@/hooks/useUserProfile';
+import { useEntitlements } from '@/lib/entitlements';
 import { toast } from '@/lib/toast';
-import React, { useMemo } from 'react';
+import React from 'react';
 import { useExchangeMutations } from '../../hooks/useExchangeMutations';
 import { useExchangesStore } from '../../stores/exchangesStore';
 import {
@@ -48,14 +47,10 @@ const ExchangeDialog: React.FC<ExchangeDialogProps> = ({
     formDataToUpdateExchangeInput,
   } = useExchangeMutations();
 
-  // Get user profile for subscription check
-  const { userProfile } = useUserProfile();
-
-  // Check if user has paid subscription
-  const isPaidUser = useMemo(() => {
-    const planName = userProfile?.subscription?.subscriptionPlanName ?? 'free';
-    return paidPlans.includes(planName);
-  }, [userProfile]);
+  // Unified entitlements gate. Cloud reads `userProfile.subscription`
+  // against `paidPlans`; sh reads `useLicense().isPremium`. The
+  // adapter (lib/entitlements) hides the difference.
+  const { isPaid: isPaidUser } = useEntitlements();
 
   // Convert ExchangeInUser to ExchangeFormData for editing
   const getInitialFormData = (): Partial<ExchangeFormData> | undefined => {

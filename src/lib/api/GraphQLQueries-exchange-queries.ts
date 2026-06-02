@@ -1,4 +1,3 @@
-import { IS_CLOUD } from '../../config/mode';
 import type {
   ExchangeEnum,
   CoinbaseKeysType,
@@ -131,14 +130,7 @@ export const exchangeQueries = {
                             }
                         }
                     }`;
-    // Strip fields the backend may not accept. `shouldCheckAffiliate` is
-    // tied to the cloud-only affiliate program; sh's slimmer
-    // `addExchangeInput` rejects it.
-    const sanitized: typeof input = { ...input };
-    if (!IS_CLOUD) {
-      delete sanitized.shouldCheckAffiliate;
-    }
-    const variables = { input: sanitized };
+    const variables = { input };
     return { query, variables };
   },
 

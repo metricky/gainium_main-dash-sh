@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.8] - 2026-06-02
+
+### Added
+- Hyperliquid builder fees.
+
 ## [2.7.7] - 2026-06-02
 
 ### Fixed

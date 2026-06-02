@@ -1,20 +1,26 @@
+import { IS_CLOUD } from '@/config/mode';
 import { ExchangeEnum } from '@/types/exchange.types';
 
-// Exchanges that require a paid subscription
-export const paidExchanges = [
-  ExchangeEnum.binance,
-  ExchangeEnum.binanceCoinm,
-  ExchangeEnum.binanceUsdm,
-  ExchangeEnum.binanceUS,
-  ExchangeEnum.coinbase,
-  ExchangeEnum.binanceAll,
-  ExchangeEnum.binanceSpot,
-  ExchangeEnum.okx,
-  ExchangeEnum.okxAll,
-  ExchangeEnum.okxInverse,
-  ExchangeEnum.okxLinear,
-  ExchangeEnum.okxSpot,
-];
+// Exchanges that require a paid subscription. Cloud gates the listed
+// providers behind paid plans; sh has no plan tiers (premium is the
+// license-key add-on, gated separately via `useLicense`/`useEntitlements`)
+// so every exchange is freely selectable — the array is empty there.
+export const paidExchanges = IS_CLOUD
+  ? [
+      ExchangeEnum.binance,
+      ExchangeEnum.binanceCoinm,
+      ExchangeEnum.binanceUsdm,
+      ExchangeEnum.binanceUS,
+      ExchangeEnum.coinbase,
+      ExchangeEnum.binanceAll,
+      ExchangeEnum.binanceSpot,
+      ExchangeEnum.okx,
+      ExchangeEnum.okxAll,
+      ExchangeEnum.okxInverse,
+      ExchangeEnum.okxLinear,
+      ExchangeEnum.okxSpot,
+    ]
+  : [];
 
 // Subscription plans that are considered "paid" (not free)
 // Must match backend's NewSubscriptionName enum values (lowercase)

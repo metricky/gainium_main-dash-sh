@@ -11,6 +11,8 @@ import { installScreenerStub } from './lib/api/screenerStub';
 import { registerAuthProvider } from './lib/auth';
 import { logAuthConfig } from './lib/authConfig';
 import { addManualClearTrigger, initLoadingWatchdog } from './lib/cacheManager';
+import { registerEntitlementsProvider } from './lib/entitlements';
+import { useShEntitlements } from './lib/entitlements/impl/sh';
 import { registerLicenseProvider } from './lib/license';
 import { useShLicense } from './lib/license/impl/sh';
 import { initThemeManager } from './lib/themeManager';
@@ -39,6 +41,13 @@ installScreenerStub();
 // off the auth store — the app-sh backend validates the license key
 // and sets the flag, and we just surface it through the adapter.
 registerLicenseProvider(useShLicense);
+
+// Register the entitlements provider. Sh derives "paid" status from
+// the license key (no subscription object exists on sh user docs);
+// cloud registers its own impl that reads `userProfile.subscription`.
+// Call sites read `useEntitlements().isPaid` and don't know which
+// mechanism is in play.
+registerEntitlementsProvider(useShEntitlements);
 
 // Register the auth provider with a pass-through env wrapper (no
 // Google OAuth) and capabilities flagged for first-install

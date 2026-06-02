@@ -1,9 +1,8 @@
-import { paidExchanges, paidPlans } from '@/constants/subscription';
-import { useUserProfile } from '@/hooks/useUserProfile';
+import { paidExchanges } from '@/constants/subscription';
 import { useWeb3Wallet, type WalletProvider } from '@/hooks/useWeb3Wallet';
 import { track as analyticsTrack } from '@/lib/analytics';
+import { useEntitlements } from '@/lib/entitlements';
 import { Slot } from '@/lib/extensions';
-import { useLicense } from '@/lib/license';
 import { useTrial } from '@/lib/trial';
 import { toast } from '@/lib/toast';
 import { completeHyperliquidSetup } from '@/utils/hyperliquid';
@@ -105,18 +104,11 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
   hedgeModePending = false,
   ignoreFeesPending = false,
 }) => {
-  // Get user profile for subscription check
-  const { userProfile } = useUserProfile();
-
-  // Check if user has paid subscription
-  const isPaidUser = useMemo(() => {
-    const planName = userProfile?.subscription?.subscriptionPlanName ?? 'free';
-    return paidPlans.includes(planName);
-  }, [userProfile]);
-
-  // License gate. Used to hide Hyperliquid variants from the exchange
-  // picker when the user doesn't have a premium license.
-  const { isPremium } = useLicense();
+  // Unified entitlements gate. Cloud reads `userProfile.subscription.subscriptionPlanName`
+  // against `paidPlans`; sh reads `useLicense().isPremium`. The
+  // `useEntitlements` adapter hides the difference — see
+  // `lib/entitlements/impl/{cloud,sh}.ts`.
+  const { isPaid: isPaidUser } = useEntitlements();
 
   // Trial gate (cloud-only). When the user is still eligible for a free
   // trial, premium exchanges stay selectable in the dropdown and picking
@@ -314,10 +306,9 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
     return exchangeProviders.filter((config) => {
       if (formData.isPaperTrading && !config.isPaperExchange) return false;
       if (!formData.isPaperTrading && config.isPaperExchange) return false;
-      if (!isPremium && config.name === 'hyperliquid') return false;
       return true;
     });
-  }, [formData.isPaperTrading, isPremium]);
+  }, [formData.isPaperTrading]);
 
   // Whether premium exchanges should be offered behind the start-trial
   // prompt rather than hard-blocked. True only for a free user in live

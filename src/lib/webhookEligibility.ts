@@ -1,12 +1,14 @@
 import { BotTypesEnum, type DCABot, type DCABotSettings } from '@/types';
 /* import type { DcaBot } from '@/types/dcaBot'; */
 
-export const WEBHOOK_PLAN_NAMES = new Set([
-  'basic',
-  'advanced',
-  'pro',
-  'enterprise',
-]);
+// NOTE: a `WEBHOOK_PLAN_NAMES` constant used to live here, listing four
+// plan names against which webhook eligibility was matched. It became
+// stale every time cloud added a new tier (edge / elite / legend /
+// master / mini / prime / vip1-4 / trial). Eligibility now flows
+// through `useEntitlements().isPaid` in `useWebhookEligibility`, so
+// every paid plan (and any sh license-key premium) unlocks webhooks
+// uniformly. This comment exists so the rename isn't surprising to
+// future readers looking up the constant.
 
 export const TERMINAL_TYPE_TOKEN = 'terminal';
 

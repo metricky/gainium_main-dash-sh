@@ -2,12 +2,12 @@ import { useMemo } from 'react';
 import useUserProfile from '@/hooks/useUserProfile';
 /* import type { DcaBot } from '@/types/dcaBot'; */
 import { isWebhookGatingEnabled } from '@/config/featureFlags';
+import { useEntitlements } from '@/lib/entitlements';
 import {
   computeWebhookEligibility,
   isTerminalBot,
   isTerminalFromFormData,
   type WebhookEligibilityState,
-  WEBHOOK_PLAN_NAMES,
 } from '@/lib/webhookEligibility';
 import type { DCABot } from '@/types';
 
@@ -48,21 +48,24 @@ export function useWebhookEligibility(
     context,
   } = options;
   const { userProfile } = useUserProfile();
+  // Webhook eligibility is "the user has paid access of any kind."
+  // Previously we matched against a hardcoded `WEBHOOK_PLAN_NAMES` set
+  // of four plan names, which excluded the newer cloud tiers (edge,
+  // elite, legend, master, mini, prime, vip1-4, trial). The
+  // entitlements adapter resolves this uniformly: cloud → any plan in
+  // `paidPlans`; sh → `useLicense().isPremium`.
+  const { isPaid } = useEntitlements();
 
   const featureEnabled = useMemo(() => isWebhookGatingEnabled(), []);
 
+  // `planName` stays on the result for analytics/labels only — it does
+  // NOT drive the gating decision anymore.
   const planName = useMemo(() => {
     const rawPlan = userProfile?.subscription?.subscriptionPlanName;
     return rawPlan ? rawPlan.toLowerCase() : null;
   }, [userProfile?.subscription?.subscriptionPlanName]);
 
-  const hasWebhookSubscription = useMemo(() => {
-    if (!planName) {
-      return false;
-    }
-
-    return WEBHOOK_PLAN_NAMES.has(planName);
-  }, [planName]);
+  const hasWebhookSubscription = isPaid;
 
   const isTerminal = useMemo(() => {
     if (typeof isTerminalOverride === 'boolean') {
