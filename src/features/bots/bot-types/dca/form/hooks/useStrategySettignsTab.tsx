@@ -1,4 +1,5 @@
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
+import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
 import {
   useBotFormFieldLock,
   useBotFormSelector,
@@ -1199,17 +1200,16 @@ export const useStrategySettingsTab = ({
   }, [displayBaseAsset, displayQuoteAsset, strategy]);
 
   const baseOrderCoinIcon = useMemo(() => {
-    // For long bots, always show quote asset
-    // For short bots, always show base asset
-    const assetToShow = futures
-      ? coinm
-        ? displayBaseAsset
-        : displayQuoteAsset
-      : strategy === StrategyEnum.long
-        ? displayQuoteAsset
-        : displayBaseAsset;
+    // Icon follows the selected currency reference so it updates when the user
+    // toggles base/quote/USD — matching the DCA order amount input. (It used to
+    // key off strategy only, so it never reacted to the reference.)
+    const assetToShow = resolveOrderSizeIconSymbol(
+      orderSizeType,
+      displayBaseAsset,
+      displayQuoteAsset
+    );
     return <CoinIcon symbol={assetToShow} size="md" />;
-  }, [strategy, displayBaseAsset, displayQuoteAsset, futures, coinm]);
+  }, [orderSizeType, displayBaseAsset, displayQuoteAsset]);
 
   return {
     baseOrderDisplayValue,

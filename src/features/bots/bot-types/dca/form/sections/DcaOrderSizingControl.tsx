@@ -13,6 +13,7 @@ import {
 } from '@/contexts/bots/form/BotFormProvider';
 import { formatNumberWithTrim } from '@/features/bots/shared/utils/order-guard';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
+import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
 import {
   resolveBaseOrderContext,
   type DcaTradingContext,
@@ -285,21 +286,15 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
     [handlePercentChange, orderSizeValue, updateFormData]
   );
 
-  const coinIconSymbol = useMemo(() => {
-    switch (orderSizeType) {
-      case 'base':
-        return tradingContext.baseAsset ?? 'BTC';
-      case 'quote':
-        return tradingContext.quoteAsset ?? 'USDT';
-      case 'usd':
-        return 'USDT';
-      case 'percFree':
-      case 'percTotal':
-        return tradingContext.quoteAsset ?? 'USDT';
-      default:
-        return tradingContext.quoteAsset ?? 'USDT';
-    }
-  }, [orderSizeType, tradingContext.baseAsset, tradingContext.quoteAsset]);
+  const coinIconSymbol = useMemo(
+    () =>
+      resolveOrderSizeIconSymbol(
+        orderSizeType,
+        tradingContext.baseAsset,
+        tradingContext.quoteAsset
+      ),
+    [orderSizeType, tradingContext.baseAsset, tradingContext.quoteAsset]
+  );
 
   const coinIconElement = useMemo(
     () => <CoinIcon symbol={coinIconSymbol} size="w-6 h-6" />,

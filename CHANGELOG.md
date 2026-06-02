@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.5] - 2026-06-02
+
+### Fixed
+- Base Order Size input now updates its coin icon when the currency reference
+  is switched (base/quote/USD), matching the DCA order amount input. Both inputs
+  share `resolveOrderSizeIconSymbol`.
+- Footer "Capital required" chip now derives the whole-bot total from the same
+  example-orders deal summary the DCA overview "Total Funds" tile uses (new
+  `useBotDealCapital` hook), so the two agree when the order size is referenced
+  in the base currency — previously the chip recomputed it standalone and
+  mismatched.
+
 ## [2.7.4] - 2026-06-01
 
 ### Fixed

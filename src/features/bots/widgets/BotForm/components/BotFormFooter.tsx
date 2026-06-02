@@ -57,7 +57,6 @@ import {
   BuyTypeEnum,
   CloseDCATypeEnum,
   CloseGRIDTypeEnum,
-  StrategyEnum,
   type BotStatus,
   type DCABot,
   type ExchangeInUser,
@@ -66,7 +65,7 @@ import {
 import type { BotFormData, BotFormErrors } from '@/types/bots';
 import { calculateCost } from '@/utils/bots/credits';
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
-import { deriveCapitalSummary } from '@/utils/bots/dca/capital-summary';
+import { useBotDealCapital } from '@/hooks/bots/dca/useBotDealCapital';
 import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
 import { BotFormSaveTemplateDialog } from './BotFormSaveTemplateDialog';
 import GridStartBotDialog from '@/features/bots/shared/runtime/dialogs/GridStartBotDialog';
@@ -589,17 +588,17 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   // example-order side effects so this second consumer doesn't fight the
   // form's own trading context.
   const budget = useBotFormSelector('budget');
-  const strategy = useBotFormSelector('strategy');
-  const futures = useBotFormSelector('futures');
-  const coinm = useBotFormSelector('coinm');
   const dcaTradingContext = useDcaTradingContext(formData, {
     mode: 'settings-readonly',
   });
+  // Whole-bot capital, derived from the same example-orders deal summary the
+  // DCA overview "Total Funds" tile uses — so the chip and the tile agree even
+  // when the order size is referenced in the base currency.
+  const dealCapital = useBotDealCapital(formData, dcaTradingContext, {
+    creditsMultiplier: creditsMultiplier || 1,
+  });
   const fundsInfo = useMemo<FundsInfo | null>(() => {
     const quote = dcaTradingContext.quoteAsset;
-    const base = dcaTradingContext.baseAsset;
-    const price = dcaTradingContext.latestPrice;
-    const mult = creditsMultiplier || 1;
 
     // Grid: the budget is the whole-bot investment, denominated in quote.
     if (botType === BotTypesEnum.grid) {
@@ -619,88 +618,50 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
       };
     }
 
-    const summary = deriveCapitalSummary({
-      formData,
-      tradingContext: dcaTradingContext,
-    });
-    if (summary.percentageMode) return null;
+    if (!dealCapital) return null;
 
-    // Order sizes are denominated in `currencyLabel`; the deposit side is
-    // base for spot short / COIN-M futures, quote otherwise. Convert the
-    // breakdown into the deposit currency for display.
-    const orderInBase = summary.currencyLabel === base;
-    const useBase = futures ? !!coinm : strategy === StrategyEnum.short;
-    const displayCurrency = useBase ? base : quote;
-    const toDisplay = (amount: number): number | null => {
-      if (useBase === orderInBase) return amount; // already in deposit currency
-      if (!price || price <= 0) return null;
-      return useBase ? amount / price : amount * price; // quote↔base via price
-    };
-
-    // "Capital required" is the margin actually committed, not the notional
-    // exposure: for leveraged (futures) bots that's notional / leverage. The
-    // % required and overspend checks already use the cost figures, so the
-    // displayed total and its breakdown must divide by leverage too to stay
-    // consistent (spot bots have leverage 1, so this is a no-op there).
-    const lev = summary.leverage > 0 ? summary.leverage : 1;
-    const grandTotal = toDisplay((summary.totalPerBot * mult) / lev);
-    if (grandTotal == null || !Number.isFinite(grandTotal) || grandTotal <= 0) {
-      return null;
-    }
-    const baseOrders = toDisplay(
-      (summary.baseOrderSize * summary.maxDeals * mult) / lev
-    );
-    const safetyPerDeal = Math.max(
-      0,
-      summary.totalPerDeal - summary.baseOrderSize
-    );
-    const safetyOrders = toDisplay((safetyPerDeal * summary.maxDeals * mult) / lev);
+    const {
+      useBase,
+      currency: displayCurrency,
+      maxDeals,
+      total,
+      baseOrders,
+      dcaOrders,
+      availableBalance,
+      pctRequired,
+      overspend,
+    } = dealCapital;
 
     const rows: ChipRow[] = [];
-    if (baseOrders != null && baseOrders > 0) {
+    if (baseOrders > 0) {
       rows.push({
-        label: `Base orders (×${summary.maxDeals} deals)`,
+        label: `Base orders (×${maxDeals} deals)`,
         value: fmtCurrency(baseOrders, displayCurrency, useBase),
       });
     }
-    if (safetyOrders != null && safetyOrders > 0) {
+    if (dcaOrders > 0) {
       rows.push({
-        label: `DCA orders (×${summary.maxDeals} deals)`,
-        value: fmtCurrency(safetyOrders, displayCurrency, useBase),
+        label: `DCA orders (×${maxDeals} deals)`,
+        value: fmtCurrency(dcaOrders, displayCurrency, useBase),
       });
     }
 
-    // Available balance / % required stay in the order currency (the basis
-    // deriveCapitalSummary checks overspend against), so the ratio is exact
-    // regardless of the deposit-currency conversion used for display.
-    const available = summary.availableBalance;
-    const pctRequired =
-      available > 0 ? ((summary.costPerBot * mult) / available) * 100 : null;
     const availableLabel =
-      available > 0
-        ? fmtCurrency(available, summary.currencyLabel, orderInBase)
+      availableBalance > 0
+        ? fmtCurrency(availableBalance, displayCurrency, useBase)
         : null;
 
     return {
       title: 'Capital required',
       symbol: displayCurrency,
-      amountLabel: fmtAmount(grandTotal, useBase),
-      totalLabel: fmtCurrency(grandTotal, displayCurrency, useBase),
+      amountLabel: fmtAmount(total, useBase),
+      totalLabel: fmtCurrency(total, displayCurrency, useBase),
       rows,
       availableLabel,
       pctRequired,
-      overspend: summary.overspend,
+      overspend,
     };
-  }, [
-    botType,
-    budget,
-    formData,
-    dcaTradingContext,
-    creditsMultiplier,
-    strategy,
-    futures,
-    coinm,
-  ]);
+  }, [botType, budget, dcaTradingContext, dealCapital]);
 
   const handleSubmit = useCallback(() => {
     void onSubmit();

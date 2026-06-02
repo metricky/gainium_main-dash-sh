@@ -146,6 +146,8 @@ export const useDealOverviewData = () => {
         avgDownPower: '0.00',
         totalCapital: 0,
         totalCapitalBase: 0,
+        baseOrderCapital: 0,
+        baseOrderCapitalBase: 0,
       };
     }
 
@@ -195,7 +197,21 @@ export const useDealOverviewData = () => {
     const totalCapitalBase =
       lastBuy?.totalBase || buyOrders[0]?.totalBase || 0;
 
-    return { coverage, avgDownPower, totalCapital, totalCapitalBase };
+    // The first entry order is the base order; its cumulative figure is the
+    // base-order capital for a single deal. The DCA portion is the remainder up
+    // to the last buy. Exposed so the footer's "Capital required" breakdown can
+    // be derived from these same authoritative numbers rather than recomputed.
+    const baseOrderCapital = buyOrders[0]?.totalQuote || 0;
+    const baseOrderCapitalBase = buyOrders[0]?.totalBase || 0;
+
+    return {
+      coverage,
+      avgDownPower,
+      totalCapital,
+      totalCapitalBase,
+      baseOrderCapital,
+      baseOrderCapitalBase,
+    };
   }, [graphData]);
 
   return { orders, tableData, graphData, summary };
