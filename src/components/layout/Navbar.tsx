@@ -1,5 +1,6 @@
 import ShortcutChip from '@/components/common/ShortcutChip';
 import { TradingModeIcon } from '@/components/common/TradingModeIcon';
+import { useTradingModeSwitching } from '@/stores/live/tradingContext';
 import { BotCreditsUsage } from '@/components/subscription/BotCreditsUsage';
 import { PlanBadge } from '@/components/subscription/PlanBadge';
 import NewBotWizard from '@/components/wizards/NewBotWizard';
@@ -32,6 +33,7 @@ import {
   Eye,
   EyeOff,
   Gift,
+  Loader2,
   LogOut,
   Search,
   Settings,
@@ -92,6 +94,7 @@ const Navbar: React.FC<NavbarProps> = ({
   // previous direct useUIStore() call was removed to avoid full-store subscription
   const { toggleTradingMode, isLiveTrading, tradingMode, setLiveTrading } =
     usePaperContext();
+  const { isSwitching: isTradingModeSwitching } = useTradingModeSwitching();
   const { unreadCounts, toggleNotificationsPanel } = useNotificationsStore();
   const privacyMode = useUIStore((s) => s.privacyMode);
   const togglePrivacyMode = useUIStore((s) => s.togglePrivacyMode);
@@ -909,6 +912,9 @@ const Navbar: React.FC<NavbarProps> = ({
                       <div className="flex items-center gap-xs">
                         <DollarSign className="h-4 w-4" />
                         <span>Live trading</span>
+                        {isTradingModeSwitching && (
+                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                        )}
                       </div>
                       <Switch
                         checked={isLiveTrading}

@@ -841,6 +841,7 @@ comboSmartGridsCount
 `;
 
 const dcaDealFragment = `
+paperContext
 flags
 closeTrigger
 tpFilledHistory {
@@ -1061,6 +1062,7 @@ fixedSlPrice
             `;
 
 const comboDealFragment = `
+paperContext
 parentBotId
 note
 moveSlActivated

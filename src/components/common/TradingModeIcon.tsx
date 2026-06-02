@@ -1,5 +1,6 @@
 import { useUIStore } from '@/stores/uiStore';
-import { Activity, DollarSign, FlaskConical } from 'lucide-react';
+import { useTradingModeSwitching } from '@/stores/live/tradingContext';
+import { Activity, DollarSign, FlaskConical, Loader2 } from 'lucide-react';
 
 interface TradingModeIconProps {
   /** Size variant for the icon container */
@@ -50,9 +51,13 @@ export const TradingModeIcon: React.FC<TradingModeIconProps> = ({
   const isLiveTrading = useUIStore((s) => s.isLiveTrading);
   const tradingMode = useUIStore((s) => s.tradingMode);
   const setTradingMode = useUIStore((s) => s.setTradingMode);
+  const { isSwitching } = useTradingModeSwitching();
 
   const isDemoMode = tradingMode === 'demo';
   const effectiveIsLive = forceLive !== undefined ? forceLive : isLiveTrading;
+  // Only reflect the global switch when this badge mirrors global state.
+  // `forceLive` badges are static labels and must not show a spinner.
+  const showSwitching = forceLive === undefined && isSwitching;
 
   const handleClick = () => {
     if (onClick) {
@@ -83,7 +88,11 @@ export const TradingModeIcon: React.FC<TradingModeIconProps> = ({
     ModeIcon = FlaskConical;
   }
 
-  const tooltipText = showTooltip ? `${modeLabel} Trading` : undefined;
+  const tooltipText = showTooltip
+    ? showSwitching
+      ? `Switching to ${modeLabel}…`
+      : `${modeLabel} Trading`
+    : undefined;
 
   return (
     <span
@@ -93,7 +102,11 @@ export const TradingModeIcon: React.FC<TradingModeIconProps> = ({
       title={tooltipText}
       onClick={clickable || onClick ? handleClick : undefined}
     >
-      <ModeIcon className={`${sizeClasses.icon} text-white ${iconAnimation}`} />
+      {showSwitching ? (
+        <Loader2 className={`${sizeClasses.icon} text-white animate-spin`} />
+      ) : (
+        <ModeIcon className={`${sizeClasses.icon} text-white ${iconAnimation}`} />
+      )}
     </span>
   );
 };

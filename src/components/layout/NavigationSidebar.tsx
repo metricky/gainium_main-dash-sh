@@ -7,6 +7,7 @@ import {
   ChevronRight,
   HelpCircle,
   Lightbulb,
+  Loader2,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -35,6 +36,7 @@ import { TruncatedText } from '../ui/TruncatedText';
 import { IS_CLOUD } from '@/config/mode';
 import { SHORTCUT_IDS } from '@/config/shortcuts';
 import { usePaperContext } from '@/hooks/usePaperContext';
+import { useTradingModeSwitching } from '@/stores/live/tradingContext';
 import { showShortcutHintById } from '@/lib/shortcutHints';
 import { getBotStatusConfig } from '@/utils/botUtils';
 import {
@@ -230,6 +232,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
 
   // Use paper context hook for trading mode toggle
   const { toggleTradingMode, isDemoMode } = usePaperContext();
+  const { isSwitching: isTradingModeSwitching } = useTradingModeSwitching();
 
   // Multi-dashboard store — narrow selectors so the sidebar only re-renders
   // when these specific fields change (not on every store mutation). Actions
@@ -1692,8 +1695,11 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                 ) : (
                   // Live/Paper mode: Show switch
                   <div className="flex items-center justify-between">
-                    <span className="transition-colors duration-200 cursor-pointer text-muted-foreground hover:text-foreground text-sm">
+                    <span className="flex items-center gap-xs transition-colors duration-200 cursor-pointer text-muted-foreground hover:text-foreground text-sm">
                       {isLiveTrading ? 'Live Trading' : 'Paper Trading'}
+                      {isTradingModeSwitching && (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      )}
                     </span>
                     <Switch
                       checked={isLiveTrading}

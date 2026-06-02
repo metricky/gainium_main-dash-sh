@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.6] - 2026-06-02
+
+### Fixed
+- Combo/DCA deal lists no longer merge live and paper deals on a trading-context
+  switch. Deal queries now request the `paperContext` field (exposed by the
+  backend) so each deal is scoped to its true context instead of being inferred
+  from the active mode (which mis-tagged placeholder data during the switch).
+
+### Added
+- Trading-mode toggle (badge + sidebar/navbar switches) shows a spinner while
+  the newly-selected context's data loads.
+
 ## [2.7.5] - 2026-06-02
 
 ### Fixed
