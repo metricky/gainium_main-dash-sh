@@ -5,9 +5,10 @@ to know before opening a pull request.
 
 ## Contributor License Agreement (CLA)
 
-This project is licensed under the **Business Source License 1.1** (see
-[`LICENSE`](./LICENSE)). Before your first contribution can be merged, you
-must sign our Contributor License Agreement.
+This project is licensed under the **Fair Core License 1.0
+(FCL-1.0-Apache-2.0)** (see [`LICENSE`](./LICENSE)). Before your first
+contribution can be merged, you must sign our Contributor License
+Agreement.
 
 The process is automated by a GitHub Action:
 
