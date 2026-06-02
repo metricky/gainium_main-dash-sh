@@ -7,8 +7,10 @@ import {
   ExchangeIntervals,
   type BacktestingSettings,
   type DCABacktestingResultShort,
+  type DCABotSettings,
   type ExchangeInUser,
   type ServerSideBacktestPayload,
+  type Settings,
   type Symbols,
 } from '@/types';
 import type { BotFormData } from '@/types/bots';
@@ -135,29 +137,59 @@ export function prepareBacktestInput(
     })
     .filter(Boolean) as SSBinput['symbols'];
 
-  const result: SSBinput = {
-    symbols,
-    payload: {
-      type: BotTypesEnum.dca,
+  // Transport fields shared by every bot type. Only `type`, `settings`,
+  // and the `combo` flag vary per bot type — mirroring legacy, which sets
+  // `type` from the bot type and sends the bot's own settings (useDCAPage
+  // `type: combo ? combo : dca` with the combo flag; gridbot `type: grid`).
+  // Hardcoding dca/combo:false/formData.dca ran combo and grid bots as a
+  // plain DCA bot with the empty DCA slice → trivial/garbage results.
+  const commonData = {
+    exchange: currentExchange.provider,
+    exchangeUUID: currentExchange.uuid,
+    interval,
+    balances: [],
+    from: backtestConfig.firstDataTime,
+    to: backtestConfig.lastDataTime,
+    slippage: +backtestConfig.slippage,
+    userFee: +backtestConfig.userFee,
+  };
+  const pairList = [formData.pair].flat();
+
+  let payload: ServerSideBacktestPayload;
+  if (formData.type === BotTypesEnum.grid) {
+    payload = {
+      type: BotTypesEnum.grid,
       data: {
-        exchange: currentExchange.provider,
-        exchangeUUID: currentExchange.uuid,
-        interval,
-        balances: [],
-        from: backtestConfig.firstDataTime,
-        to: backtestConfig.lastDataTime,
-        slippage: +backtestConfig.slippage,
-        userFee: +backtestConfig.userFee,
+        ...commonData,
         settings: {
-          ...formData.dca,
-          pair: [formData.pair].flat(),
+          ...formData.grid,
+          pair: pairList[0] ?? '',
           name: formData.name,
-        },
-        combo: false,
+          // Legacy forces this true at backtest time; the form mapper
+          // defaults it to false for edited/cloned bots (the stored
+          // payload strips it), which fee-reduces the budget and diverges
+          // from legacy. Matches the grid local-backtest path.
+          updatedBudget: true,
+        } as unknown as Settings,
       },
       config: backtestConfig,
-    },
-  };
+    };
+  } else {
+    const isCombo = formData.type === BotTypesEnum.combo;
+    payload = {
+      type: isCombo ? BotTypesEnum.combo : BotTypesEnum.dca,
+      data: {
+        ...commonData,
+        settings: {
+          ...(isCombo ? formData.combo : formData.dca),
+          pair: pairList,
+          name: formData.name,
+        } as unknown as DCABotSettings,
+        combo: isCombo,
+      },
+      config: backtestConfig,
+    };
+  }
 
-  return result;
+  return { symbols, payload };
 }

@@ -2856,6 +2856,13 @@ const BotForm: React.FC<BotFormProps> = ({
               ...formData.grid,
               pair: primaryPair,
               name: formData.name || 'Grid Bot',
+              // Legacy forces this flag true at backtest time (gridbot
+              // `{ ...settings, updatedBudget: true }`). The form mapper
+              // defaults it to `false` for edited/cloned bots (the stored
+              // payload strips `updatedBudget`), which makes the backtester
+              // fee-reduce the budget (`budget / (1 + userFee*100)`) and
+              // diverge from legacy order sizes / ROI. Force true for parity.
+              updatedBudget: true,
             } as unknown as Settings;
 
             const gridBacktesterInput: GRIDBacktestingInput = {
@@ -3005,11 +3012,22 @@ const BotForm: React.FC<BotFormProps> = ({
                 settingsFromMapping.useMulti;
             }
 
+            // A combo bot stores its settings in `formData.combo`, not
+            // `formData.dca`, and must run with `combo: true` so the
+            // backtester applies combo grid logic. Mirrors legacy
+            // (useDCAPage `settingsInput`), which passes the bot's own
+            // settings plus the real `combo` flag. Using `formData.dca` +
+            // `combo: false` for a combo bot ran it as a plain DCA bot with
+            // the empty DCA slice, producing trivial ~1% ROI deals.
+            const isComboBacktest = formData.type === BotTypesEnum.combo;
+            const backtestSettings = (
+              isComboBacktest ? formData.combo : formData.dca
+            ) as unknown as DCABotSettings;
             const backtesterInput: DCABacktestingInput = {
               exchange: currentExchange?.provider,
               symbols,
               settings: {
-                ...formData.dca,
+                ...backtestSettings,
                 name: formData.name,
                 pair: [formData.pair].flat(),
               },
@@ -3020,7 +3038,7 @@ const BotForm: React.FC<BotFormProps> = ({
               from: firstDataTime,
               to: lastDataTime,
               slippage: cfg.slippagePercent ?? 0,
-              combo: false,
+              combo: isComboBacktest,
               multi: settingsFromMapping?.useMulti ?? false,
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             };
