@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
+import { useBalanceStore } from '@/stores/live/balanceStore';
 import type { ExchangeInUser } from '@/types';
 
 interface UseQuickBalanceArgs {
@@ -12,58 +12,44 @@ interface UseQuickBalanceArgs {
 }
 
 interface UseQuickBalanceResult {
-  /**
-   * Effective balance the slider uses. Falls back to the exchange's
-   * total USD balance when the asset entry is missing or zero.
-   */
+  /** Balance the slider percentages off — the real free balance of `asset`
+   *  on the selected exchange (0 when the user holds none). */
   availableBalance: number;
-  /**
-   * True when `availableBalance` came from `currentExchange.balance`
-   * (the account total in USD) rather than the matched asset entry.
-   * Lets the consumer label the trailing summary correctly.
-   */
-  usingExchangeTotal: boolean;
-  /** Raw free balance of the requested asset from the balances list (0 if missing). */
+  /** Raw free balance of the requested asset (alias of `availableBalance`). */
   freeAssetBalance: number;
-  /** Raw exchange total balance (0 if missing). */
-  exchangeTotalBalance: number;
 }
 
 /**
- * Resolves the balance the investment slider should percentage off
- * for a quick-setup form. Prefers the free asset balance (what the
- * bot can actually deploy); falls back to the exchange's total
- * balance so the slider isn't stuck at 0% when the asset entry is
- * simply absent.
+ * Resolves the free balance of the investment asset for a quick-setup form,
+ * read from the live balance store (the same source the manual tab uses, kept
+ * hydrated per-exchange by BotForm's `getBalances`). Scoped to the selected
+ * exchange and the exact asset — a 0 is a real zero (the user holds none of
+ * that asset) and is reported as 0. It never falls back to the exchange's
+ * total USD balance: that figure is denominated in the account's settlement
+ * asset, so showing it for a different quote asset (e.g. USDC when the account
+ * holds USDT) is always wrong.
  */
 export const useQuickBalance = ({
   currentExchange,
   asset,
 }: UseQuickBalanceArgs): UseQuickBalanceResult => {
-  const { balances } = useBotFormQuery();
+  const balances = useBalanceStore((state) => state.balances);
+  const exchangeUUID = currentExchange?.uuid;
 
   const freeAssetBalance = useMemo(() => {
-    if (!asset || !balances) return 0;
-    const match = balances.find((b) => b.asset === asset);
-    if (!match) return 0;
-    const value = Number(match.free);
+    if (!asset || !exchangeUUID) return 0;
+    const wanted = asset.toUpperCase();
+    const value = balances
+      .filter(
+        (b) =>
+          b.exchangeUUID === exchangeUUID && b.asset?.toUpperCase() === wanted
+      )
+      .reduce((sum, b) => sum + (Number(b.free) || 0), 0);
     return Number.isFinite(value) ? value : 0;
-  }, [balances, asset]);
-
-  const exchangeTotalBalance = useMemo(() => {
-    const value = Number(currentExchange?.balance);
-    return Number.isFinite(value) && value > 0 ? value : 0;
-  }, [currentExchange?.balance]);
-
-  const availableBalance =
-    freeAssetBalance > 0 ? freeAssetBalance : exchangeTotalBalance;
-  const usingExchangeTotal =
-    availableBalance > 0 && freeAssetBalance <= 0 && exchangeTotalBalance > 0;
+  }, [balances, asset, exchangeUUID]);
 
   return {
-    availableBalance,
-    usingExchangeTotal,
+    availableBalance: freeAssetBalance,
     freeAssetBalance,
-    exchangeTotalBalance,
   };
 };

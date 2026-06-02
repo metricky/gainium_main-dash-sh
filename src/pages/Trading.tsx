@@ -2041,7 +2041,7 @@ const Trading: React.FC = () => {
                   ...(originalTrade.created && {
                     created: originalTrade.created,
                   }),
-                  botId: originalTrade.id, // Use trade ID as botId fallback
+                  ...(originalTrade.botId && { botId: originalTrade.botId }),
                 }}
                 open={true}
                 onClose={() => setSelectedTradeId(null)}

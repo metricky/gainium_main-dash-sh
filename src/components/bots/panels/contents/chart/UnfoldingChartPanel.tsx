@@ -54,6 +54,7 @@ export interface UnfoldingChartPanelProps {
   onTimeframeChange?: (timeframe: TimeframeKey) => void;
   onPanelMenuChange?: (menu: PanelMenuConfig | null) => void;
   overrideSymbol?: string | null;
+  overrideExchange?: string | null;
 }
 
 const DEFAULT_TIMEFRAME: TimeframeKey = 'all';
@@ -136,6 +137,7 @@ const UnfoldingChartPanel = ({
   onTimeframeChange,
   onPanelMenuChange,
   overrideSymbol,
+  overrideExchange,
 }: UnfoldingChartPanelProps) => {
   const resolvedBotIdentifier = botId ?? bot?.id ?? null;
   const persistenceKey = getTimeframeStorageKey(resolvedBotIdentifier);
@@ -231,10 +233,15 @@ const UnfoldingChartPanel = ({
           ?.symbol
       : (bot?.symbol as unknown as string | undefined);
     const pair = overrideSymbol || bot?.pair || symbolFallback;
-    const exch = bot?.exchange;
-    if (pair && exch) return `${pair}@${exch}`;
+    // Fall back to the deal's own exchange when the parent bot isn't in the
+    // live store — e.g. terminal deals, whose bots are loaded with
+    // `terminal: false` on the Trading page and so never land in the DCA
+    // bots store. Without this the price chart can't resolve a symbol and
+    // the panel shows "No chart data is available for the selected timeframe".
+    const exch = overrideExchange || bot?.exchange;
+    if (pair && exch && exch !== 'Unknown') return `${pair}@${exch}`;
     return undefined;
-  }, [overrideSymbol, bot?.exchange, bot?.pair, bot?.symbol]);
+  }, [overrideSymbol, overrideExchange, bot?.exchange, bot?.pair, bot?.symbol]);
 
   /* const handleMarkerClick = useCallback((data: unknown, _index?: number) => {
     const marker = (data as { payload?: MarkerDatum })?.payload;

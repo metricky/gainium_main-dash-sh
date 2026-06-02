@@ -17,7 +17,6 @@ export { resolveBaseOrderContext } from '@/utils/bots/dca/base-order-context';
 export type { AggregatedBalanceSnapshot } from '@/utils/bots/dca/base-order-context';
 
 import { useBotFormSelector, type BotFormMode } from '@/features/bots';
-import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { findUSDRate } from '@/lib/utils/unrealizedPnL';
 import {
   MAX_DCA_ORDERS,
@@ -239,7 +238,6 @@ export const useDcaTradingContext = (
   options?: UseDcaTradingContextOptions
 ): DcaTradingContext => {
   const balances = useBalanceStore((state) => state.balances);
-  const { currentExchange } = useBotFormQuery();
   const botSettings = options?.bot?.settings;
   const selectedPairs = React.useMemo(() => {
     const metadataRecord = formData.pairMetadata ?? {};
@@ -385,42 +383,19 @@ export const useDcaTradingContext = (
       quoteSymbols.add(quoteAsset);
     }
 
+    // The per-asset free balances are the real, deployable amounts. We never
+    // fall back to currentExchange.balance (the account's total USD): that
+    // figure is denominated in the settlement asset, so showing it for a
+    // different quote/base asset (e.g. USDC when the account holds USDT) is
+    // always wrong. A 0 here is a real zero — the user holds none of that
+    // asset — and must display as 0.
     const result = {
       base: buildAggregatedSnapshot(baseSymbols, balanceMap),
       quote: buildAggregatedSnapshot(quoteSymbols, balanceMap),
     };
 
-    // Fallback when the aggregation produced 0 — covers two loading
-    // races that the Quick tab papers over via useQuickBalance:
-    //   1. Balance store hasn't hydrated for the active exchange yet
-    //      (right after onboarding creates one and lands on /bot/new).
-    //   2. Pair metadata hasn't resolved the active pair yet, so
-    //      `quoteSymbols` is empty and the sum is 0 even though the
-    //      store has a matching entry — the symptom is "BAL 0 QUOTE"
-    //      where the QUOTE placeholder is itself the giveaway.
-    // In both cases, currentExchange.balance (the exchange's total USD
-    // field) is a safe upper-bound for what the user can deploy.
-    const exchangeTotal = Number(currentExchange?.balance);
-    if (
-      result.quote.free <= 0 &&
-      Number.isFinite(exchangeTotal) &&
-      exchangeTotal > 0
-    ) {
-      result.quote = {
-        free: exchangeTotal,
-        total: exchangeTotal,
-        usd: exchangeTotal,
-      };
-    }
-
     return result;
-  }, [
-    selectedPairs,
-    balanceMap,
-    baseAsset,
-    quoteAsset,
-    currentExchange?.balance,
-  ]);
+  }, [selectedPairs, balanceMap, baseAsset, quoteAsset]);
 
   const ranges = React.useMemo((): DcaDerivedRanges => {
     const resolved = resolveDcaRanges(formData);

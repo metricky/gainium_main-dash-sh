@@ -316,6 +316,9 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
                     // {key,value} objects — which gets stringified into
                     // "[object Object],[object Object],…" in the chart.
                     overrideSymbol={symbolString}
+                    // Lets the price chart resolve a symbol even when the
+                    // parent bot isn't in the live store (terminal deals).
+                    overrideExchange={trade.exchange}
                     enabled={true}
                     className="h-full"
                   />

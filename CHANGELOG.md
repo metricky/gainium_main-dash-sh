@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.7] - 2026-06-02
+
+### Fixed
+- Deal drawer chart opened from the Trading terminal no longer always shows "No
+  chart data is available for the selected timeframe". The terminal passed the
+  deal id as `botId`, breaking the bot lookup (and order/smart-order fetches);
+  it now passes the real `botId`. The price chart also falls back to the deal's
+  own exchange when the parent bot isn't in the live store (terminal deals,
+  whose bots load with `terminal: false`), so the candlestick chart resolves.
+- Exchange chip in the deal drawer truncates its label instead of overflowing
+  the card when the exchange name is long.
+- Bot-form investment slider now percentages off the real free balance of the
+  selected asset (read from the live balance store), and never falls back to the
+  exchange's total USD balance — that figure is denominated in the settlement
+  asset and was wrong for a different quote asset (e.g. USDC vs USDT). A 0 now
+  shows as a real 0.
+
 ## [2.7.6] - 2026-06-02
 
 ### Fixed

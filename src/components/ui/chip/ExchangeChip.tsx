@@ -203,10 +203,11 @@ export const ExchangeChip: React.FC<ExchangeChipProps> = ({
       variant="default"
       size={size}
       chipStyle={chipStyle}
-      className={cn('text-muted-foreground', className)}
+      className={cn('max-w-full min-w-0 text-muted-foreground', className)}
     >
       {showIcon && (
         <ExchangeIcon
+          className="shrink-0"
           icon={icon}
           size={cn(
             size === 'xs' && 'w-6 h-6',
@@ -217,7 +218,7 @@ export const ExchangeChip: React.FC<ExchangeChipProps> = ({
           )}
         />
       )}
-      <span className="truncate">{inlineLabel}</span>
+      <span className="min-w-0 truncate">{inlineLabel}</span>
     </Chip>
   );
 };
