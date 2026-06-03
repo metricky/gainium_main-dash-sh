@@ -715,7 +715,7 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
         { ...newIndicator, groupId: groupId },
       ]);
     },
-    [startIndicatorGroups, totalIndicators, indicatorsLimit, updateFormData, indicators]
+    [startIndicatorGroups, totalIndicators, updateFormData, indicators]
   );
 
   const handleChangeIndicatorParamsInGroup = React.useCallback(

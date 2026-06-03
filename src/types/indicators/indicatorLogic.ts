@@ -9,6 +9,7 @@ import {
   type IndicatorCategory,
   type IndicatorDefinition,
   type IndicatorFieldDefinition,
+  type IndicatorFieldOption,
 } from './indicatorTypes';
 import type {
   IndicatorParamPrimitive,
@@ -26,7 +27,6 @@ import {
   ppValueTypeEnum,
   type SettingsIndicators,
 } from '..';
-import type { IndicatorFieldOption } from './indicatorTypes';
 
 const collectFields = (
   definition: IndicatorDefinition

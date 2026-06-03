@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.10] - 2026-06-03
+
+### Fixed
+- Dynamic AR config missed in SL panel. 
+- ADR timeframe bug. 
+
 ## [2.7.9] - 2026-06-03
 
 ### Added

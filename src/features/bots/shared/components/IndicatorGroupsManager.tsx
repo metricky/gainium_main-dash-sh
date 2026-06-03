@@ -16,8 +16,8 @@ import {
   IndicatorSection,
   indicatorsLimit,
   IndicatorsLogicEnum,
+  type ExchangeEnum,
 } from '@/types';
-import type { ExchangeEnum } from '@/types';
 import type { IndicatorConfig, IndicatorGroup } from '@/types/indicators';
 import {
   getIndicatorDefaultParams,

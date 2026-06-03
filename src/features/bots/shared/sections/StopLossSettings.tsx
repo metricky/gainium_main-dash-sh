@@ -39,6 +39,7 @@ import {
   indicatorsLimit,
   type MultiTP,
 } from '@/types';
+import { DynamicArIndicatorPanel } from '@/features/bots/shared/components/DynamicArIndicatorPanel';
 import { CloseConditionEnum } from '@/types/bots/dealConditions';
 import type {
   BotFormData,
@@ -1862,139 +1863,6 @@ const IndicatorsSL: React.FC<
   );
 };
 
-const DynamicArSL: React.FC<Omit<StopLossSettingsProps, 'formData'>> = ({
-  //formData,
-  updateFormData,
-  errors: _errors,
-}) => {
-  const indicators = useBotFormSelector('indicators');
-  const indicator = useMemo(
-    () =>
-      indicators.find(
-        (i) =>
-          i.indicatorAction === IndicatorAction.closeDeal &&
-          i.section === IndicatorSection.sl &&
-          (i.type === IndicatorEnum.atr || i.type === IndicatorEnum.adr)
-      ),
-    [indicators]
-  );
-
-  const updateIndicator = useCallback(
-    (updates: Partial<IndicatorConfig>) => {
-      if (!indicator?.uuid) {
-        return;
-      }
-      const nextIndicators = indicators.map((ind) =>
-        ind.uuid === indicator.uuid ? { ...ind, ...updates } : ind
-      );
-      updateFormData('indicators', nextIndicators);
-    },
-    [indicators, indicator?.uuid, updateFormData]
-  );
-
-  // Register Dynamic AR indicator error with form context
-  useComponentError(
-    'dynamicArIndicator',
-    !indicator,
-    'Dynamic AR indicator not configured. Please add the ATR/ADR indicator to enable dynamic stop loss.',
-    {
-      navId: 'stop-loss-advanced',
-      variant: 'error',
-    }
-  );
-
-  if (!indicator) {
-    return (
-      <div className="text-sm text-destructive">
-        Dynamic AR indicator not configured. Please add the ATR/ADR indicator to
-        enable dynamic stop loss.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-sm sm:space-y-md">
-      <div className="text-sm text-muted-foreground mb-4">
-        Configure stop loss based on ATR (Average True Range) or ADR (Average
-        Daily Range).
-      </div>
-
-      <div className="border rounded-lg p-md">
-        <div className="flex items-center justify-between mb-3">
-          <Label className="text-base">Dynamic AR Settings</Label>
-        </div>
-        <div className="space-y-sm">
-          <div className="space-y-xs">
-            <Label className="text-sm">Type:</Label>
-            <TerminalButtonStack
-              value={indicator.type}
-              onValueChange={(nextValue) =>
-                updateIndicator({ type: nextValue as IndicatorEnum })
-              }
-              options={[
-                { value: IndicatorEnum.atr, label: 'ATR' },
-                { value: IndicatorEnum.adr, label: 'ADR' },
-              ]}
-              className="w-full sm:w-auto"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-sm">
-            <div className="space-y-xs">
-              <Label>Period</Label>
-              <NumberInput
-                value={indicator.indicatorLength}
-                onChange={(value) =>
-                  updateIndicator({ indicatorLength: +`${value}` })
-                }
-                min={1}
-                max={100}
-                step={1}
-                precision={0}
-                placeholder="14"
-              />
-              <p className="text-xs text-muted-foreground">
-                Number of periods for {indicator.type} calculation
-              </p>
-            </div>
-            <div className="space-y-xs">
-              <Label>Multiplier</Label>
-              <NumberInput
-                value={indicator.dynamicArFactor}
-                onChange={(value) =>
-                  updateIndicator({ dynamicArFactor: `${value}` })
-                }
-                min={0.1}
-                max={10}
-                step={0.1}
-                precision={1}
-                placeholder="2.0"
-              />
-            </div>
-          </div>
-
-          <div className="text-xs text-muted-foreground">
-            {indicator.type === IndicatorEnum.atr
-              ? 'ATR measures volatility over the specified period and adjusts stop loss based on price movement.'
-              : 'ADR measures daily range average and sets stop loss relative to typical daily price swings.'}
-          </div>
-
-          {/* Show calculated SL if we have the data */}
-          <div className="pt-2 border-t">
-            <div className="text-sm">
-              <span className="text-muted-foreground">Calculated SL: </span>
-              <span className="font-mono">
-                ~{indicator.dynamicArFactor}x {indicator.type} (pending
-                calculation)
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export const StopLossSettings: React.FC<StopLossSettingsProps> = ({
   currentExchange,
   formData,
@@ -2189,10 +2057,9 @@ export const StopLossSettings: React.FC<StopLossSettingsProps> = ({
         );
       case CloseConditionEnum.dynamicAr:
         return (
-          <DynamicArSL
+          <DynamicArIndicatorPanel
+            section={IndicatorSection.sl}
             currentExchange={currentExchange}
-            updateFormData={updateFormData}
-            errors={{}}
           />
         );
       case CloseConditionEnum.webhook:
