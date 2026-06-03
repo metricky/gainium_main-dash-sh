@@ -24,11 +24,7 @@ import { useUserFee } from '@/hooks/useUserFee';
 import type { Asset, CoinListItem, ExchangeInUser } from '@/types';
 
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
-import {
-  formatExchangeProvider,
-  isCoinmExchange,
-  isFuturesExchange,
-} from '@/utils/exchangeUtils';
+import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
 
 export interface BotFormQueryProviderProps {
   mode: BotFormMode;
@@ -160,13 +156,15 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
           return;
         }
 
+        // No exchange subtitle: the selector is already scoped to the
+        // current exchange, so repeating the venue on every row is noise.
+        // The market-cap rank / curated ROI now occupy that secondary line.
         items.set(selectionSymbol, {
           symbol: selectionSymbol,
           name: `${base}/${quote}`,
           baseAsset: base,
           quoteAsset: quote,
           color: 'var(--color-primary)',
-          subtitle: formatExchangeProvider(exchangeName),
         });
 
         const normalizedPairKey = `${base}${quote}`;

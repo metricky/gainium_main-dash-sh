@@ -407,6 +407,44 @@ export const useBasicSettingsTab = (
     return multiAssetDimension === 'base' ? 'base asset' : 'quote asset';
   }, [multiAssetDimension]);
 
+  // Constraint used to filter the add-pairs modal: pairs must share the
+  // quote asset (longs) or base asset (shorts/coinm) with the current
+  // selection. Unlike `multiAssetDimension` this is NOT gated on multi
+  // mode — a single-pair long bot should still only browse same-quote
+  // pairs. Anchor comes from the first selected pair via the same
+  // direction-aware `selectTargetAsset` used everywhere else.
+  const pairSelectionFilter = useMemo<{
+    dimension: 'base' | 'quote';
+    anchor: string;
+  } | null>(() => {
+    if (!pairs.length) {
+      return null;
+    }
+    const dimension: 'base' | 'quote' = futures
+      ? coinm
+        ? 'base'
+        : 'quote'
+      : strategy === StrategyEnum.short
+        ? 'base'
+        : 'quote';
+    const firstPair = pairs[0];
+    const metadata = resolvePairMetadata(firstPair);
+    const [fallbackBase, fallbackQuote] = splitPair(firstPair);
+    const anchor = selectTargetAsset(metadata, fallbackBase, fallbackQuote);
+    if (!anchor) {
+      return null;
+    }
+    return { dimension, anchor: anchor.toUpperCase() };
+  }, [
+    pairs,
+    futures,
+    coinm,
+    strategy,
+    resolvePairMetadata,
+    splitPair,
+    selectTargetAsset,
+  ]);
+
   const formattedMissingPairs = useMemo(() => {
     return missingPairs.map((pair) => {
       const [baseAssetSymbol, quoteAssetSymbol] = splitPair(pair);
@@ -910,6 +948,7 @@ export const useBasicSettingsTab = (
     activeQuickSelectOption,
     multiAssetAnchor,
     multiAssetConstraintLabel,
+    pairSelectionFilter,
     applyPairsInput,
     handleCoinToggle,
     handlePairsPaste,

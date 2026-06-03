@@ -182,6 +182,19 @@ export const Profit: React.FC<ProfitProps> = ({
       return result.toISOString();
     };
 
+    // Calendar date (YYYY-MM-DD) in the user's timezone. The backend keys daily
+    // rows by the timezone's STANDARD-offset midnight and does NOT apply DST, so
+    // in summer its instants (e.g. Europe/Rome "…T23:00:00Z") never match a
+    // DST-aware midnight (`…T22:00:00Z`). Matching on the calendar day instead of
+    // an exact ISO instant stays correct across DST in both directions.
+    const toTzDateKey = (date: Date): string =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: userTimezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(date);
+
     // If no data or error, return fallback data
     if (!response || response.status !== 'OK' || !response.data?.result) {
       logger.warn('[ProfitWidget] No valid data from GraphQL', {
@@ -247,7 +260,12 @@ export const Profit: React.FC<ProfitProps> = ({
         );
         return;
       }
-      const key = item.date.toString();
+      // Daily rows are matched by tz calendar day (DST-safe); other timeframes
+      // use the backend's own key format ("2026-13" week, "2026-5" month, etc.).
+      const key =
+        timeframe === 0
+          ? toTzDateKey(new Date(item.date as string))
+          : item.date.toString();
       dataMap.set(key, item.quote || 0);
     });
 
@@ -267,9 +285,10 @@ export const Profit: React.FC<ProfitProps> = ({
         for (let i = 29; i >= 0; i--) {
           const date = new Date(today);
           date.setDate(today.getDate() - i);
-          // Use timezone-aware midnight to match backend data
+          // Display key stays the tz-aware midnight ISO; the data lookup uses the
+          // tz calendar day so it matches the backend's non-DST daily instants.
           const dateString = getTimezoneAwareMidnight(date);
-          const value = dataMap.get(dateString) || 0;
+          const value = dataMap.get(toTzDateKey(date)) || 0;
           timeSeries.push({ date: dateString, value });
         }
       } else if (timeframe === 1) {

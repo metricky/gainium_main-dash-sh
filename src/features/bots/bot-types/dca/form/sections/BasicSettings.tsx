@@ -59,8 +59,8 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
     formattedMissingPairs,
     missingPairsExchangeLabel,
     splitPair,
-    quickSelectOptions,
     activeQuickSelectOption,
+    pairSelectionFilter,
     handleCoinToggle,
     handlePairsPaste,
     handleSelectAllMatching,
@@ -239,19 +239,14 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                   mode="pairs"
                   {...(exchangeProvider ? { exchangeProvider } : {})}
                   onPairsPaste={handlePairsPaste}
-                  {...(quickSelectOptions.length
+                  {...(pairSelectionFilter
                     ? {
-                        helperTokens: quickSelectOptions.map(
-                          ({ token, label, description }) => ({
-                            token,
-                            label,
-                            description,
-                          })
-                        ),
+                        pairFilter: pairSelectionFilter,
+                        onClearSelection: handleClearPairs,
                       }
                     : {})}
                   shouldShowAddButton={!isComboBot}
-                  showAllOption={!isComboBot && useMulti}
+                  showAllOption={false}
                 />
                 {useMulti && (
                   <div className="space-y-1">

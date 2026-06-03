@@ -4929,6 +4929,22 @@ export interface CoinListItem {
   quoteAsset?: string;
   subtitle?: string;
   isHelper?: boolean;
+  // Optional market-data enrichment (cloud only — populated from the
+  // screener + curated-presets via the pairMarketData provider). All
+  // optional so sh and coins-mode are unaffected.
+  price?: number;
+  marketCap?: number;
+  marketCapRank?: number;
+  volume24h?: number;
+  change1h?: number;
+  change24h?: number;
+  change7d?: number;
+  change30d?: number;
+  volatility?: number;
+  rsi?: number;
+  /** Best positive curated-strategy ROI for this coin, percent. */
+  roi?: number;
+  isFavorite?: boolean;
 }
 
 export const ENTER_MARKET_TIMEOUT_GUARD: PrecisionGuard = {

@@ -2,7 +2,7 @@ import React from 'react';
 import { Crown, Sprout, Star, Trophy, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-export type PlanBadgeSize = 'sm' | 'md' | 'lg';
+export type PlanBadgeSize = 'sm' | 'md' | 'lg' | 'xl';
 
 interface PlanBadgeProps {
   /** Plan name (case-insensitive). Falls back to "FREE" when missing. */
@@ -51,18 +51,21 @@ const SIZE_CLASSES: Record<PlanBadgeSize, string> = {
   sm: 'h-5 px-2 text-[10px] gap-1 rounded-full',
   md: 'h-6 px-2.5 text-xs gap-1.5 rounded-full',
   lg: 'h-7 px-3 text-sm gap-1.5 rounded-full',
+  xl: 'h-9 px-4 text-base gap-2 rounded-full',
 };
 
 const ICON_CLASSES: Record<PlanBadgeSize, string> = {
   sm: 'h-2.5 w-2.5',
   md: 'h-3 w-3',
   lg: 'h-3.5 w-3.5',
+  xl: 'h-4 w-4',
 };
 
 const STAR_CLASSES: Record<PlanBadgeSize, string> = {
   sm: 'h-2 w-2',
   md: 'h-2.5 w-2.5',
   lg: 'h-3 w-3',
+  xl: 'h-3.5 w-3.5',
 };
 
 export const PlanBadge: React.FC<PlanBadgeProps> = ({

@@ -23,7 +23,12 @@ import type {
   IndicatorParamsState,
 } from '@/types/indicators/indicatorParams';
 import { filterIntervalOptionsByExchange } from '@/types/indicators/indicatorLogic';
-import type { ExchangeEnum, VarToSearchType } from '@/types';
+import {
+  timeIntervalMap,
+  type ExchangeEnum,
+  type ExchangeIntervals,
+  type VarToSearchType,
+} from '@/types';
 
 interface InlineIndicatorConfigProps {
   definition: IndicatorDefinition;
@@ -39,6 +44,12 @@ interface InlineIndicatorConfigProps {
   // options to the candle intervals the exchange supports (legacy parity:
   // `filterIndicatorIntervalsByExchange`). Omitted/undefined = no filtering.
   exchange?: ExchangeEnum | undefined;
+  // Minimum candle interval (in milliseconds) an interval-type field is
+  // allowed to offer. Used by the dynamic ATR/ADR scaling mode, where legacy
+  // restricts the indicator interval to >= 1h
+  // (indicators.tsx:1415 `timeIntervalMap[int] >= 60 * 60 * 1000`). Omitted =
+  // no lower bound. Applied on top of the per-exchange filter.
+  minIntervalMs?: number | undefined;
 }
 
 // Global variables are typed `int` | `float` | `text`. We infer numeric
@@ -125,6 +136,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
   className,
   indicatorUuid,
   exchange,
+  minIntervalMs,
 }) => {
   const updateParam = (key: string, value: IndicatorParamPrimitive) => {
     const next: IndicatorParamsState = { ...params, [key]: value };
@@ -177,7 +189,20 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
         ?.options ?? field.options;
     const resolvedOptions =
       field.type === 'interval'
-        ? filterIntervalOptionsByExchange(baseOptions, exchange)
+        ? (() => {
+            const byExchange = filterIntervalOptionsByExchange(
+              baseOptions,
+              exchange
+            );
+            if (minIntervalMs === undefined) {
+              return byExchange;
+            }
+            return byExchange?.filter(
+              (option) =>
+                (timeIntervalMap[option.value as ExchangeIntervals] ?? 0) >=
+                minIntervalMs
+            );
+          })()
         : baseOptions;
 
     switch (field.type) {

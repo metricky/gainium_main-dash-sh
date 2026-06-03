@@ -1,5 +1,5 @@
 import { IndicatorList } from '@/components/indicators/IndicatorList';
-import { InlineIndicatorConfig } from '@/components/indicators/InlineIndicatorConfig';
+import { DynamicArIndicatorConfig } from '@/components/indicators/DynamicArIndicatorConfig';
 import { TerminalButtonStack } from '@/components/ui';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -65,10 +65,7 @@ import type {
 } from '@/types/bots/form';
 import type { GlobalVariable } from '@/types/globalVariables';
 import { type IndicatorConfig, type IndicatorGroup } from '@/types/indicators';
-import {
-  getIndicatorDefaultParams,
-  getIndicatorDefinition,
-} from '@/types/indicators/indicatorLogic';
+import { getIndicatorDefaultParams } from '@/types/indicators/indicatorLogic';
 import type { IndicatorParamsState } from '@/types/indicators/indicatorParams';
 import {
   distributePositionSizesEqually,
@@ -2031,67 +2028,23 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
         );
       }
 
-      try {
-        const definition = getIndicatorDefinition(
-          indicator.type as IndicatorEnum
-        );
-        const defaults = getIndicatorDefaultParams(
-          definition.type,
-          IndicatorAction.closeDeal
-        );
-        const params: IndicatorParamsState = {
-          ...defaults,
-          ...((indicator ?? {}) as IndicatorParamsState),
-        };
-        const rawFactor = params['dynamicArFactor'];
-        const factorValue =
-          typeof typeof rawFactor === 'string' && rawFactor?.trim().length
-            ? rawFactor
-            : '1';
-
-        return (
-          <div className="space-y-md">
-            <InlineIndicatorConfig
-              definition={definition}
-              params={params}
-              indicatorUuid={indicator.uuid}
-              exchange={currentExchange?.provider}
-              onChange={(next) =>
-                handleChangeIndicatorParams(indicator.uuid, next)
-              }
-              className="space-y-md"
-            />
-            <div className="flex flex-col gap-sm sm:flex-row sm:items-center sm:justify-between">
-              <div className="space-y-xs">
-                <Label className="text-sm">Multiplier</Label>
-                <NumberInput
-                  value={factorValue}
-                  onChange={(value) =>
-                    handleDynamicArFactorChange(indicator.uuid, value)
-                  }
-                  min={0.1}
-                  step={0.1}
-                  precision={2}
-                  className="w-24"
-                />
-              </div>
-              <p className="text-xs text-muted-foreground sm:max-w-[60%]">
-                Multiplies the indicator's ATR/ADR value to determine distance
-                from the latest price.
-              </p>
-            </div>
-          </div>
-        );
-      } catch (_error) {
-        return (
-          <div className="rounded-md border border-border/60 bg-destructive/10 p-sm text-sm text-destructive">
-            Selected indicator definition is unavailable.
-          </div>
-        );
-      }
+      return (
+        <DynamicArIndicatorConfig
+          indicator={indicator}
+          action={IndicatorAction.closeDeal}
+          exchange={currentExchange?.provider}
+          onChangeParams={(next) =>
+            handleChangeIndicatorParams(indicator.uuid, next)
+          }
+          onChangeFactor={(value) =>
+            handleDynamicArFactorChange(indicator.uuid, value)
+          }
+        />
+      );
     },
     [
       dynamicArAllowedTypes,
+      currentExchange?.provider,
       handleChangeIndicatorParams,
       handleDynamicArFactorChange,
     ]

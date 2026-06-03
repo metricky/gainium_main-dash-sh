@@ -619,7 +619,9 @@ export async function createDCAOrders(
             });
           }
         : undefined,
-      draggable: !!onDrag,
+      // Dynamic AR take-profit price is derived from the ATR/ADR value, so the
+      // line must not be user-draggable.
+      draggable: !!onDrag && !useArTp,
     };
     if (
       symbol &&
@@ -715,7 +717,7 @@ export async function createDCAOrders(
                   });
                 }
               : undefined,
-            draggable: !!onDrag,
+            draggable: !!onDrag && !useArTp,
           };
         })
         .forEach((o) => {
@@ -1119,7 +1121,9 @@ export async function createDCAOrders(
             });
           }
         : undefined,
-      draggable: !!onDrag,
+      // Dynamic AR stop-loss price is derived from the ATR/ADR value, so the
+      // line must not be user-draggable.
+      draggable: !!onDrag && !useArSl,
     };
     if (useArSl) {
       const indicator = settings.indicators.find(
@@ -1262,7 +1266,7 @@ export async function createDCAOrders(
                   });
                 }
               : undefined,
-            draggable: !!onDrag,
+            draggable: !!onDrag && !useArSl,
           };
         })
         .forEach((o) => {

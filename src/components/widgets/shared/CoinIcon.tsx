@@ -7,6 +7,14 @@ export interface CoinIconProps {
   className?: string;
 }
 
+// Fiat quote currencies don't have coin logos on the remote icon host, so we
+// ship local SVG icons for them under /images/fiat/<code>.svg.
+const FIAT_ICONS = new Set([
+  'USD', 'EUR', 'GBP', 'JPY', 'CNY', 'AUD', 'CAD', 'CHF', 'HKD', 'SGD',
+  'NZD', 'TRY', 'BRL', 'RUB', 'INR', 'KRW', 'ZAR', 'MXN', 'PLN', 'SEK',
+  'NOK', 'DKK', 'AED', 'SAR', 'UAH', 'NGN', 'IDR', 'THB', 'PHP', 'ARS',
+]);
+
 const CoinIcon: React.FC<CoinIconProps> = ({
   symbol,
   size = 'md',
@@ -38,6 +46,13 @@ const CoinIcon: React.FC<CoinIconProps> = ({
 
     setIsLoading(true);
     setImageSrc(null);
+
+    // Fiat currencies use locally-shipped SVG icons — no remote lookup needed.
+    if (FIAT_ICONS.has(symbol.toUpperCase())) {
+      setImageSrc(`/images/fiat/${symbol.toLowerCase()}.svg`);
+      setIsLoading(false);
+      return;
+    }
 
     const primaryPath = `https://app.gainium.io/coins/${symbol.toLowerCase()}.png`;
     const fallbackPath = symbol.toLowerCase().startsWith('u')

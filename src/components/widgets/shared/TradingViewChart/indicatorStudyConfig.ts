@@ -64,6 +64,13 @@ const STUDY_NAME_MAP: Omit<
   [IndicatorEnum.lw]: 'Long Wick Detector',
 };
 
+// AR-price variants: drawn as a price level on the candle pane when
+// indicator.arPrice === true (mirrors legacy `arPriceStudies`).
+const AR_PRICE_STUDY_NAME_MAP: Record<string, string> = {
+  [IndicatorEnum.atr]: 'Average True Range Price (Custom)',
+  [IndicatorEnum.adr]: 'Average Daily Range Price',
+};
+
 const MA_STUDY_NAME_MAP: Omit<Record<MAEnum, string>, MAEnum.price> = {
   [MAEnum.ema]: 'Moving Average Exponential (Custom)',
   [MAEnum.sma]: 'Simple Moving Average',
@@ -86,8 +93,6 @@ const OVERLAY_TYPES = new Set<string>([
   IndicatorEnum.pp,
   IndicatorEnum.qfl,
   IndicatorEnum.sr,
-  IndicatorEnum.atr,
-  IndicatorEnum.adr,
   IndicatorEnum.obfvg,
   IndicatorEnum.dc,
 ]);
@@ -149,6 +154,10 @@ export const SUPPORTED_STUDY_NAMES = new Set<string>([
     Boolean(name)
   ),
   ...Object.values(MA_STUDY_NAME_MAP),
+  // AR-price variants must be listed too, otherwise clearCustomIndicators()
+  // won't recognise/remove them on refresh and changing the Multiplier
+  // stacks a duplicate study instead of replacing it.
+  ...Object.values(AR_PRICE_STUDY_NAME_MAP),
   /* ...LEGACY_STUDY_ALIASES, */
 ]);
 
@@ -238,10 +247,17 @@ const buildInputs = (
     case IndicatorEnum.ath:
       return { lookback: toNumber(indicator.athLookback, 100) };
     case IndicatorEnum.atr:
-    case IndicatorEnum.adr:
-      return {
+    case IndicatorEnum.adr: {
+      const atrInputs: TradingViewInput = {
         in_0: toNumber(indicator.length ?? indicator.atrLength, 14),
       };
+      // AR-price variant plots a price level on the candle pane and
+      // takes a `factor` input (legacy getCommonConfig: factor: arFactor ?? 1).
+      if (indicator.arPrice) {
+        atrInputs['factor'] = toNumber(indicator.arFactor, 1);
+      }
+      return atrInputs;
+    }
     case IndicatorEnum.st:
       return {
         in_0: toNumber(indicator.atrLength, 10),
@@ -747,7 +763,10 @@ const buildOverrides = (
     delete overrides['lowerLimit.value'];
   }
   if (arPriceIndicators.includes(indicator.type) && indicator.arPrice) {
-    return { 'plot.visible': false };
+    // Legacy does NOT plot the AR indicator line — the study only exists to
+    // emit its value (via the callback) for positioning the order lines. The
+    // custom AR-price studies expose their line as `plot_0`, so hide that.
+    return { 'plot_0.visible': false };
   }
 
   return overrides;
@@ -761,6 +780,13 @@ export function buildTradingViewStudyDescriptor(
     return null;
   }
 
+  // AR-price variant: a plain atr/adr study renders in its own pane, but
+  // when arPrice is set it switches to the price-level study overlaid on
+  // the candles (mirrors legacy arPriceStudies selection).
+  const isArPrice =
+    (type === IndicatorEnum.atr || type === IndicatorEnum.adr) &&
+    !!indicator.arPrice;
+
   let studyName: string | undefined;
   if (type === IndicatorEnum.ma) {
     const maType = indicator.maType ?? MAEnum.ema;
@@ -768,6 +794,8 @@ export function buildTradingViewStudyDescriptor(
       return null;
     }
     studyName = MA_STUDY_NAME_MAP[maType] ?? STUDY_NAME_MAP[IndicatorEnum.ma];
+  } else if (isArPrice) {
+    studyName = AR_PRICE_STUDY_NAME_MAP[type];
   } else {
     studyName = STUDY_NAME_MAP[type];
   }
@@ -799,7 +827,7 @@ export function buildTradingViewStudyDescriptor(
     descriptor.overrides = overrides;
   }
 
-  if (OVERLAY_TYPES.has(type)) {
+  if (OVERLAY_TYPES.has(type) || isArPrice) {
     descriptor.forceOverlay = true;
     logger.info('[chart-indicators] Setting forceOverlay for indicator', {
       type,

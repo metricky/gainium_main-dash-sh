@@ -9593,7 +9593,10 @@ export const ATRPrice = (r, callback) => ({
           plottype: 0,
           trackPrice: !1,
           transparency: 0,
-          visible: true,
+          // Dynamic-AR mode uses this study only to emit its value (via the
+          // callback) for positioning the order lines — the line itself is
+          // never drawn (legacy parity).
+          visible: false,
           color: '#7E57C2',
         },
       },
@@ -9655,13 +9658,14 @@ export const ATRPrice = (r, callback) => ({
     this.main = function (e, t) {
       const i = t(0);
       const id = t(1);
-      const factor = t(2);
-      const close = r.Std.close(e);
       const res = r.Std.atr(i, e);
       if (callback) {
         callback(res, id);
       }
-      return [close + res * factor];
+      // Dynamic-AR mode consumes `res` via the callback to position the order
+      // lines; the indicator itself is never plotted (legacy parity), so emit
+      // no value (NaN renders nothing).
+      return [NaN];
     };
   },
 });
@@ -9683,7 +9687,10 @@ export const ADRPrice = (r, callback) => ({
           plottype: 0,
           trackPrice: !1,
           transparency: 0,
-          visible: true,
+          // Dynamic-AR mode uses this study only to emit its value (via the
+          // callback) for positioning the order lines — the line itself is
+          // never drawn (legacy parity).
+          visible: false,
           color: '#7E57C2',
         },
       },
@@ -9746,10 +9753,8 @@ export const ADRPrice = (r, callback) => ({
       this._input = t;
       const i = this._input(0);
       const id = this._input(1);
-      const factor = this._input(2);
       const h = r.Std.high(this._context);
       const l = r.Std.low(this._context);
-      const close = r.Std.close(this._context);
       const high = this._context.new_var(h);
       const low = this._context.new_var(l);
       const dr = high - low;
@@ -9758,7 +9763,10 @@ export const ADRPrice = (r, callback) => ({
       if (callback) {
         callback(res, id);
       }
-      return [close + res * factor];
+      // Dynamic-AR mode consumes `res` via the callback to position the order
+      // lines; the indicator itself is never plotted (legacy parity), so emit
+      // no value (NaN renders nothing).
+      return [NaN];
     };
   },
 });

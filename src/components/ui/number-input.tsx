@@ -33,15 +33,30 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
       endAdornment,
       startAdornment,
       startAdornmentOnClick,
+      onBlur,
       ...props
     },
     ref
   ) => {
-    const handleIncrement = () => {
-      const currentValue =
-        typeof value === 'string' ? parseFloat(value) || 0 : value || 0;
-      const newValue = Math.min(currentValue + step, max ?? Infinity);
+    // Local editing buffer. The input is otherwise fully controlled, so when a
+    // parent normalises the value on every keystroke (e.g. dropping an empty
+    // string), the field snaps back and becomes impossible to clear/retype.
+    // While the user is typing we show their raw draft and still emit onChange;
+    // on blur we let the controlled `value` take over again.
+    const [draft, setDraft] = React.useState<string | null>(null);
+    const displayValue = draft ?? value ?? '';
+    const handleBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+      setDraft(null);
+      onBlur?.(e);
+    };
 
+    const handleIncrement = () => {
+      const base =
+        typeof displayValue === 'string'
+          ? parseFloat(displayValue) || 0
+          : displayValue || 0;
+      const newValue = Math.min(base + step, max ?? Infinity);
+      setDraft(null);
       if (precision !== undefined) {
         onChange?.(parseFloat(newValue.toFixed(precision)));
       } else {
@@ -50,10 +65,12 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
     };
 
     const handleDecrement = () => {
-      const currentValue =
-        typeof value === 'string' ? parseFloat(value) || 0 : value || 0;
-      const newValue = Math.max(currentValue - step, min ?? -Infinity);
-
+      const base =
+        typeof displayValue === 'string'
+          ? parseFloat(displayValue) || 0
+          : displayValue || 0;
+      const newValue = Math.max(base - step, min ?? -Infinity);
+      setDraft(null);
       if (precision !== undefined) {
         onChange?.(parseFloat(newValue.toFixed(precision)));
       } else {
@@ -63,6 +80,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const inputValue = e.target.value;
+      setDraft(inputValue);
       onChange?.(inputValue);
     };
 
@@ -81,8 +99,9 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
           <input
             type="text"
             inputMode="numeric"
-            value={value}
+            value={displayValue}
             onChange={handleInputChange}
+            onBlur={handleBlur}
             min={min}
             max={max}
             step={step}
@@ -157,8 +176,9 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
           <input
             type="text"
             inputMode="numeric"
-            value={value}
+            value={displayValue}
             onChange={handleInputChange}
+            onBlur={handleBlur}
             min={min}
             max={max}
             step={step}
@@ -201,8 +221,9 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
       <input
         type="text"
         inputMode="numeric"
-        value={value}
+        value={displayValue}
         onChange={handleInputChange}
+        onBlur={handleBlur}
         min={min}
         max={max}
         step={step}

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.9] - 2026-06-03
+
+### Added
+- Pair preset selector: list + detail view with ROI / market-cap / volume / RSI
+  sort, favorites, and filters. Lazy-loaded and cached, shared with the
+  dashboard screener and indicator heatmap.
+- Favorite (starred) pairs, persisted locally.
+- Fiat currency icons for 30 currencies in the coin/pair icon component
+  (previously only USD/EUR had icons; others fell back to first-letter circles).
+- Dynamic ATR/ADR ("AR") take-profit / stop-loss mode in the DCA bot form, with
+  an inline indicator config.
+
+### Fixed
+- Curated preset ROI now resolves on paper accounts — paper provider names
+  (e.g. `paperBybit`) are normalized to their real exchange before the curated
+  lookup, so risk-profile cards, the strategies drawer, and the curated strip
+  all render ROI on both live and paper accounts.
+- Dynamic-AR TP/SL now feeds ATR values into the order engine
+  (`TP = price + ATR × multiplier`) instead of silently falling back to the
+  percentage value.
+- Dynamic-AR price study no longer draws its line on the price chart while still
+  feeding order-line prices; TP/SL lines are non-draggable in AR mode.
+
+### Changed
+- Bot-form pair screener data now lazy-loads on dialog open (5-min cache) instead
+  of walking the full screener in the background on bot-form mount.
+- Compact ListModal rows with an expandable detail panel (price, 1h/24h/7d/30d
+  changes, volume, market cap, RSI, volatility).
+
 ## [2.7.8] - 2026-06-02
 
 ### Added

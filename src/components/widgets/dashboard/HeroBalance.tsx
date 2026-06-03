@@ -69,28 +69,18 @@ const KPI_FONT_STEPS: FontStep[] = [
   { sizeClass: 'text-xs', px: 12 },
 ];
 
-// Compute the user's "today" key in the same form the backend emits, so we can
-// match the daily-profit response by date. Mirrors Profit widget logic.
-function getTodayKey(timezone: string): string {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
+// Calendar date (YYYY-MM-DD) in the user's timezone. The daily-profit backend
+// keys rows by the timezone's STANDARD-offset midnight and does NOT apply DST,
+// so an exact-ISO match drops every row in summer (the instant is off by an
+// hour). Matching on the calendar day instead stays correct across DST. Mirrors
+// the Profit widget's `toTzDateKey`.
+function toTzDateKey(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  });
-  const [year, month, day] = formatter
-    .format(new Date())
-    .split('-')
-    .map(Number);
-  const midnightUTC = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-  const tzMidnight = new Date(
-    midnightUTC.toLocaleString('en-US', { timeZone: timezone })
-  );
-  const utcMidnight = new Date(
-    midnightUTC.toLocaleString('en-US', { timeZone: 'UTC' })
-  );
-  const offset = utcMidnight.getTime() - tzMidnight.getTime();
-  return new Date(midnightUTC.getTime() + offset).toISOString();
+  }).format(date);
 }
 
 export const HeroBalance: React.FC = () => {
@@ -315,9 +305,11 @@ export const HeroBalance: React.FC = () => {
     ) {
       return 0;
     }
-    const todayKey = getTodayKey(userTimezone);
+    const todayKey = toTzDateKey(new Date(), userTimezone);
     const row = dailyProfit.data.result.find(
-      (r) => r.date?.toString() === todayKey
+      (r) =>
+        r.date != null &&
+        toTzDateKey(new Date(r.date as string), userTimezone) === todayKey
     );
     return row?.quote ?? 0;
   }, [dailyProfit, userTimezone]);

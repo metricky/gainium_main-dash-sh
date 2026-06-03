@@ -4,7 +4,13 @@ import { riskRewardRuntimeStore } from '@/contexts/bots/dca/RiskRewardRuntimeCon
 import { indicatorStore } from '@/stores/indicatorStore';
 import { riskRewardPositionStore } from '@/stores/riskRewardPositionStore';
 import { IndicatorEnum } from '@/types';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useMarketData } from '../../../hooks/useMarketData';
 import {
   useWidgetSettings,
@@ -592,6 +598,11 @@ const BotChart: React.FC<BotChartProps> = ({
   // everything else into `stopLossPrice` (a literal price). Mirrors
   // the legacy split where `riskRewardIndicator?.type === atr` switched
   // the computation path.
+  // Accumulates the latest raw ATR/ADR value per indicator uuid so the
+  // dynamic-AR example-order math (scaled DCA, dynamic-AR TP/SL) can read
+  // them. Without this the order engine's `dcaArValues` stays empty and the
+  // TP/SL never reflect the indicator value or its Multiplier.
+  const dynamicArValuesRef = useRef<Record<string, number>>({});
   const handleIndicatorValue = useCallback(
     (value: number, id: string) => {
       if (!Number.isFinite(value) || value <= 0) return;
@@ -604,6 +615,20 @@ const BotChart: React.FC<BotChartProps> = ({
           ? { atrValue: value, sourceId: id }
           : { stopLossPrice: value, sourceId: id }
       );
+      if (isAtrFamily) {
+        const prev = dynamicArValuesRef.current[id];
+        if (prev !== value) {
+          dynamicArValuesRef.current = {
+            ...dynamicArValuesRef.current,
+            [id]: value,
+          };
+          exampleOrdersStore.setContext({
+            dcaArValues: Object.entries(dynamicArValuesRef.current).map(
+              ([arId, arValue]) => ({ id: arId, value: arValue })
+            ),
+          });
+        }
+      }
     },
     [indicatorPayload]
   );

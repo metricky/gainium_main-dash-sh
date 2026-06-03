@@ -1,3 +1,4 @@
+import { DynamicArIndicatorConfig } from '@/components/indicators/DynamicArIndicatorConfig';
 import { InlineIndicatorConfig } from '@/components/indicators/InlineIndicatorConfig';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -63,6 +64,7 @@ import {
   BotTypesEnum,
   DCAConditionEnum,
   DCAVolumeType,
+  ExchangeIntervals,
   IndicatorAction,
   IndicatorEnum,
   IndicatorSection,
@@ -70,6 +72,7 @@ import {
   OrderSizeTypeEnum,
   ScaleDcaTypeEnum,
   StrategyEnum,
+  timeIntervalMap,
   type DCACustom,
   type ExchangeInUser,
   type SettingsIndicators,
@@ -498,9 +501,67 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     useMultiTp,
     orderSizeType,
   });
+  const useDca = useBotFormSelector('useDca');
+  const indicators = useBotFormSelector('indicators');
+  const { currentExchange } = useBotFormQuery();
   const showMinimumDeviationGuard = useMemo(
     () => scaleDcaType === 'atr' || scaleDcaType === 'adr',
     [scaleDcaType]
+  );
+  // Dynamic ATR/ADR scaling: legacy renders ONE startDca indicator (the
+  // `dynamicAr` mode in DcaModeSettings.tsx:940-970) when scaling on atr/adr
+  // and DCA is enabled. The indicator is seeded by handleSettingsUpdate when
+  // `scaleDcaType` switches to atr/adr.
+  const isScalingOnAtrAdr = scaleDcaType === 'atr' || scaleDcaType === 'adr';
+  const dynamicArIndicator = useMemo(
+    () =>
+      isScalingOnAtrAdr
+        ? (indicators || []).find(
+            (i) => i.indicatorAction === IndicatorAction.startDca
+          )
+        : undefined,
+    [isScalingOnAtrAdr, indicators]
+  );
+  const updateDynamicArIndicator = useCallback(
+    (field: keyof IndicatorConfig, value: string | number | boolean) => {
+      if (!dynamicArIndicator) return;
+      updateFormData(
+        'indicators',
+        (indicators || []).map((ind) =>
+          ind.uuid === dynamicArIndicator.uuid
+            ? { ...ind, [field]: value }
+            : ind
+        )
+      );
+    },
+    [dynamicArIndicator, indicators, updateFormData]
+  );
+  const updateDynamicArIndicatorParams = useCallback(
+    (newParams: IndicatorParamsState) => {
+      if (!dynamicArIndicator) return;
+      const sanitized = sanitizeIndicatorParams(newParams);
+      const next = (indicators || []).map((ind) =>
+        ind.uuid === dynamicArIndicator.uuid ? { ...ind, ...sanitized } : ind
+      );
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[AR-LEN] ' +
+          JSON.stringify({
+            incoming: (newParams as { indicatorLength?: unknown })
+              .indicatorLength,
+            sanitized: (sanitized as { indicatorLength?: unknown })
+              .indicatorLength,
+            targetUuid: dynamicArIndicator.uuid,
+            matched: (indicators || []).some(
+              (i) => i.uuid === dynamicArIndicator.uuid
+            ),
+            resultLen: next.find((i) => i.uuid === dynamicArIndicator.uuid)
+              ?.indicatorLength,
+          })
+      );
+      updateFormData('indicators', next);
+    },
+    [dynamicArIndicator, indicators, updateFormData]
   );
   const { isBound: isMinimumDeviationVarBound } =
     useBotVarBinding('minimumDeviation');
@@ -1137,6 +1198,27 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
             </Select>
           </SettingsRow>
         )}
+
+        {isScalingOnAtrAdr && useDca && dynamicArIndicator ? (
+          <SettingsRow
+            name={`${scaleDcaType === 'adr' ? 'ADR' : 'ATR'} indicator`}
+            tooltip="DCA order spacing scales off this dynamic ATR/ADR value instead of a fixed percentage."
+            colSpan="full"
+          >
+            <SettingsRowSurface tone="inner" spacing="md">
+              <DynamicArIndicatorConfig
+                indicator={dynamicArIndicator}
+                action={IndicatorAction.startDca}
+                exchange={currentExchange?.provider}
+                minIntervalMs={timeIntervalMap[ExchangeIntervals.oneH]}
+                onChangeParams={updateDynamicArIndicatorParams}
+                onChangeFactor={(value) =>
+                  updateDynamicArIndicator('dynamicArFactor', value)
+                }
+              />
+            </SettingsRowSurface>
+          </SettingsRow>
+        ) : null}
 
         {showMinimumDeviationGuard ? (
           <SettingsRow

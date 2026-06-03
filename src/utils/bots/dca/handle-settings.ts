@@ -6,15 +6,21 @@ import {
   DCAConditionEnum,
   DCAVolumeType,
   DynamicPriceFilterDirectionEnum,
+  ExchangeIntervals,
   IndicatorAction,
+  IndicatorEnum,
   IndicatorSection,
+  IndicatorsLogicEnum,
   OrderSizeTypeEnum,
   RRSlTypeEnum,
   ScaleDcaTypeEnum,
   StartConditionEnum,
   StrategyEnum,
   type DCABotSettings,
+  type SettingsIndicatorGroup,
+  type SettingsIndicators,
 } from '@/types';
+import { getIndicatorDefaultParams } from '@/types/indicators/indicatorLogic';
 import type { BotFormData } from '@/types/bots';
 
 export type HandleSettingsUpdateResult = Partial<Omit<BotFormData, 'dca'>> & {
@@ -472,6 +478,68 @@ export const handleSettingsUpdate = (
       updates.dca.indicators = (updates.dca.indicators ?? []).filter(
         (i) => i.indicatorAction !== IndicatorAction.startDca
       );
+    }
+    // Dynamic ATR/ADR scaling: when switching `scaleDcaType` to atr/adr, legacy
+    // forces a single startDca indicator (DcaModeSettings.tsx:940-970 +
+    // DCATechnicalIndicators addIndicator with `dynamicAr ? IndicatorEnum.atr`).
+    // Seed one if none exists; otherwise just realign its type to the new
+    // scaling mode (atr↔adr).
+    if (
+      field === 'scaleDcaType' &&
+      (value === ScaleDcaTypeEnum.atr || value === ScaleDcaTypeEnum.adr)
+    ) {
+      const dynamicArType =
+        value === ScaleDcaTypeEnum.adr
+          ? IndicatorEnum.adr
+          : IndicatorEnum.atr;
+      const baseIndicators = (settings.indicators ?? []) as SettingsIndicators[];
+      const existing = baseIndicators.find(
+        (i) => i.indicatorAction === IndicatorAction.startDca
+      );
+      if (existing) {
+        if (existing.type !== dynamicArType) {
+          updates.dca.indicators = baseIndicators.map((i) =>
+            i.uuid === existing.uuid ? { ...i, type: dynamicArType } : i
+          );
+        }
+      } else {
+        const generateId = (): string =>
+          typeof crypto !== 'undefined' &&
+          typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `dca-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const existingGroups = (settings.indicatorGroups ??
+          []) as SettingsIndicatorGroup[];
+        let group = existingGroups.find(
+          (g) => g.action === IndicatorAction.startDca
+        );
+        if (!group) {
+          group = {
+            id: generateId(),
+            logic: IndicatorsLogicEnum.and,
+            action: IndicatorAction.startDca,
+            section: IndicatorSection.dca,
+          };
+          updates.dca.indicatorGroups = [...existingGroups, group];
+        }
+        const defaults = getIndicatorDefaultParams(
+          dynamicArType,
+          IndicatorAction.startDca,
+          IndicatorSection.dca
+        );
+        const seeded: SettingsIndicators = {
+          ...(defaults as unknown as SettingsIndicators),
+          type: dynamicArType,
+          indicatorAction: IndicatorAction.startDca,
+          section: IndicatorSection.dca,
+          indicatorInterval: ExchangeIntervals.oneH,
+          dynamicArFactor: '1',
+          minPercFromLast: '1',
+          uuid: generateId(),
+          groupId: group.id,
+        };
+        updates.dca.indicators = [...baseIndicators, seeded];
+      }
     }
     if (
       JSON.stringify(updates.dca.indicators) ===
