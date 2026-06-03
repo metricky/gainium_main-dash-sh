@@ -7,15 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bot form: move "what it does" helper text into field tooltips across the
+  combo, DCA, and grid sections (Deal close type, Base Take Profit/Stop Loss On,
+  grid direction/type/range/budget, Dynamic ATR/ADR). Constraints, ranges, and
+  computed values stay inline.
+- Combo grid strategy: drop the verbose section copy into a tooltip and fold the
+  current grid spacing % into the spacing chip (always shown).
+
+### Fixed
+
+- Hide "Order Size Reference" in the bot form on spot exchanges — it only
+  applies to leveraged/futures positions.
+
+## [2.8.0] - 2026-06-03
+
+### Added
+
+- Trading Terminal "Exchange Orders" tab: raw open exchange orders & positions
+  with per-row Cancel / Import actions (import a position as a terminal deal,
+  import an order into a smart terminal bot).
+
+### Fixed
+
+- DCA Bot Controller parity with legacy: newly added start/stop indicators are
+  now tagged with their `indicatorAction` and `groupId`, so indicator-mode
+  start/stop conditions are no longer silently dropped from the saved payload.
+- Bot Controller now reconciles indicators when toggled or switched: enabling
+  the controller (or switching Bot Start/Stop to indicators) auto-seeds a
+  group + indicator, disabling/leaving indicator mode strips them, and empty
+  groups are pruned — matching legacy.
+- Integer-coerce `closeAfterX` / `closeAfterXopen` on commit; auto-clamp
+  `closeAfterXopen` up to the max open deals and validate it is not lower.
+- Narrow the multipair reset to only downgrade price-mode triggers to manual
+  (indicator mode and entered price values are left intact).
+- Restore legacy Bot Controller labels, `deals` / `$` input adornments,
+  between-group AND/OR separators, and the global "add indicator (new group)"
+  button.
+
 ## [2.7.10] - 2026-06-03
 
 ### Fixed
-- Dynamic AR config missed in SL panel. 
-- ADR timeframe bug. 
+
+- Dynamic AR config missed in SL panel.
+- ADR timeframe bug.
 
 ## [2.7.9] - 2026-06-03
 
 ### Added
+
 - Pair preset selector: list + detail view with ROI / market-cap / volume / RSI
   sort, favorites, and filters. Lazy-loaded and cached, shared with the
   dashboard screener and indicator heatmap.
@@ -26,6 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an inline indicator config.
 
 ### Fixed
+
 - Curated preset ROI now resolves on paper accounts — paper provider names
   (e.g. `paperBybit`) are normalized to their real exchange before the curated
   lookup, so risk-profile cards, the strategies drawer, and the curated strip
@@ -37,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feeding order-line prices; TP/SL lines are non-draggable in AR mode.
 
 ### Changed
+
 - Bot-form pair screener data now lazy-loads on dialog open (5-min cache) instead
   of walking the full screener in the background on bot-form mount.
 - Compact ListModal rows with an expandable detail panel (price, 1h/24h/7d/30d
@@ -45,11 +88,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.8] - 2026-06-02
 
 ### Added
+
 - Hyperliquid builder fees.
 
 ## [2.7.7] - 2026-06-02
 
 ### Fixed
+
 - Deal drawer chart opened from the Trading terminal no longer always shows "No
   chart data is available for the selected timeframe". The terminal passed the
   deal id as `botId`, breaking the bot lookup (and order/smart-order fetches);
@@ -67,18 +112,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.6] - 2026-06-02
 
 ### Fixed
+
 - Combo/DCA deal lists no longer merge live and paper deals on a trading-context
   switch. Deal queries now request the `paperContext` field (exposed by the
   backend) so each deal is scoped to its true context instead of being inferred
   from the active mode (which mis-tagged placeholder data during the switch).
 
 ### Added
+
 - Trading-mode toggle (badge + sidebar/navbar switches) shows a spinner while
   the newly-selected context's data loads.
 
 ## [2.7.5] - 2026-06-02
 
 ### Fixed
+
 - Base Order Size input now updates its coin icon when the currency reference
   is switched (base/quote/USD), matching the DCA order amount input. Both inputs
   share `resolveOrderSizeIconSymbol`.
@@ -91,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.4] - 2026-06-01
 
 ### Fixed
+
 - Closing or canceling a deal now removes it from the active list immediately
   instead of waiting on a websocket update (there is no polling fallback):
   close/cancel/move optimistically update the deal store (cancel → canceled,
@@ -98,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list no longer resurrects a just-closed deal from its last-fetch snapshot.
 
 ### Changed
+
 - Indicator configuration parity pass: interval-type fields filter their
   options to the selected exchange's supported candle intervals; STOCH band
   fields resolve the correct param key from `stochRange`; related bot-form
@@ -106,6 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.3] - 2026-06-01
 
 ### Added
+
 - Cancel button on a deal's pending DCA / add-funds / reduce-funds orders
   (parity with the legacy dashboard), with a confirmation dialog. Routes an
   add/reduce-funds order to `cancelPendingAddFundsDealOrder` and a plain
@@ -116,18 +167,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alongside `trial_started`, via a dedicated `trialEvents` registry.
 
 ### Fixed
+
 - Canceling a deal order no longer fails with "Cannot access" — the cancel
   mutations now send the auth token + paper-context like every other call.
 - An order canceled in another client no longer reappears — pending orders
   are re-fetched fresh and reconciled instead of restored stale from cache.
 
 ### Changed
+
 - Deal cards in the bot drawer read clearly against the panel (elevation
   instead of blending into the glass surface).
 
 ## [2.7.2] - 2026-05-31
 
 ### Changed
+
 - Bot form save row: cost moved out of the Create button into its own
   credits chip on the left (hover shows the per-component breakdown, now
   with decimals), added a "capital required" chip beside it (same
@@ -144,6 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   currency, reinvest).
 
 ### Fixed
+
 - Saving a bot template with a hotkey no longer throws "Maximum update
   depth exceeded" — the template-shortcut sync effect no longer re-fires
   on the shortcut-store writes it triggers itself.
@@ -151,9 +206,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.1] - 2026-05-31
 
 ### Added
+
 - Bot events drawer: coin-pair icons and click-to-copy order/deal ID chips.
 
 ### Changed
+
 - Bot events drawer now categorizes, searches, and paginates server-side
   (fetches a handful per tab via the `getBotEvents` `category`/`counts`
   fields). The "Recent" tab is the full activity feed; "Deals"/"Alerts" are
@@ -161,6 +218,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   click-to-expand.
 
 ### Fixed
+
 - Bot events: order errors no longer render as completed "Sell Closed" trades;
   the event time is shown once (no longer duplicated); the year is hidden
   unless an event is over a year old.
@@ -170,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.7.0] - 2026-05-30
 
 ### Added
+
 - Trial provider adapter (`useTrial` / `registerTrialProvider`) and an
   `exchange.trialPrompt` slot so the connect-exchange picker can offer
   premium exchanges behind a start-trial prompt for trial-eligible users.
@@ -178,6 +237,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tooltip` prop on `StatusChip`.
 
 ### Changed
+
 - Premium exchanges are now selectable (tagged "Trial") for free users
   who still have a trial available; picking one opens the start-trial
   prompt instead of showing a disabled "(upgrade to use)" row. Once the
@@ -186,6 +246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixes ref-cleanup handling.
 
 ### Fixed
+
 - DCA deal usage % now reads the base side for short spot / COIN-M deals
   instead of always the quote side, which made short combos and coin-m
   deals report 0% usage.
@@ -193,17 +254,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.4] - 2026-05-30
 
 ### Added
+
 - Top Deals widget on the Overview dashboard: ranks active deals by cost
   (default), value, unrealized PnL, PnL %, realized profit, or age, with a
   card/table view and the ranking selector in the table toolbar.
 
 ### Changed
+
 - Login page now reads "Sign in or sign up" with a clearer subheading on
   cloud, so new users see they can create an account from the same page.
 - Deal cards now surface the creation date/time as a tooltip on the
   trade-duration chip instead of a dedicated cell.
 
 ### Fixed
+
 - Deal card hover actions are scoped per card again, so hovering one card no
   longer reveals every card's action buttons when shown inside a dashboard
   widget.
@@ -211,11 +275,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.3] - 2026-05-29
 
 ### Added
+
 - `isTrialAvailable` user query and an auth-store `refreshUser` action to
   re-fetch the user (subscription, balance, credits) after a plan change
   without clearing the session on a transient failure.
 
 ### Changed
+
 - DCA "Total Funds" tile now shows base-currency funds for spot-short and
   coin-M futures bots (quote `$` figure unchanged for everything else).
 - Base order section stays visible in DCA strategy settings even when
@@ -225,6 +291,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.2] - 2026-05-29
 
 ### Changed
+
 - Live stores hydration is now serialized through a single
   `liveStoreHydrationQueue` so the eight heavy IndexedDB-persisted
   stores (dca/combo/grid/hedge bots, transactions, deals, orders) read
@@ -241,6 +308,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.1] - 2026-05-28
 
 ### Changed
+
 - Bot forms: Quick / Manual toggle uses a clearly-visible primary-tinted
   pill for the selected option (matches the existing subtab pattern)
   instead of a subtle card-surface fill.
@@ -262,11 +330,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.0] - 2026-05-28
 
 ### Added
-- Admin page to manage running containers, choose exchanges, and upgrade images. 
+
+- Admin page to manage running containers, choose exchanges, and upgrade images.
 
 ## [2.5.2] - 2026-05-28
 
 ### Fixed
+
 - Bot forms (DCA / Terminal / Combo / Grid / Hedge): removed unintended
   auto-focus on the budget / base-order input so opening a new or edit
   page no longer jumps to that field.
@@ -288,6 +358,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.5.1] - 2026-05-28
 
 ### Changed
+
 - Grid bot strategy settings: on futures exchanges (linear or coin-m),
   Profit Currency and Order Fixed In are now auto-set to match the
   margin asset and the corresponding rows are hidden — the user can't
@@ -304,6 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   came from stringifying the GridLeverageState object.
 
 ### Fixed
+
 - CoinSelect: picking a new pair via the swap (↔) icon on the trading-
   pair chip now actually updates the chart, backtest button, example
   orders, and risk-profile prices. The dialog returned a dashed
@@ -325,6 +397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.5.0] - 2026-05-28
 
 ### Added
+
 - Unified bot-list KPI strip: a shared `BotListStatsBoxes` component
   rendering Active Bots / Total P&L / Capital Deployed across DCA,
   Grid, Combo, HedgeDca, HedgeCombo, and the Trading page. Single
@@ -333,7 +406,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   small adapter into the same normalized shape.
 - Hedge DCA / Hedge Combo bot list pages: KPI stats strip in the
   header (was previously stats-less). Sums per-leg `profit/assets/
-  dealsInBot` since the hedge wrapper doesn't aggregate those.
+dealsInBot` since the hedge wrapper doesn't aggregate those.
 - IndicatorConfigurationModal / InlineIndicatorConfig: per-field
   global-variable binding via `FieldVariableBinding` — bind indicator
   parameters to global variables instead of hard-coding values.
@@ -341,6 +414,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the floating bottom-nav and remains scrollable into view.
 
 ### Changed
+
 - VariableChip: more compact layout (smaller padding, rounded-lg, no
   Link2 icon prefix) to fit denser indicator/setting rows.
 - EmptyState placement on TradingBots / GridBots / ComboBots /
@@ -354,6 +428,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being stretched by an outer grid.
 
 ### Fixed
+
 - ComboBots stats: "Accumulated Profit" and "Profit By Day" were both
   showing the same value as "Total Profit". Replaced with the unified
   KPI strip; the duplicate-value placeholders are gone.
@@ -374,6 +449,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.2] - 2026-05-27
 
 ### Added
+
 - NavigationSidebar: third "hidden" mode in addition to pinned /
   unpinned. Drag the right-edge handle further left from collapsed to
   fully hide; the sidebar reappears as an overlay when the cursor
@@ -388,6 +464,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to be visible at the previous offset.
 
 ### Fixed
+
 - BotFormAlertSummary: long validation chips (e.g. "Base order amount
   must be more than 10 USDC") now truncate inside their parent row.
   Previous SettingsAlert-only fix didn't help because the chip lived
@@ -399,6 +476,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.1] - 2026-05-27
 
 ### Fixed
+
 - SettingsAlert: long warning/error chips (e.g. "Base order amount
   must be more than 10 USDC") now actually truncate inside their
   parent. Previous fix used `inline-flex max-w-full`, which doesn't
@@ -410,6 +488,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.0] - 2026-05-27
 
 ### Changed
+
 - Single-bot Duplicate (DCA / Grid / Combo) now navigates to
   `/<route>/new?load=<id>` and opens the new-bot form pre-seeded from
   the source, matching the hedge clone flow. Previously the non-hedge
@@ -417,6 +496,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bulk-clone paths (where they exist) keep the API-only behavior.
 
 ### Fixed
+
 - DCA bot details "Clone" button navigated to `/bot/new?clone=<id>`,
   a param nothing read; switched to the `?load=` convention so it
   actually seeds the form.
@@ -424,6 +504,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.3.0] - 2026-05-27
 
 ### Added
+
 - `firstToolbarActionsCompact`, `customToolbarActionsCompact`,
   `finalToolbarActionsCompact` on DataTable — caller supplies a narrow
   variant of any toolbar action. When provided the responsive row swaps
@@ -436,6 +517,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   threshold.
 
 ### Changed
+
 - ResponsiveButtonRow overflow algorithm simplified back to pure
   priority-based progression: compact lowest-priority buttons first,
   overflow lowest-priority first only after full compaction. The
@@ -450,6 +532,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.1] - 2026-05-27
 
 ### Changed
+
 - Toolbar custom actions (Archive toggle on Trading/Combo/Grid bots,
   Refresh on Global Variables) now use the same ghost+labeled style
   as the standard toolbar buttons. Cards-mode Filters button on the
@@ -461,6 +544,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.0] - 2026-05-27
 
 ### Added
+
 - DataTable toolbar buttons now show icon + label (Resize, Filters,
   Columns, Cards) when there's room; compactContent stays icon-only
   for narrow widths.
@@ -470,6 +554,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct element on any surface.
 
 ### Changed
+
 - ResponsiveButtonRow overflow algorithm: progressive compaction is
   now interleaved with a single-button overflow probe. After each
   compaction step we re-check whether overflowing one wide hidable
@@ -483,6 +568,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   toggle sits just below column-visibility (which is neverOverflow).
 
 ### Fixed
+
 - ResponsiveButtonRow no longer reserves overflow-menu space
   preemptively when there are no custom menu items; reservation
   happens only when a button actually needs to overflow.
@@ -490,6 +576,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.3] - 2026-05-27
 
 ### Fixed
+
 - Notifications: bot rows now mark-as-read server-side via
   `deleteBotMessage` (parity with legacy). Previously the single-row
   action sent `NaN` to `readPlatformNotificationByUser` and the bulk
@@ -497,6 +584,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and out of sync with the server.
 
 ### Removed
+
 - `localStorage["readBotNotifications"]` client-side read tracking
   for bot notifications; bot read state is now backend-owned. The
   stale key is purged once on load.
@@ -504,6 +592,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.2] - 2026-05-27
 
 ### Added
+
 - Hedge bot tables (DCA + Combo): Name, Cost, Max cost, Avg daily,
   Annualized columns — closes the remaining gap with the standalone
   trading-bots table.
@@ -511,12 +600,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.1] - 2026-05-27
 
 ### Changed
+
 - Card primitive: no default border (surface contrast separates cards
   from the page background per DESIGN_SYSTEM.md §3); padding now uses
   spacing tokens (`py-md md:py-lg`, `px-md md:px-lg`) so it tracks
   compact / comfortable density.
 
 ### Fixed
+
 - Card primitive: `min-w-0` so wide children (tables) shrink within
   constrained parents — their own `overflow-x-auto` actually scrolls
   instead of blowing out the layout.
@@ -530,6 +621,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.0] - 2026-05-27
 
 ### Added
+
 - Hedge bot card: full info parity with the standalone trading-bots
   card — Cost (current / max), Avg Daily, Annualized, total Deals; per
   leg now also shows Usage, Cost, Deals, Profit, and Unrealized PnL.
@@ -544,6 +636,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flow.
 
 ### Changed
+
 - Hedge bot card: leg tiles now use `bg-card` over the outer `bg-muted`
   (no border) per the surface ladder, replacing the previous
   border-heavy inset.
@@ -560,6 +653,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.2] - 2026-05-26
 
 ### Fixed
+
 - SettingsAlert: long warning/error chips now truncate inside their
   container instead of overflowing the parent.
 - NavigationSidebar: stop the hover-elevated sidebar from flickering on
@@ -573,6 +667,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pairs when replacing the only configured pair.
 
 ### Changed
+
 - SettingsRow: transparent by default. Stacked rows now rely on
   spacing/typography instead of an extra `bg-card` surface.
 - Bot form sub-nav (`ScrollableFormTabNavigation`): square pill tabs
@@ -586,6 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.1] - 2026-05-26
 
 ### Fixed
+
 - DataTable: actions column now renders last and stays pinned to the right
   edge. Two underlying bugs are addressed: `defaultColumnOrder` was emitting
   `accessorKey` strings react-table couldn't resolve (so it auto-appended
@@ -597,6 +693,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.0] - 2026-05-26
 
 ### Added
+
 - First release of the v2 dashboard as `@gainium/main-dash-sh`. Vite/React SPA
   replacing the previous Next.js `main-dash` build (now shipped as the
   `frontend-legacy` image).

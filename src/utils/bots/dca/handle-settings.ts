@@ -121,6 +121,19 @@ export const handleSettingsUpdate = (
       updates.dca.dcaCondition = DCAConditionEnum.percentage;
       updates.dca.scaleDcaType = ScaleDcaTypeEnum.percentage;
     }
+    // Legacy onChangeInput integer-normalizes these two count fields on commit
+    // (trimNumber(value, true)), gating to '' on an invalid number. Other count
+    // fields are stored raw.
+    if (field === 'closeAfterX') {
+      updates.dca.closeAfterX = verifyNumber(value as string)
+        ? trimNumber(value as string, true)
+        : '';
+    }
+    if (field === 'closeAfterXopen') {
+      updates.dca.closeAfterXopen = verifyNumber(value as string)
+        ? trimNumber(value as string, true)
+        : '';
+    }
     if (
       dcaCondition !== DCAConditionEnum.percentage ||
       (updates.dca.dcaCondition &&
@@ -473,6 +486,66 @@ export const handleSettingsUpdate = (
       updates.dca.indicatorGroups = (updates.dca.indicatorGroups ?? []).filter(
         (ig) => ig.action !== IndicatorAction.startBot
       );
+    }
+    // Auto-seed the first indicator + group when switching into an indicators
+    // mode (or enabling the controller while a mode is already 'indicators').
+    // Mirrors legacy addIndicator(IndicatorAction.startBot|stopBot, …, true).
+    // Note the legacy asymmetry: `botStart` drives stopBot indicators and
+    // `botActualStart` drives startBot indicators.
+    const seedControllerIndicator = (action: IndicatorAction) => {
+      const generateId = (): string =>
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `controller-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const group: SettingsIndicatorGroup = {
+        id: generateId(),
+        logic: IndicatorsLogicEnum.and,
+        action,
+      };
+      const type = IndicatorEnum.adx;
+      const defaults = getIndicatorDefaultParams(type, action);
+      const seeded: SettingsIndicators = {
+        ...(defaults as unknown as SettingsIndicators),
+        type,
+        indicatorAction: action,
+        uuid: generateId(),
+        maUUID: generateId(),
+        xoUUID: generateId(),
+        groupId: group.id,
+      };
+      updates.dca.indicators = [...(updates.dca.indicators ?? []), seeded];
+      updates.dca.indicatorGroups = [
+        ...(updates.dca.indicatorGroups ?? []),
+        group,
+      ];
+    };
+    const nextBotStart =
+      field === 'botStart' ? (value as BotStartTypeEnum) : botStart;
+    const nextBotActualStart =
+      field === 'botActualStart' ? (value as BotStartTypeEnum) : botActualStart;
+    if (
+      ((field === 'botStart' && value === BotStartTypeEnum.indicators) ||
+        (field === 'useBotController' &&
+          value &&
+          nextBotStart === BotStartTypeEnum.indicators)) &&
+      (updates.dca.indicators ?? []).filter(
+        (i) => i.indicatorAction === IndicatorAction.stopBot
+      ).length === 0
+    ) {
+      seedControllerIndicator(IndicatorAction.stopBot);
+    }
+    if (
+      ((field === 'botActualStart' &&
+        value === BotStartTypeEnum.indicators) ||
+        (field === 'useBotController' &&
+          value &&
+          nextBotActualStart === BotStartTypeEnum.indicators)) &&
+      (updates.dca.indicators ?? []).filter(
+        (i) => i.indicatorAction === IndicatorAction.startBot
+      ).length === 0
+    ) {
+      seedControllerIndicator(IndicatorAction.startBot);
     }
     if (field === 'scaleDcaType' && value === ScaleDcaTypeEnum.percentage) {
       updates.dca.indicators = (updates.dca.indicators ?? []).filter(

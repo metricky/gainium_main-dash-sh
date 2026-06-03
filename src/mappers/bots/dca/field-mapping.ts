@@ -2857,6 +2857,9 @@ export const mapBotControllerFields = (
   const _closeAfterXopen = isComboBot
     ? formData.combo.closeAfterXopen
     : formData.dca.closeAfterXopen;
+  const _maxNumberOfOpenDeals = isComboBot
+    ? formData.combo.maxNumberOfOpenDeals
+    : formData.dca.maxNumberOfOpenDeals;
   const indicators = isComboBot
     ? formData.combo.indicators
     : formData.dca.indicators;
@@ -3043,6 +3046,14 @@ export const mapBotControllerFields = (
       if (isNaN(closeAfterXopen) || closeAfterXopen <= 0) {
         errors.push(
           `Invalid closeAfterXopen: ${closeAfterXopen}. Must be a positive integer`
+        );
+      } else if (
+        _maxNumberOfOpenDeals &&
+        +_maxNumberOfOpenDeals > closeAfterXopen
+      ) {
+        // Legacy verifyInput: closeAfterXopen must be >= max open deals.
+        errors.push(
+          `Invalid closeAfterXopen: ${closeAfterXopen}. Must be greater than or equal to the max number of open deals (${_maxNumberOfOpenDeals})`
         );
       }
     }

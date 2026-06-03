@@ -1044,8 +1044,13 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
             ...settingsUpdateResult,
             dca: {
               ...prev.dca,
-              ...settingsUpdateResult.dca,
+              // Apply the raw value first, then let handleSettingsUpdate's
+              // explicit field results win — this lets it coerce the active
+              // field (e.g. integer-normalizing closeAfterX/closeAfterXopen),
+              // matching legacy onChangeInput where newSettings[field] is the
+              // computed value, not the raw input.
               [field]: value,
+              ...settingsUpdateResult.dca,
             },
           };
         }
