@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hide "Order Size Reference" in the bot form on spot exchanges — it only
   applies to leveraged/futures positions.
+- Asset precision: `math.getPrecisionFromDecimalString` now matches the legacy
+  `botUtils.getAssetPrecision` exactly — fixes an off-by-one in the multi-zero
+  branch (e.g. `0.0003` now resolves to 4 decimals, not 3) and restores the
+  Kucoin/paperKucoin path that keeps trailing zeros after the significant digit.
+  Pass the pair's exchange to opt into the Kucoin behaviour.
 
 ## [2.8.0] - 2026-06-03
 
