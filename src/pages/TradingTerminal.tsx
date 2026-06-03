@@ -7,6 +7,12 @@ import {
 import { PanelContainer } from '@/components/bots/panels/PanelContainer';
 import MainLayout from '@/components/layout/MainLayout';
 import WidgetContainer from '@/components/layout/WidgetContainer';
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs';
 /* import { ChartIntervalActions } from '@/features/trading-terminal/components/ChartIntervalActions'; */
 import { BotChartPanel } from '@/components/bots/panels';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
@@ -15,6 +21,7 @@ import {
   TradingTerminalUtilsProvider,
   useTradingTerminalUtils,
 } from '@/context/TradingTerminalUtilsContext';
+import { ExchangeOrdersPanel } from '@/features/trading-terminal/components/ExchangeOrdersPanel';
 import { OpenOrdersPanel } from '@/features/trading-terminal/components/OpenOrdersPanel';
 import { OrderEntryPanel } from '@/features/trading-terminal/components/OrderEntryPanel';
 import { TradingTerminalProvider } from '@/features/trading-terminal/context';
@@ -96,7 +103,20 @@ const TradingTerminalWidget: React.FC = () => {
       <PanelContainer
         paddinglessBody
         containerClassName="min-h-[220px]"
-        content={<OpenOrdersPanel />}
+        content={
+          <Tabs defaultValue="deals" className="h-full flex flex-col">
+            <TabsList>
+              <TabsTrigger value="deals">Deals</TabsTrigger>
+              <TabsTrigger value="exchange">Exchange Orders</TabsTrigger>
+            </TabsList>
+            <TabsContent value="deals" className="flex-1 overflow-hidden">
+              <OpenOrdersPanel />
+            </TabsContent>
+            <TabsContent value="exchange" className="flex-1 overflow-hidden">
+              <ExchangeOrdersPanel />
+            </TabsContent>
+          </Tabs>
+        }
       />
     ),
     []

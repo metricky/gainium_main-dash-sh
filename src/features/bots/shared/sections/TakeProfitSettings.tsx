@@ -43,6 +43,7 @@ import {
 } from '@/hooks/useIndicatorSelector';
 import { useWebhookEligibility } from '@/hooks/useWebhookEligibility';
 import { logger } from '@/lib/loggerInstance';
+import { math } from '@/lib/utils/math';
 import {
   CloseConditionEnum,
   closeConditionsMap,
@@ -56,6 +57,7 @@ import {
   MIN_DCA_TP_NEW,
   OrderTypeEnum,
   StrategyEnum,
+  TerminalDealTypeEnum,
   type MultiTP,
 } from '@/types';
 import type {
@@ -262,6 +264,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
   const indicatorGroups = useBotFormSelector('indicatorGroups');
   const stopDealLogic = useBotFormSelector('stopDealLogic');
   const tpPerc = useBotFormSelector('tpPerc');
+  const terminalDealType = useBotFormSelector('terminalDealType');
   const fixedTpPrice = useBotFormSelector('fixedTpPrice');
   const useTp = useBotFormSelector('useTp');
   const useMultiTp = useBotFormSelector('useMultiTp');
@@ -553,7 +556,35 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
   const minTpRange = tradingContext.ranges?.tpPerc;
   const minTpPercentFromRanges = minTpRange?.min;
 
+  // Legacy terminal Import min-TP clamp (index.tsx:5489-5515). For an imported
+  // position the minimum TP% is derived from the distance between the declared
+  // entry price and the latest market price; otherwise it floors at MIN_DCA_TP.
+  const getMinTp = useMemo(() => {
+    return terminalDealType === TerminalDealTypeEnum.import &&
+      baseOrderPrice &&
+      latestPrice &&
+      !isNaN(+(baseOrderPrice ?? '')) &&
+      !isNaN(+(latestPrice ?? '')) &&
+      (strategy === StrategyEnum.long
+        ? +latestPrice > +baseOrderPrice
+        : +latestPrice < +baseOrderPrice)
+      ? Math.max(
+          math.round(
+            ((+latestPrice - +baseOrderPrice) / +baseOrderPrice) * 100 +
+              MIN_DCA_TP * 100 * (strategy === StrategyEnum.long ? 1 : -1),
+            1,
+            false,
+            true
+          ) * (strategy === StrategyEnum.long ? 1 : -1),
+          MIN_DCA_TP * 100
+        )
+      : MIN_DCA_TP * 100;
+  }, [terminalDealType, baseOrderPrice, latestPrice, strategy]);
+
   const minTpToUse = useMemo(() => {
+    if (terminalDealType === TerminalDealTypeEnum.import) {
+      return Math.round(getMinTp * 1000) / 1000;
+    }
     const fallback =
       (isComboBot || isHedgeBot ? MIN_DCA_TP_NEW : MIN_DCA_TP) * 100;
     const resolved =
@@ -563,7 +594,13 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
         : fallback;
 
     return Math.round(resolved * 1000) / 1000;
-  }, [isComboBot, isHedgeBot, minTpPercentFromRanges]);
+  }, [
+    isComboBot,
+    isHedgeBot,
+    minTpPercentFromRanges,
+    terminalDealType,
+    getMinTp,
+  ]);
 
   const minTpSourceDescription = useMemo(() => {
     if (!minTpRange) {
@@ -2385,7 +2422,12 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
 
               <div className="space-y-md border-t border-muted pt-3">
                 <div className="space-y-1">
-                  <Label className="text-sm">Deal close type</Label>
+                  <div className="flex items-center gap-xs">
+                    <Label className="text-sm">Deal close type</Label>
+                    <Tooltip tooltip="Limit order rests the take profit on the ladder; Market order executes it immediately at market when the target triggers.">
+                      <InfoIcon />
+                    </Tooltip>
+                  </div>
                   <TerminalButtonStack
                     value={comboTpLimit ? 'limit' : 'market'}
                     onValueChange={(value) =>
@@ -2397,11 +2439,6 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
                     ]}
                     className="w-full sm:w-auto"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    {comboTpLimit
-                      ? 'Send the take profit as a resting limit order on the ladder.'
-                      : 'Execute the take profit immediately at market when the target triggers.'}
-                  </p>
                 </div>
               </div>
 
@@ -2826,7 +2863,7 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
               {isDynamicArClose && !isDealEdit ? (
                 <SettingsRow
                   name="Dynamic ATR/ADR indicators"
-                  tooltip="Use ATR or ADR indicators to drive dynamic take profit."
+                  tooltip="Use ATR or ADR indicators to drive dynamic take profit. Each indicator multiplies its value by the configured factor."
                   colSpan="full"
                   className={interactionDisabledClass}
                   contentClassName="space-y-md"
@@ -2847,12 +2884,6 @@ export const TakeProfitSettings: React.FC<TakeProfitSettingsProps> = ({
                     </Button>
                   }
                 >
-                  <p className="text-xs text-muted-foreground">
-                    Select ATR or ADR indicators to drive dynamic take profit.
-                    Each indicator multiplies its value by the configured
-                    factor.
-                  </p>
-
                   <IndicatorList
                     indicators={closeIndicators}
                     onRemove={handleRemoveIndicator}

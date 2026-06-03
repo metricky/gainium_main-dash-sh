@@ -5,10 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.8.3] - 2026-06-04
 
 ### Changed
 
+- Trading terminal Simple/Smart/Import brought to legacy parity: Buy/Sell side
+  buttons (Import inverts Buy→short / Sell→long); Import shows the full Take
+  Profit / Stop Loss / DCA / Risk:Reward sections with a labeled entry-price
+  field ("Purchased Price" / "Sold Price"); Simple drops Profit Currency and
+  futures; the Quick/Manual toggle is shown only for Smart.
+- Trading terminal: restore the legacy dual Amount/Total order-size fields
+  (both visible, kept in sync via price; focus implies the unit) in place of the
+  single Base Order Size field. Applies to Simple/Smart/Import.
 - Bot form: move "what it does" helper text into field tooltips across the
   combo, DCA, and grid sections (Deal close type, Base Take Profit/Stop Loss On,
   grid direction/type/range/budget, Dynamic ATR/ADR). Constraints, ranges, and
@@ -18,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Trading terminal: always keep a pair selected — default to BTC against
+  USDT/USDC/USD (else the first available pair) when an exchange is chosen.
+- Trading terminal percentage buttons (10–100%) now set the Amount in base
+  units instead of applying the quote total as a base amount.
+- Trading terminal: switching focus between the Amount and Total fields converts
+  the size into the focused unit instead of reinterpreting the stored number.
+- Trading terminal Import: balance/max now reads the correct wallet (base for a
+  long holding, quote for a short).
+- Trading terminal: the Amount field's USD estimate reflects the shown amount;
+  tighten the spacing between the Deals/Exchange tabs and the table.
 - Hide "Order Size Reference" in the bot form on spot exchanges — it only
   applies to leveraged/futures positions.
 - Asset precision: `math.getPrecisionFromDecimalString` now matches the legacy

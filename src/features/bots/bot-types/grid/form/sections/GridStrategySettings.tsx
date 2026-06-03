@@ -125,7 +125,7 @@ export const GridStrategySettings: React.FC = () => {
         {!futures && (
           <SettingsRow
             name="Profit currency"
-            tooltip={`Choose which asset to accumulate: ${quoteAsset || 'quote'} or ${baseAsset || 'base'}.`}
+            tooltip={`Choose which asset to accumulate: select ${quoteAsset || 'quote'} to stack quote, or ${baseAsset || 'base'} to accumulate base.`}
             tooltipURL="/help/profit-in-base-and-quote"
           >
             <div className="space-y-sm">
@@ -134,11 +134,6 @@ export const GridStrategySettings: React.FC = () => {
                 onValueChange={(next) => updateFormData('profitCurrency', next)}
                 options={profitCurrencyOptions}
               />
-              <p className="text-xs text-muted-foreground max-w-[540px]">
-                Select quote currency if you want to stack{' '}
-                {quoteAsset || 'quote'} asset; choose base currency for
-                accumulation of {baseAsset || 'base'} asset.
-              </p>
             </div>
           </SettingsRow>
         )}
@@ -146,7 +141,7 @@ export const GridStrategySettings: React.FC = () => {
         {!futures && (
           <SettingsRow
             name="Order fixed in"
-            tooltip="Define the currency used to size each grid order."
+            tooltip={`Define the currency used to size each grid order — whether each level commits a fixed amount of ${baseAsset || 'base'} or ${quoteAsset || 'quote'} on execution.`}
             tooltipURL="/help/order-fixed-in-base-and-quote-grid"
           >
             <div className="space-y-sm">
@@ -155,17 +150,13 @@ export const GridStrategySettings: React.FC = () => {
                 onValueChange={(next) => updateFormData('orderFixedIn', next)}
                 options={orderFixedInOptions}
               />
-              <p className="text-xs text-muted-foreground max-w-[540px]">
-                Determines whether each level commits a fixed amount of{' '}
-                {baseAsset || 'base'} or {quoteAsset || 'quote'} on execution.
-              </p>
             </div>
           </SettingsRow>
         )}
 
         <SettingsRow
           name="Direction"
-          tooltip="Pick between long and short grid logic."
+          tooltip={`Pick between long and short grid logic. Long grids buy more ${baseAsset || 'base'} when price drops and sell as it rises. Short grids invert this behavior to accumulate ${quoteAsset || 'quote'} or hedge against downside moves.`}
         >
           <div className="space-y-sm">
             <TerminalButtonStack
@@ -173,11 +164,6 @@ export const GridStrategySettings: React.FC = () => {
               onValueChange={(next) => updateFormData('strategy', next)}
               options={strategyOptions}
             />
-            <p className="text-xs text-muted-foreground max-w-[540px]">
-              Long grids buy more {baseAsset || 'base'} when price drops and
-              sell as it rises. Short grids invert this behavior to accumulate{' '}
-              {quoteAsset || 'quote'} or hedge against downside moves.
-            </p>
           </div>
         </SettingsRow>
 

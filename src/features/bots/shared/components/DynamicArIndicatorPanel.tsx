@@ -143,10 +143,9 @@ export const DynamicArIndicatorPanel: React.FC<
   // ─── Per-section copy ───────────────────────────────────────────
   const isTp = section === IndicatorSection.tp;
   const target = isTp ? 'take profit' : 'stop loss';
-  const description = `Select ATR or ADR indicators to drive dynamic ${target}. Each indicator multiplies its value by the configured factor.`;
   const emptyState = `No ATR/ADR indicators configured. Add ATR or ADR to enable dynamic ${target}.`;
   const missingAlertDescription = `Dynamic ATR/ADR requires at least one ATR or ADR indicator. Add an indicator to compute ${target} distance.`;
-  const tooltip = `Use ATR or ADR indicators to drive dynamic ${target}.`;
+  const tooltip = `Use ATR or ADR indicators to drive dynamic ${target}. Each indicator multiplies its value by the configured factor.`;
   const navId = isTp ? 'take-profit-advanced' : 'stop-loss-advanced';
 
   // ─── Handlers ──────────────────────────────────────────────────
@@ -372,8 +371,6 @@ export const DynamicArIndicatorPanel: React.FC<
           </Button>
         }
       >
-        <p className="text-xs text-muted-foreground">{description}</p>
-
         <IndicatorList
           indicators={closeIndicators}
           onRemove={handleRemoveIndicator}

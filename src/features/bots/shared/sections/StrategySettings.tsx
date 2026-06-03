@@ -253,17 +253,19 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
           </SettingsRow>
         )}
 
-        <SettingsRow
-          name="Order Size Reference"
-          tooltip="You can switch between the position value after leverage and the capital required to open the position."
-        >
-          <OrderSizeReferenceSelector
-            orderSizeReference={formData.orderSizeReference}
-            onOrderSizeReferenceChange={(nextReference) =>
-              updateFormData('orderSizeReference', nextReference)
-            }
-          />
-        </SettingsRow>
+        {futures && (
+          <SettingsRow
+            name="Order Size Reference"
+            tooltip="You can switch between the position value after leverage and the capital required to open the position."
+          >
+            <OrderSizeReferenceSelector
+              orderSizeReference={formData.orderSizeReference}
+              onOrderSizeReferenceChange={(nextReference) =>
+                updateFormData('orderSizeReference', nextReference)
+              }
+            />
+          </SettingsRow>
+        )}
 
         {!futures && (
           <SettingsRow
@@ -466,7 +468,7 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
             {isComboBot && (
               <SettingsRow
                 name="Combo grid strategy"
-                description={`Spacing: ${baseSpacing.display}%`}
+                tooltip="Control how the base order spreads across the underlying minigrid before DCA orders begin."
                 colSpan="full"
               >
                 <SettingsRowSurface
@@ -476,15 +478,6 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
                   className="border-0"
                 >
                   <div className="space-y-sm">
-                    <div>
-                      <p className="text-sm font-medium">
-                        Base minigrid allocation
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Control how the base order spreads across the underlying
-                        minigrid before DCA orders begin.
-                      </p>
-                    </div>
                     <div className="grid gap-sm sm:grid-cols-2">
                       <div className="space-y-1.5">
                         <Label htmlFor="combo-base-grid-levels">
@@ -592,11 +585,16 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
                       </div>
                     </div>
                   </div>
-                  {baseSpacing.isLow && (
+                  {baseSpacing.isLow ? (
                     <SettingsAlert
                       variant="warning"
-                      title="Base grid spacing is tight"
+                      title={`Base grid spacing is tight · ${baseSpacing.display}%`}
                       description="Base grid spacing below 1% can concentrate exposure near the entry price. Consider increasing either the base grid levels or base step."
+                    />
+                  ) : (
+                    <SettingsAlert
+                      variant="info"
+                      title={`Base grid spacing · ${baseSpacing.display}%`}
                     />
                   )}
                 </SettingsRowSurface>

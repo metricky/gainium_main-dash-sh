@@ -29,6 +29,7 @@ import { useDcaBotSettingsStore } from '@/stores/dcaBotSettingsStore';
 import {
   BotTypesEnum,
   ExchangeIntervals,
+  TerminalDealTypeEnum,
   type BotVars,
   type ExchangeInUser,
 } from '@/types';
@@ -352,7 +353,11 @@ export const useFormHandlers = (
         });
 
         toast.success(
-          terminal ? 'Deal created successfully!' : 'Bot created successfully!'
+          terminal
+            ? formData.dca.terminalDealType === TerminalDealTypeEnum.import
+              ? 'Deal succesfully imported'
+              : 'Deal created, waiting to place orders'
+            : 'Bot created successfully!'
         );
         options.onCreateSuccess?.(createdBot);
         setErrors({});

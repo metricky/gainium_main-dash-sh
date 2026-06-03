@@ -1327,7 +1327,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
         {isComboBot ? (
           <SettingsRow
             name="Combo grid strategy"
-            description={`Spacing: ${comboSpacing.display}%`}
+            tooltip="Control how the DCA order spreads across the underlying minigrid."
             colSpan="full"
           >
             <SettingsRowSurface
@@ -1337,13 +1337,6 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
               className="border-0"
             >
               <div className="space-y-sm">
-                <div>
-                  <p className="text-sm font-medium">DCA minigrid allocation</p>
-                  <p className="text-xs text-muted-foreground">
-                    Control how the DCA order spreads across the underlying
-                    minigrid.
-                  </p>
-                </div>
                 <div className="grid gap-sm sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="combo-base-grid-levels">
@@ -1432,11 +1425,16 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                 </div>
               </div>
 
-              {comboSpacing.isLow && (
+              {comboSpacing.isLow ? (
                 <SettingsAlert
                   variant="warning"
-                  title="Low grid spacing"
+                  title={`Low grid spacing · ${comboSpacing.display}%`}
                   description="Grid spacing below 1% increases the risk of orders being skipped during high volatility. Consider increasing either the order step or minigrid levels."
+                />
+              ) : (
+                <SettingsAlert
+                  variant="info"
+                  title={`Grid spacing · ${comboSpacing.display}%`}
                 />
               )}
 

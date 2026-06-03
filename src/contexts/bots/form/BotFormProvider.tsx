@@ -1038,7 +1038,12 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         }
 
         if (field in prev.dca && botType === BotTypesEnum.dca) {
-          settingsUpdateResult = handleSettingsUpdate(prev, field, value);
+          settingsUpdateResult = handleSettingsUpdate(
+            prev,
+            field,
+            value,
+            exampleOrdersStore.getInputLatestPrice()
+          );
           return {
             ...prev,
             ...settingsUpdateResult,

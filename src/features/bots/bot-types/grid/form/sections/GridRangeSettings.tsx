@@ -302,7 +302,7 @@ export const GridRangeSettings: React.FC = () => {
 
         <SettingsRow
           name={`Low price (${quoteLabel})`}
-          tooltip="Define how far the grid can extend downward."
+          tooltip="Define how far the grid can extend downward. Wider ranges capture more volatility but require additional capital."
           navId="lowPrice"
           alerts={buildErrorAlerts(errors, 'lowPrice')}
         >
@@ -375,16 +375,12 @@ export const GridRangeSettings: React.FC = () => {
                 buttonClassName: 'min-w-[64px] px-2',
               }))}
             />
-            <p className="text-xs text-muted-foreground max-w-[540px]">
-              Wider ranges capture more volatility but require additional
-              capital.
-            </p>
           </div>
         </SettingsRow>
 
         <SettingsRow
           name="Grid levels"
-          tooltip="Specify how many buy and sell levels compose the grid."
+          tooltip="Specify how many buy and sell levels compose the grid. More levels increase sensitivity but spread capital thinner per order."
           navId="levels"
           alerts={buildErrorAlerts(errors, 'levels')}
         >
@@ -411,10 +407,6 @@ export const GridRangeSettings: React.FC = () => {
               precision={0}
               showControls={false}
             />
-            <p className="text-xs text-muted-foreground max-w-[540px]">
-              More levels increase sensitivity but spread capital thinner per
-              order.
-            </p>
           </div>
         </SettingsRow>
 
@@ -455,7 +447,7 @@ export const GridRangeSettings: React.FC = () => {
 
         <SettingsRow
           name="Grid type"
-          tooltip="Choose how price spacing is calculated between grid levels."
+          tooltip="Choose how price spacing is calculated between grid levels. Geometric grids allocate more buy orders as price decreases, ideal for trending markets. Arithmetic grids keep uniform spacing and are easier to reason about."
           tooltipURL="/help/arithmetic-and-geometric-grid-types"
           navId="gridType"
         >
@@ -470,11 +462,6 @@ export const GridRangeSettings: React.FC = () => {
                 { value: 'arithmetic', label: 'Arithmetic' },
               ]}
             />
-            <p className="text-xs text-muted-foreground max-w-[640px]">
-              Geometric grids allocate more buy orders as price decreases, ideal
-              for trending markets. Arithmetic grids keep uniform spacing and
-              are easier to reason about.
-            </p>
           </div>
         </SettingsRow>
 

@@ -10,7 +10,7 @@ import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import type { BotFormMode, BotFormUpdateValue, Fields } from '@/features/bots';
 import type { ExchangeInUser } from '@/types';
 import type { BotFormData } from '@/types/bots';
-import { getProviderIcon } from '@/utils/exchangeUtils';
+import { getProviderIcon, isFuturesExchange } from '@/utils/exchangeUtils';
 import { useCallback, useEffect, useMemo } from 'react';
 
 type ExchangeSelectorProps = {
@@ -23,6 +23,12 @@ type ExchangeSelectorProps = {
   tooltip?: string;
   tooltipURL?: string;
   mode: BotFormMode;
+  /**
+   * Disable futures-provider exchange options (terminal Simple deal type is
+   * spot-only — legacy getOptionDisabled, TerminalBotSettings.tsx:857-860).
+   * Defaults to false so all other callers are unaffected.
+   */
+  disableFutures?: boolean;
 };
 
 const ExchangeSelector = ({
@@ -35,6 +41,7 @@ const ExchangeSelector = ({
   tooltip,
   tooltipURL,
   mode,
+  disableFutures = false,
 }: ExchangeSelectorProps) => {
   const exchangeDisplayName = useMemo(
     () =>
@@ -149,9 +156,15 @@ const ExchangeSelector = ({
                     ? formatUsdAmount(balanceValue)
                     : null;
                 const providerIcon = getProviderIcon(exchange.provider ?? '');
+                const optionDisabled =
+                  disableFutures && isFuturesExchange(exchange.provider ?? '');
 
                 return (
-                  <SelectItem key={exchange.uuid} value={exchange.uuid}>
+                  <SelectItem
+                    key={exchange.uuid}
+                    value={exchange.uuid}
+                    disabled={optionDisabled}
+                  >
                     <div className="flex items-center justify-between gap-sm">
                       <div className="flex items-center gap-xs min-w-0">
                         <ExchangeIcon

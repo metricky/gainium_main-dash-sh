@@ -62,6 +62,16 @@ export interface DcaTradingContext {
   fallbackLimitPrice?: number;
   /** Whether limit price should be used as reference */
   shouldUseLimitPrice?: boolean;
+  /** Quote -> USD conversion rate (already computed for $-based inputs). */
+  usdPrice?: number;
+  /** Raw quote asset minimum amount from the active pair (drives coinm Cont sizing). */
+  quoteMinAmount?: number;
+  /** Raw base asset minimum amount from the active pair. */
+  baseMinAmount?: number;
+  /** Active pair exchange/provider string (used for the bybit coinm check). */
+  provider?: string;
+  /** Taker/maker fee fraction: spot uses the user fee, futures uses 0. */
+  fee?: number;
   ranges: DcaDerivedRanges;
 }
 
@@ -488,6 +498,19 @@ export const useDcaTradingContext = (
   }, [usdPrice, isSkipExampleOrders]);
 
   const startOrderType = useBotFormSelector('startOrderType');
+  const futuresFlag = useBotFormSelector('futures');
+
+  // Legacy fee parity (`example-orders-core.ts:1353`,
+  // `feeFactor = 1 + (settings.futures ? 0 : userFee)`): the order-size max
+  // computations apply the fee on spot paths only; futures uses 0.
+  const fee = React.useMemo(() => {
+    if (futuresFlag) {
+      return 0;
+    }
+    const maker = formData.userFee?.makerCommission;
+    return typeof maker === 'number' && Number.isFinite(maker) ? maker : 0;
+  }, [futuresFlag, formData.userFee?.makerCommission]);
+
   const useLimitPrice = useBotFormSelector('useLimitPrice');
   const baseOrderPrice = useBotFormSelector('baseOrderPrice');
   const startBotPriceValue = useBotFormSelector('startPrice');
@@ -590,6 +613,20 @@ export const useDcaTradingContext = (
   if (typeof secondaryLimitPrice === 'number') {
     context.fallbackLimitPrice = secondaryLimitPrice;
   }
+
+  if (typeof usdPrice === 'number') {
+    context.usdPrice = usdPrice;
+  }
+  if (typeof activePair?.quoteAsset?.minAmount === 'number') {
+    context.quoteMinAmount = activePair.quoteAsset.minAmount;
+  }
+  if (typeof activePair?.baseAsset?.minAmount === 'number') {
+    context.baseMinAmount = activePair.baseAsset.minAmount;
+  }
+  if (activePair?.exchange) {
+    context.provider = activePair.exchange;
+  }
+  context.fee = fee;
 
   return context;
 };

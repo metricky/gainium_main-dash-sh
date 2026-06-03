@@ -33,12 +33,15 @@ import {
   IndicatorEnum,
   IndicatorSection,
   IndicatorsLogicEnum,
+  MIN_DCA_TP,
   MIN_DCA_TP_NEW,
   StrategyEnum,
+  TerminalDealTypeEnum,
   closeConditionsMap,
   indicatorsLimit,
   type MultiTP,
 } from '@/types';
+import { math } from '@/lib/utils/math';
 import { DynamicArIndicatorPanel } from '@/features/bots/shared/components/DynamicArIndicatorPanel';
 import { CloseConditionEnum } from '@/types/bots/dealConditions';
 import type {
@@ -142,6 +145,8 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
   const moveSLTrigger = useBotFormSelector('moveSLTrigger');
   const moveSLValue = useBotFormSelector('moveSLValue');
   const slPerc = useBotFormSelector('slPerc');
+  const baseOrderPrice = useBotFormSelector('baseOrderPrice');
+  const terminalDealType = useBotFormSelector('terminalDealType');
   const useMultiSl = useBotFormSelector('useMultiSl');
   const trailingSl = useBotFormSelector('trailingSl');
   const tpPerc = useBotFormSelector('tpPerc');
@@ -157,7 +162,32 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
     mode,
   } = useBotFormState();
   const isDealEdit = mode === 'deal-edit' || mode === 'deal-mass-edit';
-  const minSlToUse = MIN_DCA_TP_NEW; // Minimum percentage for SL
+  // Legacy terminal Import max-SL clamp (index.tsx:5469-5487). Returns the
+  // (negative) least-aggressive SL allowed for an imported position; floors at
+  // MIN_DCA_TP * 100 * -1 otherwise. The redesign SL section works in
+  // magnitudes, so the Import floor is applied via Math.abs below.
+  const getMaxSl = useMemo(() => {
+    return terminalDealType === TerminalDealTypeEnum.import &&
+      baseOrderPrice &&
+      latestPrice &&
+      !isNaN(+(baseOrderPrice ?? '')) &&
+      !isNaN(+(latestPrice ?? ''))
+      ? math.round(
+          ((+latestPrice - +baseOrderPrice) / +baseOrderPrice) *
+            100 *
+            (strategy === StrategyEnum.long ? 1 : -1) +
+            MIN_DCA_TP * 100 * -1,
+          1,
+          true
+        )
+      : MIN_DCA_TP * 100 * -1;
+  }, [terminalDealType, baseOrderPrice, latestPrice, strategy]);
+  // Minimum SL magnitude. For terminal Import the floor comes from getMaxSl
+  // (legacy minSlToUs = getMaxSl). Otherwise MIN_DCA_TP_NEW.
+  const minSlToUse =
+    terminalDealType === TerminalDealTypeEnum.import
+      ? Math.abs(getMaxSl)
+      : MIN_DCA_TP_NEW;
   // Upper bound for the SL magnitude. Kept high (not ~100) so cross-margin /
   // high-leverage users can set deep stops, matching the legacy dashboard.
   const maxSlToUse = MAX_TP_SL_PERCENT;
@@ -1345,7 +1375,12 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
           </div>
           <div className="space-y-sm border-t border-muted pt-3">
             <div className="space-y-1">
-              <Label className="text-sm">Deal close type</Label>
+              <div className="flex items-center gap-xs">
+                <Label className="text-sm">Deal close type</Label>
+                <Tooltip tooltip="Limit order rests the stop loss on the ladder; Market order executes it immediately at market when the target triggers.">
+                  <InfoIcon />
+                </Tooltip>
+              </div>
               <TerminalButtonStack
                 value={comboSlLimit ? 'limit' : 'market'}
                 onValueChange={(value) =>
@@ -1357,11 +1392,6 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
                 ]}
                 className="w-full sm:w-auto"
               />
-              <p className="text-xs text-muted-foreground">
-                {comboSlLimit
-                  ? 'Send the stop loss as a resting limit order on the ladder.'
-                  : 'Execute the stop loss immediately at market when the target triggers.'}
-              </p>
             </div>
           </div>
           {slErrorMessage ? (
