@@ -329,71 +329,74 @@ const ListModalRow = React.memo<ListModalRowProps>(
           {/* Icon - only render if present */}
           {icon && <div className="shrink-0">{icon}</div>}
 
-          {/* Content: pairs show base (bold) over quote (dim); other item
-              kinds keep their single-line name + subtitle. */}
-          <div className="flex-1 min-w-0">
-            {isPair ? (
-              <>
-                <div className="text-foreground font-semibold text-sm truncate leading-tight">
-                  {item.baseAsset}
-                </div>
-                <div className="text-muted-foreground text-xs truncate leading-tight">
-                  {item.quoteAsset}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="text-foreground font-medium text-sm truncate">
-                  {item.isExchange
-                    ? item.name // exchanges: name only, no parentheses
-                    : item.icon === ''
-                      ? item.name // text-only mode
-                      : `${item.name} (${item.symbol})`}
-                </div>
-                {subtitleText && (
-                  <div className="text-muted-foreground text-xs truncate">
-                    {subtitleText}
+          {/* Content + metric chips. On mobile they stack (name on top,
+              chips wrap below); from sm up the chips sit to the right of
+              the name. */}
+          <div className="flex-1 min-w-0 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-sm">
+            <div className="min-w-0">
+              {isPair ? (
+                <>
+                  <div className="text-foreground font-semibold text-sm truncate leading-tight">
+                    {item.baseAsset}
                   </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Right metric stack: curated ROI over 24h price change.
-              Label sits to the left of the colored value chip. */}
-          {(showRoi || show24h) && (
-            <div className="flex shrink-0 flex-col items-end gap-1">
-              {showRoi && (
-                <div
-                  className="flex items-center gap-1.5"
-                  title="Best curated-strategy ROI"
-                >
-                  <span className="text-xs text-muted-foreground">ROI</span>
-                  <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold text-success tabular-nums">
-                    {formatRoi(item.roi as number)}
-                  </span>
-                </div>
-              )}
-              {show24h && (
-                <div
-                  className="flex items-center gap-1.5"
-                  title="24h price change"
-                >
-                  <span className="text-xs text-muted-foreground">24h</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
-                      (item.change24h as number) >= 0
-                        ? 'bg-success/10 text-success'
-                        : 'bg-destructive/10 text-destructive'
-                    }`}
-                  >
-                    {(item.change24h as number) >= 0 ? '+' : ''}
-                    {(item.change24h as number).toFixed(2)}%
-                  </span>
-                </div>
+                  <div className="text-muted-foreground text-xs truncate leading-tight">
+                    {item.quoteAsset}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-foreground font-medium text-sm truncate">
+                    {item.isExchange
+                      ? item.name // exchanges: name only, no parentheses
+                      : item.icon === ''
+                        ? item.name // text-only mode
+                        : `${item.name} (${item.symbol})`}
+                  </div>
+                  {subtitleText && (
+                    <div className="text-muted-foreground text-xs truncate">
+                      {subtitleText}
+                    </div>
+                  )}
+                </>
               )}
             </div>
-          )}
+
+            {/* Curated ROI + 24h change. Mobile: a wrapping row under the
+                name. sm+: a right-aligned column (ROI over 24h). */}
+            {(showRoi || show24h) && (
+              <div className="flex shrink-0 flex-row flex-wrap items-center gap-2 sm:flex-col sm:items-end sm:gap-1">
+                {showRoi && (
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="Best curated-strategy ROI"
+                  >
+                    <span className="text-xs text-muted-foreground">ROI</span>
+                    <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs font-semibold text-success tabular-nums">
+                      {formatRoi(item.roi as number)}
+                    </span>
+                  </div>
+                )}
+                {show24h && (
+                  <div
+                    className="flex items-center gap-1.5"
+                    title="24h price change"
+                  >
+                    <span className="text-xs text-muted-foreground">24h</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                        (item.change24h as number) >= 0
+                          ? 'bg-success/10 text-success'
+                          : 'bg-destructive/10 text-destructive'
+                      }`}
+                    >
+                      {(item.change24h as number) >= 0 ? '+' : ''}
+                      {(item.change24h as number).toFixed(2)}%
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Selection checkbox */}
           <Checkbox
@@ -582,12 +585,12 @@ export const ListModal: React.FC<ListModalProps> = ({
 
   const modalContent = (
     <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-md"
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-xs sm:p-md"
       onClick={onClose}
       data-testid="list-modal-overlay"
     >
       <div
-        className="bg-popover rounded-2xl shadow-xl w-[26rem] max-w-full max-h-[34rem] flex flex-col"
+        className="bg-popover rounded-2xl shadow-xl w-[26rem] max-w-full max-h-[85vh] sm:max-h-[34rem] flex flex-col"
         role="dialog"
         aria-modal="true"
         data-testid="list-modal-content"
@@ -597,7 +600,7 @@ export const ListModal: React.FC<ListModalProps> = ({
             NOTE: this Tailwind config only generates named spacing tokens
             (xs/sm/md/lg) for p-/px-/py- — NOT for pt-/pb-/pl-/pr-. Use
             py-* (or numeric) for vertical padding; pt-lg silently = 0. */}
-        <div className="px-lg py-md space-y-sm">
+        <div className="px-md py-md space-y-sm sm:px-lg">
           <div className="flex items-center justify-between gap-sm">
             <div className="flex min-w-0 items-center gap-sm">
               <h3 className="shrink-0 text-foreground font-semibold text-lg">
@@ -694,7 +697,7 @@ export const ListModal: React.FC<ListModalProps> = ({
         </div>
 
         {/* Items List */}
-        <div className="flex-1 overflow-y-auto px-lg pb-2">
+        <div className="flex-1 overflow-y-auto px-md pb-2 sm:px-lg">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center gap-sm py-12">
               <div className="w-8 h-8 border-2 border-muted-foreground/30 border-t-primary rounded-full animate-spin" />
@@ -724,7 +727,7 @@ export const ListModal: React.FC<ListModalProps> = ({
 
         {/* Footer — Done button for multi-select */}
         {selectionMode === 'multi' && !isLoading && (
-          <div className="px-lg py-md">
+          <div className="px-md py-md sm:px-lg">
             <button
               type="button"
               onClick={onClose}

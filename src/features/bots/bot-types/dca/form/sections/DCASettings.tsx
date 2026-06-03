@@ -540,26 +540,14 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     (newParams: IndicatorParamsState) => {
       if (!dynamicArIndicator) return;
       const sanitized = sanitizeIndicatorParams(newParams);
-      const next = (indicators || []).map((ind) =>
-        ind.uuid === dynamicArIndicator.uuid ? { ...ind, ...sanitized } : ind
+      updateFormData(
+        'indicators',
+        (indicators || []).map((ind) =>
+          ind.uuid === dynamicArIndicator.uuid
+            ? { ...ind, ...sanitized }
+            : ind
+        )
       );
-      // eslint-disable-next-line no-console
-      console.warn(
-        '[AR-LEN] ' +
-          JSON.stringify({
-            incoming: (newParams as { indicatorLength?: unknown })
-              .indicatorLength,
-            sanitized: (sanitized as { indicatorLength?: unknown })
-              .indicatorLength,
-            targetUuid: dynamicArIndicator.uuid,
-            matched: (indicators || []).some(
-              (i) => i.uuid === dynamicArIndicator.uuid
-            ),
-            resultLen: next.find((i) => i.uuid === dynamicArIndicator.uuid)
-              ?.indicatorLength,
-          })
-      );
-      updateFormData('indicators', next);
     },
     [dynamicArIndicator, indicators, updateFormData]
   );
