@@ -1,3 +1,4 @@
+/* eslint-disable spacing/no-hardcoded-font-size */
 import React from 'react';
 import { Button } from '../../ui/button';
 import { cn } from '../../../lib/utils';

@@ -84,10 +84,10 @@ export const getNavigationSections = (
   currentDashboardId?: string,
   onCreateDashboard?: () => void,
   _onSwitchDashboard?: (id: string) => void,
-  readOnly: boolean = false,
-  reports?: { id: string; name: string }[],
-  currentReportId?: string,
-  onCreateReport?: () => void
+  readOnly: boolean = false
+  //reports?: { id: string; name: string }[],
+  //currentReportId?: string,
+  //onCreateReport?: () => void
 ): NavigationSection[] => {
   // Get bot type icon components
   const DCAIcon = getBotTypeIcon(BotTypesEnum.dca);
