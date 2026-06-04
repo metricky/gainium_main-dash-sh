@@ -148,10 +148,10 @@ export const useExchangeMinimumBump = (
   const lastSentinelRef = useRef<string | null>(null);
 
   // Read-only mode and edit mode: don't touch fields the user already
-  // committed to. The fix targets the persisted-from-storage create
-  // flow. Hedge legs mount with `disablePersistedConfig=true` but they
-  // still want the bump — they rehydrate from staged formData seeds
-  // that share the same below-min hazard.
+  // committed to. The fix targets the create flow. Hedge legs mount
+  // with `isNestedLeg=true` but they still want the bump — they
+  // rehydrate from staged formData seeds that share the same below-min
+  // hazard.
   const skip = mode !== 'create';
 
   useEffect(() => {

@@ -517,7 +517,7 @@ const BotForm: React.FC<BotFormProps> = ({
     updateFormData,
     quickSetupMode,
     setQuickSetupMode,
-    disablePersistedConfig: isNestedLeg,
+    isNestedLeg,
   } = useBotFormState();
   const { isReadOnly } = useBotFormEditing();
 

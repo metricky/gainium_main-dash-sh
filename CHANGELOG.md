@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.5] - 2026-06-04
+
+### Changed
+
+- Bot forms always start from default values. Removed the "last used config"
+  persistence that restored the previous bot's settings into new forms
+  (terminal/DCA/combo/grid/both hedge legs), which surfaced stale values such
+  as 5 max open deals in the terminal capital chip. Explicit seeds (curated
+  presets, Copy to live, backtest load, clone) still apply via `initialFormData`
+  / the `sessionStorage.botConfig` channel.
+
 ## [2.8.4] - 2026-06-04
 
 ### Fixed

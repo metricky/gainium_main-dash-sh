@@ -70,7 +70,6 @@ import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { mapBotSettingsToFormData } from '@/mappers/bots/dca/map-bot-settings-to-form-data';
 import { useAuthStore } from '@/stores/authStore';
-import { useDcaBotSettingsStore } from '@/stores/dcaBotSettingsStore';
 import { indicatorStore } from '@/stores/indicatorStore';
 import { useTablePreferencesStore } from '@/stores/tablePreferencesStore';
 import {
@@ -386,9 +385,7 @@ const ComboBotNewWidget = () => {
             exchangeUUID: backtest.exchangeUUID,
           }
         );
-        useDcaBotSettingsStore
-          .getState()
-          .saveLastUsedConfig(mappedFormData, 'combo');
+        setLoadedFormData(mappedFormData);
         setFormReloadKey((prev) => prev + 1);
         toast.success('Backtest settings loaded into combo bot form');
       } catch (error) {

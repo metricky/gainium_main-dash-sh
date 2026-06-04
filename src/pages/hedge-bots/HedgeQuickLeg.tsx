@@ -2,8 +2,8 @@
  * HedgeQuickLeg — minimal Quick-mode editor for ONE hedge leg.
  *
  * Mounts its own BotFormProvider + BotFormQueryProvider (with
- * `disablePersistedConfig` so it's not treated as a standalone DCA
- * bot) and renders the same BasicSettings (exchange + pair) the
+ * `isNestedLeg` so it's not treated as a standalone DCA bot) and
+ * renders the same BasicSettings (exchange + pair) the
  * regular DCA Quick form uses. Investment is configured once at the
  * hedge level and folded into both legs' seeds on Manual switch /
  * preset apply. The leg's current formData is published up to the
@@ -211,7 +211,7 @@ export const HedgeQuickLeg: React.FC<HedgeQuickLegProps> = ({
       <BotFormProvider
         mode="create"
         botType={BotTypesEnum.dca}
-        disablePersistedConfig
+        isNestedLeg
         {...(initialFormData ? { initialFormData } : {})}
       >
         <LegPublisher targetRef={formDataRef} />
