@@ -67,6 +67,8 @@ const CLOUD_USER_FIELDS = IS_CLOUD
                                   status
                                   type
                                   price
+                                  gateway
+                                  paypalSubscriptionId
                                   nextPayment {
                                     subscriptionPlanName
                                     date
