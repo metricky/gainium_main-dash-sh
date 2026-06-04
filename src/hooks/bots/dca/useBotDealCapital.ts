@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useDealOverviewData } from '@/components/widgets/trading/DealOverview';
-import { BotTypesEnum, StrategyEnum } from '@/types';
+import { BotTypesEnum, DCAOrderTypeEnum, StrategyEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 import type { DcaTradingContext } from './useDcaTradingContext';
 
@@ -8,6 +8,16 @@ const toPositiveInt = (value: unknown, fallback: number): number => {
   const n = Math.trunc(Number(value));
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
+
+/** A single safety/DCA order in the per-step capital breakdown. */
+export interface BotDealDcaStep {
+  /** 1-based DCA order number (DCA 1, DCA 2, …). */
+  index: number;
+  /** Price-deviation label from the example order, e.g. "2%". */
+  deviation: string;
+  /** Capital this DCA step needs across all deals, in the deposit currency. */
+  amount: number;
+}
 
 export interface BotDealCapital {
   /** Deposit-side currency symbol (base coin for spot short / COIN-M, quote
@@ -23,6 +33,8 @@ export interface BotDealCapital {
   baseOrders: number;
   /** DCA/safety-order portion of the whole-bot capital. */
   dcaOrders: number;
+  /** Per-safety-order breakdown that sums (for pure DCA) to `dcaOrders`. */
+  dcaSteps: BotDealDcaStep[];
   /** Available balance on the deposit side. */
   availableBalance: number;
   /** `total / availableBalance` as a percentage, or `null` with no balance. */
@@ -47,7 +59,7 @@ export const useBotDealCapital = (
   tradingContext: DcaTradingContext,
   options?: UseBotDealCapitalOptions
 ): BotDealCapital | null => {
-  const { summary } = useDealOverviewData();
+  const { orders, summary } = useDealOverviewData();
   const creditsMultiplier = options?.creditsMultiplier ?? 1;
 
   const isCombo = formData.type === BotTypesEnum.combo;
@@ -86,6 +98,23 @@ export const useBotDealCapital = (
     const baseOrders = Math.max(0, perDealBase) * factor;
     const dcaOrders = Math.max(0, perDealTotal - perDealBase) * factor;
 
+    // Per-safety-order breakdown, taken from the same example orders. Each
+    // order's per-order notional (qty × price for quote, qty for base) is
+    // scaled by the same factor, so for pure DCA the steps sum to `dcaOrders`.
+    // Smart/greyed orders keep the DCA type, so this covers active + inactive.
+    const dcaSteps: BotDealDcaStep[] = orders
+      .filter(
+        (o) => !o.hide && ((o.type as string) || '') === DCAOrderTypeEnum.dca
+      )
+      .map((o, idx) => {
+        const perOrder = useBase ? o.qty : o.qty * o.price;
+        return {
+          index: idx + 1,
+          deviation: o.priceDeviation || '',
+          amount: Math.max(0, perOrder) * factor,
+        };
+      });
+
     const availableBalance = useBase
       ? (aggregated?.base?.free ?? 0)
       : (aggregated?.quote?.free ?? 0);
@@ -100,11 +129,13 @@ export const useBotDealCapital = (
       total,
       baseOrders,
       dcaOrders,
+      dcaSteps,
       availableBalance,
       pctRequired,
       overspend,
     };
   }, [
+    orders,
     summary,
     futures,
     coinm,

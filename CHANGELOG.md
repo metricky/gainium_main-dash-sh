@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.6] - 2026-06-04
+
+### Changed
+
+- Capital-required popup: itemize the DCA section into one row per safety order
+  (e.g. "DCA 1 (2%) — 100 USDT") with a "Total DCA orders" subtotal, instead of
+  a single aggregate row.
+
+### Fixed
+
+- Terminal deal credit cost showed 50 instead of the backend's flat 10; the
+  footer now keys the cost off the terminal flag so the chip matches what's
+  actually charged.
+
 ## [2.8.5] - 2026-06-04
 
 ### Changed
