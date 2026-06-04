@@ -69,6 +69,7 @@ export const DCA_FORM_DEFAULTS: Readonly<Required<BotFormData['dca']>> = {
   slPerc: '-10',
   baseSlOn: BaseSlOnEnum.avg,
   useSmartOrders: false,
+  dcaByMarket: false,
   minOpenDeal: '',
   maxOpenDeal: '',
   useDca: true,

@@ -39,13 +39,12 @@ import {
 } from '@/contexts/bots/form/BotFormProvider';
 import { InputButtonsSlider } from '@/features/bots/shared/components/InputButtonsSlider';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
+import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import {
   resolveBaseOrderContext,
   useDcaTradingContext,
   type DcaTradingContext,
 } from '@/hooks/bots/dca/useDcaTradingContext';
-import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
-import type { DcaBot } from '@/types/dcaBot';
 import {
   useBotVarBinding,
   type DCACustomVarBindingPath,
@@ -56,6 +55,7 @@ import {
   useIndicatorSelector,
   type OpenIndicatorSelectorOptions,
 } from '@/hooks/useIndicatorSelector';
+import type { DcaBot } from '@/types/dcaBot';
 /* import { indicatorStore } from '@/stores/indicatorStore'; */
 import { SettingsLoadMore } from '@/components/ui/SettingsLoadMore';
 import { useTradingTerminalUtils } from '@/context/TradingTerminalUtilsContext';
@@ -543,9 +543,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
       updateFormData(
         'indicators',
         (indicators || []).map((ind) =>
-          ind.uuid === dynamicArIndicator.uuid
-            ? { ...ind, ...sanitized }
-            : ind
+          ind.uuid === dynamicArIndicator.uuid ? { ...ind, ...sanitized } : ind
         )
       );
     },
@@ -2231,7 +2229,12 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
     const tpPercVal = parseFloat(formData.dca?.tpPerc || '0');
     if (tpPercVal > 0) return tpPercVal;
     return 1;
-  }, [dealCloseCondition, formData.dca?.minTp, formData.dca?.useMinTP, formData.dca?.tpPerc]);
+  }, [
+    dealCloseCondition,
+    formData.dca?.minTp,
+    formData.dca?.useMinTP,
+    formData.dca?.tpPerc,
+  ]);
 
   const stepRange = tradingContext.ranges.step;
   const stepRangeMin = stepRange.min;
@@ -3845,6 +3848,7 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
   } = useBotFormState();
   const useDca = useBotFormSelector('useDca');
   const dcaCondition = useBotFormSelector('dcaCondition');
+  const dcaByMarket = useBotFormSelector('dcaByMarket');
   // Pass `bot` so the trading context falls back to the bot's saved symbol
   // when `formData.pairMetadata` is empty — happens in the readonly bot-view
   // dialog where ReadOnlyBotForm seeds an empty `pairMetadata` (no exchange
@@ -3971,6 +3975,25 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
           </Tabs>
         </SettingsRow>
       )}
+
+      {dcaCondition !== DCAConditionEnum.indicators &&
+        dcaCondition !== DCAConditionEnum.dynamicAr && (
+          <SettingsRow
+            name="DCA order type"
+            tooltip="Place DCA orders as market orders instead of limit orders. This can help ensure DCA orders are filled quickly and funds are not locked in advance, but deviation from the desired price may occur."
+          >
+            <TerminalButtonStack
+              value={dcaByMarket ? 'market' : 'limit'}
+              onValueChange={(value) =>
+                updateFormData('dcaByMarket', value === 'market')
+              }
+              options={[
+                { value: 'limit', label: 'Limit' },
+                { value: 'market', label: 'Market' },
+              ]}
+            />
+          </SettingsRow>
+        )}
 
       <div className="col-span-full space-y-md">{renderDCATypeContent()}</div>
     </>

@@ -1715,6 +1715,7 @@ export interface DCABotSettings extends BaseSettings {
   dcaVolumeRequiredChange?: string;
   dcaVolumeRequiredChangeRef?: DcaVolumeRequiredChangeRef;
   dcaVolumeMaxValue?: string;
+  dcaByMarket?: boolean;
   dcaCustom?: DCACustom[] | undefined;
   strategy: StrategyEnum;
   baseOrderSize: string;

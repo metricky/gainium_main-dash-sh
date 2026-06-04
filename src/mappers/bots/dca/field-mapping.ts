@@ -696,6 +696,9 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
   const useSmartOrders = isComboBot
     ? formData.combo.useSmartOrders
     : formData.dca.useSmartOrders;
+  const dcaByMarket = isComboBot
+    ? formData.combo.dcaByMarket
+    : formData.dca.dcaByMarket;
   const _activeOrdersCount = isComboBot
     ? formData.combo.activeOrdersCount
     : formData.dca.activeOrdersCount;
@@ -818,6 +821,7 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
         | 'useDca'
         | 'ordersCount'
         | 'useSmartOrders'
+        | 'dcaByMarket'
         | 'activeOrdersCount'
         | 'gridLevel'
         | 'baseGridLevels'
@@ -885,6 +889,9 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
     const smartOrdersCountMax = 5;
     dcaFields['useSmartOrders'] = Boolean(useSmartOrders);
     fieldsMapped.push('useSmartOrders');
+
+    dcaFields['dcaByMarket'] = Boolean(dcaByMarket);
+    fieldsMapped.push('dcaByMarket');
 
     if (useSmartOrders) {
       const activeOrdersCount = Number(_activeOrdersCount ?? 0);
