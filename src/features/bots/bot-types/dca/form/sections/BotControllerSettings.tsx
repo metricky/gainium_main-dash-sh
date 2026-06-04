@@ -485,6 +485,12 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
         const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
           uuid: createIndicatorId(),
           groupId,
+          indicatorAction:
+            kind === 'start'
+              ? IndicatorAction.startBot
+              : IndicatorAction.stopBot,
+          maUUID: createIndicatorId(),
+          xoUUID: createIndicatorId(),
         });
 
         handleUpdateIndicators((indicators) => [
@@ -496,6 +502,54 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
     [
       getAddIndicatorDisabledReason,
       /* getGroups, */
+      handleUpdateIndicators,
+      launchControllerIndicatorSelector,
+    ]
+  );
+
+  // Legacy global "Add" button below all groups: addIndicator(action) with no
+  // groupId creates a brand-new group and an indicator inside it.
+  const handleAddIndicatorNewGroup = React.useCallback(
+    (kind: 'start' | 'stop') => {
+      const disabledReason = getAddIndicatorDisabledReason();
+      if (disabledReason) {
+        return;
+      }
+
+      launchControllerIndicatorSelector(kind, (type) => {
+        const action =
+          kind === 'start'
+            ? IndicatorAction.startBot
+            : IndicatorAction.stopBot;
+        const newGroup: IndicatorGroup = {
+          id: createGroupId(),
+          logic: IndicatorsLogicEnum.and,
+          action,
+        };
+
+        const defaults = getIndicatorDefaultParams(type, action);
+        const sanitizedParams = sanitizeIndicatorParams(
+          (defaults ?? {}) as IndicatorParamsState
+        );
+        const newIndicator = buildIndicatorConfig(type, sanitizedParams, {
+          uuid: createIndicatorId(),
+          groupId: newGroup.id,
+          indicatorAction: action,
+          maUUID: createIndicatorId(),
+          xoUUID: createIndicatorId(),
+        });
+
+        setGroups([...getGroups(kind), newGroup]);
+        handleUpdateIndicators((indicators) => [
+          ...indicators,
+          { ...newIndicator, params: sanitizedParams },
+        ]);
+      });
+    },
+    [
+      getAddIndicatorDisabledReason,
+      getGroups,
+      setGroups,
       handleUpdateIndicators,
       launchControllerIndicatorSelector,
     ]
@@ -517,6 +571,12 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
 
         const nextIndicator = buildIndicatorConfig(type, sanitizedParams, {
           uuid: indicator.uuid,
+          indicatorAction:
+            kind === 'start'
+              ? IndicatorAction.startBot
+              : IndicatorAction.stopBot,
+          maUUID: createIndicatorId(),
+          xoUUID: createIndicatorId(),
         });
 
         handleUpdateIndicators(
@@ -606,6 +666,10 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
   const startBotPriceValue = useBotFormSelector('startBotPriceValue');
   const stopBotPriceValue = useBotFormSelector('stopBotPriceValue');
 
+  // Legacy (onChangeInput 'useMulti') only downgrades the PRICE modes to
+  // manual when multipair is enabled — indicators mode stays selectable
+  // (it is gated by the disabled option), and price value strings are left
+  // intact. Mirror that narrow behavior here.
   React.useEffect(() => {
     if (!useMulti) {
       return;
@@ -613,20 +677,12 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
 
     const updates: Array<[Fields, BotFormUpdateValue]> = [];
 
-    if (botActualStart !== 'manual') {
+    if (botActualStart === 'price') {
       updates.push(['botActualStart', 'manual']);
     }
 
-    if (botStart !== 'manual') {
+    if (botStart === 'price') {
       updates.push(['botStart', 'manual']);
-    }
-
-    if (startBotPriceValue) {
-      updates.push(['startBotPriceValue', '']);
-    }
-
-    if (stopBotPriceValue) {
-      updates.push(['stopBotPriceValue', '']);
     }
 
     if (updates.length === 0) {
@@ -636,14 +692,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
     updates.forEach(([key, value]) => {
       updateFormData(key, value);
     });
-  }, [
-    useMulti,
-    botStart,
-    botActualStart,
-    startBotPriceValue,
-    stopBotPriceValue,
-    updateFormData,
-  ]);
+  }, [useMulti, botStart, botActualStart, updateFormData]);
 
   /* const metadataSnapshot = React.useMemo(() => {
     const summarizeGroup = (group: IndicatorGroup) => ({
@@ -741,6 +790,11 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
   const stopType = useBotFormSelector('stopType');
   const stopStatus = useBotFormSelector('stopStatus');
   const stopBotLogic = useBotFormSelector('stopBotLogic');
+  // Between-group AND/OR separator word (legacy IndicatorsGroup actionLogic).
+  const startDealLogic = useBotFormSelector('startDealLogic');
+  const betweenGroupLogic = (
+    startDealLogic ?? IndicatorsLogicEnum.and
+  ).toUpperCase();
   const stopBotPriceCondition = useBotFormSelector('stopBotPriceCondition');
   const useCloseAfterXopen = useBotFormSelector('useCloseAfterXopen');
   const closeAfterXopen = useBotFormSelector('closeAfterXopen');
@@ -804,7 +858,10 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
               <SelectContent>
                 <SelectItem value="manual">Manual/Webhook</SelectItem>
                 <SelectItem value="indicators" disabled={!!useMulti}>
-                  Technical Indicators
+                  {/* Legacy label preserves the "Tecnical" typo + "(beta)" on
+                      Bot Start; Bot Stop intentionally uses the corrected
+                      "Technical indicators" with no (beta). */}
+                  Tecnical Indicators (beta)
                   {useMulti ? ' (disable multipair)' : ''}
                 </SelectItem>
                 <SelectItem value="price" disabled={!!useMulti}>
@@ -904,7 +961,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     automatically start the bot.
                   </div>
                 ) : (
-                  startGroups.map((group) => {
+                  startGroups.map((group, groupIdx) => {
                     const addIndicatorDisabledReason =
                       getAddIndicatorDisabledReason(/* group */);
                     const i = indicators.filter(
@@ -924,53 +981,72 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     const canDuplicateGroup = !duplicateGroupDisabledReason;
 
                     return (
-                      <ControllerIndicatorGroup
-                        key={group.id}
-                        indicators={i}
-                        group={group}
-                        canAddIndicator={!addIndicatorDisabledReason}
-                        {...(addIndicatorDisabledReason
-                          ? { addIndicatorDisabledReason }
-                          : {})}
-                        onUpdateGroup={(groupId, updates) =>
-                          handleUpdateGroup('start', groupId, updates)
-                        }
-                        onRemoveGroup={(groupId) =>
-                          handleRemoveGroup('start', groupId)
-                        }
-                        onAddIndicator={() =>
-                          handleAddIndicator('start', group.id)
-                        }
-                        onSelectIndicatorType={(indicator) =>
-                          handleSelectIndicatorType(
-                            'start',
-                            /* group.id, */
-                            indicator
-                          )
-                        }
-                        renderIndicatorExtras={(indicator) =>
-                          renderControllerIndicatorExtras(
-                            'start',
-                            group.id,
-                            indicator
-                          )
-                        }
-                        onRemoveIndicator={(indicatorId) =>
-                          handleRemoveIndicator(
-                            /* 'start', group.id, */ indicatorId
-                          )
-                        }
-                        onDuplicateGroup={() =>
-                          handleDuplicateGroup('start', group.id)
-                        }
-                        canDuplicateGroup={canDuplicateGroup}
-                        {...(duplicateGroupDisabledReason
-                          ? { duplicateGroupDisabledReason }
-                          : {})}
-                      />
+                      <React.Fragment key={group.id}>
+                        <ControllerIndicatorGroup
+                          indicators={i}
+                          group={group}
+                          canAddIndicator={!addIndicatorDisabledReason}
+                          {...(addIndicatorDisabledReason
+                            ? { addIndicatorDisabledReason }
+                            : {})}
+                          onUpdateGroup={(groupId, updates) =>
+                            handleUpdateGroup('start', groupId, updates)
+                          }
+                          onRemoveGroup={(groupId) =>
+                            handleRemoveGroup('start', groupId)
+                          }
+                          onAddIndicator={() =>
+                            handleAddIndicator('start', group.id)
+                          }
+                          onSelectIndicatorType={(indicator) =>
+                            handleSelectIndicatorType(
+                              'start',
+                              /* group.id, */
+                              indicator
+                            )
+                          }
+                          renderIndicatorExtras={(indicator) =>
+                            renderControllerIndicatorExtras(
+                              'start',
+                              group.id,
+                              indicator
+                            )
+                          }
+                          onRemoveIndicator={(indicatorId) =>
+                            handleRemoveIndicator(
+                              /* 'start', group.id, */ indicatorId
+                            )
+                          }
+                          onDuplicateGroup={() =>
+                            handleDuplicateGroup('start', group.id)
+                          }
+                          canDuplicateGroup={canDuplicateGroup}
+                          {...(duplicateGroupDisabledReason
+                            ? { duplicateGroupDisabledReason }
+                            : {})}
+                        />
+                        {groupIdx + 1 < startGroups.length ? (
+                          <div className="text-center text-xs font-semibold uppercase text-muted-foreground">
+                            {betweenGroupLogic}
+                          </div>
+                        ) : null}
+                      </React.Fragment>
                     );
                   })
                 )}
+                {startGroups.length > 0 ? (
+                  <div className="flex justify-start">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAddIndicatorNewGroup('start')}
+                      disabled={indicatorLimitReached}
+                    >
+                      Add indicator (new group)
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </SettingsRow>
           ) : null}
@@ -991,7 +1067,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
               <SelectContent>
                 <SelectItem value="manual">Manual/Webhook</SelectItem>
                 <SelectItem value="indicators" disabled={!!useMulti}>
-                  Technical Indicators
+                  Technical indicators
                   {useMulti ? ' (disable multipair)' : ''}
                 </SelectItem>
                 <SelectItem value="price" disabled={!!useMulti}>
@@ -1083,7 +1159,8 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     Closed (won't listen for new start bot events)
                   </SelectItem>
                   <SelectItem value="monitoring">
-                    Monitoring (will listen for new start bot events)
+                    {/* Legacy label has a trailing space before the paren. */}
+                    Monitoring (will listen for new start bot events )
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -1134,7 +1211,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     automatically stop the bot.
                   </div>
                 ) : (
-                  stopGroups.map((group) => {
+                  stopGroups.map((group, groupIdx) => {
                     const addIndicatorDisabledReason =
                       getAddIndicatorDisabledReason(/* group */);
                     const i = indicators.filter(
@@ -1154,52 +1231,71 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     const canDuplicateGroup = !duplicateGroupDisabledReason;
 
                     return (
-                      <ControllerIndicatorGroup
-                        key={group.id}
-                        group={group}
-                        indicators={i}
-                        canAddIndicator={!addIndicatorDisabledReason}
-                        {...(addIndicatorDisabledReason
-                          ? { addIndicatorDisabledReason }
-                          : {})}
-                        onUpdateGroup={(groupId, updates) =>
-                          handleUpdateGroup('stop', groupId, updates)
-                        }
-                        onRemoveGroup={(groupId) =>
-                          handleRemoveGroup('stop', groupId)
-                        }
-                        onAddIndicator={() =>
-                          handleAddIndicator('stop', group.id)
-                        }
-                        onSelectIndicatorType={(indicator) =>
-                          handleSelectIndicatorType(
-                            'stop',
-                            /* group.id, */ indicator
-                          )
-                        }
-                        renderIndicatorExtras={(indicator) =>
-                          renderControllerIndicatorExtras(
-                            'stop',
-                            group.id,
-                            indicator
-                          )
-                        }
-                        onRemoveIndicator={(indicatorId) =>
-                          handleRemoveIndicator(
-                            /* 'stop', group.id, */ indicatorId
-                          )
-                        }
-                        onDuplicateGroup={() =>
-                          handleDuplicateGroup('stop', group.id)
-                        }
-                        canDuplicateGroup={canDuplicateGroup}
-                        {...(duplicateGroupDisabledReason
-                          ? { duplicateGroupDisabledReason }
-                          : {})}
-                      />
+                      <React.Fragment key={group.id}>
+                        <ControllerIndicatorGroup
+                          group={group}
+                          indicators={i}
+                          canAddIndicator={!addIndicatorDisabledReason}
+                          {...(addIndicatorDisabledReason
+                            ? { addIndicatorDisabledReason }
+                            : {})}
+                          onUpdateGroup={(groupId, updates) =>
+                            handleUpdateGroup('stop', groupId, updates)
+                          }
+                          onRemoveGroup={(groupId) =>
+                            handleRemoveGroup('stop', groupId)
+                          }
+                          onAddIndicator={() =>
+                            handleAddIndicator('stop', group.id)
+                          }
+                          onSelectIndicatorType={(indicator) =>
+                            handleSelectIndicatorType(
+                              'stop',
+                              /* group.id, */ indicator
+                            )
+                          }
+                          renderIndicatorExtras={(indicator) =>
+                            renderControllerIndicatorExtras(
+                              'stop',
+                              group.id,
+                              indicator
+                            )
+                          }
+                          onRemoveIndicator={(indicatorId) =>
+                            handleRemoveIndicator(
+                              /* 'stop', group.id, */ indicatorId
+                            )
+                          }
+                          onDuplicateGroup={() =>
+                            handleDuplicateGroup('stop', group.id)
+                          }
+                          canDuplicateGroup={canDuplicateGroup}
+                          {...(duplicateGroupDisabledReason
+                            ? { duplicateGroupDisabledReason }
+                            : {})}
+                        />
+                        {groupIdx + 1 < stopGroups.length ? (
+                          <div className="text-center text-xs font-semibold uppercase text-muted-foreground">
+                            {betweenGroupLogic}
+                          </div>
+                        ) : null}
+                      </React.Fragment>
                     );
                   })
                 )}
+                {stopGroups.length > 0 ? (
+                  <div className="flex justify-start">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleAddIndicatorNewGroup('stop')}
+                      disabled={indicatorLimitReached}
+                    >
+                      Add indicator (new group)
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </SettingsRow>
           ) : null}
@@ -1250,7 +1346,7 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
           ) : null}
 
           <SettingsRow
-            name="Stop after deals opened"
+            name="Stop after X deals opened"
             tooltip="Stop the bot after it opens a fixed number of deals."
             colSpan="full"
             navId="stop-after-open"
@@ -1275,13 +1371,17 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                   placeholder="20"
                   min={1}
                   showControls={false}
+                  endAdornment={unitAdornment('deals', {
+                    size: 'sm',
+                    className: 'whitespace-nowrap',
+                  })}
                 />
               </>
             )}
           </SettingsRow>
 
           <SettingsRow
-            name="Stop after deals closed"
+            name="Stop after X deals closed"
             tooltip="Stop the bot once it has closed a set number of deals."
             colSpan="full"
             navId="stop-after-closed"
@@ -1306,13 +1406,17 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                   placeholder="20"
                   min={1}
                   showControls={false}
+                  endAdornment={unitAdornment('deals', {
+                    size: 'sm',
+                    className: 'whitespace-nowrap',
+                  })}
                 />
               </>
             )}
           </SettingsRow>
 
           <SettingsRow
-            name="Stop after winning deals"
+            name="Stop after X winning deals (beta)"
             tooltip="Stop the bot after a run of successful deals."
             colSpan="full"
             navId="stop-after-win"
@@ -1337,13 +1441,17 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                   placeholder="20"
                   min={1}
                   showControls={false}
+                  endAdornment={unitAdornment('deals', {
+                    size: 'sm',
+                    className: 'whitespace-nowrap',
+                  })}
                 />
               </>
             )}
           </SettingsRow>
 
           <SettingsRow
-            name="Stop after losing deals"
+            name="Stop after X losing deals (beta)"
             tooltip="Stop the bot after accumulating a number of losses."
             colSpan="full"
             navId="stop-after-loss"
@@ -1368,13 +1476,17 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                   placeholder="20"
                   min={1}
                   showControls={false}
+                  endAdornment={unitAdornment('deals', {
+                    size: 'sm',
+                    className: 'whitespace-nowrap',
+                  })}
                 />
               </>
             )}
           </SettingsRow>
 
           <SettingsRow
-            name="Stop after accumulated profit"
+            name="Stop after X accumulated bot profit (beta)"
             tooltip="Stop the bot once total bot profit hits a limit."
             colSpan="full"
             navId="stop-after-profit"
@@ -1420,6 +1532,10 @@ export const BotControllerSettings: React.FC<BotControllerSettingsProps> = ({
                     }
                     placeholder="20"
                     showControls={false}
+                    startAdornment={unitAdornment('$', {
+                      size: 'sm',
+                      className: 'whitespace-nowrap',
+                    })}
                   />
                 </div>
               </div>

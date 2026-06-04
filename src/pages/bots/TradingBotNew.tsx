@@ -81,7 +81,6 @@ import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { mapBotSettingsToFormData } from '@/mappers/bots/dca/map-bot-settings-to-form-data';
 import { useAuthStore } from '@/stores/authStore';
-import { useDcaBotSettingsStore } from '@/stores/dcaBotSettingsStore';
 import { indicatorStore } from '@/stores/indicatorStore';
 import { useSurveyStore } from '@/stores/surveyStore';
 import { useTablePreferencesStore } from '@/stores/tablePreferencesStore';
@@ -472,9 +471,7 @@ const TradingBotNewWidget = () => {
             exchangeUUID: backtest.exchangeUUID,
           }
         );
-        useDcaBotSettingsStore
-          .getState()
-          .saveLastUsedConfig(mappedFormData, 'dca');
+        setLoadedFormData(mappedFormData);
         setFormReloadKey((prev) => prev + 1);
         toast.success('Backtest settings loaded into bot form');
       } catch (error) {

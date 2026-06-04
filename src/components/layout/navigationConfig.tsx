@@ -1,6 +1,5 @@
 import { IS_CLOUD } from '@/config/mode';
 import { createDashboardSlug } from '@/stores/multiDashboardStore';
-import { createReportSlug } from '@/stores/multiReportStore';
 import { BotTypesEnum } from '@/types';
 import { getBotTypeIcon } from '@/utils/botUtils';
 import {
@@ -8,7 +7,6 @@ import {
   Building2,
   Bot,
   Braces,
-  ChartBar,
   Home,
   LayoutDashboard,
   ListChecks,
@@ -277,38 +275,6 @@ export const getNavigationSections = (
           label: 'Trade Journal',
           href: '/journal',
           shortcut: 'J',
-        },
-        {
-          id: 'reports',
-          icon: <ChartBar className="w-4 h-4" />,
-          label: 'Reports',
-          href: '/reports',
-          shortcut: 'Q',
-          ...(reports && reports.length > 0
-            ? {
-                children: [
-                  ...reports.map((report) => ({
-                    icon: (
-                      <svg viewBox="0 0 8 8" className="w-2 h-2 fill-current">
-                        <circle cx="4" cy="4" r="3" />
-                      </svg>
-                    ),
-                    label: report.name,
-                    href: `/reports/${createReportSlug(report.name)}`,
-                  })),
-                ],
-              }
-            : {}),
-          // Only show create report action in normal mode
-          ...(!readOnly && onCreateReport
-            ? {
-                action: {
-                  icon: <Plus className="w-3 h-3" />,
-                  onClick: onCreateReport,
-                  title: 'Create New Report',
-                },
-              }
-            : {}),
         },
         {
           id: 'global-variables',

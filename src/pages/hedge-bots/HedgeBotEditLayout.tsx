@@ -1284,7 +1284,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 variant="panel"
                 formDataRef={longFormDataRef}
                 forceSubmitDisabled
-                disablePersistedConfig
+                isNestedLeg
                 footerOverride={footerOverride}
                 initialBot={longLegBot}
                 innerSlot={<HedgeLegActiveChartPublisher leg="long" />}
@@ -1302,7 +1302,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 variant="panel"
                 formDataRef={shortFormDataRef}
                 forceSubmitDisabled
-                disablePersistedConfig
+                isNestedLeg
                 footerOverride={footerOverride}
                 initialBot={shortLegBot}
                 innerSlot={<HedgeLegActiveChartPublisher leg="short" />}

@@ -1,4 +1,5 @@
 import { ExchangeEnum } from '@/types';
+import { extractPairAssets } from '@/utils/pairs';
 
 type ExchangeMarketType = 'spot' | 'futures' | 'unknown';
 
@@ -76,6 +77,32 @@ export const isCoinmExchange = (
   const normalized = normalizeExchangeId(exchange);
   if (!normalized) return false;
   return normalized.includes('coinm') || normalized.includes('inverse');
+};
+
+const KUCOIN_SPOT_ENUM_SET = new Set<ExchangeEnum>([
+  ExchangeEnum.kucoin,
+  ExchangeEnum.paperKucoin,
+]);
+
+/**
+ * Convert our normalized concatenated pair (e.g. "BTCUSDT") into the symbol an
+ * exchange's candle API expects. KuCoin **spot** identifies pairs with a dash
+ * ("BTC-USDT"); Binance/Bybit/etc. use the concatenated form natively and pass
+ * through unchanged, as do symbols that already carry a separator. KuCoin
+ * futures (linear/inverse) use contract symbols and are intentionally excluded.
+ *
+ * Applied at the single `requestCandles` chokepoint so every candle consumer
+ * (chart, backtest, market-stats / quick-panel risk calc, …) is covered.
+ */
+export const toExchangeCandleSymbol = (
+  exchange: ExchangeEnum | string | null | undefined,
+  symbol: string
+): string => {
+  if (!KUCOIN_SPOT_ENUM_SET.has(exchange as ExchangeEnum) || symbol.includes('-')) {
+    return symbol;
+  }
+  const { baseAsset, quoteAsset } = extractPairAssets(symbol);
+  return baseAsset && quoteAsset ? `${baseAsset}-${quoteAsset}` : symbol;
 };
 
 // Providers that do NOT support the "ignore fee" toggle (mirrors legacy `showZeroFee`).

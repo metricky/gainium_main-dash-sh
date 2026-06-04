@@ -13,6 +13,8 @@ import {
 } from '@/types';
 import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
 import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-core';
+import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
+import { useTransformedExchanges } from '@/hooks/useTransformedExchanges';
 import { useCallback, useEffect, useMemo } from 'react';
 
 export interface CreateDealProps {
@@ -192,6 +194,61 @@ const CreateDeal: React.FC<CreateDealProps> = (props) => {
       exampleOrdersStore.setContext({ onDrag: onChartLineDrag });
     }
   }, [formData.terminal, onChartLineDrag]);
+
+  // Legacy parity (index.tsx:1257-1279): the terminal must always have a pair
+  // selected. When the selected exchange has loaded pairs but none is chosen
+  // (fresh load, or the previous pair was dropped as unsupported on a new
+  // exchange), default to BTC against USDT/USDC/USD, falling back to the first
+  // available pair. Runs at the terminal level so it also fires in Quick mode,
+  // where the basic-tab pair logic isn't mounted.
+  const { exchanges } = useTransformedExchanges();
+  const { pairsByExchange } = useTradingPairsFromContext();
+  const exchangeProvider = useMemo(
+    () => exchanges.find((e) => e.id === formData.exchangeUUID)?.provider,
+    [exchanges, formData.exchangeUUID]
+  );
+  useEffect(() => {
+    if (!formData.terminal || !exchangeProvider) {
+      return;
+    }
+    const current = Array.isArray(formData.pair) ? formData.pair : [];
+    if (current.length > 0) {
+      return;
+    }
+    const providerKey = Object.keys(pairsByExchange ?? {}).find(
+      (k) => k.toUpperCase() === exchangeProvider.toUpperCase()
+    );
+    const available = providerKey ? pairsByExchange[providerKey] : undefined;
+    if (!available || available.length === 0) {
+      return;
+    }
+    // Prefer BTC against the most liquid/owned quote first (USDT > USDC > USD)
+    // rather than whichever happens to appear first.
+    let preferred;
+    for (const quotePref of ['USDT', 'USDC', 'USD']) {
+      preferred = available.find(
+        (p) =>
+          p.baseAsset?.name?.toUpperCase?.() === 'BTC' &&
+          p.quoteAsset?.name?.toUpperCase?.() === quotePref
+      );
+      if (preferred) {
+        break;
+      }
+    }
+    const chosen = preferred ?? available[0];
+    const base = chosen.baseAsset?.name?.toUpperCase?.();
+    const quote = chosen.quoteAsset?.name?.toUpperCase?.();
+    if (!base || !quote) {
+      return;
+    }
+    updateFormData('pair', [`${base}${quote}`]);
+  }, [
+    formData.terminal,
+    formData.pair,
+    exchangeProvider,
+    pairsByExchange,
+    updateFormData,
+  ]);
 
   return (
     <>

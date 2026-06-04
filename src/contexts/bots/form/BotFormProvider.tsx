@@ -17,13 +17,8 @@ import type { PrecisionGuard } from '@/features/bots/shared/utils/order-guard';
 import { useBotFormRegistryContext } from '@/features/bots/widgets/BotForm/context';
 import { type TradingPair } from '@/hooks/useTradingPairs';
 import { GraphQLClient, GraphQlQuery } from '@/lib/api';
-import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
-import {
-  useDcaBotSettingsStore,
-  type ConfigType,
-} from '@/stores/dcaBotSettingsStore';
 import { indicatorStore } from '@/stores/indicatorStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
@@ -151,9 +146,10 @@ export interface BotFormStateContextValue {
   setQuickSetupMode: Dispatch<SetStateAction<'quick' | 'manual'>>;
   selectedPreset: string | null;
   setSelectedPreset: Dispatch<SetStateAction<string | null>>;
-  /** Forwarded from the provider so the shell can recognise nested
-   *  contexts (hedge legs) and skip mode toggles, persistence, etc. */
-  disablePersistedConfig: boolean;
+  /** True when this provider is one leg of a hedge bot. Lets consumers
+   *  (e.g. the form shell) skip standalone-DCA-only chrome like the
+   *  Quick/Manual mode toggle. */
+  isNestedLeg: boolean;
 }
 
 const BotFormStateContext = createContext<BotFormStateContextValue | undefined>(
@@ -168,14 +164,12 @@ interface BotFormProviderProps {
   botType: BotTypesEnum;
   terminal?: boolean;
   /**
-   * When true, skip the global "last used config" read+write
-   * (`useDcaBotSettingsStore`) and treat `initialFormData` as the sole
-   * seed. Used by hedge bots, where two leg-scoped BotFormProviders are
-   * mounted side-by-side: without this, both legs would read and stomp
-   * over the same shared draft, and our seedRef snapshots used to carry
-   * inactive-leg edits across tab switches would be ignored on remount.
+   * True when this provider is one leg of a hedge bot (two leg-scoped
+   * BotFormProviders are mounted side-by-side). Nested legs aren't
+   * standalone DCA bots, so they skip the Quick/Manual mode toggle and
+   * default to Manual.
    */
-  disablePersistedConfig?: boolean;
+  isNestedLeg?: boolean;
 }
 
 const createDefaultFormState = (
@@ -214,119 +208,13 @@ const createDefaultFormState = (
 // Export for use in other components
 export { createDefaultFormState };
 
-const defaultStateFn = (
-  props: BotFormProviderProps & {
-    getLastUsedConfig: (type: ConfigType) => Partial<BotFormData> | null;
-  },
-  reset = false
-) => {
-  const {
-    mode,
-    initialFormData,
-    botType,
-    terminal,
-    getLastUsedConfig,
-    disablePersistedConfig,
-  } = props;
+const defaultStateFn = (props: BotFormProviderProps, reset = false) => {
+  const { mode, initialFormData, botType, terminal } = props;
   const defaultState = createDefaultFormState(mode, !!terminal);
 
-  // Load last used config in create mode for DCA and Combo bots
-  if (
-    !disablePersistedConfig &&
-    (mode === 'create' ||
-      mode === 'deal-edit' ||
-      mode === 'deal-mass-edit' ||
-      mode === 'settings-readonly') &&
-    (botType === BotTypesEnum.dca ||
-      botType === BotTypesEnum.combo ||
-      botType === BotTypesEnum.grid) &&
-    !reset
-  ) {
-    const lastConfig = getLastUsedConfig(
-      botType === BotTypesEnum.dca
-        ? terminal
-          ? 'terminal'
-          : 'dca'
-        : botType === BotTypesEnum.grid
-          ? 'grid'
-          : 'combo'
-    );
-    logger.info('[BotFormPersistence] Initializing form', {
-      mode,
-      botType,
-      hasLastConfig: !!lastConfig,
-      hasInitialFormData: !!initialFormData,
-      initialFormDataKeys: initialFormData ? Object.keys(initialFormData) : [],
-      lastConfigKeys: lastConfig ? Object.keys(lastConfig) : [],
-    });
-
-    if (lastConfig) {
-      // Layer order: defaults < lastConfig < initialFormData. Callers
-      // that explicitly stage a seed (curated presets widget, BotCard
-      // "Copy to live", etc.) MUST win over the persisted last-used
-      // config — otherwise their preload silently disappears for any
-      // user who has previously saved a bot.
-      const mergedDca = {
-        ...defaultState.dca,
-        ...(lastConfig.dca || {}),
-        ...(initialFormData?.dca || {}),
-      };
-      if (terminal) {
-        mergedDca.type = DCATypeEnum.terminal;
-        mergedDca.useMulti = false;
-        mergedDca.startOrderType = OrderTypeEnum.market;
-        mergedDca.rrSlType = RRSlTypeEnum.fixed;
-      }
-      if (mergedDca.indicators) {
-        indicatorStore.setIndicators(mergedDca.indicators);
-      }
-      const merged = {
-        ...defaultState,
-        ...lastConfig,
-        ...(initialFormData ?? {}),
-        terminal: !!terminal,
-        dca: {
-          ...mergedDca,
-        },
-        combo: {
-          ...defaultState.combo,
-          ...(lastConfig.combo || {}),
-          ...(initialFormData?.combo || {}),
-        },
-        grid: {
-          ...defaultState.grid,
-          ...(lastConfig.grid || {}),
-          ...(initialFormData?.grid || {}),
-        },
-        type: botType,
-      };
-      if (
-        [merged.pair].flat().length === 0 &&
-        [defaultState.pair].flat().length > 0
-      ) {
-        merged.pair = defaultState.pair;
-      }
-      if (terminal) {
-        merged.dca.type = DCATypeEnum.terminal;
-        merged.dca.useMulti = false;
-        merged.pair = merged.pair
-          ? [merged.pair].flat().length > 0
-            ? [merged.pair].flat()[0]
-            : ''
-          : '';
-      }
-      logger.info('[BotFormPersistence] Loaded saved config');
-      return merged;
-    }
-  }
-
-  logger.info('[BotFormPersistence] Using default state', {
-    mode,
-    botType,
-    hasInitialFormData: !!initialFormData,
-    initialFormDataKeys: initialFormData ? Object.keys(initialFormData) : [],
-  });
-
+  // Bot forms always start from defaults. Explicit seeds (curated
+  // presets, "Copy to live", backtest load, clone) come in via
+  // `initialFormData` and layer over the defaults.
   const result: BotFormData = {
     ...defaultState,
     ...(reset ? {} : (initialFormData ?? {})),
@@ -342,10 +230,9 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     children,
     botType,
     terminal,
-    disablePersistedConfig,
+    isNestedLeg,
   } = props;
   const { botExperience } = useBotFormRegistryContext();
-  const { getLastUsedConfig, saveLastUsedConfig } = useDcaBotSettingsStore();
 
   const [activeTab, setActiveTab] = useState<BotFormTabId>(
     defaultTab ?? 'basic'
@@ -366,7 +253,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   >({});
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [formData, _setFormData] = useState<BotFormData>(() =>
-    defaultStateFn({ ...props, getLastUsedConfig })
+    defaultStateFn(props)
   );
   const setFormData = useCallback(
     (value: React.SetStateAction<BotFormData>) => {
@@ -381,15 +268,15 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     []
   );
   const resetFormData = useCallback(() => {
-    setFormData(defaultStateFn({ ...props, getLastUsedConfig }, true));
-  }, [props, getLastUsedConfig, setFormData]);
+    setFormData(defaultStateFn(props, true));
+  }, [props, setFormData]);
   const [botVars, setBotVars] = useState<BotVars | null>(null);
   const [isEditLocked, setIsEditLocked] = useState<boolean>(mode === 'edit');
   const [quickSetupMode, setQuickSetupMode] = useState<'quick' | 'manual'>(
-    // Hedge legs mount BotFormWidget with `disablePersistedConfig` —
-    // they're not standalone DCA bots, so they shouldn't get the
-    // Quick/Manual mode toggle. Default to Manual for them and let the
-    // outer hedge layout drive any preset UI separately.
+    // Hedge legs mount BotFormWidget with `isNestedLeg` — they're not
+    // standalone DCA bots, so they shouldn't get the Quick/Manual mode
+    // toggle. Default to Manual for them and let the outer hedge layout
+    // drive any preset UI separately.
     //
     // Combo bots share the DCA preset machinery (combo settings extend
     // DCA settings) so they default into Quick as well. Grid bots get
@@ -400,7 +287,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         botType === BotTypesEnum.combo ||
         botType === BotTypesEnum.grid) &&
       !terminal &&
-      !disablePersistedConfig
+      !isNestedLeg
       ? 'quick'
       : 'manual'
   );
@@ -491,54 +378,6 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       'favoriteIndicators',
     ])
   );
-
-  // Persist form data to local storage with debouncing
-  useEffect(() => {
-    if (mode !== 'create') {
-      return;
-    }
-
-    if (!isDirty) {
-      return;
-    }
-
-    if (disablePersistedConfig) {
-      return;
-    }
-
-    const timeoutId = setTimeout(() => {
-      if (
-        botType === BotTypesEnum.dca ||
-        botType === BotTypesEnum.combo ||
-        botType === BotTypesEnum.grid
-      ) {
-        logger.info('[BotFormPersistence] Saving form data', {
-          botType,
-          hasData: !!formData,
-        });
-        saveLastUsedConfig(
-          formData,
-          botType === BotTypesEnum.dca
-            ? terminal
-              ? 'terminal'
-              : 'dca'
-            : botType === BotTypesEnum.grid
-              ? 'grid'
-              : 'combo'
-        );
-      }
-    }, 1000); // 1 second debounce
-
-    return () => clearTimeout(timeoutId);
-  }, [
-    mode,
-    isDirty,
-    formData,
-    saveLastUsedConfig,
-    botType,
-    terminal,
-    disablePersistedConfig,
-  ]);
 
   const favoriteIndicatorsVersionRef = useRef(0);
   const favoriteIndicatorsRequestState = useRef<{
@@ -1038,14 +877,24 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         }
 
         if (field in prev.dca && botType === BotTypesEnum.dca) {
-          settingsUpdateResult = handleSettingsUpdate(prev, field, value);
+          settingsUpdateResult = handleSettingsUpdate(
+            prev,
+            field,
+            value,
+            exampleOrdersStore.getInputLatestPrice()
+          );
           return {
             ...prev,
             ...settingsUpdateResult,
             dca: {
               ...prev.dca,
-              ...settingsUpdateResult.dca,
+              // Apply the raw value first, then let handleSettingsUpdate's
+              // explicit field results win — this lets it coerce the active
+              // field (e.g. integer-normalizing closeAfterX/closeAfterXopen),
+              // matching legacy onChangeInput where newSettings[field] is the
+              // computed value, not the raw input.
               [field]: value,
+              ...settingsUpdateResult.dca,
             },
           };
         }
@@ -1811,7 +1660,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       setQuickSetupMode,
       selectedPreset,
       setSelectedPreset,
-      disablePersistedConfig: !!disablePersistedConfig,
+      isNestedLeg: !!isNestedLeg,
     }),
     [
       mode,
@@ -1836,7 +1685,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       registerComponentError,
       quickSetupMode,
       selectedPreset,
-      disablePersistedConfig,
+      isNestedLeg,
     ]
   );
 

@@ -4,6 +4,7 @@ import { Label } from '@/components/ui/label';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
 import { NumberInput } from '@/components/ui/number-input';
 import { Switch } from '@/components/ui/switch';
+import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import SettingsRow, {
   SettingsRowSurface,
 } from '@/components/widgets/shared/SettingsRow';
@@ -70,7 +71,7 @@ export const GridBudgetSettings: React.FC = () => {
     >
       <SettingsRow
         name={`Investment (${quoteAsset || 'quote'})`}
-        tooltip="Define the total capital allocation the bot can utilize."
+        tooltip="Define the total capital allocation the bot can utilize. The allocated funds determine how many buy and sell levels can be filled at once."
         tooltipURL="/help/budget-grid"
         navId="budget"
         alerts={budgetAlerts}
@@ -87,10 +88,6 @@ export const GridBudgetSettings: React.FC = () => {
               className: 'whitespace-nowrap',
             })}
           />
-          <p className="text-xs text-muted-foreground max-w-[540px]">
-            The allocated funds determine how many buy and sell levels can be
-            filled at once.
-          </p>
         </div>
       </SettingsRow>
 
@@ -113,7 +110,12 @@ export const GridBudgetSettings: React.FC = () => {
       >
         {useOrderInAdvance ? (
           <SettingsRowSurface tone="faint" spacing="sm" className="space-y-xs">
-            <Label htmlFor="grid-active-orders">Active orders</Label>
+            <div className="flex items-center gap-xs">
+              <Label htmlFor="grid-active-orders">Active orders</Label>
+              <Tooltip tooltip="Choose how many buy and sell orders should remain on the book simultaneously.">
+                <InfoIcon />
+              </Tooltip>
+            </div>
             <NumberInput
               id="grid-active-orders"
               value={ordersInAdvance?.toString() ?? ''}
@@ -125,10 +127,6 @@ export const GridBudgetSettings: React.FC = () => {
               precision={0}
               showControls={false}
             />
-            <p className="text-xs text-muted-foreground">
-              Choose how many buy and sell orders should remain on the book
-              simultaneously.
-            </p>
           </SettingsRowSurface>
         ) : null}
       </SettingsRow>

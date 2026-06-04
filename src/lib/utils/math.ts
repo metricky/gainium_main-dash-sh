@@ -1,3 +1,5 @@
+import { ExchangeEnum } from '@/types/exchange.types';
+
 class MathHelper {
   private eps = 1e-10;
 
@@ -186,7 +188,10 @@ class MathHelper {
     return ((a * multiplier) % (b * multiplier)) / multiplier;
   }
 
-  getPrecisionFromDecimalString(price: string) {
+  // Faithful port of legacy `botUtils.getAssetPrecision` (main-dash). Pass the
+  // pair's exchange so Kucoin/paperKucoin keep trailing zeros after the
+  // significant digit (their tick sizes encode precision that way).
+  getPrecisionFromDecimalString(price: string, exchange?: ExchangeEnum) {
     let use = price;
     // if price exp fromat, 1e-7
     if (price.indexOf('e-') !== -1) {
@@ -201,9 +206,13 @@ class MathHelper {
         return place;
       }
 
-      use = `0.${'0'.repeat(place - 1)}1`;
+      use = `0.${'0'.repeat(place)}1`;
     }
-    return use.indexOf('1') === 0 ? 0 : use.replace('0.', '').indexOf('1') + 1;
+    return use.indexOf('1') === 0
+      ? 0
+      : exchange === ExchangeEnum.kucoin || exchange === ExchangeEnum.paperKucoin
+        ? use.replace('0.', '').length
+        : use.replace('0.', '').indexOf('1') + 1;
   }
 }
 

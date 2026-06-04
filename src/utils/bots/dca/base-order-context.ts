@@ -1,4 +1,4 @@
-import { StrategyEnum } from '@/types';
+import { StrategyEnum, TerminalDealTypeEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 
 export interface AggregatedBalanceSnapshot {
@@ -19,6 +19,7 @@ export interface BaseOrderContextParams {
   latestPrice?: number;
   futures: boolean;
   coinm: boolean;
+  terminalDealType?: BotFormData['dca']['terminalDealType'];
 }
 
 export interface BaseOrderContextResult {
@@ -43,6 +44,7 @@ export const resolveBaseOrderContext = (
     latestPrice,
     futures,
     coinm,
+    terminalDealType,
   } = params;
 
   const normalizedReference = futures
@@ -56,8 +58,16 @@ export const resolveBaseOrderContext = (
   const quoteSnapshot = aggregatedBalances.quote;
 
   // Balance display: ALWAYS quote for long, ALWAYS base for short
-  // This doesn't change regardless of currencyReference
-  const isShort = normalizedDirection === StrategyEnum.short;
+  // This doesn't change regardless of currencyReference.
+  // Import (spot) inverts the funding side: an Import-long declares a base
+  // holding you already own (so the BASE wallet is the relevant balance),
+  // and an Import-short the QUOTE wallet — mirroring legacy index.tsx
+  // (maxAmount L434-439 / maxTotal L373-379). Futures funding is driven by
+  // coinm, not direction, so it is left untouched.
+  const rawShort = normalizedDirection === StrategyEnum.short;
+  const isImportSpot =
+    !futures && terminalDealType === TerminalDealTypeEnum.import;
+  const isShort = isImportSpot ? !rawShort : rawShort;
   const balanceCurrency = futures
     ? coinm
       ? (baseAsset ?? 'BASE')

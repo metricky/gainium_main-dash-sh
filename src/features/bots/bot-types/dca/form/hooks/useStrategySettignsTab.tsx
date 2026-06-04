@@ -33,6 +33,11 @@ import {
   type LeverageBracket,
 } from '@/types';
 import type { GlobalVariable } from '@/types/globalVariables';
+import { math } from '@/utils/math';
+import {
+  computeMaxAmount,
+  computeMaxTotal,
+} from '@/utils/bots/dca/order-size-maxes';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type StrategySettingsProps } from '../sections';
 import { useBalanceRefreshControl } from './useBalanceRefreshControl';
@@ -284,11 +289,16 @@ export const useStrategySettingsTab = ({
     aggregatedBalances,
     latestPrice,
     selectedPairs,
+    usdPrice,
+    quoteMinAmount,
+    provider,
+    fee,
   } = tradingContext;
 
   const isLiveTrading = useUIStore((state) => state.isLiveTrading);
   const isPaperTrading = !isLiveTrading;
   const futures = useBotFormSelector('futures');
+  const terminalDealType = useBotFormSelector('terminalDealType');
   const leverage = useBotFormSelector('leverage');
   const orderSizeType = useBotFormSelector('orderSizeType');
   const startOrderType = useBotFormSelector('startOrderType');
@@ -943,6 +953,14 @@ export const useStrategySettingsTab = ({
     updateFormData('dcaOrderGuard', baseOrderGuard);
   }, [baseOrderGuard, updateFormData]);
 
+  // ===========================================================================
+  // Dual Amount / Total order-size fields (legacy `TerminalBotSettings` parity)
+  // ===========================================================================
+  // Legacy keeps a single canonical `baseOrderSize` (string) + `orderSizeType`
+  // (`base`/`quote`) and derives the two visible fields from price. The active
+  // field shows the raw `baseOrderSize`; the inactive field shows the
+  // price-derived value. See spec §1-4 and PARITY CHECKLIST.
+
   const baseOrderLocked = isFieldLocked?.('baseOrderSize') ?? false;
   const directionLocked = isFieldLocked?.('strategy') ?? false;
   const profitCurrencyLocked = isFieldLocked?.('profitCurrency') ?? false;
@@ -981,6 +999,268 @@ export const useStrategySettingsTab = ({
     },
     [baseOrderLocked, convertDisplayToNotional, updateFormData]
   );
+
+  // --- Dual Amount/Total derivations (legacy `amount`/`total`, lines 298-355) -
+  const effectivePrice = latestPrice ?? 0;
+  const minAmount = useMemo(
+    () => (coinm ? (quoteMinAmount ?? 1) : 1),
+    [coinm, quoteMinAmount]
+  );
+
+  // Both base and quote precisions are needed simultaneously (legacy
+  // `precision.base` / `precision.quote`). Derive each from its own guard.
+  const precisionBase = useMemo(() => {
+    const guard = createOrderGuard(OrderSizeTypeEnum.base, precisionConstraints, {
+      base: displayBaseAsset,
+      quote: displayQuoteAsset,
+    });
+    return typeof guard?.decimals === 'number' ? guard.decimals : 8;
+  }, [precisionConstraints, displayBaseAsset, displayQuoteAsset]);
+  const precisionQuote = useMemo(() => {
+    const guard = createOrderGuard(
+      OrderSizeTypeEnum.quote,
+      precisionConstraints,
+      {
+        base: displayBaseAsset,
+        quote: displayQuoteAsset,
+      }
+    );
+    return typeof guard?.decimals === 'number' ? guard.decimals : 2;
+  }, [precisionConstraints, displayBaseAsset, displayQuoteAsset]);
+
+  const baseOrderFee = fee ?? 0;
+  const providerIsBybit = useMemo(
+    () => (provider ?? '').toLowerCase().includes('bybit'),
+    [provider]
+  );
+
+  // legacy `amount` (298-320): baseOrderSize -> base units (down-rounded).
+  const amountInBase = useMemo(
+    () =>
+      math.round(
+        (+(baseOrderSize ?? 0) * minAmount) / (effectivePrice || 1),
+        precisionBase,
+        true
+      ),
+    [baseOrderSize, minAmount, effectivePrice, precisionBase]
+  );
+
+  // legacy `total` (333-355): baseOrderSize -> quote units.
+  const totalInQuote = useMemo(
+    () =>
+      math.round(
+        (+(baseOrderSize ?? 0) * effectivePrice) / (coinm ? minAmount || 1 : 1),
+        coinm ? 0 : precisionQuote,
+        coinm ? undefined : true
+      ),
+    [baseOrderSize, effectivePrice, coinm, minAmount, precisionQuote]
+  );
+
+  // The display flip (legacy 1055-1060 / 1195-1200): the active field shows the
+  // raw canonical value in its own unit; the inactive field shows the derived.
+  const amountFieldValue =
+    orderSizeType === OrderSizeTypeEnum.base
+      ? +(baseOrderSize ?? 0)
+      : amountInBase;
+  const totalFieldValue =
+    orderSizeType === OrderSizeTypeEnum.quote
+      ? +(baseOrderSize ?? 0)
+      : totalInQuote;
+
+  // Amount USD adornment: USD of the value SHOWN in the Amount field, not the
+  // derived base figure (legacy computes from `orderSizeType===base ?
+  // baseOrderSize : amount`). base -> quote -> USD.
+  const amountUsdEquivalent = useMemo(
+    () => amountFieldValue * effectivePrice * (usdPrice ?? 0),
+    [amountFieldValue, effectivePrice, usdPrice]
+  );
+
+  // legacy `maxTotal` / `maxAmount` (lines 366-484) — returned as strings.
+  const maxAmount = useMemo(
+    () =>
+      computeMaxAmount({
+        baseFree: aggregatedBalances.base.free,
+        quoteFree: aggregatedBalances.quote.free,
+        price: effectivePrice,
+        fee: baseOrderFee,
+        ...(strategy ? { strategy } : {}),
+        ...(terminalDealType ? { terminalDealType } : {}),
+        futures: !!futures,
+        coinm: !!coinm,
+        ...(marginType ? { marginType } : {}),
+        leverage: normalizedLeverage,
+        minAmount,
+        precisionBase,
+        precisionQuote,
+      }),
+    [
+      aggregatedBalances.base.free,
+      aggregatedBalances.quote.free,
+      effectivePrice,
+      baseOrderFee,
+      strategy,
+      terminalDealType,
+      futures,
+      coinm,
+      marginType,
+      normalizedLeverage,
+      minAmount,
+      precisionBase,
+      precisionQuote,
+    ]
+  );
+  const maxTotal = useMemo(
+    () =>
+      computeMaxTotal({
+        baseFree: aggregatedBalances.base.free,
+        quoteFree: aggregatedBalances.quote.free,
+        price: effectivePrice,
+        fee: baseOrderFee,
+        ...(strategy ? { strategy } : {}),
+        ...(terminalDealType ? { terminalDealType } : {}),
+        futures: !!futures,
+        coinm: !!coinm,
+        ...(marginType ? { marginType } : {}),
+        leverage: normalizedLeverage,
+        minAmount,
+        precisionBase,
+        precisionQuote,
+      }),
+    [
+      aggregatedBalances.base.free,
+      aggregatedBalances.quote.free,
+      effectivePrice,
+      baseOrderFee,
+      strategy,
+      terminalDealType,
+      futures,
+      coinm,
+      marginType,
+      normalizedLeverage,
+      minAmount,
+      precisionBase,
+      precisionQuote,
+    ]
+  );
+
+  const [activePerc, setActivePerc] = useState<string>('');
+
+  // legacy `updatePercent` (518-525): derive the active highlight from the
+  // raw value vs. the relevant max.
+  const updatePercent = useCallback(
+    (val: string) => {
+      if (isNaN(+val)) {
+        return;
+      }
+      const useBalance =
+        orderSizeType === OrderSizeTypeEnum.base ? maxAmount : maxTotal;
+      setActivePerc(`${math.round((+val / (+useBalance || 1)) * 100, 3)}`);
+    },
+    [orderSizeType, maxAmount, maxTotal]
+  );
+
+  // legacy `setPercent` (486-516): max(active side) * (1-fee) * num/100 -> base
+  // order size. Keep the intentional double `(1-fee)` quirk for parity.
+  const setPercent = useCallback(
+    (num: number) => () => {
+      if (baseOrderLocked) {
+        return;
+      }
+      // The % buttons sit under the Amount field, so the result is always a
+      // BASE amount. `maxAmount` already converts the quote balance via price
+      // (long) or is the base balance (short/coinm), so a straight percentage
+      // of it gives the right base order size. (Legacy used the active side's
+      // max then converted on the orderSizeType flip; our updateFormData does
+      // not convert, so computing in base directly avoids storing a quote
+      // amount as base — the reported bug.) Keep legacy's double `(1-fee)`.
+      const useBalance = +maxAmount * (1 - baseOrderFee);
+      const use = math.convertFromExponential(
+        math.round(useBalance * (num / 100), precisionBase, true),
+        precisionBase
+      );
+      updateFormData('baseOrderSize', String(use));
+      if (orderSizeType !== OrderSizeTypeEnum.base) {
+        updateFormData('orderSizeType', OrderSizeTypeEnum.base);
+      }
+      setActivePerc(`${num}`);
+    },
+    [
+      baseOrderLocked,
+      orderSizeType,
+      maxAmount,
+      baseOrderFee,
+      precisionBase,
+      updateFormData,
+    ]
+  );
+
+  // legacy focus handlers (527, 1080, 1220): focus implies the unit. Legacy
+  // froze the field's displayed value while focused so flipping orderSizeType
+  // didn't reinterpret the stored number; our fields are controlled, so we
+  // instead CONVERT baseOrderSize into the focused field's unit on focus. That
+  // keeps the displayed amount equal to the price-equivalent of the current
+  // size (otherwise focusing Amount would show the raw quote total as base).
+  const handleAmountFocus = useCallback(() => {
+    setActivePerc('');
+    if (orderSizeType !== OrderSizeTypeEnum.base) {
+      updateFormData('baseOrderSize', String(amountInBase));
+      updateFormData('orderSizeType', OrderSizeTypeEnum.base);
+    }
+  }, [orderSizeType, amountInBase, updateFormData]);
+
+  const handleTotalFocus = useCallback(() => {
+    setActivePerc('');
+    if (orderSizeType !== OrderSizeTypeEnum.quote) {
+      updateFormData('baseOrderSize', String(totalInQuote));
+      updateFormData('orderSizeType', OrderSizeTypeEnum.quote);
+    }
+  }, [orderSizeType, totalInQuote, updateFormData]);
+
+  // legacy blur handlers (1062, 1202): write baseOrderSize in the focused
+  // field's unit (orderSizeType already flipped on focus). Reuse
+  // `convertDisplayToNotional` for the futures cost scaling legacy did via
+  // `assetMultiplier`.
+  const handleAmountChange = useCallback(
+    (value: number | string) => {
+      if (baseOrderLocked) {
+        return;
+      }
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        return;
+      }
+      updateFormData('baseOrderSize', String(convertDisplayToNotional(n)));
+      updatePercent(String(n));
+    },
+    [baseOrderLocked, convertDisplayToNotional, updateFormData, updatePercent]
+  );
+
+  const handleTotalChange = useCallback(
+    (value: number | string) => {
+      if (baseOrderLocked) {
+        return;
+      }
+      const n = Number(value);
+      if (!Number.isFinite(n)) {
+        return;
+      }
+      updateFormData('baseOrderSize', String(convertDisplayToNotional(n)));
+      updatePercent(String(n));
+    },
+    [baseOrderLocked, convertDisplayToNotional, updateFormData, updatePercent]
+  );
+
+  // legacy on-mount activePerc seed (322-331).
+  useEffect(() => {
+    updatePercent(
+      `${
+        orderSizeType === OrderSizeTypeEnum.base
+          ? +(baseOrderSize ?? 0)
+          : amountInBase
+      }`
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!isBaseOrderVarBound) {
@@ -1106,6 +1386,7 @@ export const useStrategySettingsTab = ({
         aggregatedBalances,
         futures: !!futures,
         coinm: !!coinm,
+        ...(terminalDealType ? { terminalDealType } : {}),
         ...(resolvedBaseAsset ? { baseAsset: resolvedBaseAsset } : {}),
         ...(resolvedQuoteAsset ? { quoteAsset: resolvedQuoteAsset } : {}),
         ...(typeof latestPrice === 'number' ? { latestPrice } : {}),
@@ -1116,6 +1397,7 @@ export const useStrategySettingsTab = ({
       aggregatedBalances,
       futures,
       coinm,
+      terminalDealType,
       resolvedBaseAsset,
       resolvedQuoteAsset,
       latestPrice,
@@ -1217,6 +1499,21 @@ export const useStrategySettingsTab = ({
     baseOrderLocked,
     baseOrderCoinIcon,
     currencyReferenceOptions,
+    // Dual Amount/Total order-size fields (legacy parity)
+    orderSizeType,
+    amountFieldValue,
+    totalFieldValue,
+    amountUsdEquivalent,
+    maxAmount,
+    maxTotal,
+    coinm,
+    providerIsBybit,
+    activePerc,
+    setPercent,
+    handleAmountFocus,
+    handleAmountChange,
+    handleTotalFocus,
+    handleTotalChange,
     showBaseOrderSection,
     directionDisabled,
     profitCurrencyDisabled,

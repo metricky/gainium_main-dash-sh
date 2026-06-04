@@ -93,6 +93,16 @@ class ExampleOrdersStore {
     this.context = { ...this.context, ...context };
     this.scheduleNotify();
   }
+  /**
+   * Last-known reference price for the active pair, kept fresh by
+   * useDcaTradingContext (`inputLatestPrice`). Read by BotFormProvider so the
+   * terminal Import TP/SL auto-calc in handleSettingsUpdate has access to a
+   * market price that isn't part of the form state. Legacy parity: the
+   * terminal `onChangeInput` closed over `latestPrice` directly.
+   */
+  getInputLatestPrice(): number {
+    return this.context.inputLatestPrice;
+  }
   async updateOrders(params?: UpdateOrdersParams | undefined) {
     if (this.context.botType === BotTypesEnum.dca) {
       await this.createDCAOrders(params);

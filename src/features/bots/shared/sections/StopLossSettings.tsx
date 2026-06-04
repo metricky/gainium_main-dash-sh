@@ -33,12 +33,16 @@ import {
   IndicatorEnum,
   IndicatorSection,
   IndicatorsLogicEnum,
+  MIN_DCA_TP,
   MIN_DCA_TP_NEW,
   StrategyEnum,
+  TerminalDealTypeEnum,
   closeConditionsMap,
   indicatorsLimit,
   type MultiTP,
 } from '@/types';
+import { math } from '@/lib/utils/math';
+import { DynamicArIndicatorPanel } from '@/features/bots/shared/components/DynamicArIndicatorPanel';
 import { CloseConditionEnum } from '@/types/bots/dealConditions';
 import type {
   BotFormData,
@@ -141,6 +145,8 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
   const moveSLTrigger = useBotFormSelector('moveSLTrigger');
   const moveSLValue = useBotFormSelector('moveSLValue');
   const slPerc = useBotFormSelector('slPerc');
+  const baseOrderPrice = useBotFormSelector('baseOrderPrice');
+  const terminalDealType = useBotFormSelector('terminalDealType');
   const useMultiSl = useBotFormSelector('useMultiSl');
   const trailingSl = useBotFormSelector('trailingSl');
   const tpPerc = useBotFormSelector('tpPerc');
@@ -156,7 +162,32 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
     mode,
   } = useBotFormState();
   const isDealEdit = mode === 'deal-edit' || mode === 'deal-mass-edit';
-  const minSlToUse = MIN_DCA_TP_NEW; // Minimum percentage for SL
+  // Legacy terminal Import max-SL clamp (index.tsx:5469-5487). Returns the
+  // (negative) least-aggressive SL allowed for an imported position; floors at
+  // MIN_DCA_TP * 100 * -1 otherwise. The redesign SL section works in
+  // magnitudes, so the Import floor is applied via Math.abs below.
+  const getMaxSl = useMemo(() => {
+    return terminalDealType === TerminalDealTypeEnum.import &&
+      baseOrderPrice &&
+      latestPrice &&
+      !isNaN(+(baseOrderPrice ?? '')) &&
+      !isNaN(+(latestPrice ?? ''))
+      ? math.round(
+          ((+latestPrice - +baseOrderPrice) / +baseOrderPrice) *
+            100 *
+            (strategy === StrategyEnum.long ? 1 : -1) +
+            MIN_DCA_TP * 100 * -1,
+          1,
+          true
+        )
+      : MIN_DCA_TP * 100 * -1;
+  }, [terminalDealType, baseOrderPrice, latestPrice, strategy]);
+  // Minimum SL magnitude. For terminal Import the floor comes from getMaxSl
+  // (legacy minSlToUs = getMaxSl). Otherwise MIN_DCA_TP_NEW.
+  const minSlToUse =
+    terminalDealType === TerminalDealTypeEnum.import
+      ? Math.abs(getMaxSl)
+      : MIN_DCA_TP_NEW;
   // Upper bound for the SL magnitude. Kept high (not ~100) so cross-margin /
   // high-leverage users can set deep stops, matching the legacy dashboard.
   const maxSlToUse = MAX_TP_SL_PERCENT;
@@ -1344,7 +1375,12 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
           </div>
           <div className="space-y-sm border-t border-muted pt-3">
             <div className="space-y-1">
-              <Label className="text-sm">Deal close type</Label>
+              <div className="flex items-center gap-xs">
+                <Label className="text-sm">Deal close type</Label>
+                <Tooltip tooltip="Limit order rests the stop loss on the ladder; Market order executes it immediately at market when the target triggers.">
+                  <InfoIcon />
+                </Tooltip>
+              </div>
               <TerminalButtonStack
                 value={comboSlLimit ? 'limit' : 'market'}
                 onValueChange={(value) =>
@@ -1356,11 +1392,6 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
                 ]}
                 className="w-full sm:w-auto"
               />
-              <p className="text-xs text-muted-foreground">
-                {comboSlLimit
-                  ? 'Send the stop loss as a resting limit order on the ladder.'
-                  : 'Execute the stop loss immediately at market when the target triggers.'}
-              </p>
             </div>
           </div>
           {slErrorMessage ? (
@@ -1862,139 +1893,6 @@ const IndicatorsSL: React.FC<
   );
 };
 
-const DynamicArSL: React.FC<Omit<StopLossSettingsProps, 'formData'>> = ({
-  //formData,
-  updateFormData,
-  errors: _errors,
-}) => {
-  const indicators = useBotFormSelector('indicators');
-  const indicator = useMemo(
-    () =>
-      indicators.find(
-        (i) =>
-          i.indicatorAction === IndicatorAction.closeDeal &&
-          i.section === IndicatorSection.sl &&
-          (i.type === IndicatorEnum.atr || i.type === IndicatorEnum.adr)
-      ),
-    [indicators]
-  );
-
-  const updateIndicator = useCallback(
-    (updates: Partial<IndicatorConfig>) => {
-      if (!indicator?.uuid) {
-        return;
-      }
-      const nextIndicators = indicators.map((ind) =>
-        ind.uuid === indicator.uuid ? { ...ind, ...updates } : ind
-      );
-      updateFormData('indicators', nextIndicators);
-    },
-    [indicators, indicator?.uuid, updateFormData]
-  );
-
-  // Register Dynamic AR indicator error with form context
-  useComponentError(
-    'dynamicArIndicator',
-    !indicator,
-    'Dynamic AR indicator not configured. Please add the ATR/ADR indicator to enable dynamic stop loss.',
-    {
-      navId: 'stop-loss-advanced',
-      variant: 'error',
-    }
-  );
-
-  if (!indicator) {
-    return (
-      <div className="text-sm text-destructive">
-        Dynamic AR indicator not configured. Please add the ATR/ADR indicator to
-        enable dynamic stop loss.
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-sm sm:space-y-md">
-      <div className="text-sm text-muted-foreground mb-4">
-        Configure stop loss based on ATR (Average True Range) or ADR (Average
-        Daily Range).
-      </div>
-
-      <div className="border rounded-lg p-md">
-        <div className="flex items-center justify-between mb-3">
-          <Label className="text-base">Dynamic AR Settings</Label>
-        </div>
-        <div className="space-y-sm">
-          <div className="space-y-xs">
-            <Label className="text-sm">Type:</Label>
-            <TerminalButtonStack
-              value={indicator.type}
-              onValueChange={(nextValue) =>
-                updateIndicator({ type: nextValue as IndicatorEnum })
-              }
-              options={[
-                { value: IndicatorEnum.atr, label: 'ATR' },
-                { value: IndicatorEnum.adr, label: 'ADR' },
-              ]}
-              className="w-full sm:w-auto"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-sm">
-            <div className="space-y-xs">
-              <Label>Period</Label>
-              <NumberInput
-                value={indicator.indicatorLength}
-                onChange={(value) =>
-                  updateIndicator({ indicatorLength: +`${value}` })
-                }
-                min={1}
-                max={100}
-                step={1}
-                precision={0}
-                placeholder="14"
-              />
-              <p className="text-xs text-muted-foreground">
-                Number of periods for {indicator.type} calculation
-              </p>
-            </div>
-            <div className="space-y-xs">
-              <Label>Multiplier</Label>
-              <NumberInput
-                value={indicator.dynamicArFactor}
-                onChange={(value) =>
-                  updateIndicator({ dynamicArFactor: `${value}` })
-                }
-                min={0.1}
-                max={10}
-                step={0.1}
-                precision={1}
-                placeholder="2.0"
-              />
-            </div>
-          </div>
-
-          <div className="text-xs text-muted-foreground">
-            {indicator.type === IndicatorEnum.atr
-              ? 'ATR measures volatility over the specified period and adjusts stop loss based on price movement.'
-              : 'ADR measures daily range average and sets stop loss relative to typical daily price swings.'}
-          </div>
-
-          {/* Show calculated SL if we have the data */}
-          <div className="pt-2 border-t">
-            <div className="text-sm">
-              <span className="text-muted-foreground">Calculated SL: </span>
-              <span className="font-mono">
-                ~{indicator.dynamicArFactor}x {indicator.type} (pending
-                calculation)
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export const StopLossSettings: React.FC<StopLossSettingsProps> = ({
   currentExchange,
   formData,
@@ -2189,10 +2087,9 @@ export const StopLossSettings: React.FC<StopLossSettingsProps> = ({
         );
       case CloseConditionEnum.dynamicAr:
         return (
-          <DynamicArSL
+          <DynamicArIndicatorPanel
+            section={IndicatorSection.sl}
             currentExchange={currentExchange}
-            updateFormData={updateFormData}
-            errors={{}}
           />
         );
       case CloseConditionEnum.webhook:

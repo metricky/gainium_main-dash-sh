@@ -3,7 +3,6 @@ import {
   NumberInput,
   TerminalButtonStack,
 } from '@/components/ui';
-import BalanceInput from '@/components/ui/balance-input';
 import { Button } from '@/components/ui/button';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
 import { SettingsLoadMore } from '@/components/ui/SettingsLoadMore';
@@ -25,13 +24,17 @@ import {
 } from '@/contexts/bots/form/BotFormProvider';
 import { useBasicSettingsTab } from '@/features/bots/bot-types/dca/form/hooks/useBasicSettingsTab';
 import { useStrategySettingsTab } from '@/features/bots/bot-types/dca/form/hooks/useStrategySettignsTab';
+import TerminalAmountTotalFields from './TerminalAmountTotalFields';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
+import { formatBalance } from '@/utils/numberFormatter';
 import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
 import {
   ENTER_MARKET_TIMEOUT_GUARD,
   OrderSizeTypeEnum,
   OrderTypeEnum,
+  RRSlTypeEnum,
   StrategyEnum,
+  TerminalDealTypeEnum,
 } from '@/types';
 import type {
   BotFormData,
@@ -39,8 +42,14 @@ import type {
   ExchangeBotForm,
 } from '@/types/bots/form';
 import { Crosshair } from 'lucide-react';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Label } from 'recharts';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Label } from '@/components/ui/label';
 import ExchangeSelector from '@/features/bots/bot-types/dca/form/components/exchangeSelector';
 
 // Local helper component to handle limit price input without causing render storms
@@ -52,6 +61,7 @@ const LimitPriceInput: React.FC<{
   strategy: StrategyEnum;
   baseAssetSymbol?: string;
   quoteAssetSymbol?: string;
+  label?: string;
 }> = ({
   baseOrderPrice,
   latestPrice,
@@ -60,6 +70,7 @@ const LimitPriceInput: React.FC<{
   strategy,
   baseAssetSymbol,
   quoteAssetSymbol,
+  label,
 }) => {
   const { activePickerField, setActivePickerField, setCoordinates } =
     useTradingTerminalUtils();
@@ -163,7 +174,7 @@ const LimitPriceInput: React.FC<{
 
   return (
     <div className="space-y-sm">
-      <Label className="text-sm font-medium">Limit Price</Label>
+      <Label className="text-sm font-medium">{label ?? 'Limit Price'}</Label>
       <NumberInput
         value={localValue}
         onChange={handleChange}
@@ -259,12 +270,18 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
   useDcaTradingContext(props.formData);
   const orderSizeType = useBotFormSelector('orderSizeType');
   const strategy = useBotFormSelector('strategy');
+  const terminalDealType = useBotFormSelector('terminalDealType');
+  const isImport = terminalDealType === TerminalDealTypeEnum.import;
+  const isSimple = terminalDealType === TerminalDealTypeEnum.simple;
+  const useRiskReward = useBotFormSelector('useRiskReward');
+  const rrSlType = useBotFormSelector('rrSlType');
   const profitCurrency = useBotFormSelector('profitCurrency');
   const marginType = useBotFormSelector('marginType');
   const limitTimeout = useBotFormSelector('limitTimeout');
   const skipBalanceCheck = useBotFormSelector('skipBalanceCheck');
   const startOrderType = useBotFormSelector('startOrderType');
   const futures = useBotFormSelector('futures');
+  const coinm = useBotFormSelector('coinm');
   const baseOrderSize = useBotFormSelector('baseOrderSize');
   const useLimitPrice = useBotFormSelector('useLimitPrice');
   const baseOrderPrice = useBotFormSelector('baseOrderPrice');
@@ -272,11 +289,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
   const latestPrice = tradingContext.latestPrice;
   const { alerts } = useBotFormState();
   const {
-    baseOrderDisplayValue,
-    handleBaseOrderSizeChange,
     baseOrderLocked,
-    baseOrderCoinIcon,
-    currencyReferenceOptions,
     showBaseOrderSection,
     directionDisabled,
     profitCurrencyDisabled,
@@ -289,11 +302,8 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
     leverageControlsDisabled,
     marginNotices,
     handleMarginTypeChange,
-    handleCurrencyReferenceChange,
     handleBaseOrderTypeChange,
     baseOrderWarning,
-    canTriggerBalanceRefresh,
-    handleRefreshBalances,
     setBaseOrderVariable,
     setEnterMarketTimeoutVariable,
     enterMarketTimeoutLocked,
@@ -310,16 +320,86 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
     convertDisplayToNotional,
     applyGuardedValue,
     baseOrderGuard,
-    baseOrderContext,
     isBaseOrderVarBound,
     isEnterMarketTimeoutVarBound,
     unbindEnterMarketTimeoutVariable,
+    amountFieldValue,
+    totalFieldValue,
+    amountUsdEquivalent,
+    maxAmount,
+    maxTotal,
+    providerIsBybit,
+    activePerc,
+    setPercent,
+    handleAmountFocus,
+    handleAmountChange,
+    handleTotalFocus,
+    handleTotalChange,
   } = useStrategySettingsTab(props);
 
-  const isBaseOrderPercentageMode = [
-    OrderSizeTypeEnum.percFree,
-    OrderSizeTypeEnum.percTotal,
-  ].includes(orderSizeType);
+  // Legacy parity (Import deal type): the import flow declares a position
+  // already held at a known entry price, so it always uses a limit order
+  // with an explicit price. Force Limit + Use Limit Price and seed the
+  // entry price to the latest price the first time so the field is usable.
+  useEffect(() => {
+    if (!isImport) return;
+    if (startOrderType !== OrderTypeEnum.limit) {
+      updateFormData('startOrderType', OrderTypeEnum.limit);
+    }
+    if (!useLimitPrice) {
+      updateFormData('useLimitPrice', true);
+    }
+    const existing =
+      typeof baseOrderPrice === 'string' ? baseOrderPrice.trim() : '';
+    const hasValidExisting =
+      existing !== '' && !isNaN(+existing) && +existing > 0;
+    if (
+      !hasValidExisting &&
+      typeof latestPrice === 'number' &&
+      Number.isFinite(latestPrice) &&
+      latestPrice > 0
+    ) {
+      updateFormData('baseOrderPrice', String(latestPrice));
+    }
+  }, [
+    isImport,
+    startOrderType,
+    useLimitPrice,
+    baseOrderPrice,
+    latestPrice,
+    updateFormData,
+  ]);
+
+  // Import labels the entry-price field by what the user did to acquire the
+  // position: a long holding was "Purchased", a short was "Sold".
+  const importPriceLabel =
+    strategy === StrategyEnum.short ? 'Sold Price' : 'Purchased Price';
+
+  // Legacy terminal parity: show the available balance of the asset that funds
+  // each direction under the Long/Short buttons. Long spends the quote asset
+  // (base for COIN-M); Short spends the base asset (quote for USDT-M futures,
+  // base for COIN-M).
+  const directionBalanceLabels = useMemo(() => {
+    const baseFree = tradingContext.aggregatedBalances.base.free;
+    const quoteFree = tradingContext.aggregatedBalances.quote.free;
+    const longUsesBase = coinm;
+    const shortUsesBase = futures ? coinm : true;
+    return {
+      longBalanceLabel: longUsesBase
+        ? `${formatBalance(baseFree, displayBaseAsset)} ${displayBaseAsset}`
+        : `${formatBalance(quoteFree, displayQuoteAsset)} ${displayQuoteAsset}`,
+      shortBalanceLabel: shortUsesBase
+        ? `${formatBalance(baseFree, displayBaseAsset)} ${displayBaseAsset}`
+        : `${formatBalance(quoteFree, displayQuoteAsset)} ${displayQuoteAsset}`,
+    };
+  }, [
+    tradingContext.aggregatedBalances.base.free,
+    tradingContext.aggregatedBalances.quote.free,
+    coinm,
+    futures,
+    displayBaseAsset,
+    displayQuoteAsset,
+  ]);
 
   return (
     <>
@@ -340,6 +420,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
           exchangesData={exchangesData}
           tooltip="Select the exchange account to use for this bot"
           mode={'create'}
+          disableFutures={isSimple}
         />
         <SettingsRow
           name="Trading Pairs"
@@ -379,21 +460,42 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
             )}
           </div>
         </SettingsRow>
-        <SettingsRow
-          name="Direction"
-          tooltip="Choose the direction of your trades. Long means buying low and selling high, while short means selling high and buying low."
-        >
-          <StrategySelector
-            strategy={strategy}
-            onStrategyChange={(nextDirection) => {
-              if (directionDisabled) {
-                return;
+        {!useRiskReward && (
+          <SettingsRow
+            name="Side"
+            tooltip="Choose the direction of your trades. Long means buying low and selling high, while short means selling high and buying low."
+          >
+            <StrategySelector
+              strategy={strategy}
+              onStrategyChange={(nextDirection) => {
+                if (directionDisabled) {
+                  return;
+                }
+                updateFormData('strategy', nextDirection);
+              }}
+              disabled={directionDisabled}
+              longLabel="Buy"
+              shortLabel="Sell"
+              invert={isImport}
+              {...directionBalanceLabels}
+            />
+          </SettingsRow>
+        )}
+        {useRiskReward && (
+          <SettingsRow name="Strategy">
+            <TerminalButtonStack
+              value={strategy}
+              onValueChange={(v) =>
+                updateFormData('strategy', v as StrategyEnum)
               }
-              updateFormData('strategy', nextDirection);
-            }}
-            disabled={directionDisabled}
-          />
-        </SettingsRow>
+              options={[
+                { value: StrategyEnum.long, label: 'LONG' },
+                { value: StrategyEnum.short, label: 'SHORT' },
+              ]}
+              className="w-full"
+            />
+          </SettingsRow>
+        )}
         {futures &&
           ![OrderSizeTypeEnum.percFree, OrderSizeTypeEnum.percTotal].includes(
             orderSizeType
@@ -411,7 +513,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
             </SettingsRow>
           )}
 
-        {!futures && (
+        {!futures && !isSimple && (
           <SettingsRow
             name="Profit Currency"
             tooltip="Choose quote currency if you expect the pair to move sideways or down and you want to make profit in quote currency. Choose the base currency if you expect the pair to move sideways or up and you want to make profit in base currency."
@@ -497,11 +599,9 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
         )}
         {showBaseOrderSection && (
           <>
-            <SettingsRow
-              name="Base Order Size"
-              tooltip="This is the first order the bot will make. If DCA mode is disabled, this will be the only order the bot will make. Choose the reference currency for your order size - note that a long bot will always use quote to buy base and a short bot will always sell base to obtain quote."
-              alerts={alerts?.baseOrderSize ?? []}
-            >
+            {/* Legacy parity: no "Base Order Size" header — the Amount and Total
+                fields carry their own labels. */}
+            <SettingsRow alerts={alerts?.baseOrderSize ?? []}>
               <div className="space-y-xs">
                 <FieldVariableBinding
                   path="baseOrderSize"
@@ -534,43 +634,30 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
                     }
                   }}
                 >
-                  <BalanceInput
-                    value={baseOrderDisplayValue}
-                    onChange={handleBaseOrderSizeChange}
-                    currency={baseOrderContext.currencyLabel}
-                    availableBalance={baseOrderContext.availableBalance}
-                    balanceCurrency={baseOrderContext.balanceCurrency}
-                    balanceAmount={baseOrderContext.balanceAmount}
-                    placeholder="10"
+                  {/* Legacy parity: the terminal shows two linked fields —
+                      Amount (base) and Total (quote) — kept in sync via price,
+                      with focus implying the unit (no currency-reference
+                      dropdown). Replaces the single Base Order Size field. */}
+                  <TerminalAmountTotalFields
+                    amountValue={amountFieldValue}
+                    totalValue={totalFieldValue}
+                    orderSizeType={orderSizeType}
+                    onAmountFocus={handleAmountFocus}
+                    onAmountChange={handleAmountChange}
+                    onTotalFocus={handleTotalFocus}
+                    onTotalChange={handleTotalChange}
+                    maxAmount={maxAmount}
+                    maxTotal={maxTotal}
+                    baseAsset={displayBaseAsset}
+                    quoteAsset={displayQuoteAsset}
+                    coinm={!!coinm}
+                    providerIsBybit={providerIsBybit}
+                    usdEquivalent={amountUsdEquivalent}
+                    percentButtons={[10, 25, 50, 75, 100]}
+                    activePerc={activePerc}
+                    setPercent={setPercent}
+                    guard={baseOrderGuard}
                     disabled={isBaseOrderVarBound || baseOrderLocked}
-                    onRefreshBalance={handleRefreshBalances}
-                    coinIcon={baseOrderCoinIcon}
-                    currencyReference={orderSizeType}
-                    onCurrencyReferenceChange={handleCurrencyReferenceChange}
-                    currencyReferenceOptions={currencyReferenceOptions}
-                    showRefreshButton={
-                      canTriggerBalanceRefresh &&
-                      !isBaseOrderVarBound &&
-                      !baseOrderLocked
-                    }
-                    showPercentageButtons={true}
-                    {...(typeof baseOrderGuard?.min === 'number'
-                      ? { min: baseOrderGuard.min }
-                      : {})}
-                    {...(typeof baseOrderGuard?.max === 'number'
-                      ? { max: baseOrderGuard.max }
-                      : {})}
-                    {...(typeof baseOrderGuard?.step === 'number'
-                      ? { step: baseOrderGuard.step }
-                      : {})}
-                    {...(typeof baseOrderGuard?.decimals === 'number'
-                      ? { precision: baseOrderGuard.decimals }
-                      : {})}
-                    endAdornment={
-                      isBaseOrderPercentageMode
-                        ? unitAdornment('%', { tone: 'muted', size: 'xs' })
-                        : undefined
-                    }
                   />
                 </FieldVariableBinding>
                 {baseOrderWarning.message ? (
@@ -583,25 +670,49 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
               </div>
             </SettingsRow>
 
-            <SettingsRow
-              name="Base Order Type"
-              tooltip="Market orders will execute immediately, although you will not get the best price and will incur higher fees. Limit orders incurs less fees, but they may not execute immediately. We reposition limit orders every few seconds until they are filled."
-            >
-              <TerminalButtonStack
-                value={startOrderType}
-                onValueChange={(next) =>
-                  handleBaseOrderTypeChange(next as OrderTypeEnum)
-                }
-                options={[
-                  { value: OrderTypeEnum.market, label: 'Market' },
-                  { value: OrderTypeEnum.limit, label: 'Limit' },
-                ]}
-              />
-            </SettingsRow>
+            {/* Import always uses a limit order at the declared entry price,
+                so the Market/Limit selector is hidden (legacy parity). */}
+            {!isImport && (
+              <SettingsRow
+                name="Base Order Type"
+                tooltip="Market orders will execute immediately, although you will not get the best price and will incur higher fees. Limit orders incurs less fees, but they may not execute immediately. We reposition limit orders every few seconds until they are filled."
+              >
+                <TerminalButtonStack
+                  value={startOrderType}
+                  onValueChange={(next) =>
+                    handleBaseOrderTypeChange(next as OrderTypeEnum)
+                  }
+                  options={[
+                    { value: OrderTypeEnum.market, label: 'Market' },
+                    { value: OrderTypeEnum.limit, label: 'Limit' },
+                  ]}
+                />
+              </SettingsRow>
+            )}
           </>
         )}
-        {startOrderType === OrderTypeEnum.limit && (
-          <>
+        {isImport ? (
+          // Import declares an already-held position at a known entry price,
+          // so the price field is always shown (relabeled), with no
+          // Market/Limit or Use-Limit-Price chrome (legacy parity).
+          <SettingsRow>
+            <LimitPriceInput
+              baseOrderPrice={baseOrderPrice}
+              latestPrice={latestPrice}
+              updateFormData={updateFormData}
+              error={errors['baseOrderPrice']}
+              strategy={strategy}
+              baseAssetSymbol={displayBaseAsset}
+              quoteAssetSymbol={displayQuoteAsset}
+              label={importPriceLabel}
+            />
+          </SettingsRow>
+        ) : (
+          startOrderType === OrderTypeEnum.limit &&
+          !(
+            useRiskReward &&
+            (!rrSlType || rrSlType === RRSlTypeEnum.indicator)
+          ) && (
             <SettingsRow
               name="Use Limit Price"
               tooltip="Set a specific limit price for the order. If disabled, the order will use the current market price when placing a limit order."
@@ -654,7 +765,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
                 />
               )}
             </SettingsRow>
-          </>
+          )
         )}
         <SettingsLoadMore
           id="strategy-advanced"
@@ -752,29 +863,31 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
             </SettingsRow>
           )}
 
-          <SettingsRow
-            name="Skip Balance Check"
-            tooltip="Skip balance validation before placing orders. Use with caution as this may lead to insufficient balance errors."
-            trailing={
-              <Switch
-                id="skip-balance-check"
-                checked={!!skipBalanceCheck}
-                onCheckedChange={(checked) => {
-                  if (skipBalanceCheckDisabled) {
-                    return;
-                  }
-                  updateFormData('skipBalanceCheck', checked);
-                }}
-                disabled={skipBalanceCheckDisabled}
-              />
-            }
-          >
-            {skipBalanceCheckDisabledMessage ? (
-              <p className="text-xs text-muted-foreground">
-                {skipBalanceCheckDisabledMessage}
-              </p>
-            ) : null}
-          </SettingsRow>
+          {!isImport && (
+            <SettingsRow
+              name="Skip Balance Check"
+              tooltip="Skip balance validation before placing orders. Use with caution as this may lead to insufficient balance errors."
+              trailing={
+                <Switch
+                  id="skip-balance-check"
+                  checked={!!skipBalanceCheck}
+                  onCheckedChange={(checked) => {
+                    if (skipBalanceCheckDisabled) {
+                      return;
+                    }
+                    updateFormData('skipBalanceCheck', checked);
+                  }}
+                  disabled={skipBalanceCheckDisabled}
+                />
+              }
+            >
+              {skipBalanceCheckDisabledMessage ? (
+                <p className="text-xs text-muted-foreground">
+                  {skipBalanceCheckDisabledMessage}
+                </p>
+              ) : null}
+            </SettingsRow>
+          )}
         </SettingsLoadMore>
       </MasonryLayout>
     </>

@@ -137,6 +137,7 @@ import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-
 import { validateDcaFormData } from '@/utils/bots/dca/validation';
 import { validateGridFormData } from '@/utils/bots/grid/validation';
 import { buildBotEditRoute } from '@/utils/bots/navigation';
+import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { COMBO_BOT_TYPE_ID } from '../../registry';
 import BacktestSettingsDialog, {
   type BacktestConfig,
@@ -515,7 +516,8 @@ const BotForm: React.FC<BotFormProps> = ({
     features,
     updateFormData,
     quickSetupMode,
-    disablePersistedConfig: isNestedLeg,
+    setQuickSetupMode,
+    isNestedLeg,
   } = useBotFormState();
   const { isReadOnly } = useBotFormEditing();
 
@@ -1162,6 +1164,29 @@ const BotForm: React.FC<BotFormProps> = ({
     () => formData?.dca?.terminalDealType === TerminalDealTypeEnum.simple,
     [formData?.dca?.terminalDealType]
   );
+  const isTerminalImportSelected = useMemo(
+    () => formData?.dca?.terminalDealType === TerminalDealTypeEnum.import,
+    [formData?.dca?.terminalDealType]
+  );
+  // Legacy parity: the terminal order entry has no Quick/Manual mode for
+  // Simple (plain buy/sell) or Import (manual position declaration). Only
+  // Smart keeps the redesign's Quick mode. Force Manual when those deal
+  // types are active so the proper sectioned form renders.
+  useEffect(() => {
+    if (
+      isTerminal &&
+      (isTerminalSimpleSelected || isTerminalImportSelected) &&
+      quickSetupMode === 'quick'
+    ) {
+      setQuickSetupMode('manual');
+    }
+  }, [
+    isTerminal,
+    isTerminalSimpleSelected,
+    isTerminalImportSelected,
+    quickSetupMode,
+    setQuickSetupMode,
+  ]);
 
   const {
     /* updateFormData, */ handleSave,
@@ -1833,28 +1858,17 @@ const BotForm: React.FC<BotFormProps> = ({
     submitIsPending ||
     (mode === 'edit' ? !isDirty : false) ||
     isReadOnly ||
+    // Legacy parity (TerminalBotSettings.tsx:1776-1778): Simple terminal deals
+    // are spot-only, so block submit when a futures exchange is selected.
+    (isTerminal &&
+      isTerminalSimpleSelected &&
+      !!currentExchange &&
+      isFuturesExchange(currentExchange.provider)) ||
     // Caller-imposed disable (used by HedgeBotEditLayout to prevent the
     // per-leg footer from saving a standalone bot — saves go through the
     // unified hedge mutation in the outer layout instead).
     forceSubmitDisabled;
 
-  const submitLabel = useMemo(
-    () =>
-      submitIsPending
-        ? mode === 'create'
-          ? isTerminal
-            ? 'PLACING ORDER...'
-            : 'CREATING...'
-          : 'SAVING...'
-        : mode === 'create'
-          ? isTerminal
-            ? isTerminalSimpleSelected
-              ? 'Place Order'
-              : 'CREATE DEAL'
-            : 'CREATE BOT'
-          : 'SAVE SETTINGS',
-    [mode, submitIsPending, isTerminal, isTerminalSimpleSelected]
-  );
 
   const [showRestartDialog, setShowRestartDialog] = useState(false);
   /* const [showSmartOrderMergeDialog, setShowSmartOrderMergeDialog] =
@@ -1955,6 +1969,47 @@ const BotForm: React.FC<BotFormProps> = ({
 
     return [undefined, undefined] as const;
   }, [primaryPair]);
+
+  // Legacy terminal parity (TerminalBotSettings.tsx:1782-1793): the submit
+  // button reads "Import deal" for Import, otherwise
+  // "Place order (Buy/Sell|Long/Short {base})".
+  const submitLabel = useMemo(() => {
+    if (submitIsPending) {
+      return mode === 'create'
+        ? isTerminal
+          ? 'PLACING ORDER...'
+          : 'CREATING...'
+        : 'SAVING...';
+    }
+    if (mode !== 'create') {
+      return 'SAVE SETTINGS';
+    }
+    if (!isTerminal) {
+      return 'CREATE BOT';
+    }
+    if (isTerminalImportSelected) {
+      return 'Import deal';
+    }
+    const terminalStrategy = formData.dca?.strategy;
+    const terminalFutures = formData.dca?.futures;
+    const sideLabel =
+      terminalStrategy === StrategyEnum.long
+        ? terminalFutures
+          ? 'Long'
+          : 'Buy'
+        : terminalFutures
+          ? 'Short'
+          : 'Sell';
+    return `Place order (${sideLabel} ${baseAsset ?? ''})`.trim();
+  }, [
+    mode,
+    submitIsPending,
+    isTerminal,
+    isTerminalImportSelected,
+    formData.dca?.strategy,
+    formData.dca?.futures,
+    baseAsset,
+  ]);
 
   const fundsTargetName = useMemo(() => {
     if (typeof formData.name === 'string' && formData.name.trim()) {
@@ -3225,7 +3280,9 @@ const BotForm: React.FC<BotFormProps> = ({
     (botExperience.id === BotTypesEnum.dca ||
       botExperience.id === BotTypesEnum.combo ||
       botExperience.id === BotTypesEnum.grid) &&
-    !isNestedLeg;
+    !isNestedLeg &&
+    // Legacy parity: no Quick/Manual toggle for terminal Simple or Import.
+    !(isTerminal && (isTerminalSimpleSelected || isTerminalImportSelected));
 
   const [headerRef, headerWidth] = useContainerWidth();
   // Width thresholds below which we strip text from the header so the

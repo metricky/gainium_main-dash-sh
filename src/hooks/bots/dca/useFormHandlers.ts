@@ -25,10 +25,10 @@ import {
   type MapGridFormDataToPayloadResult,
   type UpdateDCABotPayload,
 } from '@/mappers/bots/dca/map-form-data-to-payload';
-import { useDcaBotSettingsStore } from '@/stores/dcaBotSettingsStore';
 import {
   BotTypesEnum,
   ExchangeIntervals,
+  TerminalDealTypeEnum,
   type BotVars,
   type ExchangeInUser,
 } from '@/types';
@@ -98,7 +98,6 @@ export const useFormHandlers = (
   const mode: BotFormMode = options.mode ?? 'edit';
   const { botVars, setAlerts } = useBotFormState();
   const { currentExchange } = useBotFormQuery();
-  const { saveLastUsedConfig } = useDcaBotSettingsStore();
   // After a successful edit-mode save, flip the form back to view mode.
   // Without this the user sees the success toast but the toolbar stays
   // in edit mode with the (now-disabled, since `isDirty=false`) Save
@@ -308,24 +307,6 @@ export const useFormHandlers = (
           vars: normalizedBotVars,
         });
 
-        // Save the configuration to the store for future use
-        if (
-          formData.type === BotTypesEnum.dca ||
-          formData.type === BotTypesEnum.combo ||
-          formData.type === BotTypesEnum.grid
-        ) {
-          saveLastUsedConfig(
-            formData,
-            formData.type === BotTypesEnum.dca
-              ? terminal
-                ? 'terminal'
-                : 'dca'
-              : formData.type === BotTypesEnum.grid
-                ? 'grid'
-                : 'combo'
-          );
-        }
-
         // Track bot creation event
         const isComboBot = formData.type === BotTypesEnum.combo;
         const botStrategy = isComboBot
@@ -352,7 +333,11 @@ export const useFormHandlers = (
         });
 
         toast.success(
-          terminal ? 'Deal created successfully!' : 'Bot created successfully!'
+          terminal
+            ? formData.dca.terminalDealType === TerminalDealTypeEnum.import
+              ? 'Deal succesfully imported'
+              : 'Deal created, waiting to place orders'
+            : 'Bot created successfully!'
         );
         options.onCreateSuccess?.(createdBot);
         setErrors({});

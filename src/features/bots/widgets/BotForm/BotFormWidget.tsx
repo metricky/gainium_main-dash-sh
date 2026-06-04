@@ -44,11 +44,10 @@ export interface BotFormWidgetProps extends BotFormProps {
    *  settings into each leg's formData without touching BotFormProvider's
    *  public API. */
   innerSlot?: ReactNode;
-  /** Forwarded to BotFormProvider — disables the global "last used config"
-   *  read+write so this widget's `initialFormData` is the sole seed. Used
-   *  by hedge bots so each leg's state is independent and seedRef
-   *  snapshots survive leg-tab switches. */
-  disablePersistedConfig?: boolean;
+  /** Forwarded to BotFormProvider — marks this widget as one leg of a
+   *  hedge bot so it skips standalone-DCA chrome (the Quick/Manual mode
+   *  toggle) and keeps each leg's state independent. */
+  isNestedLeg?: boolean;
 }
 
 /**
@@ -78,7 +77,7 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
   initialFormData,
   formDataRef,
   innerSlot,
-  disablePersistedConfig,
+  isNestedLeg,
   ...restProps
 }) => {
   const { id: paramBotId } = useParams<{ id: string }>();
@@ -159,7 +158,7 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
         defaultTab={defaultTab as BotFormTabId | undefined}
         initialFormData={resolvedInitialFormData}
         botType={botType}
-        disablePersistedConfig={disablePersistedConfig}
+        isNestedLeg={isNestedLeg}
       >
         {formDataRef && <FormDataRefPublisher targetRef={formDataRef} />}
         {innerSlot}

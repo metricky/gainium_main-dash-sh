@@ -11,11 +11,13 @@ import {
   IndicatorEnum,
   IndicatorSection,
   IndicatorsLogicEnum,
+  MIN_DCA_TP,
   OrderSizeTypeEnum,
   RRSlTypeEnum,
   ScaleDcaTypeEnum,
   StartConditionEnum,
   StrategyEnum,
+  TerminalDealTypeEnum,
   type DCABotSettings,
   type SettingsIndicatorGroup,
   type SettingsIndicators,
@@ -30,7 +32,8 @@ export type HandleSettingsUpdateResult = Partial<Omit<BotFormData, 'dca'>> & {
 export const handleSettingsUpdate = (
   formData: BotFormData,
   field: Fields,
-  value: BotFormUpdateValue
+  value: BotFormUpdateValue,
+  latestPrice?: number
 ): HandleSettingsUpdateResult => {
   const { dca: settings, pairMetadata, pair } = formData;
   const updates: HandleSettingsUpdateResult = { dca: {} };
@@ -70,6 +73,72 @@ export const handleSettingsUpdate = (
     updates.dca.indicatorGroups = settings.indicatorGroups
       ? [...settings.indicatorGroups]
       : [];
+    // Terminal deal-type side effects (legacy index.tsx:3332-3412).
+    // Switching to Simple disables DCA/TP/SL (the futures-exchange swap lives
+    // at the exchange-selection layer, not in settings).
+    if (
+      field === 'terminalDealType' &&
+      value === TerminalDealTypeEnum.simple
+    ) {
+      updates.dca.useDca = false;
+      updates.dca.useTp = false;
+      updates.dca.useSl = false;
+    }
+    // Import TP% auto-calc (legacy index.tsx:3362-3384). Uses the incoming
+    // strategy (legacy `set.strategy`) for the multiplier.
+    if (
+      settings.terminalDealType === TerminalDealTypeEnum.import &&
+      settings.baseOrderPrice &&
+      latestPrice &&
+      !isNaN(+(settings.baseOrderPrice ?? '')) &&
+      !isNaN(+(latestPrice ?? '')) &&
+      field !== 'tpPerc' &&
+      ['terminalDealType', 'strategy', 'useTp'].includes(field)
+    ) {
+      const multiplier = settings.strategy === StrategyEnum.long ? 1 : -1;
+      updates.dca.tpPerc = `${Math.max(
+        math.round(
+          ((+latestPrice - +settings.baseOrderPrice) /
+            +settings.baseOrderPrice) *
+            100 +
+            MIN_DCA_TP * 100 * multiplier,
+          1,
+          false,
+          true
+        ) * multiplier,
+        MIN_DCA_TP * 100
+      )}`;
+    }
+    // Import SL% auto-calc (legacy index.tsx:3385-3404).
+    if (
+      settings.terminalDealType === TerminalDealTypeEnum.import &&
+      settings.baseOrderPrice &&
+      latestPrice &&
+      !isNaN(+(settings.baseOrderPrice ?? '')) &&
+      !isNaN(+(latestPrice ?? '')) &&
+      field !== 'slPerc' &&
+      ['terminalDealType', 'strategy', 'useSl'].includes(field)
+    ) {
+      const multiplier = settings.strategy === StrategyEnum.long ? 1 : -1;
+      updates.dca.slPerc = `${math.round(
+        ((+latestPrice - +settings.baseOrderPrice) /
+          +settings.baseOrderPrice) *
+          100 *
+          multiplier +
+          MIN_DCA_TP * 100 * -1,
+        1,
+        true
+      )}`;
+    }
+    // Leaving Import resets a positive SL% to the floor (legacy 3405-3412).
+    if (
+      field === 'terminalDealType' &&
+      value !== TerminalDealTypeEnum.import &&
+      settings.slPerc &&
+      +settings.slPerc > 0
+    ) {
+      updates.dca.slPerc = `${MIN_DCA_TP * 100 * -1}`;
+    }
     if (field === 'dcaVolumeBaseOn' && value === DCAVolumeType.change) {
       updates.dca.tpPerc = '5';
       updates.dca.dcaVolumeRequiredChange = '5';
@@ -120,6 +189,19 @@ export const handleSettingsUpdate = (
     if (field === 'useDca' && !value) {
       updates.dca.dcaCondition = DCAConditionEnum.percentage;
       updates.dca.scaleDcaType = ScaleDcaTypeEnum.percentage;
+    }
+    // Legacy onChangeInput integer-normalizes these two count fields on commit
+    // (trimNumber(value, true)), gating to '' on an invalid number. Other count
+    // fields are stored raw.
+    if (field === 'closeAfterX') {
+      updates.dca.closeAfterX = verifyNumber(value as string)
+        ? trimNumber(value as string, true)
+        : '';
+    }
+    if (field === 'closeAfterXopen') {
+      updates.dca.closeAfterXopen = verifyNumber(value as string)
+        ? trimNumber(value as string, true)
+        : '';
     }
     if (
       dcaCondition !== DCAConditionEnum.percentage ||
@@ -473,6 +555,66 @@ export const handleSettingsUpdate = (
       updates.dca.indicatorGroups = (updates.dca.indicatorGroups ?? []).filter(
         (ig) => ig.action !== IndicatorAction.startBot
       );
+    }
+    // Auto-seed the first indicator + group when switching into an indicators
+    // mode (or enabling the controller while a mode is already 'indicators').
+    // Mirrors legacy addIndicator(IndicatorAction.startBot|stopBot, …, true).
+    // Note the legacy asymmetry: `botStart` drives stopBot indicators and
+    // `botActualStart` drives startBot indicators.
+    const seedControllerIndicator = (action: IndicatorAction) => {
+      const generateId = (): string =>
+        typeof crypto !== 'undefined' &&
+        typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `controller-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const group: SettingsIndicatorGroup = {
+        id: generateId(),
+        logic: IndicatorsLogicEnum.and,
+        action,
+      };
+      const type = IndicatorEnum.adx;
+      const defaults = getIndicatorDefaultParams(type, action);
+      const seeded: SettingsIndicators = {
+        ...(defaults as unknown as SettingsIndicators),
+        type,
+        indicatorAction: action,
+        uuid: generateId(),
+        maUUID: generateId(),
+        xoUUID: generateId(),
+        groupId: group.id,
+      };
+      updates.dca.indicators = [...(updates.dca.indicators ?? []), seeded];
+      updates.dca.indicatorGroups = [
+        ...(updates.dca.indicatorGroups ?? []),
+        group,
+      ];
+    };
+    const nextBotStart =
+      field === 'botStart' ? (value as BotStartTypeEnum) : botStart;
+    const nextBotActualStart =
+      field === 'botActualStart' ? (value as BotStartTypeEnum) : botActualStart;
+    if (
+      ((field === 'botStart' && value === BotStartTypeEnum.indicators) ||
+        (field === 'useBotController' &&
+          value &&
+          nextBotStart === BotStartTypeEnum.indicators)) &&
+      (updates.dca.indicators ?? []).filter(
+        (i) => i.indicatorAction === IndicatorAction.stopBot
+      ).length === 0
+    ) {
+      seedControllerIndicator(IndicatorAction.stopBot);
+    }
+    if (
+      ((field === 'botActualStart' &&
+        value === BotStartTypeEnum.indicators) ||
+        (field === 'useBotController' &&
+          value &&
+          nextBotActualStart === BotStartTypeEnum.indicators)) &&
+      (updates.dca.indicators ?? []).filter(
+        (i) => i.indicatorAction === IndicatorAction.startBot
+      ).length === 0
+    ) {
+      seedControllerIndicator(IndicatorAction.startBot);
     }
     if (field === 'scaleDcaType' && value === ScaleDcaTypeEnum.percentage) {
       updates.dca.indicators = (updates.dca.indicators ?? []).filter(

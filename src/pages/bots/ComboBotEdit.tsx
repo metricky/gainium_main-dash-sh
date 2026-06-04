@@ -55,9 +55,7 @@ import { useComboBacktests } from '@/hooks/useComboBacktests';
 import { useSetBacktestNote } from '@/hooks/useSetBacktestNote';
 import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
-import { mapBotSettingsToFormData } from '@/mappers/bots/dca/map-bot-settings-to-form-data';
 import { useAuthStore } from '@/stores/authStore';
-import { useDcaBotSettingsStore } from '@/stores/dcaBotSettingsStore';
 import { indicatorStore } from '@/stores/indicatorStore';
 import { useTablePreferencesStore } from '@/stores/tablePreferencesStore';
 import {
@@ -244,16 +242,16 @@ const ComboBotEditWidget = () => {
   const handleLoadBacktest = useCallback(
     (backtest: DCABacktestingResultHistory) => {
       try {
-        const { formData: mappedFormData } = mapBotSettingsToFormData(
-          BotTypesEnum.combo,
-          {
+        // Stage the backtest settings for the fresh form on /combo/new
+        // (same one-shot channel as "Copy to live"); the new form reads
+        // it via useBotConfigPreload.
+        sessionStorage.setItem(
+          'botConfig',
+          JSON.stringify({
+            type: BotTypesEnum.combo,
             settings: backtest.settings,
-            exchangeUUID: backtest.exchangeUUID,
-          }
+          })
         );
-        useDcaBotSettingsStore
-          .getState()
-          .saveLastUsedConfig(mappedFormData, 'combo');
         toast.success('Backtest settings loaded into new combo bot form');
         navigate('/combo/new');
       } catch (error) {

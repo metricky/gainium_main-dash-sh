@@ -57,6 +57,7 @@ import {
   BuyTypeEnum,
   CloseDCATypeEnum,
   CloseGRIDTypeEnum,
+  DCATypeEnum,
   type BotStatus,
   type DCABot,
   type ExchangeInUser,
@@ -317,6 +318,23 @@ interface ChipRow {
   value: string;
 }
 
+/** One safety order in the funds popover's itemized DCA breakdown. */
+interface DcaStepRow {
+  /** e.g. "DCA 1 (2%)". */
+  label: string;
+  /** Formatted amount with its asset symbol. */
+  value: string;
+}
+
+/** Grouped DCA section: a heading, the per-order rows, and a subtotal. */
+interface DcaBreakdown {
+  /** e.g. "DCA orders (×3 deals)". */
+  heading: string;
+  steps: DcaStepRow[];
+  /** Formatted "Total DCA orders" amount. */
+  totalValue: string;
+}
+
 interface CreditsChipProps {
   isCompact: boolean;
   credits: {
@@ -413,6 +431,8 @@ export interface FundsInfo {
   totalLabel: string;
   /** Component rows that sum to the total (in the deposit currency). */
   rows: ChipRow[];
+  /** Itemized DCA section, rendered below `rows`. Null when no safety orders. */
+  dca: DcaBreakdown | null;
   /** Formatted available balance, or null when it can't be resolved. */
   availableLabel: string | null;
   /** Share of available balance this bot needs (null when unknown). */
@@ -468,6 +488,26 @@ const FundsChip: React.FC<{ isCompact: boolean; info: FundsInfo }> = ({
               <span className="tabular-nums">{r.value}</span>
             </div>
           ))}
+          {info.dca && (
+            <div className="space-y-1">
+              <div className="text-muted-foreground">{info.dca.heading}</div>
+              <div className="max-h-44 space-y-0.5 overflow-y-auto pl-2 pr-1">
+                {info.dca.steps.map((s) => (
+                  <div
+                    key={s.label}
+                    className="flex items-center justify-between gap-4"
+                  >
+                    <span className="text-muted-foreground">{s.label}</span>
+                    <span className="tabular-nums">{s.value}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between gap-4 font-medium text-foreground">
+                <span>Total DCA orders</span>
+                <span className="tabular-nums">{info.dca.totalValue}</span>
+              </div>
+            </div>
+          )}
           <div className="mt-1 flex items-center justify-between gap-4 border-t border-border pt-1 font-semibold text-foreground">
             <span>Total needed</span>
             <span className="tabular-nums">{info.totalLabel}</span>
@@ -535,7 +575,11 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
       pairs: formData.pair.length,
       indicators: indicators.length,
       deals: +(maxNumberOfOpenDeals ?? '0'),
-      type: type,
+      // Terminal deals cost a flat `terminalCost` (10) on the backend. The
+      // `type` selector doesn't reliably resolve to `terminal` for the
+      // place-order flow, so key off the authoritative `formData.terminal`
+      // flag to match what the backend actually charges.
+      type: formData.terminal ? DCATypeEnum.terminal : type,
       affiliate: !!currentExchange?.affiliate,
     });
     if (creditsMultiplier === 1) return computed;
@@ -549,6 +593,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   }, [
     botType,
     formData.pair.length,
+    formData.terminal,
     indicators.length,
     maxNumberOfOpenDeals,
     type,
@@ -612,6 +657,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
         amountLabel: fmtAmount(b, false),
         totalLabel: fmtCurrency(b, quote, false),
         rows: [{ label: 'Grid investment', value: fmtCurrency(b, quote, false) }],
+        dca: null,
         availableLabel: available > 0 ? fmtCurrency(available, quote, false) : null,
         pctRequired: pct,
         overspend: pct != null && pct > 100,
@@ -627,6 +673,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
       total,
       baseOrders,
       dcaOrders,
+      dcaSteps,
       availableBalance,
       pctRequired,
       overspend,
@@ -639,12 +686,21 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
         value: fmtCurrency(baseOrders, displayCurrency, useBase),
       });
     }
-    if (dcaOrders > 0) {
-      rows.push({
-        label: `DCA orders (×${maxDeals} deals)`,
-        value: fmtCurrency(dcaOrders, displayCurrency, useBase),
-      });
-    }
+
+    // Itemized DCA section: one row per safety order with its deviation and
+    // amount, plus a subtotal. Falls back to nothing when there are no
+    // safety orders (e.g. base-order-only setups).
+    const dca: DcaBreakdown | null =
+      dcaOrders > 0 && dcaSteps.length > 0
+        ? {
+            heading: `DCA orders (×${maxDeals} deals)`,
+            steps: dcaSteps.map((s) => ({
+              label: `DCA ${s.index}${s.deviation ? ` (${s.deviation})` : ''}`,
+              value: fmtCurrency(s.amount, displayCurrency, useBase),
+            })),
+            totalValue: fmtCurrency(dcaOrders, displayCurrency, useBase),
+          }
+        : null;
 
     const availableLabel =
       availableBalance > 0
@@ -657,6 +713,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
       amountLabel: fmtAmount(total, useBase),
       totalLabel: fmtCurrency(total, displayCurrency, useBase),
       rows,
+      dca,
       availableLabel,
       pctRequired,
       overspend,

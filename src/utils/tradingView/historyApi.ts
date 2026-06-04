@@ -1,7 +1,7 @@
 import { logger } from '@/lib/loggerInstance';
 import { ExchangeEnum, ExchangeIntervals, timeIntervalMap } from '@/types';
 import Candles from '../candles';
-import { removePaperPrefix } from '../exchangeUtils';
+import { removePaperPrefix, toExchangeCandleSymbol } from '../exchangeUtils';
 import { mapStringToExchange } from './factory';
 import {
   type Bar,
@@ -99,7 +99,13 @@ export const requestCandles = async ({
         : exchange;
     const url = new URL(`${import.meta.env.VITE_API_ENDPOINT}/candles`);
     url.searchParams.set('exchange', effectiveExchange);
-    url.searchParams.set('symbol', symbol);
+    // KuCoin spot's candle API needs the dashed native symbol (BTC-USDT); the
+    // app stores pairs concatenated (BTCUSDT). Normalize here — the one place
+    // every candle fetch (chart, backtest, market-stats) funnels through.
+    url.searchParams.set(
+      'symbol',
+      toExchangeCandleSymbol(effectiveExchange, symbol)
+    );
     url.searchParams.set('type', type);
     url.searchParams.set('startAt', startAt);
     url.searchParams.set('endAt', endAt);

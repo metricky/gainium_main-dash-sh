@@ -1399,7 +1399,11 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeIntervalField({
         key: 'indicatorInterval',
         label: 'Interval',
-        defaultValue: ExchangeIntervals.oneH,
+        // ADR = Average DAILY Range — the interval is by definition 1 day.
+        // The select is permanently disabled (see comment below); pinning
+        // the default to `oneD` makes the locked value match the indicator
+        // name regardless of whatever value was inherited at creation time.
+        defaultValue: ExchangeIntervals.oneD,
         // Legacy permanently disables ADR's interval select
         // (indicators.tsx:1402 `disabled={... || i.type === IndicatorEnum.adr}`).
         disabled: true,
