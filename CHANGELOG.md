@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.4] - 2026-06-04
+
+### Fixed
+
+- KuCoin spot candles: send the dashed native symbol (BTC-USDT) instead of the
+  app's concatenated pair (BTCUSDT) at the `requestCandles` chokepoint, fixing
+  `400100 Unsupported trading pair` on KuCoin backtests and the quick-panel
+  risk/market-stats fetch. Other exchanges and KuCoin futures are unchanged.
+
 ## [2.8.3] - 2026-06-04
 
 ### Changed
