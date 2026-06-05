@@ -329,8 +329,13 @@ export const TradingViewChartCore = forwardRef<
             return true;
           }
           const startSeconds = order.startTimeMs / 1000;
+          const endSeconds = order.endTimeMs / 1000;
+          // Keep any segment that OVERLAPS the visible range, not only those
+          // whose start is in view — otherwise a line vanishes as soon as its
+          // start scrolls off the left edge even though it still crosses the
+          // viewport.
           const inRange =
-            startSeconds > resolvedRange.from &&
+            endSeconds > resolvedRange.from &&
             startSeconds < resolvedRange.to;
 
           if (!inRange) {

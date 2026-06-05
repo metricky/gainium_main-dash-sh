@@ -51,6 +51,10 @@ import {
   BacktestStatsTab,
   ShareBacktestButton,
 } from '@/components/widgets/bots/backtest';
+import {
+  BacktestResultsFullModal,
+  buildBacktestViewModel,
+} from '@/components/widgets/bots/backtest/redesign';
 import CoinPair from '@/components/widgets/shared/CoinPair';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
@@ -90,6 +94,7 @@ import {
   type BotChartData,
   type DCABacktestingResultHistory,
   type DCABot,
+  type DCABotSettings,
 } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 import { useSearchParams } from 'react-router-dom';
@@ -196,6 +201,9 @@ const TradingBotNewWidget = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<DCABacktestingResultHistory | null>(null);
   const [activeInsightsTab, setActiveInsightsTab] = useState('backtests');
+  // Clicking a backtest row opens the redesigned full-screen results modal
+  // instead of rendering Overview/Stats/Deals/Analysis inline in the widget.
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const [formReloadKey, setFormReloadKey] = useState(0);
   // Track a newly completed backtest ID so we can auto-select it once it appears in the list
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
@@ -302,7 +310,7 @@ const TradingBotNewWidget = () => {
     const found = dcaBacktests.find((b) => b._id === pendingBacktestId);
     if (found) {
       setSelectedBacktest(found);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
       setPendingBacktestId(null);
       logger.info('[TradingBotNew] Auto-selected completed backtest', {
         id: pendingBacktestId,
@@ -1008,8 +1016,9 @@ const TradingBotNewWidget = () => {
   const handleBacktestSelect = useCallback(
     (backtest: DCABacktestingResultHistory) => {
       setSelectedBacktest(backtest);
-      // Open the Overview subtab when a backtest is selected
-      setActiveInsightsTab('bt-overview');
+      // Open the full-screen results modal (deals hydrate below, the modal's
+      // view model rebuilds reactively once they arrive).
+      setResultsModalOpen(true);
 
       if ((backtest.deals?.length ?? 0) === 0) {
         void loadBacktestDetailsMutation
@@ -1039,6 +1048,22 @@ const TradingBotNewWidget = () => {
       setSelectedBacktest(hydratedBacktest);
     }
   }, [dcaBacktests, selectedBacktest]);
+
+  // View model for the full-screen results modal. Rebuilds whenever the
+  // selected backtest changes — including when its deals hydrate above.
+  const resultsVm = useMemo(() => {
+    if (!selectedBacktest) return null;
+    return buildBacktestViewModel(
+      selectedBacktest,
+      (selectedBacktest.settings ?? {}) as DCABotSettings,
+      {
+        symbol: selectedBacktest.symbol,
+        exchange: selectedBacktest.exchange,
+        baseAsset: selectedBacktest.baseAsset,
+        quoteAsset: selectedBacktest.quoteAsset,
+      }
+    );
+  }, [selectedBacktest]);
 
   const [chartMenu, handleChartMenuChange] = usePanelMenuBridge();
   const [chartData, setChartData] = useState<BotChartData>({});
@@ -1220,38 +1245,8 @@ const TradingBotNewWidget = () => {
             defaultPinnedColumns={{ left: [], right: ['actions'] }}
           />
         ),
-        // Subtabs for Backtests - only show when a backtest is selected
-        subtabs: selectedBacktest
-          ? [
-              {
-                key: 'bt-overview',
-                title: 'Overview',
-                bodyClassName: 'p-0',
-                content: <BacktestOverviewTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-stats',
-                title: 'Stats',
-                bodyClassName: 'p-0',
-                content: <BacktestStatsTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-deals',
-                title: 'Deals',
-                bodyClassName: 'p-0',
-                content: <BacktestDealsTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-analysis',
-                title: 'Analysis',
-                enabled:
-                  (selectedBacktest.deals?.length ?? 0) > 0 ||
-                  (selectedBacktest.periodicStats?.length ?? 0) > 0,
-                bodyClassName: 'p-0',
-                content: <BacktestAnalysisTab backtest={selectedBacktest} />,
-              },
-            ]
-          : undefined,
+        // Results (Overview/Stats/Deals/Analysis) now open in the
+        // full-screen modal on row click — no inline subtabs in the widget.
       },
     ];
 
@@ -1261,7 +1256,7 @@ const TradingBotNewWidget = () => {
       (selectedBacktest as { userId?: string }).userId === user.id;
 
     return {
-      defaultTab: selectedBacktest ? 'bt-overview' : 'backtests',
+      defaultTab: 'backtests',
       resetKey: selectedBacktest?._id,
       actions: (
         <div className="flex items-center gap-xs">
@@ -1487,6 +1482,16 @@ const TradingBotNewWidget = () => {
         cancelText="Cancel"
         variant="destructive"
       />
+
+      {/* Full-screen backtest results modal (opened from a table row click) */}
+      {resultsVm && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          vm={resultsVm}
+          botName={selectedBacktest?.settings?.name}
+        />
+      )}
     </MainLayout>
   );
 };

@@ -142,6 +142,11 @@ import { COMBO_BOT_TYPE_ID } from '../../registry';
 import BacktestSettingsDialog, {
   type BacktestConfig,
 } from './components/BacktestSettingsDialog';
+import {
+  BacktestResultsFullModal,
+  buildBacktestViewModel,
+  type BacktestViewModel,
+} from '@/components/widgets/bots/backtest/redesign';
 import { BotFormAlertButton } from './components/BotFormAlertButton';
 import {
   BotFormFooter,
@@ -545,6 +550,14 @@ const BotForm: React.FC<BotFormProps> = ({
   const [showBacktestDialog, setShowBacktestDialog] = useState(false);
   const [backtestProgress, setBacktestProgress] =
     useState<BacktestProgress | null>(null);
+  // Redesigned backtest results: the fresh in-memory result is adapted into a
+  // view-model the moment a local DCA run completes (the deals/portfolio are
+  // discarded after persistence, so this is the only place to capture them).
+  // The footer's "VIEW RESULTS" chip and the full-screen modal both render
+  // against it. Reset to null at the start of every run so it never shows
+  // stale data.
+  const [backtestVm, setBacktestVm] = useState<BacktestViewModel | null>(null);
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const backtesterInstanceRef = useRef<DCABacktesting | null>(null);
   const gridBacktesterInstanceRef = useRef<GridBacktestingEngine | null>(null);
   const cancelLocalBacktest = useCallback(() => {
@@ -2808,6 +2821,9 @@ const BotForm: React.FC<BotFormProps> = ({
               ? getPeriod?.(cfg.periodId)?.name
               : undefined;
           toast.info('Local backtest start (this may take a while)');
+          // Clear any prior result so the footer's "VIEW RESULTS" chip never
+          // shows stale data while a fresh run is in flight.
+          setBacktestVm(null);
           logger.info('[backtester] Local backtest start', {
             exchange: currentExchange?.provider,
             interval: cfg.timeframe,
@@ -3159,6 +3175,17 @@ const BotForm: React.FC<BotFormProps> = ({
                     name: formData.name,
                     pair: [formData.pair].flat() as string[],
                   };
+                  // Capture the fresh result as a view-model BEFORE it's
+                  // persisted (and its deals/portfolio/buyAndHold stripped).
+                  // Drives the footer "VIEW RESULTS" chip + the full modal.
+                  setBacktestVm(
+                    buildBacktestViewModel(typedResult, historySettings, {
+                      symbol: persistenceSymbol.pair,
+                      exchange: currentExchange.provider,
+                      baseAsset: persistenceSymbol.baseAsset?.name ?? '',
+                      quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
+                    })
+                  );
                   const savedId = await persistBacktestResult({
                     result: typedResult,
                     config: resolvedBacktestConfig,
@@ -3605,6 +3632,27 @@ const BotForm: React.FC<BotFormProps> = ({
                 onCancelBacktest={
                   footerOverride?.onCancelBacktest ?? cancelLocalBacktest
                 }
+                backtestSummary={
+                  footerOverride?.backtestSummary ??
+                  (backtestVm
+                    ? {
+                        netPerc: backtestVm.netPerc,
+                        winRate: backtestVm.winRate,
+                        deals: backtestVm.deals,
+                      }
+                    : null)
+                }
+                onViewResults={
+                  footerOverride?.onViewResults ??
+                  (() => setResultsModalOpen(true))
+                }
+                onDismissResults={
+                  footerOverride?.onDismissResults ??
+                  (() => {
+                    setBacktestVm(null);
+                    setResultsModalOpen(false);
+                  })
+                }
                 onLoadTemplate={handleLoadTemplate}
                 onToggleStatus={
                   footerOverride?.onToggleStatus ??
@@ -3680,6 +3728,13 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestVm && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          vm={backtestVm}
+        />
+      )}
       {/* <SmartOrderMergeDialog
         open={showSmartOrderMergeDialog}
         onOpenChange={handleSmartOrderMergeDialogChange}
@@ -3982,6 +4037,26 @@ const BotForm: React.FC<BotFormProps> = ({
             onRunBacktestDirect={onRunBacktest}
             backtestProgress={backtestProgress}
             onCancelBacktest={cancelLocalBacktest}
+            backtestSummary={
+              footerOverride?.backtestSummary ??
+              (backtestVm
+                ? {
+                    netPerc: backtestVm.netPerc,
+                    winRate: backtestVm.winRate,
+                    deals: backtestVm.deals,
+                  }
+                : null)
+            }
+            onViewResults={
+              footerOverride?.onViewResults ?? (() => setResultsModalOpen(true))
+            }
+            onDismissResults={
+              footerOverride?.onDismissResults ??
+              (() => {
+                setBacktestVm(null);
+                setResultsModalOpen(false);
+              })
+            }
             onLoadTemplate={handleLoadTemplate}
             onToggleStatus={
               footerOverride?.onToggleStatus ??
@@ -4053,6 +4128,13 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestVm && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          vm={backtestVm}
+        />
+      )}
       {/* <SmartOrderMergeDialog
         open={showSmartOrderMergeDialog}
         onOpenChange={handleSmartOrderMergeDialogChange}

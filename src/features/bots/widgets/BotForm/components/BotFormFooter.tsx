@@ -1,7 +1,9 @@
 import { track as posthogEvent } from '@/lib/analytics';
 import {
+  ArrowRight,
   BookmarkIcon,
   CalendarRange,
+  Check,
   ChevronDown,
   Clock,
   Coins,
@@ -115,6 +117,24 @@ export interface BotFormFooterProps {
   /** Cancel an in-progress local backtest. */
   onCancelBacktest?: () => void;
   backtestPending?: boolean;
+  /**
+   * Headline numbers for the "done" state. When non-null (and no run is in
+   * progress), the backtest box morphs from the run controls into a
+   * "VIEW RESULTS" summary chip showing net %, win rate, and deal count.
+   * Cleared (back to `null`) on the next run so it never shows stale data.
+   */
+  backtestSummary?: {
+    netPerc: number;
+    winRate: number;
+    deals: number;
+  } | null;
+  /** Open the full-screen results modal (the "done" chip's click handler). */
+  onViewResults?: () => void;
+  /**
+   * Dismiss the "done" chip and restore the backtest run controls so the
+   * user can run another backtest. Clears `backtestSummary` upstream.
+   */
+  onDismissResults?: () => void;
   onLoadTemplate?: (template: BotTemplate) => void;
   compactThreshold?: number;
   /**
@@ -537,6 +557,71 @@ const FundsChip: React.FC<{ isCompact: boolean; info: FundsInfo }> = ({
   );
 };
 
+/**
+ * "Done" state for the backtest box: a full-width summary chip that replaces
+ * the run controls once a local DCA backtest has completed. Shows the
+ * headline net %, win rate, and deal count, and opens the full results modal
+ * on click. Styled per DESIGN_SYSTEM §3 — a soft `bg-primary/10` fill with a
+ * `ring-1 ring-primary/30` (NOT a border); net % is tinted profit/loss.
+ */
+const ViewResultsButton: React.FC<{
+  summary: { netPerc: number; winRate: number; deals: number };
+  onClick?: () => void;
+  onDismiss?: () => void;
+}> = ({ summary, onClick, onDismiss }) => {
+  const up = summary.netPerc >= 0;
+  return (
+    // Card is a plain <div> so we can nest two real buttons (View / Dismiss)
+    // without invalid button-in-button nesting.
+    <div className="group flex w-full items-center gap-2 rounded-lg bg-primary/10 px-2 py-1.5 ring-1 ring-primary/30 transition-colors hover:bg-primary/15">
+      {/* main summary area opens the results modal */}
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label="View backtest results"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        {/* profit-circle check badge */}
+        <span className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-full bg-profit text-white">
+          <Check className="h-3.5 w-3.5" strokeWidth={3} />
+        </span>
+        {/* stacked eyebrow + headline numbers */}
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="text-xs font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            Backtest complete
+          </span>
+          <span className="truncate text-xs font-medium tabular-nums text-foreground">
+            <span className={up ? 'text-profit' : 'text-loss'}>
+              {up ? '+' : ''}
+              {fmtNumber(summary.netPerc, 2)}%
+            </span>
+            {' · '}
+            {fmtNumber(summary.winRate, 0)}% win
+            {' · '}
+            {summary.deals} {summary.deals === 1 ? 'deal' : 'deals'}
+          </span>
+        </span>
+        {/* right affordance */}
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-xs font-semibold uppercase text-primary">
+          View results
+          <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+        </span>
+      </button>
+      {/* quiet dismiss — restores the run controls for another backtest */}
+      {onDismiss ? (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss results"
+          className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+};
+
 export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   onBacktest,
   formData,
@@ -565,6 +650,9 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   onRunBacktestDirect,
   backtestProgress,
   onCancelBacktest,
+  backtestSummary,
+  onViewResults,
+  onDismissResults,
 }) => {
   const indicators = useBotFormSelector('indicators', []);
   const maxNumberOfOpenDeals = useBotFormSelector('maxNumberOfOpenDeals');
@@ -1421,6 +1509,12 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
               </div>
               <ProgressBar value={progressPct} size="sm" variant="primary" />
             </div>
+          ) : backtestSummary ? (
+            <ViewResultsButton
+              summary={backtestSummary}
+              {...(onViewResults ? { onClick: onViewResults } : {})}
+              {...(onDismissResults ? { onDismiss: onDismissResults } : {})}
+            />
           ) : (
             <ResponsiveButtonRow
               buttons={backtestButtonConfigs}
