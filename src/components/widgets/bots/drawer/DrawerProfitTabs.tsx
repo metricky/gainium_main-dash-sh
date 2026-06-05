@@ -614,7 +614,7 @@ const DrawerProfitTabs: React.FC<DrawerProfitTabsProps> = ({
           maxDrawdownPercent?: number;
         };
       }
-    ).loss;
+    )?.loss;
     const maxEquityDrawdownPerc = (() => {
       if (typeof lossStats?.maxEquityDrawdownPerc === 'number') {
         return Math.abs(lossStats.maxEquityDrawdownPerc);
