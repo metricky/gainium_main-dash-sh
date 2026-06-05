@@ -75,6 +75,7 @@ import {
   ProfitAndPerc,
   ProfitLossPercChip,
   StatusChip,
+  StrategyChip,
 } from '../../../ui/chip';
 import { ConfirmationDialog } from '../../../ui/confirmation-dialog';
 import { DataTable, type BulkAction } from '../../../ui/data-table/data-table';
@@ -1851,6 +1852,66 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         },
         enableSorting: true,
         enableColumnFilter: true,
+      },
+      {
+        id: 'strategy',
+        accessorKey: 'strategy',
+        header: 'Strategy',
+        cell: ({ row }) => {
+          const strategy = row.original.strategy;
+          if (!strategy)
+            return <span className="text-muted-foreground">-</span>;
+          return (
+            <StrategyChip strategy={strategy} size="xs" chipStyle="solid" />
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+      },
+      {
+        id: 'avgPrice',
+        accessorKey: 'avgPrice',
+        header: 'Avg Price',
+        cell: ({ row }) => {
+          const trade = row.original;
+          const value = Number(trade.avgPrice || 0);
+          const symbolObj = trade.symbol;
+          const quoteAsset =
+            typeof symbolObj === 'string' ? '' : symbolObj.quoteAsset || '';
+          if (!value) return <span className="text-muted-foreground">-</span>;
+          return (
+            <div className="text-sm font-medium">
+              {formatNumber(value, true)} {quoteAsset}
+            </div>
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+        sortingFn: 'basic',
+      },
+      {
+        id: 'initialPrice',
+        accessorFn: (row) =>
+          Number(row.initialPrice || row.entryPrice || row.avgPrice || 0),
+        header: 'Entry Price',
+        cell: ({ row }) => {
+          const trade = row.original;
+          const value = Number(
+            trade.initialPrice || trade.entryPrice || trade.avgPrice || 0
+          );
+          const symbolObj = trade.symbol;
+          const quoteAsset =
+            typeof symbolObj === 'string' ? '' : symbolObj.quoteAsset || '';
+          if (!value) return <span className="text-muted-foreground">-</span>;
+          return (
+            <div className="text-sm font-medium">
+              {formatNumber(value, true)} {quoteAsset}
+            </div>
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+        sortingFn: 'basic',
       },
       {
         id: 'cost',
