@@ -2453,7 +2453,7 @@ function DataTableComponent<TData, TValue>(
                   if (nextSelected) {
                     next[id] = true;
                   } else {
-                    delete next[id];
+                    next[id] = false;
                   }
                 }
                 return next;
