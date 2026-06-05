@@ -123,22 +123,23 @@ export function BacktestResultsFullModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
-        className="w-[96vw] max-w-[1400px] h-[92vh] max-h-[92vh] overflow-hidden flex flex-col p-0 bg-card"
+        backdropClassName="p-0 sm:p-3 md:p-4"
+        className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col overflow-hidden rounded-none p-0 bg-card sm:h-[92vh] sm:max-h-[92vh] sm:w-[96vw] sm:max-w-[1400px] sm:rounded-lg"
       >
         {/* ── header (peer-surface separator → the one allowed hairline) ── */}
-        <div className="flex flex-shrink-0 items-center gap-md border-b border-border/60 px-md py-sm">
-          {/* close */}
+        <div className="flex flex-shrink-0 flex-wrap items-start gap-sm border-b border-border/60 px-sm py-sm sm:items-center sm:gap-md sm:px-md">
+          {/* close — top-right on mobile, far-right of the row on desktop */}
           <button
             type="button"
             aria-label="Close"
             onClick={() => onOpenChange(false)}
-            className="grid h-8 w-8 flex-shrink-0 cursor-pointer place-items-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground"
+            className="order-2 ml-auto grid h-8 w-8 flex-shrink-0 cursor-pointer place-items-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground sm:order-3 sm:ml-0"
           >
             <X className="h-4 w-4" />
           </button>
 
           {/* title + identity */}
-          <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="order-1 flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="text-base font-extrabold tracking-tight text-foreground">
                 Backtest results
@@ -164,9 +165,11 @@ export function BacktestResultsFullModal({
             </div>
           </div>
 
-          {/* right rail: tabs + share */}
-          <div className="ml-auto flex flex-shrink-0 items-center gap-md">
-            <TabBar active={active} onChange={setActive} />
+          {/* right rail: tabs + share (full-width below the title on mobile) */}
+          <div className="order-3 ml-auto flex w-full flex-shrink-0 items-center gap-md sm:order-2 sm:w-auto">
+            <div className="min-w-0 flex-1 overflow-x-auto sm:flex-none">
+              <TabBar active={active} onChange={setActive} />
+            </div>
             {/*
               Share placeholder: the fresh in-memory VM has no persisted
               backtest id / owner check yet, so the live ShareBacktestButton
@@ -183,6 +186,7 @@ export function BacktestResultsFullModal({
               size="sm"
               disabled
               title="Share (available after the result is saved)"
+              className="hidden sm:inline-flex"
             >
               <Share2 className="mr-1.5 h-3.5 w-3.5" />
               Share
@@ -191,7 +195,7 @@ export function BacktestResultsFullModal({
         </div>
 
         {/* ── body ── */}
-        <div className="min-h-0 flex-1 overflow-auto p-md">
+        <div className="min-h-0 flex-1 overflow-auto p-sm sm:p-md">
           {active === 'Overview' && <RedesignOverviewTab vm={vm} />}
           {active === 'Deals' && <RedesignDealsTab vm={vm} />}
           {active === 'Stats' && <BacktestStatsTab backtest={vm.raw} />}

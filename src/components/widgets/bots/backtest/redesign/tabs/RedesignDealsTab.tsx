@@ -384,9 +384,9 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
     deal.out === 'win' ? 'up' : deal.out === 'loss' ? 'down' : 'neutral';
 
   return (
-    <div className="flex h-full gap-3.5">
-      {/* ── left rail ───────────────────────────────────────────────────── */}
-      <Inset className="flex w-[296px] shrink-0 flex-col overflow-hidden">
+    <div className="flex flex-col gap-3.5 lg:h-full lg:flex-row">
+      {/* ── left rail (full-width above the inspector on mobile) ────────── */}
+      <Inset className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden lg:max-h-none lg:w-[296px]">
         <div className="flex items-center justify-between border-b border-border/60 px-3.5 py-3">
           <span className="text-sm font-extrabold text-foreground">
             Deals{' '}
@@ -464,7 +464,7 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
             only update its lines / markers / timeframe (symbol + interval are
             constant for the whole run). */}
         <Inset className="px-3 pb-1 pt-2.5">
-          <div className="h-[348px] w-full overflow-hidden rounded-lg">
+          <div className="h-[520px] w-full overflow-hidden rounded-lg sm:h-[320px] lg:h-[348px]">
             <TradingViewChart
               ref={chartRef}
               widgetId="backtest-deal-chart"
@@ -483,8 +483,8 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
           </div>
         </Inset>
 
-        {/* detail + execution + ladder — three equal-height columns */}
-        <div className="flex min-h-0 flex-1 gap-3.5">
+        {/* detail + execution + ladder — stacked on mobile, 3 columns ≥md */}
+        <div className="flex min-h-0 flex-1 flex-col gap-3.5 md:flex-row">
           {/* col 1 — P&L + prices */}
           <Inset className="min-w-0 flex-1 p-3.5">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
