@@ -9,16 +9,22 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 interface LocalUserSettings {
   // Invoice settings
   invoiceAddress: string;
+  // UUID of the exchange marked as default — auto-selected when creating a
+  // new bot (any type). Empty string means "no default set".
+  defaultExchangeUuid: string;
 }
 
 interface LocalUserSettingsStore {
   settings: LocalUserSettings;
   setInvoiceAddress: (address: string) => void;
+  /** Set (or, when passed '', clear) the default exchange. */
+  setDefaultExchangeUuid: (uuid: string) => void;
   resetSettings: () => void;
 }
 
 const defaultSettings: LocalUserSettings = {
   invoiceAddress: '',
+  defaultExchangeUuid: '',
 };
 
 export const useLocalUserSettingsStore = create<LocalUserSettingsStore>()(
@@ -31,6 +37,16 @@ export const useLocalUserSettingsStore = create<LocalUserSettingsStore>()(
           settings: {
             ...state.settings,
             invoiceAddress: address,
+          },
+        })),
+
+      setDefaultExchangeUuid: (uuid: string) =>
+        set((state) => ({
+          settings: {
+            ...state.settings,
+            // Toggle off if the same exchange is starred again.
+            defaultExchangeUuid:
+              state.settings.defaultExchangeUuid === uuid ? '' : uuid,
           },
         })),
 

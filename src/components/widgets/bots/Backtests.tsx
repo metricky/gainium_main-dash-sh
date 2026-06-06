@@ -1,9 +1,5 @@
-import {
-  BacktestResultsFullModal,
-  buildBacktestViewModel,
-  type BacktestViewModel,
-} from '@/components/widgets/bots/backtest/redesign';
-import type { DCABacktestingResult, DCABotSettings } from '@/types';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
+import type { DCABotSettings } from '@/types';
 import { type ColumnDef } from '@tanstack/react-table';
 import { BarChart3, Download, MoreVertical, Trash2 } from 'lucide-react';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -15,9 +11,12 @@ import WidgetWrapper, { type WidgetMenuActions } from '../WidgetWrapper';
 import {
   useDeleteBacktests,
   useExportBacktests,
+  useLoadBacktestDetails,
 } from '../../../hooks/useBacktestDataManagement';
 import { useBacktests, type BacktestData } from '../../../hooks/useBacktests';
+import { logger } from '../../../lib/loggerInstance';
 import { toast } from '../../../lib/toast';
+import { getById as getLocalBacktestById } from '../../../utils/backtest/db';
 import { Button } from '../../ui/button';
 import {
   DropdownMenu,
@@ -107,7 +106,7 @@ const Backtests: React.FC<BacktestsProps> = ({
   // Redesigned full-screen results modal — opened from a row/card click.
   // We no longer render results inline in the widget (the old
   // `BacktestDetailDrawer`); a click now opens the shared modal.
-  const [resultsVm, setResultsVm] = useState<BacktestViewModel | null>(null);
+  const [resultsRow, setResultsRow] = useState<BacktestData | null>(null);
   const [resultsOpen, setResultsOpen] = useState(false);
 
   // Lookup from display-row id (`_id`) back to the raw `BacktestData`, which
@@ -121,25 +120,39 @@ const Backtests: React.FC<BacktestsProps> = ({
     return map;
   }, [rawBacktests]);
 
-  // Build the results ViewModel from a raw row and open the modal. Saved rows
-  // may have `deals`/`portfolio` stripped (short history) — the modal degrades
-  // gracefully (Overview/Stats/Analysis render from financial/numerical/ratios;
-  // the Deals tab shows its empty state). The raw row is a superset of
-  // `DCABacktestingResult`'s engine fields, so a narrow cast is correct here.
-  const openResults = useCallback((raw: BacktestData) => {
-    const vm = buildBacktestViewModel(
-      raw as unknown as DCABacktestingResult,
-      (raw.settings ?? {}) as unknown as DCABotSettings,
-      {
-        symbol: raw.symbol,
-        exchange: raw.exchange,
-        baseAsset: raw.baseAsset,
-        quoteAsset: raw.quoteAsset,
+  const loadBacktestDetailsMutation = useLoadBacktestDetails();
+
+  // Open the bot-type-aware modal from a raw row. The list rows from the
+  // server are SHORT (no deals/transaction/values), so we hydrate the full
+  // result from the local IndexedDB cache — where dca/combo/grid runs are all
+  // saved — before the per-deal / transactions views can render. We open
+  // immediately with the short row (header is valid) and swap in the full
+  // result when it resolves.
+  const openResults = useCallback(
+    async (raw: BacktestData) => {
+      setResultsRow(raw);
+      setResultsOpen(true);
+      if (!raw._id) return;
+      try {
+        let store = await getLocalBacktestById(raw._id, true);
+        if (!store?.data) {
+          // Not cached yet — fetch + persist locally, then re-read.
+          await loadBacktestDetailsMutation.mutateAsync({ id: raw._id });
+          store = await getLocalBacktestById(raw._id, true);
+        }
+        if (store?.data) {
+          const full = JSON.parse(store.data) as BacktestData;
+          // Only apply if the user hasn't navigated to a different row.
+          setResultsRow((cur) =>
+            cur && cur._id === raw._id ? { ...raw, ...full } : cur,
+          );
+        }
+      } catch (e) {
+        logger.warn('[Backtests] could not load full backtest details', e);
       }
-    );
-    setResultsVm(vm);
-    setResultsOpen(true);
-  }, []);
+    },
+    [loadBacktestDetailsMutation],
+  );
 
   // Transform backend data to UI format
   const transformBacktestData = (data: BacktestData): Backtest => {
@@ -229,7 +242,7 @@ const Backtests: React.FC<BacktestsProps> = ({
         className="w-full text-left"
         disabled={!raw}
         onClick={() => {
-          if (raw) openResults(raw);
+          if (raw) void openResults(raw);
         }}
       >
         <Card className="cursor-pointer hover:shadow-md transition-shadow">
@@ -579,7 +592,7 @@ const Backtests: React.FC<BacktestsProps> = ({
           // old inline `BacktestDetailDrawer`).
           onRowClick={(rowData: Backtest) => {
             const raw = rawById.get(rowData.id);
-            if (raw) openResults(raw);
+            if (raw) void openResults(raw);
           }}
           // Bulk actions for exporting / deleting selected backtests
           bulkActions={[
@@ -647,12 +660,24 @@ const Backtests: React.FC<BacktestsProps> = ({
           }}
           cardViewGap={16}
         />
-        {resultsVm && (
+        {resultsRow && (
           <BacktestResultsFullModal
             open={resultsOpen}
             onOpenChange={setResultsOpen}
-            vm={resultsVm}
-            botName={resultsVm.pair || undefined}
+            result={resultsRow}
+            strategy={resultsRow.settings?.strategy}
+            settings={resultsRow.settings as unknown as DCABotSettings}
+            meta={{
+              symbol: resultsRow.symbol,
+              exchange: resultsRow.exchange,
+              baseAsset: resultsRow.baseAsset,
+              quoteAsset: resultsRow.quoteAsset,
+            }}
+            botName={
+              (resultsRow.settings?.name as string | undefined) ||
+              resultsRow.symbol ||
+              undefined
+            }
           />
         )}
       </>

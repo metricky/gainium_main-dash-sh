@@ -31,12 +31,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
-import {
-  BacktestAnalysisTab,
-  BacktestDealsTab,
-  BacktestOverviewTab,
-  BacktestStatsTab,
-} from '@/components/widgets/bots/backtest';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import CoinPair from '@/components/widgets/shared/CoinPair';
 import { TradingTerminalUtilsProvider } from '@/context/TradingTerminalUtilsContext';
 import { useBotPageLoading } from '@/hooks/bots/base/useBotPageLoading';
@@ -62,6 +57,7 @@ import {
   BotTypesEnum,
   type BotChartData,
   type DCABacktestingResultHistory,
+  type DCABotSettings,
 } from '@/types';
 import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
 import { removePaperPrefix } from '@/utils/exchangeUtils';
@@ -87,6 +83,9 @@ const ComboBotEditWidget = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<DCABacktestingResultHistory | null>(null);
   const [activeInsightsTab, setActiveInsightsTab] = useState('history');
+  // Clicking a backtest row opens the redesigned full-screen results modal
+  // instead of rendering Overview/Deals/Analysis/Stats inline in the widget.
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
     null
   );
@@ -161,7 +160,7 @@ const ComboBotEditWidget = () => {
     const found = comboBacktests.find((b) => b._id === pendingBacktestId);
     if (found) {
       setSelectedBacktest(found);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
       setPendingBacktestId(null);
       logger.info('[ComboBotEdit] Auto-selected completed backtest', {
         id: pendingBacktestId,
@@ -174,7 +173,7 @@ const ComboBotEditWidget = () => {
       backtestId,
     });
     setPendingBacktestId(backtestId);
-    setActiveInsightsTab('backtests');
+    setActiveInsightsTab('history');
   }, []);
 
   // Handle export single or multiple backtests
@@ -279,7 +278,7 @@ const ComboBotEditWidget = () => {
         );
       }
       setSelectedBacktest(backtest);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
     },
     [loadBacktestDetailsMutation]
   );
@@ -801,8 +800,9 @@ const ComboBotEditWidget = () => {
   const handleBacktestSelect = useCallback(
     (backtest: DCABacktestingResultHistory) => {
       setSelectedBacktest(backtest);
-      // Open the Overview subtab when a backtest is selected
-      setActiveInsightsTab('bt-overview');
+      // Open the full-screen results modal (deals hydrate below; the modal's
+      // view model rebuilds reactively once they arrive).
+      setResultsModalOpen(true);
 
       if ((backtest.deals?.length ?? 0) === 0) {
         void loadBacktestDetailsMutation
@@ -942,38 +942,8 @@ const ComboBotEditWidget = () => {
             defaultPinnedColumns={{ left: [], right: ['actions'] }}
           />
         ),
-        // Subtabs for History - Overview, Deals, Analysis, Stats (appear when a backtest is selected)
-        subtabs: selectedBacktest
-          ? [
-              {
-                key: 'bt-overview',
-                title: 'Overview',
-                bodyClassName: 'p-0',
-                content: <BacktestOverviewTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-deals',
-                title: 'Deals',
-                bodyClassName: 'p-0',
-                content: <BacktestDealsTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-analysis',
-                title: 'Analysis',
-                enabled:
-                  (selectedBacktest.deals?.length ?? 0) > 0 ||
-                  (selectedBacktest.periodicStats?.length ?? 0) > 0,
-                bodyClassName: 'p-0',
-                content: <BacktestAnalysisTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-stats',
-                title: 'Stats',
-                bodyClassName: 'p-0',
-                content: <BacktestStatsTab backtest={selectedBacktest} />,
-              },
-            ]
-          : undefined,
+        // Results (Overview/Deals/Analysis/Stats) now open in the
+        // full-screen modal on row click — no inline subtabs in the widget.
       },
     ];
 
@@ -985,7 +955,6 @@ const ComboBotEditWidget = () => {
     comboBacktestsError,
     backtestColumns,
     handleBacktestSelect,
-    selectedBacktest,
     handleExportBacktests,
     handleDeleteBacktests,
   ]);
@@ -1131,6 +1100,24 @@ const ComboBotEditWidget = () => {
         cancelText="Cancel"
         variant="destructive"
       />
+
+      {/* Full-screen backtest results modal (opened from a table row click) */}
+      {selectedBacktest && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={selectedBacktest}
+          strategy="Combo"
+          settings={(selectedBacktest.settings ?? {}) as DCABotSettings}
+          meta={{
+            symbol: selectedBacktest.symbol,
+            exchange: selectedBacktest.exchange,
+            baseAsset: selectedBacktest.baseAsset,
+            quoteAsset: selectedBacktest.quoteAsset,
+          }}
+          botName={selectedBacktest.settings?.name}
+        />
+      )}
     </MainLayout>
   );
 };

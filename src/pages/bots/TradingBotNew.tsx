@@ -51,10 +51,7 @@ import {
   BacktestStatsTab,
   ShareBacktestButton,
 } from '@/components/widgets/bots/backtest';
-import {
-  BacktestResultsFullModal,
-  buildBacktestViewModel,
-} from '@/components/widgets/bots/backtest/redesign';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import CoinPair from '@/components/widgets/shared/CoinPair';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
@@ -1049,21 +1046,6 @@ const TradingBotNewWidget = () => {
     }
   }, [dcaBacktests, selectedBacktest]);
 
-  // View model for the full-screen results modal. Rebuilds whenever the
-  // selected backtest changes — including when its deals hydrate above.
-  const resultsVm = useMemo(() => {
-    if (!selectedBacktest) return null;
-    return buildBacktestViewModel(
-      selectedBacktest,
-      (selectedBacktest.settings ?? {}) as DCABotSettings,
-      {
-        symbol: selectedBacktest.symbol,
-        exchange: selectedBacktest.exchange,
-        baseAsset: selectedBacktest.baseAsset,
-        quoteAsset: selectedBacktest.quoteAsset,
-      }
-    );
-  }, [selectedBacktest]);
 
   const [chartMenu, handleChartMenuChange] = usePanelMenuBridge();
   const [chartData, setChartData] = useState<BotChartData>({});
@@ -1484,12 +1466,20 @@ const TradingBotNewWidget = () => {
       />
 
       {/* Full-screen backtest results modal (opened from a table row click) */}
-      {resultsVm && (
+      {selectedBacktest && (
         <BacktestResultsFullModal
           open={resultsModalOpen}
           onOpenChange={setResultsModalOpen}
-          vm={resultsVm}
-          botName={selectedBacktest?.settings?.name}
+          result={selectedBacktest}
+          strategy="DCA"
+          settings={(selectedBacktest.settings ?? {}) as DCABotSettings}
+          meta={{
+            symbol: selectedBacktest.symbol,
+            exchange: selectedBacktest.exchange,
+            baseAsset: selectedBacktest.baseAsset,
+            quoteAsset: selectedBacktest.quoteAsset,
+          }}
+          botName={selectedBacktest.settings?.name}
         />
       )}
     </MainLayout>

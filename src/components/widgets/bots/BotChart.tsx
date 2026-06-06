@@ -307,6 +307,14 @@ const BotChart: React.FC<BotChartProps> = ({
     'symbol',
     initialChartSymbol
   );
+  // Tracks the last symbol we derived from the form props. The prop
+  // effect below must react only to genuine form changes — not to
+  // TradingView's own re-resolution of the symbol we already applied
+  // (e.g. the form's `@hyperliquid` becomes `@hyperliquidLinear` once
+  // TV resolves the pair). Without this, the prop effect and TV's
+  // `onSymbolChanged` listener overwrite each other every tick and lock
+  // the main thread.
+  const lastPropSymbolRef = useRef<string>(initialChartSymbol);
   const [interval, setInterval] = usePersistedState(
     'interval',
     defaultInterval
@@ -405,9 +413,17 @@ const BotChart: React.FC<BotChartProps> = ({
     }
 
     const nextSymbol = buildChartSymbol(incomingSymbol, fallbackExchange);
-    // Equivalent (TV-normalized) forms must not retrigger setSymbol —
-    // otherwise BotChart's prop-driven update and TV's `onSymbolChanged`
-    // listener bounce the symbol between cases and lock the main thread.
+    // Only react when the form actually produced a different symbol.
+    // This effect re-runs whenever `chartSymbol` changes — including when
+    // TV reports its own resolved form (`@hyperliquid` → `@hyperliquidLinear`)
+    // back through `handleTradingViewSymbolChange`. Re-asserting the stale
+    // form value here would bounce the symbol between the two exchange
+    // forms forever (chartSymbolsEquivalent collapses case/`:`/`_` but not
+    // `hyperliquid` vs `hyperliquidLinear`), locking the main thread.
+    if (chartSymbolsEquivalent(nextSymbol, lastPropSymbolRef.current)) {
+      return;
+    }
+    lastPropSymbolRef.current = nextSymbol;
     if (!chartSymbolsEquivalent(nextSymbol, chartSymbol)) {
       setChartSymbol(nextSymbol);
     }

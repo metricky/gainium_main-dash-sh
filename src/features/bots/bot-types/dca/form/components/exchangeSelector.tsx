@@ -11,6 +11,9 @@ import type { BotFormMode, BotFormUpdateValue, Fields } from '@/features/bots';
 import type { ExchangeInUser } from '@/types';
 import type { BotFormData } from '@/types/bots';
 import { getProviderIcon, isFuturesExchange } from '@/utils/exchangeUtils';
+import { useLocalUserSettingsStore } from '@/stores/localUserSettingsStore';
+import { cn } from '@/lib/utils';
+import { Star } from 'lucide-react';
 import { useCallback, useEffect, useMemo } from 'react';
 
 type ExchangeSelectorProps = {
@@ -43,6 +46,12 @@ const ExchangeSelector = ({
   mode,
   disableFutures = false,
 }: ExchangeSelectorProps) => {
+  const defaultExchangeUuid = useLocalUserSettingsStore(
+    (s) => s.settings.defaultExchangeUuid
+  );
+  const setDefaultExchangeUuid = useLocalUserSettingsStore(
+    (s) => s.setDefaultExchangeUuid
+  );
   const exchangeDisplayName = useMemo(
     () =>
       currentExchange?.name || currentExchange?.provider || 'Unknown exchange',
@@ -76,6 +85,17 @@ const ExchangeSelector = ({
     if (!exchangesData?.length) {
       return;
     }
+    // Honor the user's chosen default exchange (the starred one) when it
+    // still exists, regardless of recency.
+    if (defaultExchangeUuid) {
+      const preferred = exchangesData.find(
+        (exchange) => exchange.uuid === defaultExchangeUuid
+      );
+      if (preferred) {
+        updateFormData('exchangeUUID', preferred.uuid);
+        return;
+      }
+    }
     // No (or stale) persisted exchange — pick the most-recently-active one
     // by `lastUpdated`. Falls back to the last entry in the list (most
     // exchange APIs append new accounts), then to the first as a last
@@ -100,6 +120,7 @@ const ExchangeSelector = ({
     formData.exchangeUUID,
     exchangesData,
     updateFormData,
+    defaultExchangeUuid,
   ]);
 
   return (
@@ -158,6 +179,7 @@ const ExchangeSelector = ({
                 const providerIcon = getProviderIcon(exchange.provider ?? '');
                 const optionDisabled =
                   disableFutures && isFuturesExchange(exchange.provider ?? '');
+                const isDefault = exchange.uuid === defaultExchangeUuid;
 
                 return (
                   <SelectItem
@@ -176,11 +198,51 @@ const ExchangeSelector = ({
                           {exchange.name || exchange.provider}
                         </span>
                       </div>
-                      {balanceLabel && (
-                        <span className="whitespace-nowrap text-xs text-muted-foreground">
-                          {balanceLabel}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-xs">
+                        {balanceLabel && (
+                          <span className="whitespace-nowrap text-xs text-muted-foreground">
+                            {balanceLabel}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          aria-label={
+                            isDefault
+                              ? 'Remove as default exchange'
+                              : 'Set as default exchange'
+                          }
+                          aria-pressed={isDefault}
+                          title={
+                            isDefault
+                              ? 'Default exchange — new bots start here'
+                              : 'Set as default exchange'
+                          }
+                          // Toggle the default without selecting the item or
+                          // closing the dropdown (Radix selects on pointer-up).
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onPointerUp={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            setDefaultExchangeUuid(exchange.uuid);
+                          }}
+                          className={cn(
+                            'shrink-0 rounded-md p-1 transition-all hover:bg-foreground/10',
+                            isDefault
+                              ? 'opacity-100'
+                              : 'opacity-40 hover:opacity-100'
+                          )}
+                        >
+                          <Star
+                            className={cn(
+                              'size-4',
+                              isDefault
+                                ? 'fill-amber-400 text-amber-400'
+                                : 'text-muted-foreground'
+                            )}
+                          />
+                        </button>
+                      </div>
                     </div>
                   </SelectItem>
                 );

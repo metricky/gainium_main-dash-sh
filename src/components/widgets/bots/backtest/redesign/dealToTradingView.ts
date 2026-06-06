@@ -31,6 +31,7 @@ import {
   type TransactionChart,
 } from '@/types';
 
+
 /** ~20 bars of padding around the deal window, in seconds, per interval. */
 const PAD_BARS = 20;
 
@@ -110,8 +111,10 @@ function transactionsFromDeal(
     const price = px(o.price);
     if (price == null || o.filledTime == null) continue;
     out.push({
+      // Pass the raw side through (legacy parity) — the chart lowercases it
+      // and treats buy/long as a buy icon, sell/short as a sell icon.
       id: o.id,
-      side: String(o.side).toUpperCase() === 'BUY' ? 'buy' : 'sell',
+      side: String(o.side),
       time: o.filledTime,
       price,
     });
@@ -134,35 +137,310 @@ function transactionsFromDeal(
   return out;
 }
 
+/** A minimal OHLC bar — only the extremes are needed to detect a price cross. */
+export interface ClipCandle {
+  time: number; // ms
+  high: number;
+  low: number;
+}
+
+/** True when `side` denotes a buy / long order. */
+function isBuySide(side: unknown): boolean {
+  const s = String(side).toUpperCase();
+  return s.includes('BUY') || s.includes('LONG');
+}
+
+/** Build the minigrid → genuine `closeTime` map (open minigrids have none). */
+function minigridCloseMap(rawDeal: PreparedDeal): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const mg of rawDeal.mingrids ?? []) {
+    if (mg.id && mg.closeTime != null && Number.isFinite(Number(mg.closeTime))) {
+      m.set(mg.id, Number(mg.closeTime));
+    }
+  }
+  return m;
+}
+
 /**
- * Build the horizontal line SEGMENTS for the deal from `ordersHistory`, the
- * legacy way. Each entry becomes a `{ price, side, startTime, endTime }`
- * segment: green for BUY levels, red for SELL (take-profit) levels, grey for
- * the synthetic averaged-entry line (`avgLine`). `startTime` is when the level
- * was placed; `endTime` is its fill/cancel time, falling back to the deal's
- * effective end so an order still open at deal close runs to the edge. Because
- * the backtester re-places the TP (and re-emits the avg line) after every DCA
- * fill, these segments naturally "step".
+ * First candle STRICTLY after `afterMs` whose range reaches `price` for the
+ * given side (BUY fills when `low <= price`, SELL when `high >= price`), i.e.
+ * when a resting order at that level would execute. Null if price never gets
+ * there. `bars` must be ascending by time.
  */
-function orderDrawingsFromDeal(
-  rawDeal: PreparedDeal,
+function firstCrossTime(
+  bars: ClipCandle[],
+  afterMs: number,
+  buy: boolean,
+  price: number,
+): number | null {
+  let lo = 0;
+  let hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (bars[mid].time <= afterMs) lo = mid + 1;
+    else hi = mid;
+  }
+  for (let i = lo; i < bars.length; i++) {
+    const c = bars[i];
+    if (buy ? c.low <= price : c.high >= price) return c.time;
+  }
+  return null;
+}
+
+/** Merge overlapping/touching spans within one (side, price) group. */
+function mergeSpans(
+  side: string,
+  price: number,
+  spans: Array<[number, number]>,
+): ChartOrderDrawing[] {
+  spans.sort((a, b) => a[0] - b[0]);
+  const out: ChartOrderDrawing[] = [];
+  let cur: [number, number] | null = null;
+  for (const s of spans) {
+    if (cur && s[0] <= cur[1]) {
+      if (s[1] > cur[1]) cur[1] = s[1];
+    } else {
+      if (cur) out.push({ price, side, startTime: cur[0], endTime: cur[1] });
+      cur = [s[0], s[1]];
+    }
+  }
+  if (cur) out.push({ price, side, startTime: cur[0], endTime: cur[1] });
+  return out;
+}
+
+/**
+ * Reconstruct each resting order's life from the PRICE PATH (the chart's
+ * candles) — the robust source of truth.
+ *
+ * `ordersHistory[].filledTime` is NOT a reliable "this order executed" signal:
+ * the backtester also stamps it on minigrid regrids, grid recomputes and SL
+ * moves, none of which take the order off a real exchange. So we ignore it for
+ * the line END and instead compute, per placement:
+ *
+ *   end = the first candle after `startTime` that reaches the order's price
+ *         (BUY: low ≤ price, SELL: high ≥ price) — when it would fill — capped
+ *         by its minigrid `closeTime` (TP → leftover orders cancelled) or the
+ *         deal end. A level the price never reaches rests to the cap.
+ *
+ * Per-placement segments are unioned per (minigridId, side, price): a grid
+ * level that re-arms and fills repeatedly tiles into one continuous line, a
+ * one-shot order ends at its fill, and a sell far above a crashed market keeps
+ * resting. This fixes both the "a new minigrid deletes earlier lines" and the
+ * "a buy line continues after it filled" artifacts.
+ */
+function linesByPriceCross(
+  history: PreparedDeal['ordersHistory'],
+  candles: ClipCandle[],
+  minigridClose: Map<string, number>,
   fallbackEndMs: number,
 ): ChartOrderDrawing[] {
-  const history = rawDeal.ordersHistory ?? [];
+  const last = candles[candles.length - 1];
+  const bars =
+    candles[0] && last && candles[0].time <= last.time
+      ? candles
+      : [...candles].sort((a, b) => a.time - b.time);
+
+  const groups = new Map<
+    string,
+    { side: string; price: number; spans: Array<[number, number]> }
+  >();
+
+  for (const o of history) {
+    const price = px(o.price);
+    if (price == null) continue;
+    const start = o.startTime ?? fallbackEndMs;
+    const buy = isBuySide(o.side);
+
+    const cap =
+      o.minigridId != null && minigridClose.has(o.minigridId)
+        ? (minigridClose.get(o.minigridId) as number)
+        : fallbackEndMs;
+
+    const cross = firstCrossTime(bars, start, buy, price);
+    const end = cross != null ? Math.min(cross, cap) : cap;
+    if (!(end > start)) continue;
+
+    const key = `${o.minigridId ?? ''}|${buy ? 'B' : 'S'}|${price.toFixed(2)}`;
+    const g = groups.get(key);
+    if (g) g.spans.push([start, end]);
+    else
+      groups.set(key, { side: String(o.side), price, spans: [[start, end]] });
+  }
+
+  const out: ChartOrderDrawing[] = [];
+  for (const { side, price, spans } of groups.values()) {
+    out.push(...mergeSpans(side, price, spans));
+  }
+  return out;
+}
+
+/**
+ * Fallback used only before the chart's candles are available: collapse each
+ * (minigridId, side, price) level and end it at its LAST genuine fill (an id in
+ * `filledOrders`), else its minigrid `closeTime`, else the deal end. Less
+ * precise than {@link linesByPriceCross} but renders something sensible
+ * immediately; it is replaced as soon as candles load.
+ */
+function linesByFilledHeuristic(
+  history: PreparedDeal['ordersHistory'],
+  filledOrders: PreparedDeal['filledOrders'],
+  minigridClose: Map<string, number>,
+  fallbackEndMs: number,
+): ChartOrderDrawing[] {
+  const realFillIds = new Set<string>();
+  for (const o of filledOrders ?? []) {
+    if (o.id != null) realFillIds.add(o.id);
+  }
+
+  interface Level {
+    side: string;
+    price: number;
+    start: number;
+    lastRealFill: number | null;
+    minigridIds: Set<string>;
+    hasLooseOrder: boolean;
+  }
+  const levels = new Map<string, Level>();
+
+  for (const o of history) {
+    const price = px(o.price);
+    if (price == null) continue;
+    const start = o.startTime ?? fallbackEndMs;
+    const key = `${o.minigridId ?? ''}|${o.side}|${price.toFixed(2)}`;
+    let lvl = levels.get(key);
+    if (!lvl) {
+      lvl = {
+        side: String(o.side),
+        price,
+        start,
+        lastRealFill: null,
+        minigridIds: new Set(),
+        hasLooseOrder: false,
+      };
+      levels.set(key, lvl);
+    }
+    if (start < lvl.start) lvl.start = start;
+    if (o.id != null && realFillIds.has(o.id) && o.filledTime != null) {
+      lvl.lastRealFill = Math.max(lvl.lastRealFill ?? 0, o.filledTime);
+    }
+    if (o.minigridId != null) lvl.minigridIds.add(o.minigridId);
+    else lvl.hasLooseOrder = true;
+  }
+
+  const out: ChartOrderDrawing[] = [];
+  for (const lvl of levels.values()) {
+    let end: number;
+    if (lvl.lastRealFill != null) {
+      end = lvl.lastRealFill;
+    } else {
+      const allClosed =
+        !lvl.hasLooseOrder &&
+        lvl.minigridIds.size > 0 &&
+        [...lvl.minigridIds].every((m) => minigridClose.has(m));
+      end = allClosed
+        ? Math.max(
+            ...[...lvl.minigridIds].map((m) => minigridClose.get(m) as number),
+          )
+        : fallbackEndMs;
+    }
+    if (end > lvl.start) {
+      out.push({
+        price: lvl.price,
+        side: lvl.side,
+        startTime: lvl.start,
+        endTime: end,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Plain DCA lines: one segment per `ordersHistory` entry, `[startTime,
+ * filledTime ?? dealEnd]`. A DCA deal has no minigrids, and its `filledTime` is
+ * meaningful for EVERY entry type — a real fill for a safety buy (so the line
+ * ends where it filled), the re-placement time for the single take-profit (so
+ * the chained TP entries render as ONE stepping line), and the step time for
+ * the averaged-entry line. So the original per-entry mapping is exactly right
+ * here; the combo-only `filledTime` ambiguity that needs price-cross
+ * reconstruction does not apply.
+ */
+function linesByPerEntry(
+  history: PreparedDeal['ordersHistory'],
+  fallbackEndMs: number,
+): ChartOrderDrawing[] {
   const out: ChartOrderDrawing[] = [];
   for (const o of history) {
     const price = px(o.price);
     if (price == null) continue;
-    const startTime = o.startTime ?? fallbackEndMs;
-    const endTime = o.filledTime ?? fallbackEndMs;
-    out.push({
-      price,
-      side: o.avgLine ? 'GREY' : String(o.side),
-      startTime,
-      endTime,
-    });
+    const start = o.startTime ?? fallbackEndMs;
+    const end = o.filledTime ?? fallbackEndMs;
+    if (end > start) {
+      out.push({ price, side: String(o.side), startTime: start, endTime: end });
+    }
   }
   return out;
+}
+
+/**
+ * Build the horizontal order-book lines for the deal from `ordersHistory`.
+ *
+ * The two bot families need different treatment because `filledTime` means
+ * different things:
+ *   - **DCA** (no minigrids): `filledTime` is reliable for every entry, so we
+ *     map one segment per entry ({@link linesByPerEntry}) — safety buys end at
+ *     their fill, the single TP steps, the average steps.
+ *   - **Combo** (minigrids): the backtester also stamps `filledTime` on grid
+ *     regrids, so we reconstruct each line's true exit from the price path
+ *     ({@link linesByPriceCross}) — or, before candles load, from a filled-order
+ *     heuristic ({@link linesByFilledHeuristic}).
+ *
+ * The averaged-entry line (`avgLine`) keeps its native per-step grey segments
+ * in all cases.
+ */
+function orderDrawingsFromDeal(
+  rawDeal: PreparedDeal,
+  fallbackEndMs: number,
+  candles?: ClipCandle[],
+): ChartOrderDrawing[] {
+  const history = rawDeal.ordersHistory ?? [];
+  const isCombo = (rawDeal.mingrids?.length ?? 0) > 0;
+
+  // Average-entry line: native grey per-step segments.
+  const avgSegments: ChartOrderDrawing[] = [];
+  for (const o of history) {
+    if (!o.avgLine) continue;
+    const price = px(o.price);
+    if (price == null) continue;
+    avgSegments.push({
+      price,
+      side: 'GREY',
+      startTime: o.startTime ?? fallbackEndMs,
+      endTime: o.filledTime ?? fallbackEndMs,
+    });
+  }
+
+  const concrete = history.filter((o) => !o.avgLine);
+  let out: ChartOrderDrawing[];
+  if (!isCombo) {
+    out = linesByPerEntry(concrete, fallbackEndMs);
+  } else if (candles && candles.length > 0) {
+    out = linesByPriceCross(
+      concrete,
+      candles,
+      minigridCloseMap(rawDeal),
+      fallbackEndMs,
+    );
+  } else {
+    out = linesByFilledHeuristic(
+      concrete,
+      rawDeal.filledOrders ?? [],
+      minigridCloseMap(rawDeal),
+      fallbackEndMs,
+    );
+  }
+
+  return [...out, ...avgSegments];
 }
 
 /** Shape returned by {@link dealToTradingView}. */
@@ -181,12 +459,15 @@ export interface DealTradingViewProps {
  * (constant across deals), already mapped via {@link intervalToResolution}.
  * `fallbackEndMs` is the deal's effective end (its close time, or the
  * backtest's last data time for a still-open deal) — used as the end of any
- * order segment that never filled.
+ * order segment that never filled. `candles` (the chart's bars for this
+ * symbol/interval) let order lines be clipped at the real price cross; omit
+ * them and the lines fall back to the filled-order heuristic.
  */
 export function dealToTradingView(
   rawDeal: PreparedDeal,
   intervalResolution: string,
   fallbackEndMs: number,
+  candles?: ClipCandle[],
 ): DealTradingViewProps {
   const sym = rawDeal.symbol;
   const symbol = symbolString(sym);
@@ -208,6 +489,10 @@ export function dealToTradingView(
     interval: intervalResolution,
     initialTimeframe,
     transactions: transactionsFromDeal(rawDeal),
-    ordersForDrawing: orderDrawingsFromDeal(rawDeal, endMs || fallbackEndMs),
+    ordersForDrawing: orderDrawingsFromDeal(
+      rawDeal,
+      endMs || fallbackEndMs,
+      candles,
+    ),
   };
 }

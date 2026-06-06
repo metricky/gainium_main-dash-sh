@@ -1,8 +1,4 @@
-import {
-  BacktestResultsFullModal,
-  buildBacktestViewModel,
-  type BacktestViewModel,
-} from '@/components/widgets/bots/backtest/redesign';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import { BACKTEST_DB_UPDATED_EVENT } from '@/constants/backtest';
 import type {
   BacktestingSettings,
@@ -108,27 +104,17 @@ const BacktestDataPage: React.FC = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<BacktestDisplayData | null>(null);
   // Redesigned full-screen results modal — opened from a row's action.
-  const [resultsVm, setResultsVm] = useState<BacktestViewModel | null>(null);
+  // The modal reads `strategy` from the row's `settings.strategy` and renders
+  // the right view (DCA / Combo / Grid) internally. Saved rows may have
+  // `deals`/`portfolio`/`transaction` stripped (short history) — the modal
+  // degrades gracefully.
+  const [resultsRow, setResultsRow] = useState<BacktestDisplayData | null>(
+    null
+  );
   const [resultsOpen, setResultsOpen] = useState(false);
 
-  // Build the results ViewModel from a saved table row and open the modal.
-  // Saved rows may have `deals`/`portfolio` stripped (short history) — the
-  // modal degrades gracefully (Overview/Stats/Analysis render from
-  // financial/numerical/ratios; the Deals tab shows its empty state). The
-  // row's shape is a superset of `DCABacktestingResult`'s engine fields, so
-  // a narrow cast is the right tool rather than inventing fields.
   const openResults = useCallback((row: BacktestDisplayData) => {
-    const vm = buildBacktestViewModel(
-      row as unknown as DCABacktestingResult,
-      (row.settings ?? {}) as unknown as DCABotSettings,
-      {
-        symbol: row.symbol,
-        exchange: row.exchange,
-        baseAsset: row.baseAsset,
-        quoteAsset: row.quoteAsset,
-      }
-    );
-    setResultsVm(vm);
+    setResultsRow(row);
     setResultsOpen(true);
   }, []);
 
@@ -1590,12 +1576,20 @@ const BacktestDataPage: React.FC = () => {
           </DetailDrawer>
 
           {/* Redesigned full-screen results modal */}
-          {resultsVm && (
+          {resultsRow && (
             <BacktestResultsFullModal
               open={resultsOpen}
               onOpenChange={setResultsOpen}
-              vm={resultsVm}
-              botName={resultsVm.pair || undefined}
+              result={resultsRow}
+              strategy={resultsRow.settings?.strategy}
+              settings={resultsRow.settings as unknown as DCABotSettings}
+              meta={{
+                symbol: resultsRow.symbol,
+                exchange: resultsRow.exchange,
+                baseAsset: resultsRow.baseAsset,
+                quoteAsset: resultsRow.quoteAsset,
+              }}
+              botName={resultsRow.displayName || resultsRow.symbol || undefined}
             />
           )}
         </WidgetContainer>

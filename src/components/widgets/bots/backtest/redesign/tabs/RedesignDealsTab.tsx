@@ -43,14 +43,20 @@ import {
 import TradingViewChart, {
   type TradingViewChartRef,
 } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
+import CoinPair from '@/components/widgets/shared/CoinPair';
+import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 import {
+  type ClipCandle,
   dealToTradingView,
   intervalToResolution,
 } from '../dealToTradingView';
 import type { BacktestViewModel, DealVM } from '../viewModel';
+import Candles from '@/utils/candles';
+import type { ExchangeIntervals } from '@/types';
+import logger from '@/lib/loggerInstance';
 
 // ── formatters (mirror the prototype's GX.fmt* helpers) ─────────────────────
 
@@ -180,11 +186,21 @@ function RailRow({ deal, active, onSelect }: RailRowProps) {
         style={{ background: outColor(deal.out) }}
       />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold text-foreground">
-          {deal.pair || '—'}
-        </span>
+        {deal.pair ? (
+          <CoinPair
+            pair={deal.pair}
+            iconSize="sm"
+            layout="horizontal"
+            textVariant="symbol"
+            className="text-sm font-semibold text-foreground"
+          />
+        ) : (
+          <span className="block truncate text-sm font-semibold text-foreground">
+            —
+          </span>
+        )}
         <span className="block text-xs tabular-nums text-muted-foreground/70">
-          {deal.filled}/{deal.maxSo} SO · {fmtDur(deal.durationH)}
+          {deal.filled}/{deal.maxSo} DCA · {fmtDur(deal.durationH)}
         </span>
       </span>
       <span className="text-right">
@@ -292,6 +308,10 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
 
   const [sel, setSel] = useState<number>(() => pickDefaultIndex(deals));
 
+  // Chart overlay visibility toggles (order lines / fill icons).
+  const [showLines, setShowLines] = useState(true);
+  const [showIcons, setShowIcons] = useState(true);
+
   // Re-seat the selection if the deal list identity changes (new run).
   useEffect(() => {
     setSel(pickDefaultIndex(deals));
@@ -346,12 +366,58 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
 
   const chartRef = useRef<TradingViewChartRef>(null);
 
+  // Candles for the whole run window (symbol + interval are constant across
+  // deals). They let `dealToTradingView` clip each order line at the real price
+  // cross — the robust way to know when a resting order actually leaves the
+  // book — instead of trusting the backtester's overloaded `filledTime`. Loaded
+  // independently (its own `Candles` instance) so it never couples to the live
+  // chart datafeed; lines fall back to the filled-order heuristic until ready.
+  const sym = rawDeal?.symbol;
+  const symKey = sym?.pair && sym.exchange ? `${sym.pair}@${sym.exchange}` : '';
+  const [candles, setCandles] = useState<ClipCandle[] | undefined>(undefined);
+  useEffect(() => {
+    if (!sym?.pair || !sym.exchange || !(vm.to > vm.from)) {
+      setCandles(undefined);
+      return;
+    }
+    const instance = new Candles(sym.exchange);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const bars = await instance.getCandles({
+          symbol: sym.pair,
+          interval: vm.raw.interval as ExchangeIntervals,
+          period: {
+            from: Math.floor(vm.from / 1000),
+            to: Math.ceil(vm.to / 1000),
+            countBack: 0,
+            firstDataRequest: true,
+          },
+          baseAsset: sym.baseAsset?.name ?? '',
+          quoteAsset: sym.quoteAsset?.name ?? '',
+        });
+        if (!cancelled) setCandles(bars);
+      } catch (err) {
+        logger.warn('[RedesignDealsTab] candle load for line clipping failed', err);
+        if (!cancelled) setCandles(undefined);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      instance.stop = true;
+    };
+    // symKey collapses pair+exchange; interval/window complete the cache key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symKey, vm.raw.interval, vm.from, vm.to]);
+
+  // Per-deal chart props. `candles` (when loaded) clip order lines at the real
+  // price cross; until then the filled-order heuristic renders.
   const chartProps = useMemo(
     () =>
       rawDeal
-        ? dealToTradingView(rawDeal, intervalResolution, vm.to)
+        ? dealToTradingView(rawDeal, intervalResolution, vm.to, candles)
         : null,
-    [rawDeal, intervalResolution, vm.to],
+    [rawDeal, intervalResolution, vm.to, candles],
   );
 
   // On deal switch, pan the existing widget to the new deal's start.
@@ -435,7 +501,21 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
           <span className="text-sm text-muted-foreground">
             {fmtTime(deal.startTime)} → {fmtTime(deal.closeTime)}
           </span>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-3">
+            <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
+              <Checkbox
+                checked={showLines}
+                onCheckedChange={(v) => setShowLines(v === true)}
+              />
+              Lines
+            </label>
+            <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
+              <Checkbox
+                checked={showIcons}
+                onCheckedChange={(v) => setShowIcons(v === true)}
+              />
+              Icons
+            </label>
             <button
               type="button"
               onClick={() => go(-1)}
@@ -463,8 +543,8 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
         {/* price chart — one persistent TradingView widget; deal switches
             only update its lines / markers / timeframe (symbol + interval are
             constant for the whole run). */}
-        <Inset className="px-3 pb-1 pt-2.5">
-          <div className="h-[520px] w-full overflow-hidden rounded-lg sm:h-[320px] lg:h-[348px]">
+        <Inset className="flex h-[320px] shrink-0 flex-col px-3 pb-1 pt-2.5 lg:h-auto lg:min-h-0 lg:flex-1">
+          <div className="min-h-0 w-full flex-1 overflow-hidden rounded-lg">
             <TradingViewChart
               ref={chartRef}
               widgetId="backtest-deal-chart"
@@ -477,14 +557,16 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
               enableAutoSave={false}
               enableLoadLastChart={false}
               enableSeparateDrawingsStorage={false}
-              showPastOrders
-              showTransactions
+              showPastOrders={showLines}
+              showTransactions={showIcons}
             />
           </div>
         </Inset>
 
-        {/* detail + execution + ladder — stacked on mobile, 3 columns ≥md */}
-        <div className="flex min-h-0 flex-1 flex-col gap-3.5 md:flex-row">
+        {/* detail + execution + ladder — stacked on mobile, 3 fixed-height
+            columns ≥md (170px; the ladder scrolls internally) so the chart
+            above takes the remaining height. */}
+        <div className="flex flex-none flex-col gap-3.5 md:h-[170px] md:flex-row">
           {/* col 1 — P&L + prices */}
           <Inset className="min-w-0 flex-1 p-3.5">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -508,7 +590,7 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
             <DetailRow label="Duration" value={fmtDur(deal.durationH)} />
             <DetailRow label="Volume" value={fmtUsd(deal.volume)} />
             <DetailRow
-              label="Safety filled"
+              label="DCA filled"
               value={`${deal.filled} / ${deal.maxSo}`}
             />
           </Inset>
@@ -516,7 +598,7 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
           {/* col 3 — safety-order ladder */}
           <Inset className="flex min-w-0 flex-[1.6] flex-col overflow-hidden p-3.5">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Safety order ladder
+              DCA ladder
             </div>
             <div className="grid grid-cols-[auto_1fr_1fr_auto] gap-x-3.5 pb-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground/70">
               <span>Lvl</span>
