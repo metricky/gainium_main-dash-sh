@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2026-06-06
+
+### Fixed
+
+- Profit widget on Overview crashes ("xe.split is not a function") when the backend returns a weekly or monthly date value as a number instead of a string; `as string` assertions replaced with `String()` runtime conversions.
+
 ## [2.9.1] - 2026-06-05
 
 ### Changed
