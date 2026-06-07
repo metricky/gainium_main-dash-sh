@@ -155,6 +155,14 @@ interface TradingViewChartProps {
   toolbarDropdown?: TradingViewToolbarDropdownConfig | null;
   // Initial timeframe to show when chart first loads (UNIX timestamps in seconds)
   initialTimeframe?: { from: number; to: number };
+  /**
+   * Optional custom datafeed for this chart instance. When supplied, this
+   * chart routes data through the provided feed AND skips the wrapper's
+   * shared-exchange prefetch + global symbol-state writes, making it a
+   * fully self-contained chart. Defaults to the shared live datafeed when
+   * omitted, so all existing (live) consumers are unaffected.
+   */
+  datafeed?: import('@/utils/tradingView/types').IBasicDataFeed;
 }
 
 // Interface for exposing high-level methods
@@ -210,6 +218,7 @@ const TradingViewChartComponent = forwardRef<
     toolbarDropdown,
     initialTimeframe,
     useCb,
+    datafeed,
     // ... other props
   } = props;
   const coreChartRef = useRef<TradingViewChartCoreRef>(null);
@@ -283,21 +292,25 @@ const TradingViewChartComponent = forwardRef<
 
   useEffect(() => {
     const symbolsToRegister = availableSymbols ?? [];
+    availableSymbolsRef.current = symbolsToRegister;
+    // A custom datafeed is self-contained; never mutate the shared live
+    // global symbol state from a chart that doesn't use it.
+    if (datafeed) return;
     logger.info('availableSymbols in TVChart', {
       availableSymbols: symbolsToRegister,
     });
-    availableSymbolsRef.current = symbolsToRegister;
     if (symbolsToRegister.length) {
       setAvailableSymbols(symbolsToRegister);
     }
-  }, [availableSymbols]);
+  }, [availableSymbols, datafeed]);
 
   useEffect(() => {
+    if (datafeed) return; // custom datafeed: don't touch live global symbol state
     if (!symbol) return;
     const sourceSymbols = availableSymbols ?? availableSymbolsRef.current;
     const resolvedSymbol = buildSymbolFromFullName(symbol, sourceSymbols);
     setCurrentSymbol(resolvedSymbol);
-  }, [symbol, availableSymbols]);
+  }, [symbol, availableSymbols, datafeed]);
 
   const handleChartReady = useCallback(() => {
     setIsChartReady(true);
@@ -326,6 +339,11 @@ const TradingViewChartComponent = forwardRef<
         logger.debug('[ScrollLoadBars] No range provided, skipping prefetch');
         return;
       }
+
+      // The prefetcher is for the shared exchange (core) datafeed only. A
+      // chart driven by a custom datafeed handles its own history loading;
+      // routing through maybePrefetchHistory would hit the wrong handler.
+      if (datafeed) return;
 
       const fallbackSymbol = availableSymbolsRef.current.length
         ? `${availableSymbolsRef.current[0].pair}@${String(availableSymbolsRef.current[0].exchange).toUpperCase()}`
@@ -359,7 +377,7 @@ const TradingViewChartComponent = forwardRef<
         range,
       });
     },
-    [interval, isBarsReady, symbol]
+    [interval, isBarsReady, symbol, datafeed]
   ); // Helpers to force re-apply props to the chart
   const reapplyOrders = useCallback(() => {
     if (!coreChartRef.current?.isReady()) return;
@@ -892,6 +910,19 @@ const TradingViewChartComponent = forwardRef<
 
   const onSymbolChange = useCallback(
     (fullSymbol: string) => {
+      // A custom datafeed is self-contained; don't write the shared live
+      // global symbol state when the embedded widget reports a change.
+      if (datafeed) {
+        const symbolObj = buildSymbolFromFullName(
+          fullSymbol,
+          availableSymbolsRef.current
+        );
+        currentStateRef.current.symbol = fullSymbol;
+        if (setOnChangeSymbol) {
+          setOnChangeSymbol(symbolObj);
+        }
+        return;
+      }
       // TradingView normalizes our HIP-3 ticker (`flx:CRCL-USDH` →
       // `FLX_CRCL-USDH`) internally and reports the normalized form
       // back here. If it's just a renamed copy of what we already set,
@@ -923,7 +954,7 @@ const TradingViewChartComponent = forwardRef<
         setOnChangeSymbol(symbolObj);
       }
     },
-    [setOnChangeSymbol]
+    [setOnChangeSymbol, datafeed]
   );
 
   return (
@@ -941,6 +972,7 @@ const TradingViewChartComponent = forwardRef<
       toolbarDropdown={toolbarDropdown ?? null}
       initialTimeframe={initialTimeframe}
       indicatorValueCallback={indicatorValueCallback}
+      {...(datafeed ? { datafeed } : {})}
       {...(widgetId ? { layoutPersistenceKey: widgetId } : {})}
       onLayoutChange={handleLayoutChange}
       onSymbolChange={onSymbolChange}

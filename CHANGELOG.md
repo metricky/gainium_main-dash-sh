@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.3] - 2026-06-07
+
+### Fixed
+
+- TradingView chart: support an optional injected datafeed so a host app can
+  supply its own data source per chart instance, and skip the shared-exchange
+  history prefetch and global symbol-state writes when one is supplied;
+  removed the manual-backtesting→Binance fallback alias from the shared
+  candle path.
+- IndexedDB persistence no longer freezes when a cached blob picks up a
+  non-cloneable value: `setItem` now strips the offending data and retries,
+  so manual-backtesting session deletes/creates (and other persisted-store
+  writes) save reliably instead of silently failing on older caches.
+
 ## [2.10.2] - 2026-06-07
 
 ### Fixed

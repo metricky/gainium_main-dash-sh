@@ -124,6 +124,7 @@ export const TradingViewChartCore = forwardRef<
       toolbarDropdown,
       initialTimeframe,
       indicatorValueCallback,
+      datafeed,
     },
     ref
   ) => {
@@ -178,6 +179,7 @@ export const TradingViewChartCore = forwardRef<
       initialSymbol,
       initialInterval,
       ...(indicatorValueCallback ? { indicatorValueCallback } : {}),
+      ...(datafeed ? { datafeed } : {}),
       // cast because hook expects non-nullable but ref is filled after mount
       containerRef:
         chartContainerRef as unknown as React.RefObject<HTMLDivElement>,

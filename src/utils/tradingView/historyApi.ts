@@ -92,11 +92,7 @@ export const requestCandles = async ({
   limit?: number;
 }): Promise<CandleResponse[]> => {
   try {
-    // Alias manualbacktesting to binance for real data source
-    const effectiveExchange =
-      exchange === ExchangeEnum.ManualBacktesting
-        ? ExchangeEnum.binance
-        : exchange;
+    const effectiveExchange = exchange;
     const url = new URL(`${import.meta.env.VITE_API_ENDPOINT}/candles`);
     url.searchParams.set('exchange', effectiveExchange);
     // KuCoin spot's candle API needs the dashed native symbol (BTC-USDT); the

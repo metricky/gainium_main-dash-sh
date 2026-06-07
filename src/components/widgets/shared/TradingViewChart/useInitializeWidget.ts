@@ -56,6 +56,12 @@ interface InitParams {
    * callable through to `custom_indicators_getter`.
    */
   indicatorValueCallback?: (value: number, id: string) => void;
+  /**
+   * Custom datafeed for this chart instance. When omitted, the shared
+   * live createDatafeed() is used. Cloud manual-backtesting injects its
+   * own fully-independent IBasicDataFeed here.
+   */
+  datafeed?: import('@/utils/tradingView/types').IBasicDataFeed;
 }
 
 const tvTimezones = [
@@ -158,6 +164,7 @@ export function useInitializeWidget({
   onLayoutChange,
   initialTimeframe,
   indicatorValueCallback,
+  datafeed: datafeedProp,
 }: InitParams) {
   const widgetRef = useRef<TradingViewWidgetInstance | null>(null);
   const isInitializedRef = useRef(false);
@@ -323,7 +330,7 @@ export function useInitializeWidget({
         layoutPersistenceKey
       );
 
-      const datafeed = createDatafeed();
+      const datafeed = datafeedProp ?? createDatafeed();
       const lightThemeColors = getCustomThemeColors('light');
       const darkThemeColors = getCustomThemeColors('dark');
 
