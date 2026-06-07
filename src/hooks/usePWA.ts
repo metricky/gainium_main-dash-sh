@@ -30,72 +30,77 @@ export function usePWAUpdate(): PWAUpdateState {
   const isDev = import.meta.env.DEV;
 
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      // Register service worker and then listen for updates
-      const registerAndListen = async () => {
-        try {
-          // First try to get existing registration
-          let reg = await navigator.serviceWorker.getRegistration();
+    if (!('serviceWorker' in navigator)) return;
 
-          // If no registration exists, register the service worker
-          if (!reg) {
-            // Registering service worker
-            reg = await navigator.serviceWorker.register('/sw.js', {
-              scope: '/',
-            });
-            // Service worker registered successfully
-          } else {
-            // Using existing service worker registration
+    // In dev a service worker must NEVER control the page (it serves stale
+    // precached bundles and can't self-update). Teardown of any leftover SW
+    // happens at app entry via unregisterServiceWorkersInDev() in main.tsx;
+    // here we simply never register one.
+    if (isDev) return;
+
+    // Only a genuine UPDATE (a new SW replacing an existing controller) should
+    // force a reload. On a user's first visit the initial SW claims the page
+    // (clientsClaim) and ALSO fires controllerchange — reloading then would
+    // bounce a freshly-loaded page for no reason. This flag flips true only when
+    // an installing worker appears while a controller already exists.
+    let reloadOnControllerChange = false;
+
+    const registerAndListen = async () => {
+      try {
+        let reg = await navigator.serviceWorker.getRegistration();
+        if (!reg) {
+          reg = await navigator.serviceWorker.register('/sw.js', {
+            scope: '/',
+          });
+        }
+
+        setRegistration(reg);
+
+        if (reg.waiting) {
+          setUpdateAvailable(true);
+        }
+
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if (!newWorker) return;
+          // A controller already present means this is an update, not the
+          // first install — so a subsequent controllerchange should reload.
+          if (navigator.serviceWorker.controller) {
+            reloadOnControllerChange = true;
           }
-
-          setRegistration(reg);
-
-          // Check for waiting service worker (skip in dev mode to avoid false positives)
-          if (reg.waiting && !isDev) {
-            setUpdateAvailable(true);
-          }
-
-          // Listen for update found
-          reg.addEventListener('updatefound', () => {
-            const newWorker = reg.installing;
-            if (newWorker) {
-              newWorker.addEventListener('statechange', () => {
-                // Skip update notification in dev mode to avoid false positives from HMR
-                if (
-                  newWorker.state === 'installed' &&
-                  navigator.serviceWorker.controller &&
-                  !isDev
-                ) {
-                  setUpdateAvailable(true);
-                }
-                if (newWorker.state === 'activated') {
-                  setUpdateInstalled(true);
-                  setTimeout(() => setUpdateInstalled(false), 3000);
-                }
-              });
+          newWorker.addEventListener('statechange', () => {
+            if (
+              newWorker.state === 'installed' &&
+              navigator.serviceWorker.controller
+            ) {
+              setUpdateAvailable(true);
+            }
+            if (newWorker.state === 'activated') {
+              setUpdateInstalled(true);
+              setTimeout(() => setUpdateInstalled(false), 3000);
             }
           });
+        });
 
-          // Check for updates periodically
-          setInterval(() => {
-            reg.update();
-          }, 60000); // Check every minute
-        } catch (error) {
-          console.error('PWA: Service worker registration failed', error);
-        }
-      };
+        // Poll for a new deployment so long-lived SPA sessions still update.
+        setInterval(() => {
+          reg.update();
+        }, 60000);
+      } catch (error) {
+        console.error('PWA: Service worker registration failed', error);
+      }
+    };
 
-      registerAndListen();
+    registerAndListen();
 
-      // Listen for controller change (new SW took control)
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        setUpdateInstalled(true);
-        setTimeout(() => {
-          setUpdateInstalled(false);
-          window.location.reload();
-        }, 1000);
-      });
-    }
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!reloadOnControllerChange) return;
+      setUpdateInstalled(true);
+      setTimeout(() => {
+        setUpdateInstalled(false);
+        window.location.reload();
+      }, 1000);
+    });
   }, [isDev]);
 
   const updateServiceWorker = () => {

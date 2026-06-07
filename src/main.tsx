@@ -10,7 +10,11 @@ import { LiveUpdateProvider } from './contexts/LiveUpdateContext';
 import { installScreenerStub } from './lib/api/screenerStub';
 import { registerAuthProvider } from './lib/auth';
 import { logAuthConfig } from './lib/authConfig';
-import { addManualClearTrigger, initLoadingWatchdog } from './lib/cacheManager';
+import {
+  addManualClearTrigger,
+  initLoadingWatchdog,
+  unregisterServiceWorkersInDev,
+} from './lib/cacheManager';
 import { registerEntitlementsProvider } from './lib/entitlements';
 import { useShEntitlements } from './lib/entitlements/impl/sh';
 import { registerLicenseProvider } from './lib/license';
@@ -61,6 +65,10 @@ registerAuthProvider({
 
 // Log authentication configuration
 logAuthConfig();
+
+// Dev only: remove any leftover service worker before rendering so localhost
+// never runs a stale precached bundle. No-op in production.
+void unregisterServiceWorkersInDev();
 
 // Initialize cache management to handle loading issues
 initLoadingWatchdog();

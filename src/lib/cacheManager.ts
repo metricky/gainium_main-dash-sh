@@ -55,6 +55,40 @@ export async function clearAllCaches(): Promise<void> {
   }
 }
 
+/**
+ * Dev-only: ensure no service worker controls localhost.
+ *
+ * A leftover SW from a prior production build / `npm run preview` on localhost
+ * keeps serving its stale precached bundles, and Vite serves no real /sw.js in
+ * dev so the SW can never update itself — a permanent stale-cache dead end that
+ * presents as "my code change isn't showing up". Unregister everything and clear
+ * the SW caches once (one self-healing reload); a no-op when already clean.
+ *
+ * Call this as early as possible at app entry, before rendering.
+ */
+export async function unregisterServiceWorkersInDev(): Promise<void> {
+  if (!import.meta.env.DEV) return;
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    if (!registrations.length) return;
+    await Promise.all(registrations.map((r) => r.unregister()));
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    logger.warn(
+      '[CacheManager] Removed a stale dev service worker + caches; reloading onto fresh code'
+    );
+    window.location.reload();
+  } catch (error) {
+    logger.error(
+      '[CacheManager] Failed to remove dev service worker',
+      error
+    );
+  }
+}
+
 // Keep a reference so we can cancel previous watchdogs on HMR re-execution
 let watchdogTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let watchdogCheckId: ReturnType<typeof setTimeout> | null = null;

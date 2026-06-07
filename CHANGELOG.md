@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.4] - 2026-06-07
+
+### Fixed
+
+- Combo/short bot cards no longer show absurd unrealized P&L percentages
+  (e.g. -4273%). For short positions the ROI is now measured against the
+  quote value of the position instead of the realized profit, and the
+  "Cost (Invested)" figure is shown in the quote asset.
+- Dev only: localhost no longer renders a stale precached bundle. A leftover
+  service worker is unregistered (with its caches cleared) at app entry, the
+  app never registers a service worker in dev, and a service-worker update
+  only forces a reload when it replaces an existing one (not on first visit).
+
 ## [2.10.3] - 2026-06-07
 
 ### Fixed
