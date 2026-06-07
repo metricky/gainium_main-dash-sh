@@ -173,7 +173,11 @@ const GridBotEditWidget = () => {
         );
       }
     },
-    [exportBacktestsMutation]
+    // Depend on the stable `mutateAsync` reference, not the whole mutation
+    // object — react-query returns a new mutation object on every render, so
+    // depending on it makes this callback (and `insightsTabs`/the DataTable
+    // columns built from it) churn every render and infinite-loop.
+    [exportBacktestsMutation.mutateAsync]
   );
 
   // Handle delete confirmation
@@ -214,7 +218,7 @@ const GridBotEditWidget = () => {
         error instanceof Error ? error.message : 'Failed to delete backtests'
       );
     }
-  }, [backtestsToDelete, deleteBacktestsMutation, selectedBacktest]);
+  }, [backtestsToDelete, deleteBacktestsMutation.mutateAsync, selectedBacktest]);
 
   // Inline note editing for the backtest table
   const setBacktestNoteMutation = useSetBacktestNote();
@@ -234,7 +238,11 @@ const GridBotEditWidget = () => {
         }
       );
     },
-    [setBacktestNoteMutation]
+    // `.mutate` is a stable reference; the mutation object itself is recreated
+    // every render. `handleSaveBacktestNote` feeds `backtestColumns`, which is
+    // passed straight to the DataTable as `columns` — an unstable identity here
+    // makes the whole table re-render every commit and infinite-loop.
+    [setBacktestNoteMutation.mutate]
   );
 
   const backtestColumns = useMemo<ColumnDef<GRIDBacktestingResultHistory>[]>(

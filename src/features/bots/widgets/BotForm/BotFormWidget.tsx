@@ -17,7 +17,10 @@ import {
   type BotFormTabId,
 } from '@/contexts/bots/form/BotFormProvider';
 import { BotFormRegistryContext } from './context';
-import { GridPageProvider } from '@/contexts/bots/grid/GridPageProvider';
+import {
+  GridPageProvider,
+  useOptionalGridPageContext,
+} from '@/contexts/bots/grid/GridPageProvider';
 import { BotFormQueryProvider } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import {
   getBotExperience,
@@ -136,13 +139,21 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
     ? { options: gridProviderOptions }
     : undefined;
 
-  const wrappedContent = isGridBot ? (
-    <GridPageProvider {...(gridProviderProps ?? {})}>
-      {formContent}
-    </GridPageProvider>
-  ) : (
-    formContent
-  );
+  // A grid form needs a GridPageProvider for its grid-data context, but the
+  // grid *edit* page already wraps the whole layout (chart + form + insights)
+  // in one. Mounting a second provider here gave the edit page two
+  // `useGridPage` instances firing duplicate queries and racing on the shared
+  // live stores — an infinite render loop. Only add our own provider when
+  // there isn't one above us (e.g. the standalone grid *new* page).
+  const hasGridProvider = !!useOptionalGridPageContext();
+  const wrappedContent =
+    isGridBot && !hasGridProvider ? (
+      <GridPageProvider {...(gridProviderProps ?? {})}>
+        {formContent}
+      </GridPageProvider>
+    ) : (
+      formContent
+    );
 
   const moduleInitialState =
     resolvedExperience.form?.getInitialState?.(providerMode);

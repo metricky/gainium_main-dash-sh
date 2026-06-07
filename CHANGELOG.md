@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.5] - 2026-06-07
+
+### Fixed
+
+- Grid bot edit page no longer crashes with a React "Maximum update depth
+  exceeded" error. `BotFormWidget` mounted its own `GridPageProvider` even when
+  the grid edit page already wrapped the whole layout in one, giving the page
+  two `useGridPage` instances that fired duplicate queries and raced on the
+  shared live stores — an infinite render loop. The form now reuses an existing
+  provider and only mounts its own when there isn't one (e.g. the grid *new*
+  page).
+- Hardened several render-stability bugs surfaced while tracking the above:
+  the bot-orders store-sync effect no longer depends on the whole (per-render)
+  `options` object; `useGridBacktests` no longer returns a freshly-filtered
+  array on every render; and the grid edit page's backtest table callbacks now
+  depend on stable mutation references instead of the per-render mutation
+  objects.
+
+### Changed
+
+- Crash reports now decode minified React error codes (e.g. "#185") into a
+  human-readable description before they're logged, so production error
+  reports are legible without cross-referencing react.dev.
+
 ## [2.10.4] - 2026-06-07
 
 ### Fixed
