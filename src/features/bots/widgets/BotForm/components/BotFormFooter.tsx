@@ -51,6 +51,8 @@ import {
   type CloseTypeOption,
 } from '@/features/bots/shared/runtime/dialogs';
 import { isReadOnly } from '@/lib/demoMode';
+import { IS_CLOUD } from '@/config/mode';
+import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { BotTemplate } from '@/stores/botTemplatesStore';
@@ -693,6 +695,35 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const hasErrors = Object.keys(errors).length > 0;
   const shouldDisplayErrorSummary = showErrorSummary && hasErrors;
 
+  // Insufficient-credits guard. Creating a bot/terminal deal consumes credits;
+  // the backend rejects the request when the user can't cover the cost, so
+  // block the submit up front with an explanatory tooltip. Credits are a
+  // cloud-only concept (sh has no billing), and only `create` consumes new
+  // credits — editing an existing bot doesn't. Affiliate exchanges cost 0, so
+  // `credits.total` is already 0 there and never trips this.
+  const user = useAuthStore((s) => s.user);
+  const availableCredits =
+    Number(user?.credits?.paid ?? 0) +
+    Number(user?.credits?.subscription?.amount ?? 0) -
+    Number(user?.credits?.blocked ?? 0);
+  const insufficientCredits =
+    IS_CLOUD &&
+    mode === 'create' &&
+    !!user &&
+    credits.total > 0 &&
+    credits.total > availableCredits;
+  const submitTitle = readOnly
+    ? 'Saving bots is not available in demo mode'
+    : insufficientCredits
+      ? `Not enough credits — this bot costs ${fmtNumber(
+          credits.total,
+          2
+        )} credits but you only have ${fmtNumber(
+          availableCredits,
+          2
+        )} available.`
+      : undefined;
+
   const normalizedStatus = useMemo(
     () => (botStatus ? botStatus.toLowerCase() : undefined),
     [botStatus]
@@ -924,16 +955,19 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
             data-tour="botForm.launchButton"
             aria-busy={submitIsPending}
             onClick={handleSubmit}
-            disabled={submitDisabled || readOnly || shouldDisplayErrorSummary}
+            disabled={
+              submitDisabled ||
+              readOnly ||
+              shouldDisplayErrorSummary ||
+              insufficientCredits
+            }
             aria-label={submitLabel}
             fullwidth
             className={cn(
               'gradient-brand hover:opacity-90 text-white font-semibold shadow-lg hover:shadow-xl duration-200 transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed uppercase',
               mode === 'create' && 'fx-glow'
             )}
-            title={
-              readOnly ? 'Saving bots is not available in demo mode' : undefined
-            }
+            title={submitTitle}
           >
             {submitIsPending ? (
               <>
@@ -960,16 +994,19 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
             data-tour="botForm.launchButton"
             aria-busy={submitIsPending}
             onClick={handleSubmit}
-            disabled={submitDisabled || readOnly || shouldDisplayErrorSummary}
+            disabled={
+              submitDisabled ||
+              readOnly ||
+              shouldDisplayErrorSummary ||
+              insufficientCredits
+            }
             aria-label={submitLabel}
             size="icon"
             className={cn(
               'gradient-brand hover:opacity-90 text-white font-semibold shadow-lg hover:shadow-xl duration-200 transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed uppercase',
               mode === 'create' && 'fx-glow'
             )}
-            title={
-              readOnly ? 'Saving bots is not available in demo mode' : undefined
-            }
+            title={submitTitle}
           >
             {submitIsPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -1149,6 +1186,8 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
     submitDisabled,
     readOnly,
     shouldDisplayErrorSummary,
+    insufficientCredits,
+    submitTitle,
     submitLabel,
     showCredits,
     credits,
