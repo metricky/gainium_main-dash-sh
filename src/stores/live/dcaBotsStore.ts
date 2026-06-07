@@ -298,6 +298,9 @@ export const useDcaBotsStore = create<DcaBotsStoreState>()(
       {
         name: 'dca-bots-store',
         storage: createQueuedIndexedDBStorage('dca-bots-store'),
+        // One-time cache bust: drop stale persisted bots on upgrade.
+        version: 1,
+        migrate: () => ({ bots: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({
           bots: state.bots,

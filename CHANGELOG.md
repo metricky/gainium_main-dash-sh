@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.2] - 2026-06-07
+
+### Fixed
+
+- Live and paper deals no longer mix, and already-closed deals no longer
+  linger, after upgrading. Persisted deal/order/transaction/bot caches are
+  now versioned and wiped once on load so each device refetches cleanly
+  (the old cache held mis-tagged and stale deals from before the
+  paperContext fix).
+
+### Added
+
+- Bot create submit is disabled when the account has insufficient credits.
+
 ## [2.10.1] - 2026-06-07
 
 ### Fixed

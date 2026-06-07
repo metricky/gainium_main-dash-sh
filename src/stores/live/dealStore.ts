@@ -359,6 +359,11 @@ export const useDealStore = create<DealStoreState>()(
       {
         name: 'deals-store',
         storage: createQueuedIndexedDBStorage('deals-store'),
+        // One-time cache bust: drop pre-paperContext-fix persisted deals
+        // (mis-stamped contexts / stale closed deals) so clients refetch
+        // cleanly. Bump this version again to force another wipe.
+        version: 1,
+        migrate: () => ({ deals: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({
           deals: state.deals,

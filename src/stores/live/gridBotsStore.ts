@@ -298,6 +298,9 @@ export const useGridBotsStore = create<GridBotsStoreState>()(
       {
         name: 'grid-bots-store',
         storage: createQueuedIndexedDBStorage('grid-bots-store'),
+        // One-time cache bust: drop stale persisted bots on upgrade.
+        version: 1,
+        migrate: () => ({ bots: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({
           bots: state.bots,

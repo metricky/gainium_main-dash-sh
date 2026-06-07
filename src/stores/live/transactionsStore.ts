@@ -256,6 +256,9 @@ export const useTransactionsStore = create<TransactionsStoreState>()(
       {
         name: 'transactions-store',
         storage: createQueuedIndexedDBStorage('transactions-store'),
+        // One-time cache bust: drop stale persisted transactions on upgrade.
+        version: 1,
+        migrate: () => ({ transactions: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({
           transactions: state.transactions,

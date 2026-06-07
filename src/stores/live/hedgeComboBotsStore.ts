@@ -209,6 +209,9 @@ export const useHedgeComboBotsStore = create<HedgeComboBotsStoreState>()(
       {
         name: 'hedge-combo-bots-store',
         storage: createQueuedIndexedDBStorage('hedge-combo-bots-store'),
+        // One-time cache bust: drop stale persisted bots on upgrade.
+        version: 1,
+        migrate: () => ({ bots: {} }),
         partialize: (state) => ({ bots: state.bots }),
         merge: (persistedState, currentState) => ({
           ...currentState,

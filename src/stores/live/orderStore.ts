@@ -344,6 +344,9 @@ export const useOrderStore = create<OrderStoreState>()(
       {
         name: 'orders-store',
         storage: createQueuedIndexedDBStorage('orders-store'),
+        // One-time cache bust: drop stale persisted orders on upgrade.
+        version: 1,
+        migrate: () => ({ orders: { new: {}, filled: {} } }),
         // Persist only FILLED (historical, immutable) orders. Pending/'new'
         // orders are live data — persisting them lets a stale order (e.g. one
         // canceled in another client/session) reappear on reload, since the
