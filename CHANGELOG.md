@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.7] - 2026-06-08
+
+### Added
+
+- Deal Edit now exposes a **Strategy** section with the manual **Breakeven
+  price** (single-deal edit, with a Reset to the live average) and the
+  **Profit currency** selector, matching the legacy deal editor.
+- The combo Stop Loss view now shows the weighted **Average stop loss**
+  readout (already present on regular bots), so it appears for combo deals
+  in Deal Edit too.
+- Exchange connection form: Bybit and OKX **origin host** options now match
+  the legacy dashboard (Bybit eu/com/tr/kz/ge; OKX my/app/com, including the
+  new `app` origin), shown as bare origin URLs under an "OKX Origin" /
+  "Bybit Origin" label.
+
+### Changed
+
+- Deal Edit tab bar now uses the same rounded floating style as the new bot
+  form, and the section order is now Strategy, Take Profit, Stop Loss, DCA
+  (DCA moved last).
+- Deal Edit no longer shows the "Edit Deal" heading — the tab bar sits at the
+  top of the drawer with the close button on the right.
+- The bot form and Deal Edit now render section headers from a single shared
+  `SectionHeader` component, so the two stay visually identical.
+
+### Fixed
+
+- The Actions column now stays pinned to the right even on tables with
+  nested-accessor columns. The default column order and the resize lookup
+  now mirror react-table's id resolution (`a.b` → `a_b`); the hedge bot
+  tables pin Actions right; and a one-time table-preferences migration (v2)
+  drops stale saved column order/pins so the right pin re-applies (widths,
+  visibility, sorting, filters, pagination and view mode are kept).
+
+## [2.10.6] - 2026-06-08
+
+### Fixed
+
+- The Actions column now stays pinned to the right edge of every data table.
+  Columns with a nested accessor (e.g. `settings.startCondition`) were
+  rendering to the right of Actions because the table built its default column
+  order from the raw accessor key, while react-table registers nested keys
+  with underscores (`settings_startCondition`) — so those columns looked
+  "missing" and got appended past the right pin. The default order (and the
+  resize lookup) now mirror react-table's id resolution. Also pinned Actions by
+  default on the two hedge bot tables that were missing it, and reset saved
+  column order/pins once (keeping widths, visibility, sorting, and filters) so
+  existing layouts pick up the fix.
+
 ## [2.10.5] - 2026-06-07
 
 ### Fixed

@@ -1373,6 +1373,26 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
               className="sm:ml-auto"
             />
           </div>
+          <div className="space-y-xs rounded-lg border border-border/50 bg-background/20 p-sm">
+            <div className="flex flex-wrap items-center justify-between gap-xs text-sm">
+              <div className="flex items-center gap-1">
+                Average stop loss
+                <Tooltip tooltip="Weighted by each target's allocation to estimate the blended exit level if all targets trigger.">
+                  <InfoIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                </Tooltip>
+              </div>
+              <div className="text-sm font-medium">
+                {averageStopLossValue !== undefined
+                  ? `${averageStopLossValue.toFixed(2)}%`
+                  : '—'}
+                {weightedStopLossPriceDisplay ? (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    ≈ ${weightedStopLossPriceDisplay}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          </div>
           <div className="space-y-sm border-t border-muted pt-3">
             <div className="space-y-1">
               <div className="flex items-center gap-xs">

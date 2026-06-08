@@ -8,7 +8,6 @@ import {
   DetailDrawerContent,
   DetailDrawerFooter,
   DetailDrawerHeader,
-  DetailDrawerTitle,
   DetailDrawerTrigger,
 } from '@/components/ui/detail-drawer';
 import { TradingTerminalUtilsProvider } from '@/context/TradingTerminalUtilsContext';
@@ -30,6 +29,7 @@ import {
 } from '@/features/bots/catalog/BotExperienceCatalog';
 import type { BotExperienceDescriptor } from '@/features/bots/catalog/types';
 import { StopLossSettings } from '@/features/bots/shared/sections';
+import { SectionHeader } from '@/features/bots/shared/components/SectionHeader';
 import type { TabDescriptorInput } from '@/features/bots/shared/tabs/createTabDescriptors';
 import { BotFormRegistryContext } from '@/features/bots/widgets/BotForm';
 import BotFormAlertButton from '@/features/bots/widgets/BotForm/components/BotFormAlertButton';
@@ -62,11 +62,10 @@ import type { BotFormData } from '@/types/bots';
 import { motion } from 'framer-motion';
 import {
   AlertTriangle,
-  ChevronDown,
   Delete,
-  InfoIcon,
   Loader2,
   Save,
+  SlidersHorizontal,
   TrendingUp,
   Undo,
 } from 'lucide-react';
@@ -80,12 +79,13 @@ import React, {
 import ResponsiveButtonRow, {
   type ResponsiveButtonConfig,
 } from '../ui/ResponsiveButtonRow';
-import SettingsAlert from '../ui/SettingsAlert';
 import { Button } from '../ui/button';
-import { Switch } from '../ui/switch';
-import { Tooltip } from '../ui/tooltip';
 import { DCA_FORM_DEFAULTS } from '@/contexts/bots/form/formDefaults';
 import type { TradingPair } from '@/hooks/useTradingPairs';
+import { NumberInput } from '@/components/ui/number-input';
+import { TerminalButtonStack } from '@/components/ui/terminal-button-stack';
+import SettingsRow from '@/components/widgets/shared/SettingsRow';
+import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 
 interface DealEditDrawerProps {
   children: React.ReactNode;
@@ -110,6 +110,7 @@ const mapFromDataToDealSettings = (
       ? formData.originalBot.settings
       : undefined) as DCABotSettings | ComboBotSettings | undefined);
   const keys = [
+    'avgPrice',
     'ordersCount',
     'step',
     'baseOrderPrice',
@@ -230,6 +231,10 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
           ? {
               ...trade[0].dcaBot?.settings,
               ...trade[0].settings,
+              // Breakeven price: seed from the deal's manual override if set,
+              // else its live computed average, so the input always reflects
+              // the current breakeven and the field exists for updateFormData.
+              avgPrice: trade[0].settings?.avgPrice ?? trade[0].avgPrice,
             }
           : { ...DCA_FORM_DEFAULTS };
         setFormData((prev) => {
@@ -334,13 +339,14 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
     const visibleDescriptors: TabDescriptorInput[] = useMemo(() => {
       return [
         {
-          id: 'dca',
-          label: 'DCA',
-          icon: TrendingUp,
-          Component: DCASettings,
-          description: 'Dollar Cost Averaging configuration',
-          tooltipText: 'Enable DCA to average down on losing positions',
-          tooltipUrl: '/help/dca-mode',
+          id: 'strategy',
+          label: 'Strategy',
+          icon: SlidersHorizontal,
+          // Body is rendered inline (breakeven + profit currency need the
+          // deal data), so this Component stub is never invoked.
+          Component: () => null,
+          description: 'Breakeven price & profit currency',
+          tooltipText: 'Adjust the deal breakeven and profit currency',
           isTerminal: true,
           isDca: true,
         },
@@ -363,6 +369,17 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
           description: 'Stop loss and risk management settings',
           tooltipText: 'Configure stop loss parameters',
           tooltipUrl: '/help/multiple-stop-loss-targets',
+          isTerminal: true,
+          isDca: true,
+        },
+        {
+          id: 'dca',
+          label: 'DCA',
+          icon: TrendingUp,
+          Component: DCASettings,
+          description: 'Dollar Cost Averaging configuration',
+          tooltipText: 'Enable DCA to average down on losing positions',
+          tooltipUrl: '/help/dca-mode',
           isTerminal: true,
           isDca: true,
         },
@@ -671,7 +688,7 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
       () =>
         shouldShowNavigation ? (
           <motion.div
-            className="sticky top-0 z-10 bg-background mb-4 px-1 border-b border-border"
+            className="sticky top-0 z-30 mb-3 mx-1 rounded-lg bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80"
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3 }}
@@ -697,6 +714,81 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
         shouldShowNavigation,
       ]
     );
+
+    // Deal-edit "Strategy" section is rendered inline (not via the generic
+    // descriptor.Component path) because the breakeven Reset and the profit
+    // currency labels need the deal data, not just the form state.
+    const strategyContent = useMemo(() => {
+      if (!trade) {
+        return null;
+      }
+      const isSingle = trade.length === 1;
+      const slice = isCombo ? formData.combo : formData.dca;
+      const futures = Boolean(slice.futures);
+      const baseAsset = trade[0]?.symbol.baseAsset ?? 'Base';
+      const quoteAsset = trade[0]?.symbol.quoteAsset ?? 'Quote';
+      const computedAvg = trade[0]?.avgPrice;
+      const overrideAvg = trade[0]?.settings?.avgPrice;
+      const showAvgReset =
+        isSingle &&
+        typeof computedAvg === 'number' &&
+        computedAvg !== overrideAvg;
+      return (
+        <div className="space-y-md">
+          {isSingle && (
+            <SettingsRow
+              name="Breakeven price"
+              tooltip="Manually override the deal's average entry price. The bot recalculates TP/SL targets from this value."
+            >
+              <div className="flex items-center gap-sm">
+                <NumberInput
+                  value={(slice.avgPrice as number | undefined) ?? ''}
+                  onChange={(value) => updateFormData('avgPrice', value)}
+                  className="w-40"
+                  endAdornment={unitAdornment(quoteAsset)}
+                />
+                {showAvgReset && (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                    onClick={() => updateFormData('avgPrice', computedAvg)}
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </SettingsRow>
+          )}
+          {!futures && (
+            <SettingsRow
+              name="Profit Currency"
+              tooltip="Choose quote currency if you expect the pair to move sideways or down and you want to make profit in quote currency. Choose the base currency if you expect the pair to move sideways or up and you want to make profit in base currency."
+              tooltipURL="/help/profit-in-base-and-quote"
+            >
+              <TerminalButtonStack
+                value={(slice.profitCurrency as string | undefined) ?? 'quote'}
+                onValueChange={(value) =>
+                  updateFormData('profitCurrency', value as 'base' | 'quote')
+                }
+                options={[
+                  { value: 'base', label: baseAsset },
+                  { value: 'quote', label: quoteAsset },
+                ]}
+                className="w-full"
+                disabled={isCombo || !!isFieldLocked('profitCurrency')}
+              />
+            </SettingsRow>
+          )}
+        </div>
+      );
+    }, [
+      trade,
+      isCombo,
+      formData.combo,
+      formData.dca,
+      updateFormData,
+      isFieldLocked,
+    ]);
 
     const bodyContent = useMemo(
       () => (
@@ -728,87 +820,46 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
                     className="transition-opacity scroll-mt-4"
                     data-section-id={descriptor.id}
                   >
-                    <div className="mb-4 border-t-2 border-primary/60 pt-4 pb-3 bg-primary/10 rounded-lg px-4 -mx-2">
-                      <div className="flex items-start justify-between gap-md">
-                        <div className="flex-1">
-                          <div className="flex items-start gap-sm">
-                            <descriptor.icon className="h-5 w-5 shrink-0 text-primary mt-0.5" />
-                            <div className="flex-1">
-                              <div className="flex items-center gap-xs">
-                                <h2 className="text-lg font-semibold leading-tight">
-                                  {descriptor.label}
-                                </h2>
-                                {(descriptor.tooltipText || descriptor.description) && (
-                                  <Tooltip
-                                    tooltip={descriptor.tooltipText ?? descriptor.description ?? ''}
-                                    {...(descriptor.tooltipUrl
-                                      ? {
-                                          tooltipURL: descriptor.tooltipUrl,
-                                        }
-                                      : {})}
-                                  >
-                                    <InfoIcon />
-                                  </Tooltip>
-                                )}
-                              </div>
-                              {(descriptor.id === 'stop-loss' ||
-                                descriptor.id === 'take-profit' ||
-                                descriptor.id === 'dca') &&
-                                useRiskReward && (
-                                  <SettingsAlert title="Disabled by Risk:Reward module" />
-                                )}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-xs self-start pt-0.5">
-                          {
-                            // determine if collapse control should be shown: if the section has a toggle, only allow collapse when enabled; otherwise always allow
+                    <SectionHeader
+                      icon={descriptor.icon}
+                      label={descriptor.label}
+                      {...(descriptor.tooltipText || descriptor.description
+                        ? {
+                            tooltip:
+                              descriptor.tooltipText ??
+                              descriptor.description ??
+                              '',
                           }
-                          {(hasToggle ? toggleEnabled : true) && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              type="button"
-                              aria-expanded={!isSectionCollapsed(descriptor.id)}
-                              aria-controls={`section-${descriptor.id}`}
-                              onClick={() =>
-                                toggleSectionCollapsed(descriptor.id)
-                              }
-                              className={cn('p-0', 'opacity-100')}
-                              title={
-                                isSectionCollapsed(descriptor.id)
-                                  ? 'Expand section'
-                                  : 'Collapse section'
-                              }
-                            >
-                              <ChevronDown
-                                className={cn(
-                                  'h-4 w-4 transition-transform',
-                                  isSectionCollapsed(descriptor.id)
-                                    ? 'rotate-0'
-                                    : 'rotate-180'
-                                )}
-                              />
-                            </Button>
-                          )}
-                          {hasToggle && (
-                            <div className="flex items-center gap-xs">
-                              <Switch
-                                checked={toggleEnabled}
-                                onCheckedChange={(checked: boolean) =>
-                                  updateFormData(toggleField, checked)
-                                }
-                                disabled={!!isFieldLocked(toggleField)}
-                                id={`toggle-${descriptor.id}`}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    {!isSectionCollapsed(descriptor.id) && (
-                      <SectionComponent {...componentProps} />
-                    )}
+                        : {})}
+                      {...(descriptor.tooltipUrl
+                        ? { tooltipUrl: descriptor.tooltipUrl }
+                        : {})}
+                      showRiskRewardAlert={
+                        (descriptor.id === 'stop-loss' ||
+                          descriptor.id === 'take-profit' ||
+                          descriptor.id === 'dca') &&
+                        !!useRiskReward
+                      }
+                      ariaControlsId={`section-${descriptor.id}`}
+                      showCollapse={hasToggle ? toggleEnabled : true}
+                      collapsed={isSectionCollapsed(descriptor.id)}
+                      onToggleCollapse={() =>
+                        toggleSectionCollapsed(descriptor.id)
+                      }
+                      hasToggle={hasToggle}
+                      toggleChecked={toggleEnabled}
+                      onToggleChange={(checked) =>
+                        updateFormData(toggleField, checked)
+                      }
+                      toggleDisabled={!!isFieldLocked(toggleField)}
+                      toggleId={`toggle-${descriptor.id}`}
+                    />
+                    {!isSectionCollapsed(descriptor.id) &&
+                      (descriptor.id === 'strategy' ? (
+                        strategyContent
+                      ) : (
+                        <SectionComponent {...componentProps} />
+                      ))}
                   </div>
                 );
               })}
@@ -827,6 +878,7 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
         isSectionCollapsed,
         toggleSectionCollapsed,
         useRiskReward,
+        strategyContent,
       ]
     );
 
@@ -876,21 +928,12 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
         <DetailDrawerTrigger asChild>{children}</DetailDrawerTrigger>
 
         <DetailDrawerContent
-          className="max-w-xl z-50"
+          className="max-w-2xl z-50"
           showCloseButton
           onClose={handleDrawerClose}
           resizable={false}
         >
-          <DetailDrawerHeader className="relative">
-            <div className="flex w-full flex-col gap-md">
-              <div className="flex w-full items-center justify-between gap-md">
-                <div className="flex flex-1 min-w-0 items-center gap-1 pr-4">
-                  <DetailDrawerTitle className="text-balance text-2xl leading-tight sm:text-3xl">
-                    Edit Deal
-                  </DetailDrawerTitle>
-                </div>
-              </div>
-            </div>
+          <DetailDrawerHeader className="relative pr-12 md:pr-14">
             {navigationContent}
           </DetailDrawerHeader>
 
@@ -928,7 +971,7 @@ export const DealEditDrawer: React.FC<DealEditDrawerProps> = React.memo(
       () => ({ botExperience: resolvedExperience, widgetId: 'deal-edit' }),
       [resolvedExperience]
     );
-    const defaultTab: BotFormTabId = useMemo(() => 'dca', []);
+    const defaultTab: BotFormTabId = useMemo(() => 'strategy', []);
     if (!props.trade || !props.open || props.trade.length === 0) {
       return null;
     }

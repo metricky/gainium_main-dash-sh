@@ -1392,7 +1392,11 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
             {supportsHostSelection(formData.provider) &&
               hostOptions.length > 0 && (
                 <div className="space-y-xs">
-                  <Label htmlFor="host">Host</Label>
+                  <Label htmlFor="host">
+                    {exchangeConfig.name === 'okx'
+                      ? 'OKX Origin'
+                      : 'Bybit Origin'}
+                  </Label>
                   <Select
                     value={
                       exchangeConfig.name === 'okx'

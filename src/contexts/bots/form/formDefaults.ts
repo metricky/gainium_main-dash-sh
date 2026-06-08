@@ -188,6 +188,8 @@ export const DCA_FORM_DEFAULTS: Readonly<Required<BotFormData['dca']>> = {
   comboSlLimit: false,
   comboTpLimit: false,
   useExperimental: false,
+  // Deal-edit only: manual breakeven price override (0 = use computed avg).
+  avgPrice: 0,
   remainderFullAmount: false,
   autoRebalancing: false,
   adaptiveClose: false,

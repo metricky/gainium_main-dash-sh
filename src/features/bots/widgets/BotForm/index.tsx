@@ -29,6 +29,7 @@ import {
   ScrollableFormTabNavigation,
   type ScrollableTabItem,
 } from '@/components/ui/ScrollableFormTabNavigation';
+import { SectionHeader } from '@/features/bots/shared/components/SectionHeader';
 import { Switch } from '@/components/ui/switch';
 import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import WidgetWrapper, {
@@ -3545,108 +3546,49 @@ const BotForm: React.FC<BotFormProps> = ({
                         }
                         data-section-id={descriptor.id}
                       >
-                        <div
+                        <SectionHeader
+                          icon={descriptor.icon}
+                          label={descriptor.label}
+                          {...(descriptor.tooltipText || descriptor.description
+                            ? {
+                                tooltip:
+                                  descriptor.tooltipText ??
+                                  descriptor.description ??
+                                  '',
+                              }
+                            : {})}
+                          {...(descriptor.tooltipUrl
+                            ? { tooltipUrl: descriptor.tooltipUrl }
+                            : {})}
+                          showRiskRewardAlert={
+                            (descriptor.id === 'stop-loss' ||
+                              descriptor.id === 'take-profit' ||
+                              descriptor.id === 'dca') &&
+                            !!useRiskReward
+                          }
+                          ariaControlsId={`section-${descriptor.id}`}
+                          showCollapse={hasToggle ? toggleEnabled : true}
+                          collapsed={isSectionCollapsed(descriptor.id)}
+                          onToggleCollapse={() =>
+                            toggleSectionCollapsed(descriptor.id)
+                          }
+                          collapseDisabled={isContentReadOnly}
+                          hasToggle={hasToggle}
+                          toggleChecked={toggleEnabled}
+                          onToggleChange={(checked) =>
+                            updateFormData(toggleField, checked)
+                          }
+                          toggleDisabled={
+                            isContentReadOnly || !!isFieldLocked(toggleField)
+                          }
+                          toggleId={`toggle-${descriptor.id}`}
                           className={cn(
-                            'mb-2 border-t-2 border-primary/60 pt-2 pb-2 bg-primary/10 rounded-lg px-2',
                             isTerminalSimpleSelected &&
                               descriptor.id === 'basic'
                               ? 'mt-2'
                               : ''
                           )}
-                        >
-                          <div className="flex items-start justify-between gap-md">
-                            <div className="flex-1">
-                              <div className="flex items-start gap-sm">
-                                <descriptor.icon className="h-5 w-5 shrink-0 text-primary mt-0.5" />
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-xs">
-                                    <h2 className="text-lg font-semibold leading-tight">
-                                      {descriptor.label}
-                                    </h2>
-                                    {(descriptor.tooltipText ||
-                                      descriptor.description) && (
-                                      <Tooltip
-                                        tooltip={
-                                          descriptor.tooltipText ??
-                                          descriptor.description ??
-                                          ''
-                                        }
-                                        {...(descriptor.tooltipUrl
-                                          ? {
-                                              tooltipURL: descriptor.tooltipUrl,
-                                            }
-                                          : {})}
-                                      >
-                                        <InfoIcon />
-                                      </Tooltip>
-                                    )}
-                                  </div>
-                                  {(descriptor.id === 'stop-loss' ||
-                                    descriptor.id === 'take-profit' ||
-                                    descriptor.id === 'dca') &&
-                                    useRiskReward && (
-                                      <SettingsAlert title="Disabled by Risk:Reward module" />
-                                    )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-xs self-start pt-0.5">
-                              {
-                                // determine if collapse control should be shown: if the section has a toggle, only allow collapse when enabled; otherwise always allow
-                              }
-                              {(hasToggle ? toggleEnabled : true) && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  type="button"
-                                  aria-expanded={
-                                    !isSectionCollapsed(descriptor.id)
-                                  }
-                                  aria-controls={`section-${descriptor.id}`}
-                                  onClick={() =>
-                                    toggleSectionCollapsed(descriptor.id)
-                                  }
-                                  disabled={isContentReadOnly}
-                                  className={cn(
-                                    'p-0',
-                                    isContentReadOnly
-                                      ? 'opacity-50'
-                                      : 'opacity-100'
-                                  )}
-                                  title={
-                                    isSectionCollapsed(descriptor.id)
-                                      ? 'Expand section'
-                                      : 'Collapse section'
-                                  }
-                                >
-                                  <ChevronDown
-                                    className={cn(
-                                      'h-4 w-4 transition-transform',
-                                      isSectionCollapsed(descriptor.id)
-                                        ? 'rotate-0'
-                                        : 'rotate-180'
-                                    )}
-                                  />
-                                </Button>
-                              )}
-                              {hasToggle && (
-                                <div className="flex items-center gap-xs">
-                                  <Switch
-                                    checked={toggleEnabled}
-                                    onCheckedChange={(checked: boolean) =>
-                                      updateFormData(toggleField, checked)
-                                    }
-                                    disabled={
-                                      isContentReadOnly ||
-                                      !!isFieldLocked(toggleField)
-                                    }
-                                    id={`toggle-${descriptor.id}`}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+                        />
                         {!isSectionCollapsed(descriptor.id) && (
                           <SectionComponent {...componentProps} />
                         )}

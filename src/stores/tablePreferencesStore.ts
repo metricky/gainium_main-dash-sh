@@ -216,7 +216,34 @@ export const useTablePreferencesStore = create<TablePreferencesState>()(
     }),
     {
       name: 'table-preferences-storage',
-      version: 1,
+      version: 2,
+      // v1 -> v2: force the Actions column back to the right edge of every
+      // table. Saved layouts predate the per-table
+      // `defaultPinnedColumns={{ right: ['actions'] }}`, and some can't be
+      // repaired by merging in the default pin: column ids were refactored
+      // (e.g. flat `startCondition` -> nested `settings.startCondition`), so a
+      // stale persisted `columnOrder` references ids react-table no longer
+      // knows and lets columns render past the right pin. Drop the saved
+      // `columnOrder` + `pinnedColumns` so each table falls back to its
+      // `defaultColumnOrder` + `defaultPinnedColumns`. Widths, visibility,
+      // sorting, filters, pagination and view mode are kept.
+      migrate: (persistedState, version) => {
+        if (version >= 2) return persistedState as TablePreferencesState;
+        const state = persistedState as {
+          preferences?: Record<string, TablePreferences>;
+        } | null;
+        const prefs = state?.preferences;
+        if (!prefs) return persistedState as TablePreferencesState;
+        const next: Record<string, TablePreferences> = {};
+        for (const [tableId, p] of Object.entries(prefs)) {
+          next[tableId] = {
+            ...p,
+            columnOrder: [],
+            pinnedColumns: undefined,
+          };
+        }
+        return { ...state, preferences: next } as TablePreferencesState;
+      },
     }
   )
 );

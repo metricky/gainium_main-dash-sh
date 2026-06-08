@@ -1974,12 +1974,18 @@ function DataTableComponent<TData, TValue>(
     [props]
   );
   // Get default column order and visibility.
-  // Prefer `id` over `accessorKey` to match react-table's internal column ID
-  // resolution. When a column defines both (e.g. id: 'currentBalances',
-  // accessorKey: 'currentBalance'), react-table registers the column under
-  // `id`. If we emit `accessorKey` here, our columnOrder state refers to an ID
-  // react-table doesn't know, and it auto-appends the "missing" column at the
-  // tail — past anything we tried to pin right.
+  // Mirror react-table's own column-ID resolution (table-core `createColumn`):
+  //   id ?? (accessorKey with dots replaced by underscores) ?? header-string
+  // Two things matter here:
+  //   1. Prefer `id` over `accessorKey`. When a column defines both (e.g.
+  //      id: 'currentBalances', accessorKey: 'currentBalance'), react-table
+  //      registers it under `id`.
+  //   2. A *nested* accessorKey like `settings.startCondition` is registered
+  //      by react-table under `settings_startCondition` (dots → underscores).
+  // If we emit a raw dotted key (or the wrong field) here, our columnOrder
+  // references an ID react-table doesn't know, and it auto-appends the
+  // "missing" column at the tail — past anything we tried to pin right (this
+  // is what pushed nested-accessor columns to the right of the Actions column).
   const defaultColumnOrder = useMemo(
     () =>
       initialColumns.map((col: ColumnDef<TData, TValue>) => {
@@ -1987,7 +1993,11 @@ function DataTableComponent<TData, TValue>(
           accessorKey?: string;
           id?: string;
         };
-        return columnWithId.id ?? columnWithId.accessorKey ?? '';
+        if (columnWithId.id) return columnWithId.id;
+        if (typeof columnWithId.accessorKey === 'string') {
+          return columnWithId.accessorKey.replace(/\./g, '_');
+        }
+        return '';
       }),
     [initialColumns]
   );
@@ -3035,9 +3045,13 @@ function DataTableComponent<TData, TValue>(
           accessorKey?: string;
           id?: string;
         };
-        return (
-          columnWithId.id === columnId || columnWithId.accessorKey === columnId
-        );
+        // Match react-table's leaf-id resolution: prefer `id`, otherwise a
+        // nested accessorKey (`a.b`) is registered as `a_b`.
+        if (columnWithId.id) return columnWithId.id === columnId;
+        if (typeof columnWithId.accessorKey === 'string') {
+          return columnWithId.accessorKey.replace(/\./g, '_') === columnId;
+        }
+        return false;
       }) as
         | (ColumnDef<TData, TValue> & {
             size?: number;

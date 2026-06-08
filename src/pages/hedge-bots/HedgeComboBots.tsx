@@ -628,6 +628,7 @@ const HedgeComboBots = () => {
                       cardViewBreakpoints={HEDGE_CARD_VIEW_BREAKPOINTS}
                       cardViewGap={16}
                       showPagination
+                      defaultPinnedColumns={{ left: [], right: ['actions'] }}
                       className="h-full min-h-[400px]"
                       emptyMessage={
                         isLoading
