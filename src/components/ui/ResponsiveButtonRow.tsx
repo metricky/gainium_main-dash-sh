@@ -306,8 +306,24 @@ export const ResponsiveButtonRow: React.FC<ResponsiveButtonRowProps> = ({
     ).id;
   }, [visibleButtons, highestPriorityFullWidth]);
 
-  // Measure button widths (runs once on mount and when buttons change)
-  useLayoutEffect(() => {
+  // Keep the latest display order in a ref so `measure` can stay referentially
+  // stable (no per-render identity churn) while still reading current buttons.
+  const sortedForDisplayRef = useRef(sortedForDisplay);
+  sortedForDisplayRef.current = sortedForDisplay;
+
+  // Stable signature of the button SET (ids in display order). A button being
+  // added or removed changes this; a re-render that merely hands us a new array
+  // reference for the same buttons (e.g. live-data ticks recreating
+  // buttonConfigs) does not.
+  const buttonSignature = useMemo(
+    () => sortedForDisplay.map((b) => b.id).join('|'),
+    [sortedForDisplay]
+  );
+
+  // Measure intrinsic button widths. This is the ONLY place that reads layout
+  // (getBoundingClientRect forces a synchronous reflow), so it is deliberately
+  // kept off the per-render path and triggered only by the two effects below.
+  const measure = useCallback(() => {
     if (!measureFullRef.current || !measureCompactRef.current) return;
 
     const fullMeasurements = new Map<string, number>();
@@ -316,17 +332,28 @@ export const ResponsiveButtonRow: React.FC<ResponsiveButtonRowProps> = ({
     const fullChildren = measureFullRef.current.children;
     const compactChildren = measureCompactRef.current.children;
 
-    sortedForDisplay.forEach((button, index) => {
+    // Round to integer pixels. getBoundingClientRect returns sub-pixel floats
+    // that jitter between otherwise-identical layouts (DPR, browser zoom,
+    // subpixel text metrics, font reflow). The equality guard below compares
+    // with exact ===, so unrounded jitter (e.g. 100.6666 vs 100.6667) makes it
+    // fail forever: setMeasurements commits → re-render → re-measure → new tiny
+    // float → "Maximum update depth exceeded". Rounding collapses identical
+    // layouts to the same value so the guard can actually hold. useContainerWidth
+    // already floors its width, so this keeps both sides on integer footing.
+    sortedForDisplayRef.current.forEach((button, index) => {
       const fullEl = fullChildren[index] as HTMLElement | undefined;
       const compactEl = compactChildren[index] as HTMLElement | undefined;
 
       if (fullEl) {
-        fullMeasurements.set(button.id, fullEl.getBoundingClientRect().width);
+        fullMeasurements.set(
+          button.id,
+          Math.round(fullEl.getBoundingClientRect().width)
+        );
       }
       if (compactEl) {
         compactMeasurements.set(
           button.id,
-          compactEl.getBoundingClientRect().width
+          Math.round(compactEl.getBoundingClientRect().width)
         );
       }
     });
@@ -334,7 +361,9 @@ export const ResponsiveButtonRow: React.FC<ResponsiveButtonRowProps> = ({
     // Measure menu button width
     let menuButtonWidth = 0;
     if (measureMenuRef.current) {
-      menuButtonWidth = measureMenuRef.current.getBoundingClientRect().width;
+      menuButtonWidth = Math.round(
+        measureMenuRef.current.getBoundingClientRect().width
+      );
     }
 
     setMeasurements((prev) => {
@@ -355,7 +384,37 @@ export const ResponsiveButtonRow: React.FC<ResponsiveButtonRowProps> = ({
         menuButton: menuButtonWidth,
       };
     });
-  }, [sortedForDisplay]);
+  }, []);
+
+  // Re-measure on mount and whenever the button SET changes. useLayoutEffect so
+  // the first measured layout is committed before paint (no flash of an
+  // unmeasured row). Keyed on the stable signature — NOT the array identity — so
+  // live-data re-renders that recreate the buttons array don't force a reflow.
+  // Window resize does not run this: container width is tracked separately by
+  // useContainerWidth, which feeds the (cheap, DOM-free) compact/overflow math.
+  useLayoutEffect(() => {
+    measure();
+  }, [measure, buttonSignature]);
+
+  // Re-measure when the hidden measure containers actually change size. This
+  // catches content-driven width changes that don't change the button set —
+  // a label going "Save" → "Saving…", a count badge, a late web-font swap —
+  // without paying a forced reflow on every render. The measure containers are
+  // off-screen and render the full + compact forms unconditionally, so their
+  // size is independent of container width and of the compact/overflow result;
+  // committing new measurements can't change their size, so this can't loop.
+  useEffect(() => {
+    const targets = [
+      measureFullRef.current,
+      measureCompactRef.current,
+      measureMenuRef.current,
+    ].filter((el): el is HTMLDivElement => el !== null);
+    if (targets.length === 0) return;
+
+    const observer = new ResizeObserver(() => measure());
+    targets.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [measure, enableOverflowMenu]);
 
   // Calculate which buttons should be compacted and which should overflow
   const calculateButtonStates = useCallback(() => {

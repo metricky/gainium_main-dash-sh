@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.8] - 2026-06-08
+
+### Fixed
+
+- Toolbar action rows no longer crash with "Maximum update depth exceeded"
+  after a tab is left open in the background. `ResponsiveButtonRow` now
+  rounds its measured button widths to whole pixels, so sub-pixel jitter
+  from `getBoundingClientRect` can't defeat the change-detection guard and
+  spin the measure→render loop forever. Affects the Overview tables, bot
+  form footer, and every other consumer of the shared button row.
+
 ## [2.10.7] - 2026-06-08
 
 ### Added
