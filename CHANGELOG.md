@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.9] - 2026-06-09
+
+### Fixed
+
+- Placing a Trading Terminal order (or creating a DCA/Combo bot) no longer
+  fails with `Field "avgPrice" is not defined by type "createDCABotInput"`.
+  The deal-edit-only **Breakeven price** (`avgPrice`) added in 2.10.7 was
+  leaking from the form defaults into the bot-create payload; it's now
+  stripped before the create mutation, alongside `useExperimental`.
+
 ## [2.10.8] - 2026-06-08
 
 ### Fixed
