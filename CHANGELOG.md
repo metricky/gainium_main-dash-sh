@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.13] - 2026-06-09
+
+### Fixed
+
+- New-bot page no longer gets stuck on "No trading pairs available" (and a
+  0 available balance) until a hard refresh. When the trading-pairs cache was
+  emptied — by the hourly cleanup or a live/paper context switch — while the
+  pairs query result was still cached, the store wasn't being repopulated and
+  stayed empty. `useTradingPairs` now re-syncs from the cached result the
+  moment the store is marked stale, matching how exchanges already recover.
+
+### Changed
+
+- New-bot wizard: the combo bot card now describes it as blending DCA and grid
+  strategies, and the selected bot-type card uses a ring highlight instead of a
+  filled background.
+
 ## [2.10.12] - 2026-06-09
 
 ### Fixed

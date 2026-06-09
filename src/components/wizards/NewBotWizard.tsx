@@ -38,7 +38,7 @@ const botDescriptions: Record<string, string> = {
   dca: 'Supercharged dollar-cost averaging strategy with a wide range of advanced settings.',
   grid: 'Capitalize on every market price movement by adapting to any price level range.',
   combo:
-    'Execute your strategy using webhook signals from any source or using a TradingView Strategy.',
+    'Blend DCA and grid strategies under one configuration for the best of both.',
   hedgeDca: 'DCA strategy with hedge protection against market downturns.',
   hedgeCombo: 'Combo strategy with hedge protection against market downturns.',
   signal: 'Execute your strategy using webhook signals from any source.',
@@ -101,16 +101,10 @@ export const NewBotWizard: React.FC<NewBotWizardProps> = ({
                       key={t}
                       onClick={() => setSelectedType(t)}
                       className={`group flex flex-col gap-md p-md rounded-lg border text-left transition-colors bg-inner-container
-                      ${selectedType === t ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:border-foreground/50'}
+                      ${selectedType === t ? 'border-primary ring-1 ring-primary' : 'border-border hover:border-foreground/50'}
                       `}
                     >
-                      <div
-                        className={`flex items-center justify-center rounded-md overflow-hidden w-full aspect-[16/9] ${
-                          selectedType === t
-                            ? 'bg-primary-foreground/15'
-                            : 'bg-muted'
-                        }`}
-                      >
+                      <div className="flex items-center justify-center rounded-md overflow-hidden w-full aspect-[16/9] bg-muted">
                         {Animation ? (
                           <Animation className="w-full h-full" />
                         ) : (
@@ -121,9 +115,7 @@ export const NewBotWizard: React.FC<NewBotWizardProps> = ({
                         <span className="text-base font-semibold">
                           {config.label}
                         </span>
-                        <span
-                          className={`text-sm ${selectedType === t ? 'text-primary-foreground/80' : 'text-muted-foreground'}`}
-                        >
+                        <span className="text-sm text-muted-foreground">
                           {botDescriptions[t] || 'Bot type'}
                         </span>
                       </div>
