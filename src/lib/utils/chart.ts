@@ -31,7 +31,7 @@ export const getCSSVar = (varName: string, fallback: string = '#000000') => {
     tmp.style.color = raw;
     document.body.appendChild(tmp);
     const computed = getComputedStyle(tmp).color; // e.g. "rgb(255, 0, 0)" or "rgb(255 0 0 / 0.5)"
-    document.body.removeChild(tmp);
+    tmp.remove();
 
     const hex = rgbaStringToHex(computed);
     // Debug log to help diagnose color resolution issues
