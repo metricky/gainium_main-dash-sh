@@ -1228,15 +1228,19 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       // Unrealized PnL: legacy formula
       // LONG:  (currentBase * price + currentQuote - initialQuote)
       // SHORT: (currentQuote - (initialBase - currentBase) * price)
-      const unrealizedPnl = hasMarketPrice
-        ? isLong
-          ? currentBaseAmount * Number(currentMarketPrice) +
-            currentQuoteAmount -
-            initialInvestment
-          : currentQuoteAmount -
-            (Number(deal.initialBalances.base || 0) - currentBaseAmount) *
-              Number(currentMarketPrice)
-        : undefined;
+      // Closed/canceled deals have no unrealized P&L (legacy parity with
+      // main-dash `isActiveDeal`); only compute it for live deals.
+      const unrealizedPnl = !isActiveDealStatus(deal.status)
+        ? 0
+        : hasMarketPrice
+          ? isLong
+            ? currentBaseAmount * Number(currentMarketPrice) +
+              currentQuoteAmount -
+              initialInvestment
+            : currentQuoteAmount -
+              (Number(deal.initialBalances.base || 0) - currentBaseAmount) *
+                Number(currentMarketPrice)
+          : undefined;
       const realizedPnl = executionSummary?.realizedPnl ?? 0;
       const usagePercentage = cost > 0 ? (value / cost) * 100 : 0;
 
@@ -2099,6 +2103,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           </span>
         ),
         cell: ({ row }) => {
+          // Closed/canceled deals have no unrealized P&L (legacy parity).
+          if (!row.original.active) {
+            return <span className="text-muted-foreground">-</span>;
+          }
           const unrealizedProfit = row.original.unrealizedProfit;
           if (isMetricUnavailable(unrealizedProfit)) {
             return (
@@ -2136,6 +2144,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         meta: { filterType: 'number' },
         enableHiding: true,
         cell: ({ row }) => {
+          // Closed/canceled deals have no unrealized P&L (legacy parity).
+          if (!row.original.active) {
+            return <span className="text-muted-foreground">-</span>;
+          }
           const unrealizedProfit = row.original.unrealizedProfit;
           if (isMetricUnavailable(unrealizedProfit)) {
             return (

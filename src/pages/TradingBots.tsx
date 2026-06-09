@@ -2174,18 +2174,24 @@ const TradingBots: React.FC = () => {
           ? `${workingDays}D ${workingHours}H`
           : `${workingHours}H`;
 
+      // Closed/canceled deals have no unrealized P&L. The server keeps a stale
+      // `stats.unrealizedProfit` on closed deals, so gate on active status
+      // (legacy parity with main-dash `isActiveDeal`). Zero (not undefined) so
+      // the table's totals row and sort treat closed deals as neutral.
+      const active = ['open', 'start', 'error'].includes(
+        String(deal.status).toLowerCase()
+      );
       const hookUnrealized = (deal as { unrealizedUsd?: number }).unrealizedUsd;
-      const unrealizedProfit =
-        typeof hookUnrealized === 'number'
+      const unrealizedProfit = !active
+        ? 0
+        : typeof hookUnrealized === 'number'
           ? hookUnrealized
           : (deal.stats?.unrealizedProfit ?? 0);
 
       return {
         baseAsset: deal.symbol?.baseAsset || '',
         quoteAsset: quoteSymbol,
-        active: ['open', 'start', 'error'].includes(
-          String(deal.status).toLowerCase()
-        ),
+        active,
         id: deal._id || deal.botId,
         type: 'DCA' as const,
         symbol,
