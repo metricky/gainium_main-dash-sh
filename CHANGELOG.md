@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.11] - 2026-06-09
+
+### Fixed
+
+- Bot error messages now reach the live toast (the WS payload is
+  unwrapped like every sibling event handler, and the toast header uses
+  the bot name) and the Notifications panel refreshes on every open
+  instead of serving a 5-minute stale cache.
+
 ## [2.10.10] - 2026-06-09
 
 ### Fixed

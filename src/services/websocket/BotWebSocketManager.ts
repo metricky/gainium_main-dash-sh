@@ -326,7 +326,7 @@ export class BotWebSocketManager {
       this.emitToSubscribers({
         type: 'bot sends message',
         botId: data['botId'] as string,
-        data: data,
+        data: data['data'] as Record<string, unknown>,
         timestamp: Date.now(),
         paperContext: data['paperContext'] as boolean,
         botType: data['botType'] as BotTypesEnum,
