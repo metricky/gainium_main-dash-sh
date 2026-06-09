@@ -32,6 +32,7 @@ import type { BalanceData } from '@/stores/live/balanceStore';
 import type { MessageData } from '@/stores/live/messageStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
+import { LiveMessageToaster } from '@/components/live/LiveMessageToaster';
 import { type OrderData, type DCADeals, BotTypesEnum } from '@/types';
 import type { OrderType } from '@/stores/live/orderStore';
 
@@ -468,6 +469,7 @@ export const LiveUpdateProvider: React.FC<LiveUpdateProviderProps> = ({
 
   return (
     <LiveUpdateContext.Provider value={contextValue}>
+      <LiveMessageToaster />
       {children}
     </LiveUpdateContext.Provider>
   );

@@ -10,6 +10,7 @@ import {
   type DCADealsSettings,
 } from '@/types';
 import { dealQueries } from '@/lib/api/GraphQLQueries-deal-queries';
+import { toast } from '@/lib/toast';
 import type { AdjustFundsDialogMode } from '@/features/bots/shared/runtime';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -149,6 +150,9 @@ export function useAdjustFunds() {
   );
 
   return useMutation<DealResponse, Error, AdjustFundsInput>({
+    // The call sites fire this mutation without awaiting it, so surface
+    // failures through the global error net rather than at the call site.
+    meta: { errorToast: true },
     mutationFn: async (input) => {
       logger.info('[useAdjustFunds] Adjust DCA Deals funds:', input);
 
@@ -185,12 +189,24 @@ export function useAdjustFunds() {
 
       return { status: 'NOTOK', reason: 'Invalid operation' };
     },
-    onSuccess: (data, variables) => {
-      logger.info('[useAdjustFunds] Funds in DCA deal adjusted successfully:', {
+    onSuccess: (response, variables) => {
+      logger.info('[useAdjustFunds] Adjust-funds request accepted:', {
         dealId: variables.dealId,
         mode: variables.mode,
-        response: data,
+        response,
       });
+      // The OK response only means the request was QUEUED — the order is
+      // placed on the exchange later and may still be rejected there (that
+      // rejection arrives asynchronously as a `bot sends message` error,
+      // surfaced by LiveMessageToaster). So echo the backend's "scheduled"
+      // message instead of implying the funds already moved.
+      const scheduledMsg =
+        typeof response?.data === 'string' && response.data.trim()
+          ? response.data
+          : variables.mode === 'add'
+            ? 'Add funds scheduled'
+            : 'Reduce funds scheduled';
+      toast.info(scheduledMsg);
     },
     onError: (error, variables) => {
       logger.error('[useCloseDCADeal] Failed to adjust funds in DCA deal:', {

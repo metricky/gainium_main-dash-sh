@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.10] - 2026-06-09
+
+### Fixed
+
+- Adding or reducing funds on a deal now reports "Add funds scheduled"
+  (the backend's actual response) instead of falsely claiming the funds were
+  added — the request is only queued at that point, and the order can still
+  be rejected by the exchange.
+- That later exchange-side rejection (insufficient balance, min notional,
+  ...) is now surfaced in the terminal: live bot error/warning messages are
+  shown as toasts as they arrive, instead of being swallowed. Routine
+  info-level bot messages stay quiet (kept in the message store for a
+  notification panel) to avoid noise.
+- A synchronous add/reduce-funds failure (rejected before scheduling) now
+  surfaces the backend reason instead of failing silently.
+
+### Added
+
+- Mutations can opt into global error feedback with
+  `meta: { errorToast: true }` (toasts the thrown reason) or
+  `meta: { errorToast: 'message' }` (fixed text), giving a single place to
+  surface failures for fire-and-forget mutations.
+
 ## [2.10.9] - 2026-06-09
 
 ### Fixed
