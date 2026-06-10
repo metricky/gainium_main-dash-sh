@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.21] - 2026-06-10
+
+### Changed
+
+- Backtest results deal chart now fills its panel directly with rounded
+  corners, instead of sitting inside a padded inner card.
+
+### Fixed
+
+- Bot detail side panels now use the base-canvas surface, so deal cards and
+  overview widgets stay visually distinct from the panel instead of blending
+  into it (regression from the 2.10.20 solid-panel change).
+- Backtest results "Deals" list: the open deal now shows its unrealized P&L
+  (coloured by sign) instead of a flat 0.00% / $0.00.
+- Backtest results "Deals" header: add a little spacing between the "Deals"
+  label and the deal count.
+- Backtest results "DCA ladder": safety-order deviation now reads cumulatively
+  from entry (and rung prices follow), instead of showing each order's step
+  from the previous one — every rung past the first was sitting too close to
+  entry.
+
 ## [2.10.20] - 2026-06-10
 
 ### Added
