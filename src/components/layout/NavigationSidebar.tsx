@@ -734,15 +734,18 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
           <div className="px-2 py-4 border-b border-border">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 flex items-center justify-center shrink-0 mx-2">
+                <div className="w-8 h-8 flex items-center justify-center shrink-0 ml-2">
                   <LogoIcon className="w-8 h-8" />
                 </div>
                 <div
-                  className={`transition-opacity duration-300 ease-in-out whitespace-nowrap flex-1 ${
+                  className={`transition-opacity duration-300 ease-in-out whitespace-nowrap flex-1 flex items-center gap-2 ${
                     isExpanded ? 'opacity-100' : 'opacity-0'
                   }`}
                 >
                   <LogoWordmark className="h-6" />
+                  <span className="inline-flex items-center rounded-full border border-primary/50 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground shadow-sm">
+                    v2
+                  </span>
                 </div>
               </div>
               {!isMobileVariant && (

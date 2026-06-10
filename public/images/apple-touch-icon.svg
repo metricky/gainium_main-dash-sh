@@ -1,11 +1,9 @@
-<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#ff9551;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#ff6b35;stop-opacity:1" />
-    </linearGradient>
-  </defs>
-  <rect width="180" height="180" rx="40" fill="url(#brandGradient)"/>
-  <circle cx="90" cy="90" r="45" fill="white" opacity="0.9"/>
-  <text x="90" y="102" font-family="Arial, sans-serif" font-size="45" font-weight="700" text-anchor="middle" fill="url(#brandGradient)">G</text>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs><linearGradient id="g" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF827A"/><stop offset="1" stop-color="#FFA825"/></linearGradient><filter id="sh" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#000000" flood-opacity="0.35"/></filter></defs>
+  <rect width="256" height="256" rx="53" fill="#232d45"/>
+  <path transform="translate(29,29) scale(0.714)" d="M252.743 214.669C267.906 191.975 276 165.294 276 138H175.802C175.802 145.477 173.585 152.785 169.431 159.002C165.278 165.218 159.374 170.063 152.466 172.925C145.559 175.786 137.958 176.534 130.625 175.076C123.292 173.617 116.557 170.017 111.27 164.73C105.983 159.443 102.383 152.708 100.924 145.375C99.4658 138.042 100.214 130.441 103.076 123.534C105.937 116.626 110.782 110.723 116.998 106.569C123.215 102.415 130.524 100.198 138 100.198V0C110.706 0 84.0254 8.09356 61.3314 23.2572C38.6374 38.4208 20.9496 59.9735 10.5047 85.1897C0.0597914 110.406 -2.67307 138.153 2.65169 164.922C7.97645 191.692 21.1197 216.281 40.4193 235.581C59.719 254.88 84.3082 268.024 111.078 273.348C137.847 278.673 165.594 275.94 190.81 265.495C216.027 255.05 237.579 237.363 252.743 214.669ZM276 0H176V100H276V0Z" fill="url(#g)" filter="url(#sh)"/>
+  <g filter="url(#sh)">
+    <rect x="133" y="170" width="107" height="69" rx="35" fill="#0f1420" stroke="#FFA825" stroke-width="6.5"/>
+    <text x="186.5" y="217.5" text-anchor="middle" font-family="sans-serif" font-size="38" font-weight="600" fill="#ffffff">V2</text>
+  </g>
 </svg>
