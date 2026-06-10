@@ -211,9 +211,16 @@ function nearestCandleIdx(candles: DealCandleVM[], t: number | null): number {
 /**
  * Reconstruct the planned safety-order ladder from settings and mark the
  * rungs that filled. Deviation per rung is NOT stored per-rung, so we
- * recompute the planned geometric ladder (`step * stepScale^k`) and flag
- * the first `levels.complete` rungs as filled. Best-effort fill times are
- * matched from `filledOrders` / `ordersHistory` by nearest price.
+ * recompute the planned geometric ladder and flag the first `levels.complete`
+ * rungs as filled. Best-effort fill times are matched from `filledOrders` /
+ * `ordersHistory` by nearest price.
+ *
+ * Each rung's *step* away from the previous one is `step * stepScale^k`, but
+ * the rung's deviation is measured **cumulatively from entry** (the geometric
+ * series sum), and its trigger price comes from that cumulative deviation —
+ * matching the engine, which spaces each SO from the previous order's price.
+ * (Earlier this used the per-step value as if it were the absolute deviation,
+ * so every rung past the first sat far too close to entry.)
  */
 function buildSafetyLadder(
   deal: PreparedDeal,
@@ -251,15 +258,16 @@ function buildSafetyLadder(
   };
 
   const ladder: SafetyLevelVM[] = [];
+  let cumDev = 0; // running deviation from entry (geometric series sum)
   for (let k = 0; k < maxSo; k += 1) {
-    const dev = step > 0 ? step * Math.pow(stepScale, k) : 0;
+    cumDev += step > 0 ? step * Math.pow(stepScale, k) : 0;
     const price = long
-      ? entry * (1 - dev / 100)
-      : entry * (1 + dev / 100);
+      ? entry * (1 - cumDev / 100)
+      : entry * (1 + cumDev / 100);
     const filled = k < completed;
     ladder.push({
       idx: k + 1,
-      dev,
+      dev: cumDev,
       price,
       filled,
       at: filled ? fillTimeForPrice(price) : null,
@@ -428,6 +436,22 @@ export function buildBacktestViewModel(
   const dealList: DealVM[] = deals.map((deal, i) =>
     buildDealVM(deal, i, settings),
   );
+
+  // Open deals carry no realized P&L from the engine — their `profit` stays
+  // zeroed until they close. When exactly one deal is still open (the common
+  // single-pair DCA case), surface the run's unrealized P&L on that row so the
+  // list shows a live number instead of 0.00%. With multiple open deals the
+  // engine only reports the aggregate unrealized figure, which can't be split
+  // per deal, so we leave those rows untouched.
+  const openDeals = dealList.filter((d) => d.status === 'open');
+  if (openDeals.length === 1) {
+    const uPerc = financial?.unrealizedPnLPerc;
+    const uUsd = financial?.unrealizedPnLUsd;
+    if (uPerc != null || uUsd != null) {
+      openDeals[0].pnlPerc = num(uPerc);
+      openDeals[0].pnlUsd = num(uUsd);
+    }
+  }
 
   const wins = num(numerical?.profit);
   const losses = num(numerical?.loss);

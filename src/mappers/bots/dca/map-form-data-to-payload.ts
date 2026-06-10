@@ -546,7 +546,20 @@ export const mapFormDataToPayload = (
     return failureResult;
   }
 
-  const updatePayload = mappingResult.data ?? {};
+  //TODO: remove when backend will be updated
+  // avgPrice is a deal-edit-only breakeven override seeded into the form
+  // defaults; it rides the DCA_FORM_DEFAULTS spread into mappingResult.data but
+  // change{DCA,Combo}BotInput has no such field, so strip it (like the create
+  // path does) before building the update payload. useExperimental is stripped
+  // alongside for the same reason.
+  const {
+    avgPrice: _avgPrice,
+    useExperimental: _useExperimental,
+    ...updatePayload
+  } = (mappingResult.data ?? {}) as DCABotSettings & {
+    avgPrice?: number;
+    useExperimental?: boolean;
+  };
 
   const sanitizedUpdatePayload = sanitizeSettingsForApi(
     sanitizeUpdateSettings(updatePayload)

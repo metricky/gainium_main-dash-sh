@@ -72,8 +72,12 @@ interface InputDialogProps {
   title: string;
   description?: string;
   placeholder?: string;
+  /** Pre-fills the input when the dialog opens (e.g. the current name). */
+  defaultValue?: string;
   confirmText?: string;
   cancelText?: string;
+  /** Allow submitting an empty value (e.g. clearing an optional field). */
+  allowEmpty?: boolean;
   onConfirm: (value: string) => void;
   onCancel?: () => void;
   validator?: (value: string) => string | null; // Returns error message or null if valid
@@ -85,19 +89,21 @@ export const InputDialog: React.FC<InputDialogProps> = ({
   title,
   description,
   placeholder,
+  defaultValue = '',
   confirmText = 'Confirm',
   cancelText = 'Cancel',
+  allowEmpty = false,
   onConfirm,
   onCancel,
   validator,
 }) => {
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState(defaultValue);
   const [error, setError] = useState<string | null>(null);
 
   const handleConfirm = () => {
     const trimmedValue = value.trim();
 
-    if (!trimmedValue) {
+    if (!trimmedValue && !allowEmpty) {
       setError('This field is required');
       return;
     }
@@ -111,13 +117,13 @@ export const InputDialog: React.FC<InputDialogProps> = ({
     }
 
     onConfirm(trimmedValue);
-    setValue('');
+    setValue(defaultValue);
     setError(null);
     onOpenChange(false);
   };
 
   const handleCancel = () => {
-    setValue('');
+    setValue(defaultValue);
     setError(null);
     onCancel?.();
     onOpenChange(false);
@@ -129,13 +135,16 @@ export const InputDialog: React.FC<InputDialogProps> = ({
     }
   };
 
-  // Reset state when dialog opens/closes
+  // Seed the input with the default value each time the dialog opens, and
+  // clear the transient error when it closes.
   React.useEffect(() => {
-    if (!open) {
-      setValue('');
+    if (open) {
+      setValue(defaultValue);
+      setError(null);
+    } else {
       setError(null);
     }
-  }, [open]);
+  }, [open, defaultValue]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

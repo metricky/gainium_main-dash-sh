@@ -1917,6 +1917,7 @@ const BotForm: React.FC<BotFormProps> = ({
 
 
   const [showRestartDialog, setShowRestartDialog] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   /* const [showSmartOrderMergeDialog, setShowSmartOrderMergeDialog] =
     useState(false);
   const [smartOrderMergeDefaults, setSmartOrderMergeDefaults] = useState<
@@ -2544,15 +2545,7 @@ const BotForm: React.FC<BotFormProps> = ({
           label: 'Reset to defaults',
           icon: RotateCcw,
           onSelect: () => {
-            if (
-              window.confirm(
-                'Are you sure you want to reset all settings to defaults? This cannot be undone.'
-              )
-            ) {
-              // Reset formData to defaults
-              setFormData(createDefaultFormState(mode, isTerminal));
-              toast.success('Settings reset to defaults');
-            }
+            setShowResetConfirm(true);
           },
           disabled: mode === 'edit',
         }
@@ -2650,7 +2643,6 @@ const BotForm: React.FC<BotFormProps> = ({
     handleAddFundsClick,
     handleReduceFundsClick,
     fundsActionsDisabled,
-    setFormData,
     isTerminal,
   ]);
 
@@ -3708,6 +3700,18 @@ const BotForm: React.FC<BotFormProps> = ({
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
       />
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          setFormData(createDefaultFormState(mode, isTerminal));
+          toast.success('Settings reset to defaults');
+        }}
+      />
       <BotSettingsImportExportDialog
         open={showImportExportDialog}
         onOpenChange={setShowImportExportDialog}
@@ -4105,6 +4109,18 @@ const BotForm: React.FC<BotFormProps> = ({
         confirmText="Continue"
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
+      />
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          setFormData(createDefaultFormState(mode, isTerminal));
+          toast.success('Settings reset to defaults');
+        }}
       />
       <BotSettingsImportExportDialog
         open={showImportExportDialog}

@@ -19,6 +19,10 @@ const CLOSED_GROUP: string[] = [
   DCADealStatusEnum.canceled,
 ];
 
+/** Backend active-only default when no status filter is sent: the resolver
+ *  applies `status $in [open, error, start]`. Mirrors OPEN_GROUP. */
+export const ACTIVE_ONLY_DEFAULT_STATUSES: string[] = OPEN_GROUP;
+
 /** The set of raw status strings that make up the requested open/closed view. */
 export function dealStatusGroup(
   status?: DCADealStatusEnum

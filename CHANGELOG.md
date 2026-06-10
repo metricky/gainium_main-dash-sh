@@ -5,11 +5,189 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.21] - 2026-06-10
+
+### Changed
+
+- Backtest results deal chart now fills its panel directly with rounded
+  corners, instead of sitting inside a padded inner card.
+
+### Fixed
+
+- Bot detail side panels now use the base-canvas surface, so deal cards and
+  overview widgets stay visually distinct from the panel instead of blending
+  into it (regression from the 2.10.20 solid-panel change).
+- Backtest results "Deals" list: the open deal now shows its unrealized P&L
+  (coloured by sign) instead of a flat 0.00% / $0.00.
+- Backtest results "Deals" header: add a little spacing between the "Deals"
+  label and the deal count.
+- Backtest results "DCA ladder": safety-order deviation now reads cumulatively
+  from entry (and rung prices follow), instead of showing each order's step
+  from the previous one — every rung past the first was sitting too close to
+  entry.
+
+## [2.10.20] - 2026-06-10
+
+### Added
+
+- Bot detail drawer "DCA Analysis" now shows the configured projection
+  (deviation covered, average down power, capital needed) alongside the
+  deal-level usage stats, and is shown for Combo bots too — not just DCA.
+
+### Fixed
+
+- DCA overview (coverage / average down power / total funds, plus the orders
+  table and graph) no longer reads 0 / empty when viewing an existing bot's
+  settings; it now projects the saved configuration, matching the create/edit
+  form's figures for both DCA and Combo bots.
+
+### Changed
+
+- Bot detail side panels use a solid background instead of a translucent glass
+  surface, so the form and content underneath are easier to read.
+
+## [2.10.19] - 2026-06-10
+
+### Added
+
+- Bot tables (DCA, Combo, Grid, Hedge DCA, Hedge Combo) now expose a "BOT ID"
+  column, hidden by default and toggleable from the Columns menu.
+
+### Changed
+
+- The deal table's "Deal ID" column is now hidden by default (still
+  toggleable from the Columns menu) instead of always shown.
+- Replaced the remaining native browser dialogs (confirm/alert/prompt) with
+  in-app React dialogs and toasts across Global Variables, bot form reset and
+  save-as-template, widget reset, tag editing, Notes link insertion, order
+  notes, and API key rename/restrict/delete.
+
+### Fixed
+
+- Combo bot "Total Profit" in the bot table/card now matches the bot
+  drawer. The table was showing the asset-blended `profit.total` figure
+  under the "$" column instead of the USD value, so list and detail views
+  disagreed.
+- Global Variables: editing a variable no longer leaves the Type and Value
+  fields blank. A stray empty change event from the type dropdown was
+  clearing both when the edit dialog opened.
+
+## [2.10.18] - 2026-06-10
+
+### Fixed
+
+- Closing several deals in a row from the deals card view no longer crashes
+  the page (React error #185). The deal-card price sparkline and the bot-card
+  equity chart had their mount animation enabled; recharts fires a state
+  update from that animation's unmount cleanup, so a batch of cards
+  unmounting mid-animation tripped React's nested-update limit.
+
+### Changed
+
+- The Bots/Deals toggle on the DCA and Combo bot pages is now reflected in
+  the URL (`?view=deals`), so reloads, deep links, and closing the bot
+  drawer land back on the same view. Legacy `?view=<botId>` links on the
+  DCA page still redirect to the bot drawer.
+
+## [2.10.17] - 2026-06-10
+
+### Fixed
+
+- Existing stale deals/bots now actually clear on upgrade. The stale-write
+  guards (2.10.15–16) prevented *new* contamination but couldn't evict
+  entities already resurrected into the persisted caches before the fix
+  shipped. This release busts both persisted layers on deploy: the live
+  Zustand stores (deals + all bot types) wipe and refetch on version bump,
+  and the React Query persisted cache is now keyed to the app version so a
+  pre-deploy snapshot can no longer replay after an upgrade.
+- The combo-deal list reconciliation now works against the production
+  backend, which returns the full active set without pagination counts
+  (`totalResults`/`totalPages` are null). Pruning was previously gated on a
+  numeric `totalResults` and so never ran in production, leaving closed combo
+  deals in the list. It now treats a response as complete unless it
+  explicitly signals more pages, while still only pruning against a fresh
+  snapshot.
+
+## [2.10.16] - 2026-06-10
+
+### Fixed
+
+- Hardened deal-list reconciliation against stale cached responses: the
+  absence-delete that prunes closed deals now runs only against a snapshot
+  proven fresh (each query response is stamped with its network fetch time),
+  and never removes a deal updated after that snapshot was taken. A replayed
+  cache entry — even one that looks complete — can no longer prune live deals
+  that arrived after it was cached. Closes the last window in which an open
+  deal could briefly vanish on navigating back to a deals list.
+
+## [2.10.15] - 2026-06-10
+
+### Fixed
+
+- Closed/canceled deals and stopped/deleted bots no longer reappear in lists
+  after navigating away and back (or reloading within the cache window). The
+  cached list responses replayed into the live stores could resurrect
+  entities that were just mutated locally. All store write paths (query
+  write-backs, websocket events) now go through freshness arbitration plus
+  short-lived tombstones for locally closed deals / deleted bots, and
+  close/stop/delete actions immediately patch the cached list responses
+  themselves. Covers DCA, Combo, Grid, both Hedge bot types, and the bot and
+  deal views.
+- Deal lists now reconcile against the server snapshot: a deal the backend no
+  longer returns as active is removed from the local store (previously stale
+  Combo deals could linger indefinitely), without pruning when the response
+  is known to be page-capped.
+
+## [2.10.14] - 2026-06-10
+
+### Fixed
+
+- Editing and saving a DCA or Combo bot no longer fails with
+  `Field "avgPrice" is not defined by type "changeDCABotInput"`. The
+  deal-edit-only **Breakeven price** (`avgPrice`) seeded into the form
+  defaults was leaking into the bot **update** payload — the same leak that
+  2.10.9 fixed for bot **create**. It's now stripped (alongside
+  `useExperimental`) before the update mutation. Grid bots and hedge legs are
+  unaffected.
+- The bot-create "insufficient credits" guard now reads the **bot credits**
+  pool (`subscription.credits.balance` minus `locked`) instead of the
+  consumable `user.credits` pool. Users who had bot credits but no consumable
+  balance were wrongly blocked from creating bots.
+
+## [2.10.13] - 2026-06-09
+
+### Fixed
+
+- New-bot page no longer gets stuck on "No trading pairs available" (and a
+  0 available balance) until a hard refresh. When the trading-pairs cache was
+  emptied — by the hourly cleanup or a live/paper context switch — while the
+  pairs query result was still cached, the store wasn't being repopulated and
+  stayed empty. `useTradingPairs` now re-syncs from the cached result the
+  moment the store is marked stale, matching how exchanges already recover.
+
+### Changed
+
+- New-bot wizard: the combo bot card now describes it as blending DCA and grid
+  strategies, and the selected bot-type card uses a ring highlight instead of a
+  filled background.
+
+## [2.10.12] - 2026-06-09
+
+### Fixed
+
+- Closed and canceled deals no longer report an unrealized P&L on the
+  bot deals table — they show "-" instead of the stale value the server
+  keeps after a deal closes, and sorting/totals treat them as neutral.
+
 ## [2.10.11] - 2026-06-09
 
 ### Fixed
 
 - Replaced `document.body.removeChild(tmp)` with `tmp.remove()` in `getCSSVar` color-resolution utility to prevent a DOM exception when the temporary measurement element is no longer a direct child of `document.body`.
+- Bot error messages now reach the live toast (the WS payload is
+  unwrapped like every sibling event handler, and the toast header uses
+  the bot name) and the Notifications panel refreshes on every open
+  instead of serving a 5-minute stale cache.
 
 ## [2.10.10] - 2026-06-09
 

@@ -3,6 +3,7 @@ import { createQueuedIndexedDBStorage } from '@/lib/zustand-indexeddb-storage';
 import type { HedgeBot } from '@/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { consultBotTombstone, isIncomingBotStale } from './staleWriteGuard';
 import { WebSocketDebouncer } from './webSocketDebouncer';
 
 interface HedgeComboBotsStoreState {
@@ -74,8 +75,24 @@ export const useHedgeComboBotsStore = create<HedgeComboBotsStoreState>()(
           }));
         },
         updateBots: (bots: HedgeBot[]) => {
+          // Per-bot stale + tombstone guards prevent a stale cached list
+          // response from resurrecting a just-deleted bot or reverting a
+          // newer optimistic update.
+          const existing = get().bots;
           const botsRecord: Record<string, HedgeBot> = {};
           bots.forEach((bot) => {
+            const prior = existing[bot._id];
+            if (isIncomingBotStale(prior, bot)) {
+              botsRecord[bot._id] = prior;
+              return;
+            }
+            const incomingMs = bot.updated
+              ? new Date(bot.updated).getTime()
+              : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            if (consultBotTombstone(bot._id, ms) === 'reject') return;
             botsRecord[bot._id] = bot;
           });
           set({ bots: botsRecord, loading: false, error: null });
@@ -89,6 +106,12 @@ export const useHedgeComboBotsStore = create<HedgeComboBotsStoreState>()(
             );
             return;
           }
+          if (isIncomingBotStale(existingBot, bot)) return;
+          const incomingMs = bot.updated
+            ? new Date(bot.updated).getTime()
+            : undefined;
+          const ms = Number.isNaN(incomingMs as number) ? undefined : incomingMs;
+          if (consultBotTombstone(bot._id, ms) === 'reject') return;
           set((state) => ({
             bots: { ...state.bots, [bot._id]: bot },
             loadingById: { ...state.loadingById, [bot._id]: false },
@@ -139,6 +162,15 @@ export const useHedgeComboBotsStore = create<HedgeComboBotsStoreState>()(
               );
               return;
             }
+
+            const incomingMs =
+              typeof data.updated !== 'undefined' && data.updated
+                ? new Date(data.updated as string).getTime()
+                : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            if (consultBotTombstone(botId, ms) === 'reject') return;
 
             updatedBots[botId] = {
               ...existingBot,
@@ -210,7 +242,7 @@ export const useHedgeComboBotsStore = create<HedgeComboBotsStoreState>()(
         name: 'hedge-combo-bots-store',
         storage: createQueuedIndexedDBStorage('hedge-combo-bots-store'),
         // One-time cache bust: drop stale persisted bots on upgrade.
-        version: 1,
+        version: 2,
         migrate: () => ({ bots: {} }),
         partialize: (state) => ({ bots: state.bots }),
         merge: (persistedState, currentState) => ({

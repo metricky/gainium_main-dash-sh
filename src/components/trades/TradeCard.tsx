@@ -1103,12 +1103,19 @@ const EnhancedCard = React.memo(
                           />
                         )}
 
+                        {/* isAnimationActive must stay false on every series
+                            in this sparkline: recharts' JavascriptAnimate
+                            calls setState from its unmount cleanup, and a
+                            batch of cards unmounting mid-animation (e.g.
+                            closing deals from card view) trips React's
+                            nested-update limit (minified error #185). */}
                         <Line
                           type="monotone"
                           dataKey="price"
                           stroke={colors.chart3}
                           strokeWidth={2}
                           dot={false}
+                          isAnimationActive={false}
                           activeDot={{
                             r: 4,
                             fill: colors.chart3,

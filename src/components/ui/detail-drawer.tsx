@@ -816,7 +816,9 @@ const DetailDrawerContent: React.FC<DetailDrawerContentProps> = ({
             }}
             className={cn(
               'fixed right-0 h-full flex pointer-events-none',
-              fullWidth ? 'top-14 h-[calc(100%-3.5rem)] justify-stretch' : 'top-0 justify-end'
+              fullWidth
+                ? 'top-14 h-[calc(100%-3.5rem)] justify-stretch'
+                : 'top-0 justify-end'
             )}
             role="dialog"
             aria-modal="true"
@@ -843,7 +845,7 @@ const DetailDrawerContent: React.FC<DetailDrawerContentProps> = ({
                   )}
                   <div
                     className={cn(
-                      'glass-surface h-full border-l border-border shadow-2xl overflow-hidden pointer-events-auto',
+                      'bg-background h-full border-l border-border shadow-2xl overflow-hidden pointer-events-auto',
                       !resizable && 'w-[640px] max-w-[70vw]',
                       isResizableLayout && isResizing && 'pointer-events-none',
                       leftPanelClassName
@@ -876,7 +878,7 @@ const DetailDrawerContent: React.FC<DetailDrawerContentProps> = ({
             ) : null}
             <div
               className={cn(
-                'glass-surface h-full border-l border-border shadow-2xl',
+                'bg-background h-full border-l border-border shadow-2xl',
                 'overflow-hidden flex flex-col pointer-events-auto relative',
                 'w-full max-w-none',
                 fullWidth && 'flex-1 min-w-0',

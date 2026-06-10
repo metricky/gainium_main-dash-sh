@@ -860,6 +860,9 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                           return null;
                         }}
                       />
+                      {/* Animation stays off: recharts' JavascriptAnimate
+                          setStates from unmount cleanup, so a batch of cards
+                          unmounting mid-animation crashes with React #185. */}
                       <Area
                         type="monotone"
                         dataKey="equity"
@@ -867,6 +870,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                         strokeWidth={2}
                         fill={`url(#equityGradient-${bot.id})`}
                         name="Bot Equity"
+                        isAnimationActive={false}
                       />
                     </AreaChart>
                   </ResponsiveContainer>

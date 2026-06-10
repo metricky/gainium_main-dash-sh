@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { dealQueries } from '../lib/api/GraphQLQueries-deal-queries';
 import type { ReturnResult } from '../lib/api/types';
 import { logger } from '../lib/loggerInstance';
-import { useGraphQL } from './useGraphQL';
+import { useGraphQL, type FetchStamped } from './useGraphQL';
 import type {
   ComboDeals,
   DataGridFilterInput,
@@ -10,7 +10,11 @@ import type {
 } from '@/types';
 import { useDealStore, type DealWithType } from '@/stores/live';
 import { useUIStore } from '@/stores/uiStore';
-import { dealStatusGroup, statusFilterItem } from '../lib/utils/dealStatusFilter';
+import {
+  ACTIVE_ONLY_DEFAULT_STATUSES,
+  dealStatusGroup,
+  statusFilterItem,
+} from '../lib/utils/dealStatusFilter';
 
 export type ComboDeal = ComboDeals;
 
@@ -138,11 +142,42 @@ export function useComboDeals(filter?: ComboDealsFilter): UseComboDealsResult {
           },
           {} as Record<string, ComboDeals[]>
         );
-      Object.entries(mapDealsByBotId).forEach(([botId, botDeals]) => {
-        useDealStore.getState().updateDeals(botId, botDeals, 'combo');
-      });
+      // comboDealList returns the full active set in a single response — the
+      // live backend reports page/totalPages/totalResults as null (it doesn't
+      // paginate this list). So treat the snapshot as complete UNLESS the
+      // response explicitly signals more pages (a later page, >1 total pages,
+      // or a result count short of a reported total). Requiring a numeric
+      // totalResults here would make `complete` permanently false in
+      // production, disabling the absence-delete entirely. The prune stays
+      // safe either way: the store only absence-deletes against a fresh
+      // `snapshotAt` and never removes a deal newer than the snapshot.
+      const { totalResults, totalPages, page } = queryResult.data.data;
+      const paginated =
+        (typeof totalPages === 'number' && totalPages > 1) ||
+        (typeof page === 'number' && page > 0) ||
+        (typeof totalResults === 'number' &&
+          normalizedDeals.length < totalResults);
+      const complete = !paginated;
+      // Reconcile the whole combo scope in one authoritative pass: the
+      // snapshot wins, in-scope deals absent from it AND older than the
+      // snapshot's fetch stamp are pruned (so a closed deal disappears), and
+      // per-deal arbitration + tombstones run inside. snapshotAt comes from
+      // the network stamp useGraphQL attaches — a cache-replayed response
+      // keeps its original stamp, so it can never delete deals newer than
+      // itself (e.g. created via websocket after it was fetched).
+      useDealStore.getState().reconcileDeals(
+        {
+          dealType: 'combo',
+          paperContext: currentPaperContext,
+          statuses: dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
+          botId: filter?.botId,
+          complete,
+          snapshotAt: (queryResult.data as FetchStamped).__fetchedAt,
+        },
+        mapDealsByBotId
+      );
     }
-  }, [currentPaperContext, queryResult.data]);
+  }, [currentPaperContext, queryResult.data, filter?.status, filter?.botId]);
 
   // If there's an error, log it
   if (queryResult.error) {

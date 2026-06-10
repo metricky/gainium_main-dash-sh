@@ -2448,6 +2448,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Unrealized P&L',
       cell: ({ row }) => {
         const trade = row.original;
+        // Closed/canceled deals have no unrealized P&L (legacy parity).
+        if (!trade.active) {
+          return <span className="text-muted-foreground">-</span>;
+        }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
@@ -2487,6 +2491,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Unrealized P&L, %',
       cell: ({ row }) => {
         const trade = row.original;
+        // Closed/canceled deals have no unrealized P&L (legacy parity).
+        if (!trade.active) {
+          return <span className="text-muted-foreground">-</span>;
+        }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
@@ -2689,6 +2697,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       gridProfitPercentage: false,
       netPnl: false,
       netPnlPercentage: false,
+      dealId: false,
     }),
     []
   );

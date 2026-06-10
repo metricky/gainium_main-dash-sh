@@ -34,6 +34,10 @@ import WidgetContainer from '../components/layout/WidgetContainer';
 import ShortcutsList from '../components/shortcuts/ShortcutsList';
 import { Button } from '../components/ui/button';
 import {
+  ConfirmationDialog,
+  InputDialog,
+} from '../components/ui/confirmation-dialog';
+import {
   Card,
   CardContent,
   CardHeader,
@@ -306,6 +310,14 @@ const Settings: React.FC = () => {
   const licenseKeyOps = useLicenseKeyOperations();
 
   // Regenerate-recovery-codes dialog state.
+  // Pending API-key action driving the React rename/restrict/delete dialogs
+  // (replaces native prompt()/confirm()).
+  const [apiKeyAction, setApiKeyAction] = useState<
+    | { kind: 'rename'; id: string; name: string }
+    | { kind: 'restrict'; id: string; botId: string }
+    | { kind: 'delete'; id: string }
+    | null
+  >(null);
   const [regenOpen, setRegenOpen] = useState(false);
   const [regenOtpToken, setRegenOtpToken] = useState('');
   const [regenError, setRegenError] = useState<string | null>(null);
@@ -1423,18 +1435,13 @@ const Settings: React.FC = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => {
-                                  const newName = prompt(
-                                    'Enter new name:',
-                                    apiKey.name || ''
-                                  );
-                                  if (newName !== null) {
-                                    apiKeysOps.changeName({
-                                      key: apiKey._id,
-                                      name: newName,
-                                    });
-                                  }
-                                }}
+                                onClick={() =>
+                                  setApiKeyAction({
+                                    kind: 'rename',
+                                    id: apiKey._id,
+                                    name: apiKey.name || '',
+                                  })
+                                }
                               >
                                 <Edit className="w-4 h-4" />
                               </Button>
@@ -1500,18 +1507,13 @@ const Settings: React.FC = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => {
-                                  const newBotId = prompt(
-                                    'Enter bot ID to restrict this key to (leave blank to allow all bots):',
-                                    apiKey.botId || ''
-                                  );
-                                  if (newBotId !== null) {
-                                    apiKeysOps.changeBotId({
-                                      key: apiKey._id,
-                                      botId: newBotId.trim() || null,
-                                    });
-                                  }
-                                }}
+                                onClick={() =>
+                                  setApiKeyAction({
+                                    kind: 'restrict',
+                                    id: apiKey._id,
+                                    botId: apiKey.botId || '',
+                                  })
+                                }
                               >
                                 <Edit className="w-4 h-4" />
                               </Button>
@@ -1539,17 +1541,12 @@ const Settings: React.FC = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => {
-                                  if (
-                                    confirm(
-                                      'Are you sure you want to delete this API key?'
-                                    )
-                                  ) {
-                                    apiKeysOps.deleteAPIKeys({
-                                      key: apiKey._id,
-                                    });
-                                  }
-                                }}
+                                onClick={() =>
+                                  setApiKeyAction({
+                                    kind: 'delete',
+                                    id: apiKey._id,
+                                  })
+                                }
                                 disabled={apiKeysOps.isDeleting}
                                 className="text-red-500 hover:text-red-600"
                               >
@@ -1613,6 +1610,72 @@ const Settings: React.FC = () => {
                   Error updating bot ID: {apiKeysOps.changeBotIdError.message}
                 </div>
               )}
+
+              {/* React dialogs replacing the native prompt()/confirm() flows */}
+              <InputDialog
+                open={apiKeyAction?.kind === 'rename'}
+                onOpenChange={(open) => {
+                  if (!open) setApiKeyAction(null);
+                }}
+                title="Rename API key"
+                description="Enter a new name for this API key."
+                placeholder="API key name"
+                defaultValue={
+                  apiKeyAction?.kind === 'rename' ? apiKeyAction.name : ''
+                }
+                confirmText="Save"
+                allowEmpty
+                onConfirm={(value) => {
+                  if (apiKeyAction?.kind === 'rename') {
+                    apiKeysOps.changeName({
+                      key: apiKeyAction.id,
+                      name: value,
+                    });
+                  }
+                  setApiKeyAction(null);
+                }}
+              />
+
+              <InputDialog
+                open={apiKeyAction?.kind === 'restrict'}
+                onOpenChange={(open) => {
+                  if (!open) setApiKeyAction(null);
+                }}
+                title="Restrict API key to a bot"
+                description="Enter a bot ID to restrict this key to. Leave blank to allow all bots."
+                placeholder="Bot ID"
+                defaultValue={
+                  apiKeyAction?.kind === 'restrict' ? apiKeyAction.botId : ''
+                }
+                confirmText="Save"
+                allowEmpty
+                onConfirm={(value) => {
+                  if (apiKeyAction?.kind === 'restrict') {
+                    apiKeysOps.changeBotId({
+                      key: apiKeyAction.id,
+                      botId: value.trim() || null,
+                    });
+                  }
+                  setApiKeyAction(null);
+                }}
+              />
+
+              <ConfirmationDialog
+                open={apiKeyAction?.kind === 'delete'}
+                onOpenChange={(open) => {
+                  if (!open) setApiKeyAction(null);
+                }}
+                title="Delete API key?"
+                description="Are you sure you want to delete this API key? This cannot be undone."
+                confirmText="Delete"
+                variant="destructive"
+                onConfirm={() => {
+                  if (apiKeyAction?.kind === 'delete') {
+                    apiKeysOps.deleteAPIKeys({ key: apiKeyAction.id });
+                  }
+                  setApiKeyAction(null);
+                }}
+              />
             </CardContent>
           </Card>
         </div>

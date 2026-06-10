@@ -196,7 +196,18 @@ export const transformDealToTrade = (
       ? `${workingDays}days ${workingHours}h`
       : `${workingHours}h`;
 
-  let unrealizedPnL = useLiveStats ? deal.stats.unrealizedProfit : undefined;
+  // Legacy parity (main-dash `isActiveDeal`, utils/deals.ts): unrealized P&L
+  // only exists while a deal is live. Closed/canceled deals must not report it
+  // — the server keeps a stale `stats.unrealizedProfit` on closed deals, and
+  // the live-price formula below would otherwise recompute a bogus value from
+  // leftover balances. Force it to undefined for non-active deals either way.
+  const isActiveDeal =
+    deal.status === DCADealStatusEnum.open ||
+    deal.status === DCADealStatusEnum.error ||
+    deal.status === DCADealStatusEnum.start;
+
+  let unrealizedPnL =
+    useLiveStats && isActiveDeal ? deal.stats.unrealizedProfit : undefined;
 
   if (!useLiveStats) {
     const long = deal.strategy === StrategyEnum.long;
@@ -213,7 +224,7 @@ export const transformDealToTrade = (
         : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange)
       : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange);
     unrealizedPnL =
-      deal.strategy && price && usdRate
+      deal.strategy && price && usdRate && isActiveDeal
         ? (long
             ? deal.currentBalances.base * price +
               deal.currentBalances.quote -
@@ -272,6 +283,7 @@ export const transformDealToTrade = (
         : undefined;
     if (
       combo &&
+      isActiveDeal &&
       price !== undefined &&
       fee !== undefined &&
       usdRate !== undefined
@@ -333,10 +345,7 @@ export const transformDealToTrade = (
 
   return {
     id: deal._id,
-    active:
-      deal.status === DCADealStatusEnum.open ||
-      deal.status === DCADealStatusEnum.error ||
-      deal.status === DCADealStatusEnum.start,
+    active: isActiveDeal,
     type: dealType,
     symbol: deal.symbol,
     strategy: deal.strategy || '',

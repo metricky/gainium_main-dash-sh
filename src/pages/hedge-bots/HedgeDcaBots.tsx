@@ -506,6 +506,17 @@ const HedgeDcaBots = () => {
         },
       },
       {
+        id: 'botId',
+        accessorFn: (row) => row._id,
+        header: 'BOT ID',
+        enableSorting: false,
+        cell: ({ row }) => {
+          const value = row.original._id;
+          if (!value) return <span className="text-muted-foreground">—</span>;
+          return <span className="text-xs font-mono">{value}</span>;
+        },
+      },
+      {
         id: 'actions',
         header: '',
         enableSorting: false,
@@ -650,6 +661,7 @@ const HedgeDcaBots = () => {
                       getRowId={(row) => row._id}
                       enableGlobalFilter
                       enableColumnVisibility
+                      defaultColumnVisibility={{ botId: false }}
                       enableSorting
                       enableCardView
                       defaultView="cards"

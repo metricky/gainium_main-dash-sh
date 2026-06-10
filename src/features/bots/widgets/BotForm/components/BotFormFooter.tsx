@@ -54,6 +54,7 @@ import { isReadOnly } from '@/lib/demoMode';
 import { IS_CLOUD } from '@/config/mode';
 import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/lib/toast';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { cn } from '@/lib/utils';
 import type { BotTemplate } from '@/stores/botTemplatesStore';
 import {
@@ -695,17 +696,22 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const hasErrors = Object.keys(errors).length > 0;
   const shouldDisplayErrorSummary = showErrorSummary && hasErrors;
 
-  // Insufficient-credits guard. Creating a bot/terminal deal consumes credits;
-  // the backend rejects the request when the user can't cover the cost, so
-  // block the submit up front with an explanatory tooltip. Credits are a
+  // Insufficient-credits guard. Creating a bot/terminal deal locks *bot
+  // credits*, so the backend rejects the request when the user can't cover the
+  // cost — block the submit up front with an explanatory tooltip. Bot credits
+  // live in the `subscription.credits` bucket (`balance` minus already-`locked`
+  // by running bots), matching legacy main-dash's bot-create gate. This is a
+  // DIFFERENT pool from the consumable `user.credits` bucket
+  // (`paid`/`subscription.amount`/`blocked`), which only funds server-side
+  // backtests and AI — using that bucket here wrongly blocked creation for
+  // users who had bot credits but no consumable balance. Credits are a
   // cloud-only concept (sh has no billing), and only `create` consumes new
   // credits — editing an existing bot doesn't. Affiliate exchanges cost 0, so
   // `credits.total` is already 0 there and never trips this.
   const user = useAuthStore((s) => s.user);
   const availableCredits =
-    Number(user?.credits?.paid ?? 0) +
-    Number(user?.credits?.subscription?.amount ?? 0) -
-    Number(user?.credits?.blocked ?? 0);
+    Number(user?.subscription?.credits?.balance ?? 0) -
+    Number(user?.subscription?.credits?.locked ?? 0);
   const insufficientCredits =
     IS_CLOUD &&
     mode === 'create' &&
@@ -740,6 +746,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const [startDialogOpen, setStartDialogOpen] = useState(false);
   const [stopGridDialogOpen, setStopGridDialogOpen] = useState(false);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // "Capital required" chip. Funds to fully fund the whole bot:
   //   - grid: the configured budget (already a whole-bot figure)
@@ -1238,28 +1245,14 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
         label: 'Reset to defaults',
         icon: RotateCcw,
         onSelect: () => {
-          if (
-            // keep same wording as `BotForm` widget's Reset option
-            window.confirm(
-              'Are you sure you want to reset all settings to defaults? This cannot be undone.'
-            )
-          ) {
-            resetFormData();
-            toast.success('Settings reset to defaults');
-          }
+          setShowResetConfirm(true);
         },
         disabled: mode === 'edit',
       });
     }
 
     return items;
-  }, [
-    baseOverflowMenuItems,
-    isTerminal,
-    resetFormData,
-    mode,
-    showSaveAsTemplate,
-  ]);
+  }, [baseOverflowMenuItems, isTerminal, mode, showSaveAsTemplate]);
 
   const handleGridStartSubmit = useCallback(
     (buyType: BuyTypeEnum, buyCount?: string, buyAmount?: number) => {
@@ -1608,6 +1601,18 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
           currentFormData={formData}
         />
       )}
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          resetFormData();
+          toast.success('Settings reset to defaults');
+        }}
+      />
     </div>
   );
 };

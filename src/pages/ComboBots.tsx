@@ -46,7 +46,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   BotActionsMenuItems,
   type BotStatusType,
@@ -370,6 +370,7 @@ const ComboBots: React.FC = () => {
     profitability: 'all',
   });
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Manage widget layout
   const { initializeDefaultWidgets } = useComboBotStore();
@@ -393,13 +394,16 @@ const ComboBots: React.FC = () => {
 
   const handleSelectBot = useCallback(
     (botId: string | null) => {
+      // Carry the page-level Bots/Deals view across drawer open/close —
+      // these navigations replace the whole query string otherwise.
+      const suffix = searchParams.get('view') === 'deals' ? '?view=deals' : '';
       if (botId) {
-        navigate(`/combo/view/${botId}`);
+        navigate(`/combo/view/${botId}${suffix}`);
       } else {
-        navigate('/combo');
+        navigate(`/combo${suffix}`);
       }
     },
-    [navigate]
+    [navigate, searchParams]
   );
 
   // Track pageview when bot is selected and data is available
@@ -1479,6 +1483,17 @@ const ComboBots: React.FC = () => {
         },
       },
       {
+        id: 'botId',
+        accessorFn: (row) => row.id,
+        header: 'BOT ID',
+        cell: ({ row }) => {
+          const value = row.original.id;
+          if (!value) return <span className="text-muted-foreground">—</span>;
+          return <span className="text-xs font-mono">{value}</span>;
+        },
+        enableSorting: false,
+      },
+      {
         id: 'actions',
         header: 'ACTIONS',
         cell: ({ row }) => {
@@ -1597,7 +1612,25 @@ const ComboBots: React.FC = () => {
   );
 
   // ----- Deals tab -----
-  const [pageTab, setPageTab] = useState<'bots' | 'deals'>('bots');
+  // `?view=deals` is the source of truth for the page-level Bots/Deals
+  // toggle so reloads and deep links land on the right view. Absence of
+  // the param means the default Bots view.
+  const pageTab: 'bots' | 'deals' =
+    searchParams.get('view') === 'deals' ? 'deals' : 'bots';
+  const setPageTab = useCallback(
+    (tab: 'bots' | 'deals') => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (tab === 'deals') next.set('view', 'deals');
+          else next.delete('view');
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
 
   // Drive the deal fetch by the widget's open/closed toggle. Without this the
   // backend defaults to open-only and the Closed view is always empty.
@@ -1982,6 +2015,7 @@ const ComboBots: React.FC = () => {
                       defaultColumnVisibility={{
                         netPnl: false,
                         netPnlPercentage: false,
+                        botId: false,
                       }}
                       enableGrouping={true}
                       enableCardView={true}

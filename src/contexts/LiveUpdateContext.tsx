@@ -30,6 +30,7 @@ import {
 } from '@/stores/live';
 import type { BalanceData } from '@/stores/live/balanceStore';
 import type { MessageData } from '@/stores/live/messageStore';
+import { queryClient } from '@/lib/queryClient';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { LiveMessageToaster } from '@/components/live/LiveMessageToaster';
@@ -275,10 +276,14 @@ export const LiveUpdateProvider: React.FC<LiveUpdateProviderProps> = ({
           const data = event.data as Record<string, unknown>;
           useMessageStore.getState().addMessage({
             type: (data['type'] as string) || 'info',
-            title: (data['title'] as string) || 'Bot Message',
+            title: (data['botName'] as string) || 'Bot Message',
             message: (data['message'] as string) || '',
             botId: event.botId ?? '',
           });
+          // The Notifications panel reads from the `getMessageBot` GraphQL
+          // query (not from useMessageStore). Invalidate so the panel picks
+          // up the new entry without a hard refresh.
+          queryClient.invalidateQueries({ queryKey: ['getMessageBot'] });
         },
       });
     } else if (!isAuthenticated) {

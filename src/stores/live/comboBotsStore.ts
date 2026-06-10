@@ -3,6 +3,7 @@ import { createQueuedIndexedDBStorage } from '@/lib/zustand-indexeddb-storage';
 import type { ComboBot } from '@/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { consultBotTombstone, isIncomingBotStale } from './staleWriteGuard';
 import { WebSocketDebouncer } from './webSocketDebouncer';
 
 interface ComboBotsStoreState {
@@ -92,8 +93,26 @@ export const useComboBotsStore = create<ComboBotsStoreState>()(
         updateBots: (bots: ComboBot[]) => {
           // Replace entire bot state with API response (source of truth)
           // This ensures deleted/archived bots are removed from store
+          const existing = get().bots;
           const botsRecord: Record<string, ComboBot> = {};
           bots.forEach((bot) => {
+            const prior = existing[bot._id];
+            // Keep the existing object when the API response is older than
+            // what we already hold (e.g. a stale persisted-cache replay).
+            if (isIncomingBotStale(prior, bot)) {
+              botsRecord[bot._id] = prior;
+              return;
+            }
+            // bot.updated is an ISO string; the guard API is numeric.
+            const incomingMs = bot.updated
+              ? new Date(bot.updated).getTime()
+              : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            // A just-deleted bot replayed by a stale list response is omitted
+            // entirely so it stays deleted.
+            if (consultBotTombstone(bot._id, ms) === 'reject') return;
             botsRecord[bot._id] = bot;
           });
 
@@ -114,6 +133,15 @@ export const useComboBotsStore = create<ComboBotsStoreState>()(
             );
             return;
           }
+
+          // Reject a server response older than what we already hold, or one
+          // that resurrects a just-deleted bot.
+          if (isIncomingBotStale(existingBot, bot)) return;
+          const incomingMs = bot.updated
+            ? new Date(bot.updated).getTime()
+            : undefined;
+          const ms = Number.isNaN(incomingMs as number) ? undefined : incomingMs;
+          if (consultBotTombstone(bot._id, ms) === 'reject') return;
 
           // Replace with full bot data from API
           set((state) => ({
@@ -192,6 +220,16 @@ export const useComboBotsStore = create<ComboBotsStoreState>()(
               );
               return;
             }
+
+            // Reject a WebSocket update that would resurrect a just-deleted bot.
+            const incomingMs =
+              typeof data.updated !== 'undefined' && data.updated
+                ? new Date(data.updated as string).getTime()
+                : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            if (consultBotTombstone(botId, ms) === 'reject') return;
 
             // Merge WebSocket data with existing bot
             // Deep merge stats to preserve API-fetched numerical/duration data
@@ -306,7 +344,7 @@ export const useComboBotsStore = create<ComboBotsStoreState>()(
         name: 'combo-bots-store',
         storage: createQueuedIndexedDBStorage('combo-bots-store'),
         // One-time cache bust: drop stale persisted bots on upgrade.
-        version: 1,
+        version: 2,
         migrate: () => ({ bots: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({

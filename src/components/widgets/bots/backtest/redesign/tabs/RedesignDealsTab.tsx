@@ -113,6 +113,22 @@ function outTextClass(out: DealVM['out']): string {
 }
 
 /**
+ * Text color for a deal's P&L figure. Open deals show *unrealized* P&L, so
+ * they colour by the sign of that value (and stay neutral at exactly 0);
+ * closed deals colour by their win/loss outcome.
+ */
+function pnlTextClass(deal: DealVM): string {
+  if (deal.out === 'open') {
+    return deal.pnlPerc > 0
+      ? 'text-profit'
+      : deal.pnlPerc < 0
+        ? 'text-loss'
+        : 'text-muted-foreground';
+  }
+  return outTextClass(deal.out);
+}
+
+/**
  * Pick the default selected deal: the loss with the deepest filled ladder
  * (best showcase for the safety-order panel), falling back to the deal with
  * the most filled rungs overall, then index 0. Ported from prototype `DealsB`.
@@ -207,7 +223,7 @@ function RailRow({ deal, active, onSelect }: RailRowProps) {
         <span
           className={cn(
             'block text-sm font-extrabold tabular-nums',
-            outTextClass(deal.out),
+            pnlTextClass(deal),
           )}
         >
           {fmtPct(deal.pnlPerc)}
@@ -455,8 +471,8 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
       <Inset className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden lg:max-h-none lg:w-[296px]">
         <div className="flex items-center justify-between border-b border-border/60 px-3.5 py-3">
           <span className="text-sm font-extrabold text-foreground">
-            Deals{' '}
-            <span className="text-muted-foreground/70">{total}</span>
+            Deals
+            <span className="ml-1.5 text-muted-foreground/70">{total}</span>
           </span>
           <span className="rounded-md bg-foreground/[0.06] px-2 py-0.5 text-xs font-medium text-muted-foreground">
             All
@@ -543,25 +559,23 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
         {/* price chart — one persistent TradingView widget; deal switches
             only update its lines / markers / timeframe (symbol + interval are
             constant for the whole run). */}
-        <Inset className="flex h-[320px] shrink-0 flex-col px-3 pb-1 pt-2.5 lg:h-auto lg:min-h-0 lg:flex-1">
-          <div className="min-h-0 w-full flex-1 overflow-hidden rounded-lg">
-            <TradingViewChart
-              ref={chartRef}
-              widgetId="backtest-deal-chart"
-              symbol={chartProps.symbol}
-              availableSymbols={chartProps.availableSymbols}
-              interval={chartProps.interval}
-              initialTimeframe={chartProps.initialTimeframe}
-              transactions={chartProps.transactions}
-              ordersForDrawing={chartProps.ordersForDrawing}
-              enableAutoSave={false}
-              enableLoadLastChart={false}
-              enableSeparateDrawingsStorage={false}
-              showPastOrders={showLines}
-              showTransactions={showIcons}
-            />
-          </div>
-        </Inset>
+        <div className="h-[320px] shrink-0 overflow-hidden rounded-xl lg:h-auto lg:min-h-0 lg:flex-1">
+          <TradingViewChart
+            ref={chartRef}
+            widgetId="backtest-deal-chart"
+            symbol={chartProps.symbol}
+            availableSymbols={chartProps.availableSymbols}
+            interval={chartProps.interval}
+            initialTimeframe={chartProps.initialTimeframe}
+            transactions={chartProps.transactions}
+            ordersForDrawing={chartProps.ordersForDrawing}
+            enableAutoSave={false}
+            enableLoadLastChart={false}
+            enableSeparateDrawingsStorage={false}
+            showPastOrders={showLines}
+            showTransactions={showIcons}
+          />
+        </div>
 
         {/* detail + execution + ladder — stacked on mobile, 3 fixed-height
             columns ≥md (170px; the ladder scrolls internally) so the chart
