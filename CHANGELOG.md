@@ -183,6 +183,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Replaced `document.body.removeChild(tmp)` with `tmp.remove()` in `getCSSVar` color-resolution utility to prevent a DOM exception when the temporary measurement element is no longer a direct child of `document.body`.
 - Bot error messages now reach the live toast (the WS payload is
   unwrapped like every sibling event handler, and the toast header uses
   the bot name) and the Notifications panel refreshes on every open
