@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react';
 import { dealQueries } from '../lib/api/GraphQLQueries-deal-queries';
 import type { ReturnResult } from '../lib/api/types';
 import { logger } from '../lib/loggerInstance';
-import { useGraphQL } from './useGraphQL';
+import { useGraphQL, type FetchStamped } from './useGraphQL';
 import type {
   ComboDeals,
   DataGridFilterInput,
@@ -153,8 +153,12 @@ export function useComboDeals(filter?: ComboDealsFilter): UseComboDealsResult {
         typeof totalResults === 'number' &&
         normalizedDeals.length >= totalResults;
       // Reconcile the whole combo scope in one authoritative pass: the
-      // snapshot wins, in-scope deals absent from it are pruned (so a closed
-      // deal disappears), and per-deal arbitration + tombstones run inside.
+      // snapshot wins, in-scope deals absent from it AND older than the
+      // snapshot's fetch stamp are pruned (so a closed deal disappears), and
+      // per-deal arbitration + tombstones run inside. snapshotAt comes from
+      // the network stamp useGraphQL attaches — a cache-replayed response
+      // keeps its original stamp, so it can never delete deals newer than
+      // itself (e.g. created via websocket after it was fetched).
       useDealStore.getState().reconcileDeals(
         {
           dealType: 'combo',
@@ -162,6 +166,7 @@ export function useComboDeals(filter?: ComboDealsFilter): UseComboDealsResult {
           statuses: dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
           botId: filter?.botId,
           complete,
+          snapshotAt: (queryResult.data as FetchStamped).__fetchedAt,
         },
         mapDealsByBotId
       );

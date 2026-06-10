@@ -397,6 +397,9 @@ export function useDcaDeals(
           // Only prune absent deals when we fetched the whole result set;
           // a page-capped snapshot must not delete deals beyond the cap.
           complete: reachedEnd,
+          // This hook always fetches over the raw client (no RQ cache), so
+          // the snapshot is fresh as of now.
+          snapshotAt: Date.now(),
         },
         mapDealsByBotId
       );

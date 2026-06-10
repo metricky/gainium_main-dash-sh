@@ -9,7 +9,7 @@ import type {
   GridFilterModel,
   GridSortModel,
 } from '../types';
-import { useGraphQL } from './useGraphQL';
+import { useGraphQL, type FetchStamped } from './useGraphQL';
 import { useShareContext } from './useShareContext';
 
 // Filter interface for getBotDeals
@@ -198,14 +198,18 @@ export function useBotSpecificDeals(
         // Use a debounce timeout to prevent rapid updates
         const timeoutId = setTimeout(() => {
           // Single authoritative reconcile for this bot's requested-status
-          // scope: snapshot wins, in-scope deals absent from it are pruned
-          // (subsumes the old removeDeal stale-id loop), per-deal arbitration +
-          // tombstones run inside.
+          // scope: snapshot wins, in-scope deals absent from it AND older
+          // than the snapshot's network fetch stamp are pruned (subsumes the
+          // old removeDeal stale-id loop), per-deal arbitration + tombstones
+          // run inside. The stamp keeps a cache-replayed page from deleting
+          // deals that arrived (e.g. via websocket) after it was fetched.
           useDealStore.getState().reconcileDeals(
             {
               dealType,
               statuses: requestedStatusGroup(filter.status),
               botId: filter.botId,
+              snapshotAt: (queryResult.data as FetchStamped | null)
+                ?.__fetchedAt,
             },
             { [filter.botId]: intermediateDeals }
           );
@@ -220,13 +224,15 @@ export function useBotSpecificDeals(
       } else {
         // Fetch completed with no deals for this status — drop the snapshot so
         // a previous status's results don't linger, then reconcile with an
-        // empty snapshot so the absence-delete prunes this bot's in-scope deals.
+        // empty snapshot so the absence-delete prunes this bot's in-scope
+        // deals (snapshot-stamped for the same cache-replay reason as above).
         setCommittedDeals([]);
         useDealStore.getState().reconcileDeals(
           {
             dealType,
             statuses: requestedStatusGroup(filter.status),
             botId: filter.botId,
+            snapshotAt: (queryResult.data as FetchStamped | null)?.__fetchedAt,
           },
           { [filter.botId]: [] }
         );
@@ -240,6 +246,7 @@ export function useBotSpecificDeals(
     filter.botId,
     dealType,
     filter.status,
+    queryResult.data,
   ]);
 
   // Log errors

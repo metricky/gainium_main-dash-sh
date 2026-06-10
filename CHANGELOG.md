@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.16] - 2026-06-10
+
+### Fixed
+
+- Hardened deal-list reconciliation against stale cached responses: the
+  absence-delete that prunes closed deals now runs only against a snapshot
+  proven fresh (each query response is stamped with its network fetch time),
+  and never removes a deal updated after that snapshot was taken. A replayed
+  cache entry — even one that looks complete — can no longer prune live deals
+  that arrived after it was cached. Closes the last window in which an open
+  deal could briefly vanish on navigating back to a deals list.
+
 ## [2.10.15] - 2026-06-10
 
 ### Fixed

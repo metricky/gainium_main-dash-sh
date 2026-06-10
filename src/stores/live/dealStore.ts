@@ -42,7 +42,14 @@ interface DealStoreState {
    *  Out-of-scope deals (other dealType / context / status) are untouched.
    *  `complete` (default true) gates the absence-delete: pass false when the
    *  snapshot is known-partial (page-capped / truncated) so genuine deals
-   *  beyond the fetched page are NOT pruned — the merge still applies. */
+   *  beyond the fetched page are NOT pruned — the merge still applies.
+   *  `snapshotAt` (epoch ms the response left the network) is REQUIRED for
+   *  the absence-delete: a deal whose updateTime is newer than the snapshot
+   *  (minus a clock-skew margin) is kept even when absent — it was created or
+   *  updated after the snapshot was taken (e.g. via websocket), so the
+   *  snapshot cannot vouch for its absence. Cache-replayed responses carry
+   *  their original fetch stamp, which makes stale replays unable to delete
+   *  anything newer than themselves. */
   reconcileDeals: (
     scope: {
       dealType: DealType;
@@ -50,6 +57,7 @@ interface DealStoreState {
       statuses?: string[];
       botId?: string;
       complete?: boolean;
+      snapshotAt?: number;
     },
     dealsByBot: Record<string, DCADeals[]>
   ) => void;
@@ -104,6 +112,12 @@ const migrateDealData = (
 
   return migrated;
 };
+
+// Tolerance for client/server clock skew when comparing a deal's server-side
+// updateTime against the client-side snapshotAt fetch stamp in reconcileDeals.
+// A deal within this window of the snapshot is never absence-deleted; it heals
+// on the next refetch instead.
+const SNAPSHOT_SKEW_MARGIN_MS = 60 * 1000;
 
 // Create debouncer instance
 type DealUpdateWithType = DealUpdate & { dealType?: DealType };
@@ -267,10 +281,16 @@ export const useDealStore = create<DealStoreState>()(
             // snapshot is removed. Restrict to scope.botId when provided.
             // Skipped entirely when the snapshot is known-partial — pruning
             // against a page-capped response would drop genuine deals that
-            // simply fell beyond the fetched page.
-            if (scope.complete === false) {
+            // simply fell beyond the fetched page — or when it carries no
+            // fetch stamp (we can't prove it isn't a stale cache replay).
+            if (scope.complete === false || typeof scope.snapshotAt !== 'number') {
               return { deals: next };
             }
+            // A deal updated after the snapshot was taken cannot be pruned by
+            // it (the snapshot predates the deal — e.g. created via websocket
+            // while the response was cached). The margin absorbs client/server
+            // clock skew: updateTime is server time, snapshotAt client time.
+            const pruneBefore = scope.snapshotAt - SNAPSHOT_SKEW_MARGIN_MS;
             Object.keys(next).forEach((bucketId) => {
               if (scope.botId != null && bucketId !== scope.botId) return;
 
@@ -280,8 +300,16 @@ export const useDealStore = create<DealStoreState>()(
               const pruned: Record<string, DealWithType> = {};
 
               Object.entries(bucket).forEach(([dealId, deal]) => {
-                if (inScope(deal, bucketId) && !(ids && ids.has(dealId))) {
-                  // In scope but absent from the snapshot -> drop it.
+                if (
+                  inScope(deal, bucketId) &&
+                  !(ids && ids.has(dealId)) &&
+                  !(
+                    typeof deal.updateTime === 'number' &&
+                    deal.updateTime > pruneBefore
+                  )
+                ) {
+                  // In scope, absent from the snapshot, and older than the
+                  // snapshot -> drop it.
                   changed = true;
                   return;
                 }
