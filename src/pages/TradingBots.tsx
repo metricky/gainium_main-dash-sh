@@ -602,7 +602,7 @@ const PRICE_UPDATE_THROTTLE_MS = 10000; // Increased to 10 seconds for better st
 const TradingBots: React.FC = () => {
   const navigate = useNavigate();
   const params = useParams<{ id?: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // Check if in demo mode (read-only)
   const readOnly = isReadOnly();
@@ -610,10 +610,12 @@ const TradingBots: React.FC = () => {
   // Selected bot comes from route param now
   const selectedBot = useMemo(() => params.id ?? null, [params.id]);
 
-  // One-time migration: if legacy ?view= is present on /bot, redirect to /bot/view/:id
+  // One-time migration: if legacy ?view=<botId> is present on /bot, redirect
+  // to /bot/view/:id. Only ObjectId-shaped values are legacy bot links —
+  // `?view=deals` / `?view=bots` now belong to the page-level tabs below.
   useEffect(() => {
     const legacyView = searchParams.get('view');
-    if (legacyView && !params.id) {
+    if (legacyView && /^[0-9a-f]{24}$/i.test(legacyView) && !params.id) {
       navigate(`/bot/view/${legacyView}`, { replace: true });
     }
   }, [navigate, params.id, searchParams]);
@@ -621,13 +623,16 @@ const TradingBots: React.FC = () => {
   // Function to update selected bot by navigating
   const updateSelectedBot = useCallback(
     (botId: string | null) => {
+      // Carry the page-level Bots/Deals view across drawer open/close —
+      // these navigations replace the whole query string otherwise.
+      const suffix = searchParams.get('view') === 'deals' ? '?view=deals' : '';
       if (botId) {
-        navigate(`/bot/view/${botId}`);
+        navigate(`/bot/view/${botId}${suffix}`);
       } else {
-        navigate('/bot');
+        navigate(`/bot${suffix}`);
       }
     },
-    [navigate]
+    [navigate, searchParams]
   );
 
   // Advanced filtering state
@@ -2137,7 +2142,26 @@ const TradingBots: React.FC = () => {
   );
 
   // ----- Deals tab -----
-  const [pageTab, setPageTab] = useState<'bots' | 'deals'>('bots');
+  // `?view=deals` is the source of truth for the page-level Bots/Deals
+  // toggle so reloads and deep links land on the right view. Absence of
+  // the param means the default Bots view. (Legacy `?view=<botId>` links
+  // are redirected by the migration effect near the top of the component.)
+  const pageTab: 'bots' | 'deals' =
+    searchParams.get('view') === 'deals' ? 'deals' : 'bots';
+  const setPageTab = useCallback(
+    (tab: 'bots' | 'deals') => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (tab === 'deals') next.set('view', 'deals');
+          else next.delete('view');
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
 
   // Drive the deal fetch by the widget's open/closed toggle. Without this the
   // backend defaults to open-only and the Closed view is always empty.

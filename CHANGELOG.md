@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.18] - 2026-06-10
+
+### Fixed
+
+- Closing several deals in a row from the deals card view no longer crashes
+  the page (React error #185). The deal-card price sparkline and the bot-card
+  equity chart had their mount animation enabled; recharts fires a state
+  update from that animation's unmount cleanup, so a batch of cards
+  unmounting mid-animation tripped React's nested-update limit.
+
+### Changed
+
+- The Bots/Deals toggle on the DCA and Combo bot pages is now reflected in
+  the URL (`?view=deals`), so reloads, deep links, and closing the bot
+  drawer land back on the same view. Legacy `?view=<botId>` links on the
+  DCA page still redirect to the bot drawer.
+
 ## [2.10.17] - 2026-06-10
 
 ### Fixed
