@@ -1,7 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { StrategyEnum, type DCAGrid, type DCAOrderTypeEnum } from '@/types';
+import { type DCAGrid, type DCAOrderTypeEnum } from '@/types';
 import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import { computeDealSummary } from '@/utils/bots/dca/deal-summary';
+
+// Re-exported for existing callers that import the formatter from this module.
+export { formatTotalFunds } from '@/utils/bots/dca/deal-summary';
+export type { TotalFundsContext } from '@/utils/bots/dca/deal-summary';
 import type { ColumnDef } from '@tanstack/react-table';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Badge } from '../../ui/badge';
@@ -29,51 +34,25 @@ interface DealOrderRow {
   note: string;
 }
 
-const trimTrailingZeros = (value: string): string =>
-  value.includes('.') ? value.replace(/\.?0+$/, '') : value;
-
-export interface TotalFundsContext {
-  strategy?: StrategyEnum | string;
-  futures?: boolean;
-  coinm?: boolean;
-  baseAsset?: string;
-  quoteAsset?: string;
-}
-
-// "Total Funds" tile value. Funds are deposited in the base coin for
-// spot short and coin-M futures, so those show the base figure with
-// the base symbol; everything else keeps the quote figure with `$`.
-export const formatTotalFunds = (
-  summary: { totalCapital: number; totalCapitalBase: number },
-  ctx: TotalFundsContext
-): string => {
-  const useBase = ctx.futures
-    ? Boolean(ctx.coinm)
-    : ctx.strategy === StrategyEnum.short;
-
-  if (useBase) {
-    const amount = summary.totalCapitalBase || 0;
-    const abs = Math.abs(amount);
-    const decimals = abs >= 1000 ? 2 : abs >= 1 ? 4 : 8;
-    return `${trimTrailingZeros(amount.toFixed(decimals))} ${ctx.baseAsset ?? 'Base'}`;
-  }
-
-  return `$${(summary.totalCapital || 0).toFixed(2)}`;
-};
-
-// Hook for deal overview data - shared between standalone and subtab views
-export const useDealOverviewData = () => {
-  const [orders, setOrders] = useState<DCAGrid[]>([]);
+// Hook for deal overview data - shared between standalone and subtab views.
+// Pass `ordersOverride` to render from a caller-supplied order set (the
+// read-only settings view projects the saved bot directly and bypasses the
+// live `exampleOrdersStore`, which only the mounted form drives); omit it to
+// read the shared store as usual.
+export const useDealOverviewData = (ordersOverride?: DCAGrid[]) => {
+  const [storeOrders, setStoreOrders] = useState<DCAGrid[]>([]);
 
   useEffect(() => {
     const unsubscribe = exampleOrdersStore.subscribe((incomingOrders) => {
-      setOrders(incomingOrders);
+      setStoreOrders(incomingOrders);
     });
 
     return () => {
       unsubscribe();
     };
   }, []);
+
+  const orders = ordersOverride ?? storeOrders;
 
   // Transform DCAGrid orders to table rows
   const tableData = useMemo<DealOrderRow[]>(() => {
@@ -137,82 +116,7 @@ export const useDealOverviewData = () => {
       });
   }, [orders]);
 
-  const summary = useMemo(() => {
-    const entryTypes = ['Start order', 'DCA order', 'Smart order'];
-    const buyOrders = graphData.filter((o) => entryTypes.includes(o.type));
-    if (buyOrders.length === 0) {
-      return {
-        coverage: '0.00',
-        avgDownPower: '0.00',
-        totalCapital: 0,
-        totalCapitalBase: 0,
-        baseOrderCapital: 0,
-        baseOrderCapitalBase: 0,
-      };
-    }
-
-    const referencePrice = buyOrders[0].price;
-    const lastBuy = buyOrders[buyOrders.length - 1];
-
-    const coverage =
-      lastBuy && referencePrice
-        ? Math.abs(
-            ((lastBuy.price - referencePrice) / referencePrice) * 100
-          ).toFixed(2)
-        : '0.00';
-
-    const lastBuyAvgPrice = lastBuy?.avgPrice;
-    const avgDownPower =
-      lastBuyAvgPrice && referencePrice
-        ? Math.abs(
-            ((lastBuyAvgPrice - referencePrice) / referencePrice) * 100
-          ).toFixed(2)
-        : '0.00';
-
-    // For DCA-only flows the cumulative `totalQuote` on the last buy
-    // order already represents the full capital commitment. Combo bots
-    // additionally reserve funds for minigrid (`Grid` type) orders that
-    // sit alongside each DCA/base order — those aren't reflected in any
-    // single DCA row's cumulative `totalQuote`. Detect combo by the
-    // presence of grid-type buy orders in the store and add their
-    // notional cost so "Total funds" matches what's actually deployed.
-    const baseCapital =
-      lastBuy?.totalQuote || buyOrders[0]?.totalQuote || 0;
-    const minigridCapital = graphData
-      .filter(
-        (o) =>
-          o.type === 'Grid' &&
-          o.side === 'BUY' &&
-          typeof o.quantity === 'number' &&
-          Number.isFinite(o.quantity)
-      )
-      .reduce((acc, o) => acc + (o.quantity as number), 0);
-    const totalCapital = baseCapital + minigridCapital;
-
-    // Base-currency equivalent of the cumulative capital. Spot short
-    // bots deposit the base coin they sell, so the funds tile shows
-    // this instead of the quote figure (minigrid base isn't tracked
-    // separately, so combo short slightly under-reports — DCA short,
-    // the common case, is exact).
-    const totalCapitalBase =
-      lastBuy?.totalBase || buyOrders[0]?.totalBase || 0;
-
-    // The first entry order is the base order; its cumulative figure is the
-    // base-order capital for a single deal. The DCA portion is the remainder up
-    // to the last buy. Exposed so the footer's "Capital required" breakdown can
-    // be derived from these same authoritative numbers rather than recomputed.
-    const baseOrderCapital = buyOrders[0]?.totalQuote || 0;
-    const baseOrderCapitalBase = buyOrders[0]?.totalBase || 0;
-
-    return {
-      coverage,
-      avgDownPower,
-      totalCapital,
-      totalCapitalBase,
-      baseOrderCapital,
-      baseOrderCapitalBase,
-    };
-  }, [graphData]);
+  const summary = useMemo(() => computeDealSummary(orders), [orders]);
 
   return { orders, tableData, graphData, summary };
 };
@@ -228,6 +132,8 @@ export interface DealOverviewGraphTabProps {
   indicatorMode?: boolean;
   /** Fallback TP % when orders have no requiredPricePercent */
   fallbackTpPercent?: number;
+  /** Render from these orders instead of the shared store (read-only view). */
+  orders?: DCAGrid[];
 }
 
 export const DealOverviewGraphTab: React.FC<DealOverviewGraphTabProps> = ({
@@ -236,8 +142,9 @@ export const DealOverviewGraphTab: React.FC<DealOverviewGraphTabProps> = ({
   showTpLines = true,
   indicatorMode = false,
   fallbackTpPercent,
+  orders,
 }) => {
-  const { graphData } = useDealOverviewData();
+  const { graphData } = useDealOverviewData(orders);
 
   return (
     <div className={className}>
@@ -256,13 +163,16 @@ export const DealOverviewGraphTab: React.FC<DealOverviewGraphTabProps> = ({
 export interface DealOverviewTableTabProps {
   widgetId?: string;
   className?: string;
+  /** Render from these orders instead of the shared store (read-only view). */
+  orders?: DCAGrid[];
 }
 
 export const DealOverviewTableTab: React.FC<DealOverviewTableTabProps> = ({
   widgetId = 'deal-overview-table',
   className,
+  orders,
 }) => {
-  const { tableData } = useDealOverviewData();
+  const { tableData } = useDealOverviewData(orders);
 
   const columns = useMemo<ColumnDef<DealOrderRow>[]>(
     () => [

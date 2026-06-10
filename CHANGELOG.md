@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.20] - 2026-06-10
+
+### Added
+
+- Bot detail drawer "DCA Analysis" now shows the configured projection
+  (deviation covered, average down power, capital needed) alongside the
+  deal-level usage stats, and is shown for Combo bots too — not just DCA.
+
+### Fixed
+
+- DCA overview (coverage / average down power / total funds, plus the orders
+  table and graph) no longer reads 0 / empty when viewing an existing bot's
+  settings; it now projects the saved configuration, matching the create/edit
+  form's figures for both DCA and Combo bots.
+
+### Changed
+
+- Bot detail side panels use a solid background instead of a translucent glass
+  surface, so the form and content underneath are easier to read.
+
 ## [2.10.19] - 2026-06-10
 
 ### Added
