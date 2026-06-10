@@ -2697,6 +2697,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       gridProfitPercentage: false,
       netPnl: false,
       netPnlPercentage: false,
+      dealId: false,
     }),
     []
   );

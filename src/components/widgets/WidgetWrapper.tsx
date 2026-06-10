@@ -96,6 +96,7 @@ const PlainMenuSeparator: React.FC = () => (
   <div className="-mx-1 my-1 h-px bg-muted" role="separator" />
 );
 
+import { ConfirmationDialog } from '../ui/confirmation-dialog';
 import { TruncatedText } from '../ui/TruncatedText';
 import Widget from '../ui/widget';
 import FullscreenWidgetOverlay from './FullscreenWidgetOverlay';
@@ -259,6 +260,7 @@ export const WidgetMenu: React.FC<{
   //shortcuts,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // Determine portal target based on fullscreen state
   const getPortalTarget = () => {
@@ -278,6 +280,13 @@ export const WidgetMenu: React.FC<{
   // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      // Ignore clicks inside a portaled dialog (e.g. the reset-confirm dialog
+      // this menu renders); otherwise the mousedown would close the menu and
+      // unmount the dialog before its action runs.
+      if (target?.closest('[role="dialog"]')) {
+        return;
+      }
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         onClose();
       }
@@ -304,6 +313,7 @@ export const WidgetMenu: React.FC<{
   if (!isOpen) return null;
 
   const menuContent = (
+    <>
     <div
       ref={menuRef}
       className={`fixed pointer-events-auto min-w-40 bg-popover/95 backdrop-blur-xl rounded-xl shadow-2xl ring-1 ring-black/20 p-1 text-card-foreground ${zIndexClass}`}
@@ -472,16 +482,7 @@ export const WidgetMenu: React.FC<{
           <PlainMenuItem
             onClick={() => {
               // Confirmation to avoid accidental resets
-              if (
-                !confirm(
-                  'Reset widget to default settings? This cannot be undone.'
-                )
-              ) {
-                return;
-              }
-
-              actions.onResetToDefault?.();
-              onClose();
+              setShowResetConfirm(true);
             }}
             className="flex items-center gap-sm"
             title="Reset to default"
@@ -619,6 +620,19 @@ export const WidgetMenu: React.FC<{
         </>
       )}
     </div>
+    <ConfirmationDialog
+      open={showResetConfirm}
+      onOpenChange={setShowResetConfirm}
+      title="Reset widget?"
+      description="Reset widget to default settings? This cannot be undone."
+      confirmText="Reset"
+      variant="destructive"
+      onConfirm={() => {
+        actions.onResetToDefault?.();
+        onClose();
+      }}
+    />
+    </>
   );
 
   // Use hybrid approach: portals in normal mode, direct rendering in fullscreen

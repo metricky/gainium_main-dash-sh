@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.19] - 2026-06-10
+
+### Added
+
+- Bot tables (DCA, Combo, Grid, Hedge DCA, Hedge Combo) now expose a "BOT ID"
+  column, hidden by default and toggleable from the Columns menu.
+
+### Changed
+
+- The deal table's "Deal ID" column is now hidden by default (still
+  toggleable from the Columns menu) instead of always shown.
+- Replaced the remaining native browser dialogs (confirm/alert/prompt) with
+  in-app React dialogs and toasts across Global Variables, bot form reset and
+  save-as-template, widget reset, tag editing, Notes link insertion, order
+  notes, and API key rename/restrict/delete.
+
+### Fixed
+
+- Combo bot "Total Profit" in the bot table/card now matches the bot
+  drawer. The table was showing the asset-blended `profit.total` figure
+  under the "$" column instead of the USD value, so list and detail views
+  disagreed.
+- Global Variables: editing a variable no longer leaves the Type and Value
+  fields blank. A stray empty change event from the type dropdown was
+  clearing both when the edit dialog opened.
+
 ## [2.10.18] - 2026-06-10
 
 ### Fixed

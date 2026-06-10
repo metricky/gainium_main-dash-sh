@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from '../../ui/select';
 import { Switch } from '../../ui/switch';
+import { toast } from '@/lib/toast';
 
 // Export Dialog Props
 interface ExportDialogProps {
@@ -120,7 +121,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
       // Validate options
       const errors = validateExportOptions(options);
       if (errors.length > 0) {
-        alert(`Export validation failed:\n${errors.join('\n')}`);
+        toast.error(`Export validation failed: ${errors.join(', ')}`);
         return;
       }
 
@@ -133,7 +134,7 @@ export const ExportDialog: React.FC<ExportDialogProps> = ({
       }, 500);
     } catch (error) {
       console.error('Export failed:', error);
-      alert(
+      toast.error(
         `Export failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     } finally {

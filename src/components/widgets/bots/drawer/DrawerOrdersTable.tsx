@@ -20,6 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
+import { InputDialog } from '@/components/ui/confirmation-dialog';
 import { useNavigate } from 'react-router-dom';
 import {
   formatOrderForDisplay,
@@ -111,6 +112,9 @@ export const DrawerOrdersTable: React.FC<DrawerOrdersTableProps> = ({
     'pending'
   );
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  // Order currently being annotated via the React note dialog (replaces the
+  // native prompt()).
+  const [noteOrderId, setNoteOrderId] = useState<string | null>(null);
   const { cancelPendingOrder, isLoading: isCanceling } = useCancelOrder();
 
   // Filter states - separate for each tab
@@ -587,17 +591,21 @@ export const DrawerOrdersTable: React.FC<DrawerOrdersTableProps> = ({
     }
   };
 
-  const handleAddNote = async (orderId: string) => {
+  const handleAddNote = (orderId: string) => {
+    // Opens the React note dialog for this order (replaces native prompt()).
+    setNoteOrderId(orderId);
+  };
+
+  const handleAddNoteConfirm = (note: string) => {
     try {
-      // TODO: Implement add note functionality
-      // This would typically open a modal or inline editor for adding notes
-      const note = prompt('Add a note to this order:');
-      if (note) {
-        logger.info('Adding note to order', { orderId, note });
+      if (noteOrderId && note) {
+        logger.info('Adding note to order', { orderId: noteOrderId, note });
         // In production, this would save the note to the backend
       }
     } catch (error) {
       console.error('Failed to add note:', error);
+    } finally {
+      setNoteOrderId(null);
     }
   };
 
@@ -1416,6 +1424,18 @@ export const DrawerOrdersTable: React.FC<DrawerOrdersTableProps> = ({
           </TabsContent>
         </Tabs>
       </div>
+
+      <InputDialog
+        open={noteOrderId !== null}
+        onOpenChange={(open) => {
+          if (!open) setNoteOrderId(null);
+        }}
+        title="Add a note"
+        description="Add a note to this order."
+        placeholder="Note"
+        confirmText="Add note"
+        onConfirm={handleAddNoteConfirm}
+      />
     </DrawerSection>
   );
 };

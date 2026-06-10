@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,12 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
   const [templateName, setTemplateName] = useState('');
   const [templateDescription, setTemplateDescription] = useState('');
   const [templateHotkey, setTemplateHotkey] = useState('');
+  // Hotkey-conflict confirmation (replaces the native confirm() gates). Holds
+  // the message to show and the cleanup to run if the user reassigns.
+  const [hotkeyConflict, setHotkeyConflict] = useState<{
+    message: string;
+    resolve: () => void;
+  } | null>(null);
 
   // Reset the fields each time the dialog opens.
   useEffect(() => {
@@ -52,57 +59,13 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
       setTemplateName('');
       setTemplateDescription('');
       setTemplateHotkey('');
+      setHotkeyConflict(null);
     }
   }, [open]);
 
-  const handleSave = () => {
-    if (!templateName.trim()) return;
-
-    // Conflict detection: ensure the hotkey doesn't collide with an existing
-    // template or global shortcut before persisting.
-    if (templateHotkey) {
-      const parsed = parseShortcutString(templateHotkey);
-      if (parsed) {
-        const templates = useBotTemplatesStore
-          .getState()
-          .getAllTemplates(botType);
-        const templateConflict = templates.find((tt) => {
-          if (!tt.shortcut) return false;
-          const p2 = parseShortcutString(tt.shortcut);
-          return p2 ? areShortcutKeysEqual(p2, parsed) : false;
-        });
-        if (templateConflict) {
-          if (
-            !confirm(
-              `Hotkey ${templateHotkey} is already assigned to template "${templateConflict.name}". Replace it?`
-            )
-          ) {
-            return;
-          }
-          updateTemplate(templateConflict.id, { shortcut: undefined });
-          useShortcutStore
-            .getState()
-            .deleteShortcut(`bot-template-${templateConflict.id}`);
-        }
-
-        const scs = useShortcutStore.getState().shortcuts;
-        for (const [id, sc] of Object.entries(scs)) {
-          if (id.startsWith('bot-template-')) continue; // handled above
-          if (!sc.currentKey) continue;
-          if (areShortcutKeysEqual(sc.currentKey, parsed)) {
-            if (
-              !confirm(
-                `Hotkey ${templateHotkey} conflicts with shortcut "${sc.label}". Override it?`
-              )
-            ) {
-              return;
-            }
-            useShortcutStore.getState().deleteShortcut(id);
-          }
-        }
-      }
-    }
-
+  // Persist the template (and assign its hotkey) once any conflicts are
+  // resolved, then close the dialog.
+  const persistTemplate = () => {
     const created = saveTemplate(
       templateName,
       botType,
@@ -121,6 +84,67 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
     onOpenChange(false);
   };
 
+  const handleSave = () => {
+    if (!templateName.trim()) return;
+
+    // Conflict detection: ensure the hotkey doesn't collide with an existing
+    // template or global shortcut before persisting. Any conflicts are
+    // surfaced in a single React confirmation instead of native confirm().
+    if (templateHotkey) {
+      const parsed = parseShortcutString(templateHotkey);
+      if (parsed) {
+        const templates = useBotTemplatesStore
+          .getState()
+          .getAllTemplates(botType);
+        const templateConflict = templates.find((tt) => {
+          if (!tt.shortcut) return false;
+          const p2 = parseShortcutString(tt.shortcut);
+          return p2 ? areShortcutKeysEqual(p2, parsed) : false;
+        });
+
+        const scs = useShortcutStore.getState().shortcuts;
+        const shortcutConflicts: Array<{ id: string; label: string }> = [];
+        for (const [id, sc] of Object.entries(scs)) {
+          if (id.startsWith('bot-template-')) continue; // handled above
+          if (!sc.currentKey) continue;
+          if (areShortcutKeysEqual(sc.currentKey, parsed)) {
+            shortcutConflicts.push({ id, label: sc.label });
+          }
+        }
+
+        if (templateConflict || shortcutConflicts.length > 0) {
+          const parts: string[] = [];
+          if (templateConflict) {
+            parts.push(`template "${templateConflict.name}"`);
+          }
+          for (const sc of shortcutConflicts) {
+            parts.push(`shortcut "${sc.label}"`);
+          }
+          setHotkeyConflict({
+            message: `Hotkey ${templateHotkey} is already assigned to ${parts.join(
+              ' and '
+            )}. Reassign it to this template?`,
+            resolve: () => {
+              if (templateConflict) {
+                updateTemplate(templateConflict.id, { shortcut: undefined });
+                useShortcutStore
+                  .getState()
+                  .deleteShortcut(`bot-template-${templateConflict.id}`);
+              }
+              for (const sc of shortcutConflicts) {
+                useShortcutStore.getState().deleteShortcut(sc.id);
+              }
+              persistTemplate();
+            },
+          });
+          return; // wait for the user's decision
+        }
+      }
+    }
+
+    persistTemplate();
+  };
+
   const handleHotkey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const pressedKeys: string[] = [];
@@ -135,6 +159,7 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md max-w-[95vw]">
         <DialogHeader>
@@ -180,6 +205,23 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+      <ConfirmationDialog
+        open={hotkeyConflict !== null}
+        onOpenChange={(o) => {
+          if (!o) setHotkeyConflict(null);
+        }}
+        title="Hotkey already in use"
+        description={hotkeyConflict?.message ?? ''}
+        confirmText="Reassign"
+        cancelText="Cancel"
+        variant="destructive"
+        onConfirm={() => {
+          hotkeyConflict?.resolve();
+          setHotkeyConflict(null);
+        }}
+      />
+    </>
   );
 };
 

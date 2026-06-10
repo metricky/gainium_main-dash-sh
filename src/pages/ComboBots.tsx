@@ -1483,6 +1483,17 @@ const ComboBots: React.FC = () => {
         },
       },
       {
+        id: 'botId',
+        accessorFn: (row) => row.id,
+        header: 'BOT ID',
+        cell: ({ row }) => {
+          const value = row.original.id;
+          if (!value) return <span className="text-muted-foreground">—</span>;
+          return <span className="text-xs font-mono">{value}</span>;
+        },
+        enableSorting: false,
+      },
+      {
         id: 'actions',
         header: 'ACTIONS',
         cell: ({ row }) => {
@@ -2004,6 +2015,7 @@ const ComboBots: React.FC = () => {
                       defaultColumnVisibility={{
                         netPnl: false,
                         netPnlPercentage: false,
+                        botId: false,
                       }}
                       enableGrouping={true}
                       enableCardView={true}

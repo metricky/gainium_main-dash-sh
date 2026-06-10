@@ -134,6 +134,7 @@ const TRADING_BOTS_DEFAULT_COLUMN_VISIBILITY = {
   avgDailyPerc: false,
   netPnl: false,
   netPnlPercentage: false,
+  botId: false,
 };
 
 const TRADING_BOTS_DEFAULT_PINNED_COLUMNS = {
@@ -1740,6 +1741,17 @@ const TradingBots: React.FC = () => {
           const cost = getValue() as number;
           return `${(cost || 0).toFixed(2)}`;
         },
+      },
+      {
+        id: 'botId',
+        accessorFn: (row) => row.id,
+        header: 'BOT ID',
+        cell: ({ row }) => {
+          const value = row.original.id;
+          if (!value) return <span className="text-muted-foreground">—</span>;
+          return <span className="text-xs font-mono">{value}</span>;
+        },
+        enableSorting: false,
       },
       {
         id: 'actions',
