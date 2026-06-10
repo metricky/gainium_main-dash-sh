@@ -37,6 +37,10 @@ import {
 import { GraphQLClient, getGraphQLConfig } from '@/lib/api';
 import { otherQueries } from '@/lib/api/GraphQLQueries-other-queries';
 import { logger } from '@/lib/loggerInstance';
+import {
+  patchBotInListCaches,
+  BOT_LIST_QUERY_KEYS_BY_TYPE,
+} from '@/lib/queryCacheUtils';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
@@ -100,7 +104,15 @@ export const HedgeBotActionsCell: React.FC<HedgeBotActionsCellProps> = ({
           ? useHedgeComboBotsStore.getState()
           : useHedgeDcaBotsStore.getState();
       const previousStatus = bot.status;
+      const hedgeType =
+        botType === BotTypesEnum.hedgeCombo ? 'hedgeCombo' : 'hedgeDca';
       store.updateBot({ ...bot, status: nextStatus });
+      // Keep the persisted list cache from replaying the pre-toggle status.
+      patchBotInListCaches(
+        bot._id,
+        { status: nextStatus },
+        BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
+      );
 
       try {
         const endpoint =
@@ -130,6 +142,11 @@ export const HedgeBotActionsCell: React.FC<HedgeBotActionsCellProps> = ({
         );
       } catch (error) {
         store.updateBot({ ...bot, status: previousStatus });
+        patchBotInListCaches(
+          bot._id,
+          { status: previousStatus },
+          BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
+        );
         const message = error instanceof Error ? error.message : String(error);
         logger.error('[HedgeBotActionsCell] Toggle status failed', {
           botId: bot._id,

@@ -45,6 +45,15 @@ export interface UseBotSpecificDealsResult {
   refetch: () => Promise<unknown>;
 }
 
+// The status group this hook actually requests from the backend. NOTE: it puts
+// `error` in the CLOSED group, which differs from dealStatusFilter.ts's
+// OPEN_GROUP (open/start/error). The reconcile scope must match exactly the set
+// this hook fetched — otherwise an open fetch would absence-delete `error`
+// deals it never requested. So we keep this hook's own grouping, deliberately
+// NOT dealStatusGroup().
+const requestedStatusGroup = (status: DCADealStatusEnum): string[] =>
+  status === 'open' ? ['open', 'start'] : ['closed', 'canceled', 'error'];
+
 export function useBotSpecificDeals(
   filter: BotDealsFilter
 ): UseBotSpecificDealsResult {
@@ -188,36 +197,18 @@ export function useBotSpecificDeals(
         setCommittedDeals(intermediateDeals);
         // Use a debounce timeout to prevent rapid updates
         const timeoutId = setTimeout(() => {
-          const currentBotDeals = Object.values(
-            useDealStore.getState().deals[filter.botId] ?? {}
+          // Single authoritative reconcile for this bot's requested-status
+          // scope: snapshot wins, in-scope deals absent from it are pruned
+          // (subsumes the old removeDeal stale-id loop), per-deal arbitration +
+          // tombstones run inside.
+          useDealStore.getState().reconcileDeals(
+            {
+              dealType,
+              statuses: requestedStatusGroup(filter.status),
+              botId: filter.botId,
+            },
+            { [filter.botId]: intermediateDeals }
           );
-
-          const isMatchingRequestedStatus = (status: string) =>
-            filter.status === 'open'
-              ? status === 'open' || status === 'start'
-              : status === 'closed' ||
-                status === 'canceled' ||
-                status === 'error';
-
-          const currentStatusDeals = currentBotDeals
-            .filter(
-              (deal) =>
-                deal.dealType === dealType &&
-                isMatchingRequestedStatus(deal.status)
-            )
-            .map((deal) => deal._id);
-
-          const fetchedDealIds = new Set(intermediateDeals.map((d) => d._id));
-
-          currentStatusDeals.forEach((dealId) => {
-            if (!fetchedDealIds.has(dealId)) {
-              useDealStore.getState().removeDeal(filter.botId, dealId);
-            }
-          });
-
-          useDealStore
-            .getState()
-            .updateDeals(filter.botId, intermediateDeals, dealType, false);
           logger.info(
             `[useBotSpecificDeals] Updated store with ${intermediateDeals.length} ${dealType} deals for bot ${filter.botId}`
           );
@@ -228,13 +219,17 @@ export function useBotSpecificDeals(
         return () => clearTimeout(timeoutId);
       } else {
         // Fetch completed with no deals for this status — drop the snapshot so
-        // a previous status's results don't linger.
+        // a previous status's results don't linger, then reconcile with an
+        // empty snapshot so the absence-delete prunes this bot's in-scope deals.
         setCommittedDeals([]);
-        if (dealsFromStore.length) {
-          dealsFromStore.forEach((d) => {
-            useDealStore.getState().removeDeal(d.botId, d._id);
-          });
-        }
+        useDealStore.getState().reconcileDeals(
+          {
+            dealType,
+            statuses: requestedStatusGroup(filter.status),
+            botId: filter.botId,
+          },
+          { [filter.botId]: [] }
+        );
         setIsLoadingComplete(false);
       }
     }
@@ -244,7 +239,6 @@ export function useBotSpecificDeals(
     intermediateDeals,
     filter.botId,
     dealType,
-    dealsFromStore,
     filter.status,
   ]);
 

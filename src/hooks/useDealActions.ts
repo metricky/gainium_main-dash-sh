@@ -15,6 +15,12 @@ import type { AdjustFundsDialogMode } from '@/features/bots/shared/runtime';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useDealStore } from '@/stores/live';
+import { recordDealTombstone } from '@/stores/live/staleWriteGuard';
+import {
+  removeDealFromListCaches,
+  invalidateListCaches,
+  DEAL_LIST_QUERY_KEYS,
+} from '@/lib/queryCacheUtils';
 
 interface CloseDealInput {
   dealId: string;
@@ -71,6 +77,8 @@ function optimisticallyMarkDealClosed(
           type === CloseDCATypeEnum.closeByMarket
         ? DCADealStatusEnum.closed
         : null;
+  // `closeByLimit` yields a null status (deal stays open until the limit
+  // order fills) — bailing here means no tombstone / cache eviction for it.
   if (!newStatus || !botId || !dealId) {
     return;
   }
@@ -79,6 +87,12 @@ function optimisticallyMarkDealClosed(
   if (existing) {
     store.updateDeal(botId, { ...existing, status: newStatus }, existing.dealType);
   }
+  // Tombstone + evict from the persisted RQ list caches so a stale cached
+  // active-deal response can't replay this just-closed deal back into the
+  // store on the next mount/reload.
+  recordDealTombstone(botId, dealId, newStatus, existing?.updateTime ?? 0);
+  removeDealFromListCaches(dealId, DEAL_LIST_QUERY_KEYS);
+  invalidateListCaches(DEAL_LIST_QUERY_KEYS);
 }
 
 // Hook for closing DCA deals
@@ -381,8 +395,27 @@ export function useMoveDealToTerminal() {
         response: data,
       });
       // The deal is no longer one of this bot's deals (it now lives under
-      // terminal), so drop it from the bot's list immediately.
+      // terminal), so drop it from the bot's list immediately. Capture its
+      // updateTime first so the tombstone can arbitrate a stale cached replay.
+      const existing = useDealStore
+        .getState()
+        .getDeal(variables.botId, variables.dealId);
       useDealStore.getState().removeDeal(variables.botId, variables.dealId);
+      // Unlike a close, moving to terminal does NOT change the deal's status,
+      // so a stale active-list replay would still carry the pre-move status.
+      // Record the tombstone with a sentinel status that no real deal status
+      // can equal — otherwise consultDealTombstone's status-equality accept
+      // branch would treat the stale replay as a harmless echo and resurrect
+      // the moved deal. A genuinely newer server update still clears the
+      // tombstone via the updateTime branch.
+      recordDealTombstone(
+        variables.botId,
+        variables.dealId,
+        'moved-to-terminal',
+        existing?.updateTime ?? 0
+      );
+      removeDealFromListCaches(variables.dealId, DEAL_LIST_QUERY_KEYS);
+      invalidateListCaches(DEAL_LIST_QUERY_KEYS);
     },
     onError: (error, variables) => {
       logger.error('[useMoveDealToTerminal] Failed to move deal to terminal', {

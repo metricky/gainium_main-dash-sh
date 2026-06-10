@@ -10,7 +10,11 @@ import type {
 } from '@/types';
 import { useDealStore, type DealWithType } from '@/stores/live';
 import { useUIStore } from '@/stores/uiStore';
-import { dealStatusGroup, statusFilterItem } from '../lib/utils/dealStatusFilter';
+import {
+  ACTIVE_ONLY_DEFAULT_STATUSES,
+  dealStatusGroup,
+  statusFilterItem,
+} from '../lib/utils/dealStatusFilter';
 
 export type ComboDeal = ComboDeals;
 
@@ -138,11 +142,31 @@ export function useComboDeals(filter?: ComboDealsFilter): UseComboDealsResult {
           },
           {} as Record<string, ComboDeals[]>
         );
-      Object.entries(mapDealsByBotId).forEach(([botId, botDeals]) => {
-        useDealStore.getState().updateDeals(botId, botDeals, 'combo');
-      });
+      // comboDealList carries no explicit pageSize, so the response can be
+      // capped by the backend default. The snapshot is complete only when it
+      // returned every result; otherwise we must not absence-delete (it would
+      // prune genuine active deals beyond the backend's page). When the
+      // backend omits totalResults we can't prove completeness -> treat as
+      // partial (closes still heal via the cache-patch + tombstone path).
+      const totalResults = queryResult.data.data.totalResults;
+      const complete =
+        typeof totalResults === 'number' &&
+        normalizedDeals.length >= totalResults;
+      // Reconcile the whole combo scope in one authoritative pass: the
+      // snapshot wins, in-scope deals absent from it are pruned (so a closed
+      // deal disappears), and per-deal arbitration + tombstones run inside.
+      useDealStore.getState().reconcileDeals(
+        {
+          dealType: 'combo',
+          paperContext: currentPaperContext,
+          statuses: dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
+          botId: filter?.botId,
+          complete,
+        },
+        mapDealsByBotId
+      );
     }
-  }, [currentPaperContext, queryResult.data]);
+  }, [currentPaperContext, queryResult.data, filter?.status, filter?.botId]);
 
   // If there's an error, log it
   if (queryResult.error) {

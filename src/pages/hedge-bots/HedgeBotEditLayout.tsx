@@ -69,6 +69,10 @@ import { GraphQLClient, getGraphQLConfig } from '@/lib/api';
 import { botQueries } from '@/lib/api/GraphQLQueries-bot-queries';
 import { otherQueries } from '@/lib/api/GraphQLQueries-other-queries';
 import { logger } from '@/lib/loggerInstance';
+import {
+  patchBotInListCaches,
+  BOT_LIST_QUERY_KEYS_BY_TYPE,
+} from '@/lib/queryCacheUtils';
 import { toast } from '@/lib/toast';
 import { mapFormDataToPayload } from '@/mappers/bots/dca/map-form-data-to-payload';
 import { useAuthStore } from '@/stores/authStore';
@@ -745,7 +749,15 @@ export const HedgeBotEditLayout: React.FC = () => {
           ? useHedgeComboBotsStore.getState()
           : useHedgeDcaBotsStore.getState();
       const previousStatus = hedgeBot.status;
+      const hedgeType =
+        botType === BotTypesEnum.hedgeCombo ? 'hedgeCombo' : 'hedgeDca';
       store.updateBot({ ...hedgeBot, status: nextStatus });
+      // Keep the persisted list cache from replaying the pre-toggle status.
+      patchBotInListCaches(
+        botId,
+        { status: nextStatus },
+        BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
+      );
 
       try {
         const endpoint =
@@ -790,6 +802,11 @@ export const HedgeBotEditLayout: React.FC = () => {
       } catch (error) {
         // Roll back the optimistic update on failure.
         store.updateBot({ ...hedgeBot, status: previousStatus });
+        patchBotInListCaches(
+          botId,
+          { status: previousStatus },
+          BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
+        );
         const message = error instanceof Error ? error.message : String(error);
         logger.error('[HedgeBotEditLayout] Toggle status failed', {
           error: message,

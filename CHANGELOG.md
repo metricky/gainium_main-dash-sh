@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.15] - 2026-06-10
+
+### Fixed
+
+- Closed/canceled deals and stopped/deleted bots no longer reappear in lists
+  after navigating away and back (or reloading within the cache window). The
+  cached list responses replayed into the live stores could resurrect
+  entities that were just mutated locally. All store write paths (query
+  write-backs, websocket events) now go through freshness arbitration plus
+  short-lived tombstones for locally closed deals / deleted bots, and
+  close/stop/delete actions immediately patch the cached list responses
+  themselves. Covers DCA, Combo, Grid, both Hedge bot types, and the bot and
+  deal views.
+- Deal lists now reconcile against the server snapshot: a deal the backend no
+  longer returns as active is removed from the local store (previously stale
+  Combo deals could linger indefinitely), without pruning when the response
+  is known to be page-capped.
+
 ## [2.10.14] - 2026-06-10
 
 ### Fixed

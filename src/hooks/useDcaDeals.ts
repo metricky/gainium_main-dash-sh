@@ -22,7 +22,11 @@ import type {
 } from '../types';
 import { useUsdRate } from './useUsdRate';
 import { useUserFees } from './useUserFeesService';
-import { dealStatusGroup, statusFilterItem } from '../lib/utils/dealStatusFilter';
+import {
+  ACTIVE_ONLY_DEFAULT_STATUSES,
+  dealStatusGroup,
+  statusFilterItem,
+} from '../lib/utils/dealStatusFilter';
 
 /* export interface DCADeals {
   _id: string;
@@ -295,6 +299,10 @@ export function useDcaDeals(
       const MAX_PAGES = isTerminal ? 5 : 1; // Only autopaginate for terminal deals
       const PAGE_SIZE = 500;
       let totalPages = MAX_PAGES;
+      // Whether we fetched the full result set (vs. stopping at the page cap
+      // with more pages remaining). Only a complete snapshot may absence-delete
+      // in reconcileDeals — pruning against a capped page drops genuine deals.
+      let reachedEnd = false;
 
       // Fetch pages sequentially (0-based) until we reach max pages or no more pages
       for (let page = 0; page < MAX_PAGES && page < totalPages; page++) {
@@ -332,6 +340,12 @@ export function useDcaDeals(
 
           // If this page has fewer deals than page size, we've reached the last page
           if (pageDeals.length < PAGE_SIZE) {
+            reachedEnd = true;
+            break;
+          }
+          // Fetched every page the backend reports -> snapshot is complete.
+          if (page + 1 >= totalPages) {
+            reachedEnd = true;
             break;
           }
         } else {
@@ -368,22 +382,24 @@ export function useDcaDeals(
           {} as Record<string, DCADeals[]>
         );
 
-      // Update store in a single batch operation
-      Object.entries(mapDealsByBotId).forEach(([botId, botDeals]) => {
-        useDealStore.getState().updateDeals(botId, botDeals, dealType, true);
-      });
-
-      if (
-        Object.entries(mapDealsByBotId).length === 0 &&
-        (filter?.botId || isTerminal)
-      ) {
-        if (isTerminal) {
-          useDealStore.getState().updateDeals('terminal', [], 'terminal', true);
-        }
-        if (filter?.botId) {
-          useDealStore.getState().updateDeals(filter.botId, [], dealType, true);
-        }
-      }
+      // Reconcile the whole fetched scope in one authoritative pass. Unlike the
+      // old per-bot replace=true writes, this also prunes stale in-scope deals
+      // of bots that are ABSENT from the response (all-bots fetch where a bot
+      // has zero remaining active deals). An empty snapshot still triggers the
+      // absence-delete, subsuming the old empty-result special cases.
+      useDealStore.getState().reconcileDeals(
+        {
+          dealType,
+          paperContext,
+          statuses:
+            dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
+          botId: isTerminal ? 'terminal' : filter?.botId,
+          // Only prune absent deals when we fetched the whole result set;
+          // a page-capped snapshot must not delete deals beyond the cap.
+          complete: reachedEnd,
+        },
+        mapDealsByBotId
+      );
 
       // Set final result
       setQueryResult({
@@ -428,6 +444,7 @@ export function useDcaDeals(
     input,
     isTerminal,
     filter?.botId,
+    filter?.status,
   ]);
 
   // Trigger fetch when dependencies change

@@ -4,6 +4,7 @@ import type { DCADeals } from '@/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import type { DealUpdate } from '../../services/websocket/BotWebSocketManager';
+import { consultDealTombstone, isIncomingDealStale } from './staleWriteGuard';
 import { WebSocketDebouncer } from './webSocketDebouncer';
 
 export type DealType = 'dca' | 'combo' | 'terminal';
@@ -35,6 +36,23 @@ interface DealStoreState {
     replace?: boolean
   ) => void;
   updateDeal: (botId: string, deal: DCADeals, dealType: DealType) => void;
+  /** Authoritative snapshot reconciliation: every in-scope existing deal
+   *  absent from the snapshot is removed; snapshot deals are merged with the
+   *  same per-deal arbitration (stale-updateTime + tombstone) as updateDeals.
+   *  Out-of-scope deals (other dealType / context / status) are untouched.
+   *  `complete` (default true) gates the absence-delete: pass false when the
+   *  snapshot is known-partial (page-capped / truncated) so genuine deals
+   *  beyond the fetched page are NOT pruned — the merge still applies. */
+  reconcileDeals: (
+    scope: {
+      dealType: DealType;
+      paperContext?: boolean;
+      statuses?: string[];
+      botId?: string;
+      complete?: boolean;
+    },
+    dealsByBot: Record<string, DCADeals[]>
+  ) => void;
   updateDealFromWebSocket: (update: DealUpdate, dealType: DealType) => void;
   applyBatchedDealUpdates: (
     updates: Array<DealUpdate & { dealType?: DealType }>
@@ -101,21 +119,38 @@ export const useDealStore = create<DealStoreState>()(
         _hasHydrated: false,
         updateDeals: (botId, deals, dealType, replace) => {
           set((state) => {
-            const currentDeals = replace ? {} : state.deals[botId] || {};
-            const newDeals: Record<string, DealWithType> = {};
+            const existingBotDeals = state.deals[botId] || {};
+            // replace rebuilds the record from scratch (but a stale/rejected
+            // incoming re-adds the existing copy); merge keeps prior deals.
+            const newDeals: Record<string, DealWithType> = replace
+              ? {}
+              : { ...existingBotDeals };
 
             deals.forEach((deal) => {
-              const dealWithType: DealWithType = { ...deal, dealType };
-              newDeals[deal._id] = dealWithType;
+              const existing = existingBotDeals[deal._id];
+
+              if (isIncomingDealStale(existing, deal)) {
+                if (existing) newDeals[deal._id] = existing;
+                return;
+              }
+
+              const verdict = consultDealTombstone(botId, deal._id, {
+                updateTime: deal.updateTime,
+                status: deal.status,
+              });
+              if (verdict === 'reject') {
+                // Keep the existing store copy; never re-add a tombstoned deal.
+                if (existing) newDeals[deal._id] = existing;
+                return;
+              }
+
+              newDeals[deal._id] = { ...deal, dealType };
             });
 
             return {
               deals: {
                 ...state.deals,
-                [botId]: {
-                  ...currentDeals,
-                  ...newDeals,
-                },
+                [botId]: newDeals,
               },
               loading: {
                 ...state.loading,
@@ -131,6 +166,20 @@ export const useDealStore = create<DealStoreState>()(
         updateDeal: (botId: string, deal: DCADeals, dealType: DealType) => {
           set((state) => {
             const currentDeals = state.deals[botId] || {};
+            const existing = currentDeals[deal._id];
+
+            // Strict-less stale guard: equal updateTime passes so an optimistic
+            // close (which reuses updateTime) is not rejected here.
+            if (isIncomingDealStale(existing, deal)) return state;
+
+            // The status-equality accept branch lets the optimistic close pass
+            // regardless of call order relative to recordDealTombstone.
+            const verdict = consultDealTombstone(botId, deal._id, {
+              updateTime: deal.updateTime,
+              status: deal.status,
+            });
+            if (verdict === 'reject') return state;
+
             const dealWithType: DealWithType = { ...deal, dealType };
 
             return {
@@ -150,6 +199,99 @@ export const useDealStore = create<DealStoreState>()(
                 [botId]: null,
               },
             };
+          });
+        },
+
+        reconcileDeals: (scope, dealsByBot) => {
+          set((state) => {
+            const next: Record<string, Record<string, DealWithType>> = {
+              ...state.deals,
+            };
+
+            // Whether an existing stored deal falls inside the reconcile scope.
+            const inScope = (d: DealWithType, bucketId: string): boolean => {
+              if (d.dealType !== scope.dealType) return false;
+              if (typeof scope.paperContext === 'boolean') {
+                // Missing existing paperContext is treated as matching.
+                if (
+                  typeof d.paperContext === 'boolean' &&
+                  d.paperContext !== scope.paperContext
+                ) {
+                  return false;
+                }
+              }
+              if (scope.statuses && !scope.statuses.includes(d.status)) {
+                return false;
+              }
+              if (scope.botId != null && bucketId !== scope.botId) return false;
+              return true;
+            };
+
+            // Apply the snapshot with the same per-deal arbitration as
+            // updateDeals, tracking which deal ids the snapshot supplied per
+            // bucket (so absent in-scope deals can be pruned below).
+            const snapshotIds: Record<string, Set<string>> = {};
+
+            Object.entries(dealsByBot).forEach(([bucketId, deals]) => {
+              if (scope.botId != null && bucketId !== scope.botId) return;
+
+              const existingBucket = next[bucketId] || {};
+              const merged: Record<string, DealWithType> = { ...existingBucket };
+              const ids = (snapshotIds[bucketId] ??= new Set<string>());
+
+              deals.forEach((deal) => {
+                ids.add(deal._id);
+                const existing = existingBucket[deal._id];
+
+                if (isIncomingDealStale(existing, deal)) {
+                  if (existing) merged[deal._id] = existing;
+                  return;
+                }
+
+                const verdict = consultDealTombstone(bucketId, deal._id, {
+                  updateTime: deal.updateTime,
+                  status: deal.status,
+                });
+                if (verdict === 'reject') {
+                  if (existing) merged[deal._id] = existing;
+                  return;
+                }
+
+                merged[deal._id] = { ...deal, dealType: scope.dealType };
+              });
+
+              next[bucketId] = merged;
+            });
+
+            // Absence-delete: any in-scope existing deal not present in the
+            // snapshot is removed. Restrict to scope.botId when provided.
+            // Skipped entirely when the snapshot is known-partial — pruning
+            // against a page-capped response would drop genuine deals that
+            // simply fell beyond the fetched page.
+            if (scope.complete === false) {
+              return { deals: next };
+            }
+            Object.keys(next).forEach((bucketId) => {
+              if (scope.botId != null && bucketId !== scope.botId) return;
+
+              const bucket = next[bucketId];
+              const ids = snapshotIds[bucketId];
+              let changed = false;
+              const pruned: Record<string, DealWithType> = {};
+
+              Object.entries(bucket).forEach(([dealId, deal]) => {
+                if (inScope(deal, bucketId) && !(ids && ids.has(dealId))) {
+                  // In scope but absent from the snapshot -> drop it.
+                  changed = true;
+                  return;
+                }
+                pruned[dealId] = deal;
+              });
+
+              if (changed) next[bucketId] = pruned;
+            });
+
+            return { deals: next };
           });
         },
 
@@ -210,6 +352,15 @@ export const useDealStore = create<DealStoreState>()(
               );
               return;
             }
+
+            // Tombstone consult: reject a stale replay of an entity we just
+            // closed (covers both the socketIntegration and LiveUpdateContext
+            // feeds since both flow through this batched path).
+            const verdict = consultDealTombstone(botId, deal._id, {
+              updateTime: deal.updateTime,
+              status: deal.status,
+            });
+            if (verdict === 'reject') return;
 
             // Create deal with type
             const dealWithType: DealWithType = {

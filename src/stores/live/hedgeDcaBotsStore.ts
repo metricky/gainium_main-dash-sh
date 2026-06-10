@@ -3,6 +3,7 @@ import { createQueuedIndexedDBStorage } from '@/lib/zustand-indexeddb-storage';
 import type { HedgeBot } from '@/types';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+import { consultBotTombstone, isIncomingBotStale } from './staleWriteGuard';
 import { WebSocketDebouncer } from './webSocketDebouncer';
 
 interface HedgeDcaBotsStoreState {
@@ -94,9 +95,28 @@ export const useHedgeDcaBotsStore = create<HedgeDcaBotsStoreState>()(
         },
         updateBots: (bots: HedgeBot[]) => {
           // Replace entire bot state with API response (source of truth)
-          // This ensures deleted/archived bots are removed from store
+          // This ensures deleted/archived bots are removed from store.
+          // Per-bot stale + tombstone guards prevent a stale cached list
+          // response from resurrecting a just-deleted bot or reverting a
+          // newer optimistic update.
+          const existing = get().bots;
           const botsRecord: Record<string, HedgeBot> = {};
           bots.forEach((bot) => {
+            const prior = existing[bot._id];
+            if (isIncomingBotStale(prior, bot)) {
+              botsRecord[bot._id] = prior;
+              return;
+            }
+            const incomingMs = bot.updated
+              ? new Date(bot.updated).getTime()
+              : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            if (consultBotTombstone(bot._id, ms) === 'reject') {
+              // Stays deleted — omit from the rebuilt record entirely.
+              return;
+            }
             botsRecord[bot._id] = bot;
           });
 
@@ -117,6 +137,13 @@ export const useHedgeDcaBotsStore = create<HedgeDcaBotsStoreState>()(
             );
             return;
           }
+
+          if (isIncomingBotStale(existingBot, bot)) return;
+          const incomingMs = bot.updated
+            ? new Date(bot.updated).getTime()
+            : undefined;
+          const ms = Number.isNaN(incomingMs as number) ? undefined : incomingMs;
+          if (consultBotTombstone(bot._id, ms) === 'reject') return;
 
           // Replace with full bot data from API
           set((state) => ({
@@ -194,6 +221,15 @@ export const useHedgeDcaBotsStore = create<HedgeDcaBotsStoreState>()(
               );
               return;
             }
+
+            const incomingMs =
+              typeof data.updated !== 'undefined' && data.updated
+                ? new Date(data.updated as string).getTime()
+                : undefined;
+            const ms = Number.isNaN(incomingMs as number)
+              ? undefined
+              : incomingMs;
+            if (consultBotTombstone(botId, ms) === 'reject') return;
 
             // Merge WebSocket data with existing bot
             updatedBots[botId] = {
