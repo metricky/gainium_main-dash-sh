@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.14] - 2026-06-10
+
+### Fixed
+
+- Editing and saving a DCA or Combo bot no longer fails with
+  `Field "avgPrice" is not defined by type "changeDCABotInput"`. The
+  deal-edit-only **Breakeven price** (`avgPrice`) seeded into the form
+  defaults was leaking into the bot **update** payload — the same leak that
+  2.10.9 fixed for bot **create**. It's now stripped (alongside
+  `useExperimental`) before the update mutation. Grid bots and hedge legs are
+  unaffected.
+- The bot-create "insufficient credits" guard now reads the **bot credits**
+  pool (`subscription.credits.balance` minus `locked`) instead of the
+  consumable `user.credits` pool. Users who had bot credits but no consumable
+  balance were wrongly blocked from creating bots.
+
 ## [2.10.13] - 2026-06-09
 
 ### Fixed

@@ -695,17 +695,22 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const hasErrors = Object.keys(errors).length > 0;
   const shouldDisplayErrorSummary = showErrorSummary && hasErrors;
 
-  // Insufficient-credits guard. Creating a bot/terminal deal consumes credits;
-  // the backend rejects the request when the user can't cover the cost, so
-  // block the submit up front with an explanatory tooltip. Credits are a
+  // Insufficient-credits guard. Creating a bot/terminal deal locks *bot
+  // credits*, so the backend rejects the request when the user can't cover the
+  // cost — block the submit up front with an explanatory tooltip. Bot credits
+  // live in the `subscription.credits` bucket (`balance` minus already-`locked`
+  // by running bots), matching legacy main-dash's bot-create gate. This is a
+  // DIFFERENT pool from the consumable `user.credits` bucket
+  // (`paid`/`subscription.amount`/`blocked`), which only funds server-side
+  // backtests and AI — using that bucket here wrongly blocked creation for
+  // users who had bot credits but no consumable balance. Credits are a
   // cloud-only concept (sh has no billing), and only `create` consumes new
   // credits — editing an existing bot doesn't. Affiliate exchanges cost 0, so
   // `credits.total` is already 0 there and never trips this.
   const user = useAuthStore((s) => s.user);
   const availableCredits =
-    Number(user?.credits?.paid ?? 0) +
-    Number(user?.credits?.subscription?.amount ?? 0) -
-    Number(user?.credits?.blocked ?? 0);
+    Number(user?.subscription?.credits?.balance ?? 0) -
+    Number(user?.subscription?.credits?.locked ?? 0);
   const insufficientCredits =
     IS_CLOUD &&
     mode === 'create' &&
