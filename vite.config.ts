@@ -1,10 +1,18 @@
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Exposed to the bundle as `__APP_CACHE_VERSION__`; used as the React Query
+// persisted-cache buster so every release discards the prior persisted cache
+// (otherwise a pre-deploy snapshot can replay for up to its maxAge window).
+const appVersion = JSON.parse(
+  readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')
+).version as string;
 
 // Mock API plugin for development
 const mockApiPlugin = (): Plugin => {
@@ -212,6 +220,7 @@ export default defineConfig({
     // Polyfill global for PouchDB and other Node.js libraries
     global: 'globalThis',
     'process.env': {},
+    __APP_CACHE_VERSION__: JSON.stringify(appVersion),
   },
   resolve: {
     alias: {

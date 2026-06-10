@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.17] - 2026-06-10
+
+### Fixed
+
+- Existing stale deals/bots now actually clear on upgrade. The stale-write
+  guards (2.10.15–16) prevented *new* contamination but couldn't evict
+  entities already resurrected into the persisted caches before the fix
+  shipped. This release busts both persisted layers on deploy: the live
+  Zustand stores (deals + all bot types) wipe and refetch on version bump,
+  and the React Query persisted cache is now keyed to the app version so a
+  pre-deploy snapshot can no longer replay after an upgrade.
+- The combo-deal list reconciliation now works against the production
+  backend, which returns the full active set without pagination counts
+  (`totalResults`/`totalPages` are null). Pruning was previously gated on a
+  numeric `totalResults` and so never ran in production, leaving closed combo
+  deals in the list. It now treats a response as complete unless it
+  explicitly signals more pages, while still only pruning against a fresh
+  snapshot.
+
 ## [2.10.16] - 2026-06-10
 
 ### Fixed

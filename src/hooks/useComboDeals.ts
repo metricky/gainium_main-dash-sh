@@ -142,16 +142,22 @@ export function useComboDeals(filter?: ComboDealsFilter): UseComboDealsResult {
           },
           {} as Record<string, ComboDeals[]>
         );
-      // comboDealList carries no explicit pageSize, so the response can be
-      // capped by the backend default. The snapshot is complete only when it
-      // returned every result; otherwise we must not absence-delete (it would
-      // prune genuine active deals beyond the backend's page). When the
-      // backend omits totalResults we can't prove completeness -> treat as
-      // partial (closes still heal via the cache-patch + tombstone path).
-      const totalResults = queryResult.data.data.totalResults;
-      const complete =
-        typeof totalResults === 'number' &&
-        normalizedDeals.length >= totalResults;
+      // comboDealList returns the full active set in a single response — the
+      // live backend reports page/totalPages/totalResults as null (it doesn't
+      // paginate this list). So treat the snapshot as complete UNLESS the
+      // response explicitly signals more pages (a later page, >1 total pages,
+      // or a result count short of a reported total). Requiring a numeric
+      // totalResults here would make `complete` permanently false in
+      // production, disabling the absence-delete entirely. The prune stays
+      // safe either way: the store only absence-deletes against a fresh
+      // `snapshotAt` and never removes a deal newer than the snapshot.
+      const { totalResults, totalPages, page } = queryResult.data.data;
+      const paginated =
+        (typeof totalPages === 'number' && totalPages > 1) ||
+        (typeof page === 'number' && page > 0) ||
+        (typeof totalResults === 'number' &&
+          normalizedDeals.length < totalResults);
+      const complete = !paginated;
       // Reconcile the whole combo scope in one authoritative pass: the
       // snapshot wins, in-scope deals absent from it AND older than the
       // snapshot's fetch stamp are pruned (so a closed deal disappears), and

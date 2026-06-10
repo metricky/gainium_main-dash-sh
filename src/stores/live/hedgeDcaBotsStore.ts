@@ -336,7 +336,7 @@ export const useHedgeDcaBotsStore = create<HedgeDcaBotsStoreState>()(
         name: 'hedge-dca-bots-store',
         storage: createQueuedIndexedDBStorage('hedge-dca-bots-store'),
         // One-time cache bust: drop stale persisted bots on upgrade.
-        version: 1,
+        version: 2,
         migrate: () => ({ bots: {} }),
         partialize: (state) => ({
           bots: state.bots,

@@ -541,7 +541,9 @@ export const useDealStore = create<DealStoreState>()(
         // One-time cache bust: drop pre-paperContext-fix persisted deals
         // (mis-stamped contexts / stale closed deals) so clients refetch
         // cleanly. Bump this version again to force another wipe.
-        version: 1,
+        // v2: wipe deals resurrected before the stale-write guards shipped —
+        // those have no tombstone and would otherwise linger indefinitely.
+        version: 2,
         migrate: () => ({ deals: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({

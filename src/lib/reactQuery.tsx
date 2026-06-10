@@ -14,6 +14,14 @@ export default function ReactQueryProvider({
         persister,
         dehydrateOptions: { shouldDehydrateQuery: () => true },
         maxAge: FIVE_MINUTES, // **crucial**: if cache younger than this, it is reused with stale-while-revalidate
+        // Discard the persisted cache whenever the app version changes, so a
+        // deploy never resurrects a pre-deploy snapshot (e.g. a stale deal
+        // list) during the maxAge window. Falls back to a fixed string when
+        // the define is absent (e.g. some test runners).
+        buster:
+          typeof __APP_CACHE_VERSION__ !== 'undefined'
+            ? __APP_CACHE_VERSION__
+            : 'dev',
       }}
     >
       {children}

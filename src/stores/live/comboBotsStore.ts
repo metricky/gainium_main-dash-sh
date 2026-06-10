@@ -344,7 +344,7 @@ export const useComboBotsStore = create<ComboBotsStoreState>()(
         name: 'combo-bots-store',
         storage: createQueuedIndexedDBStorage('combo-bots-store'),
         // One-time cache bust: drop stale persisted bots on upgrade.
-        version: 1,
+        version: 2,
         migrate: () => ({ bots: {} }),
         // Only persist bot data, not loading/error states
         partialize: (state) => ({

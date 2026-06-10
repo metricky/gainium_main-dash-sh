@@ -17,6 +17,10 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+/** App version injected at build time (vite `define`). Used as the React
+ *  Query persisted-cache buster so each release drops the prior cache. */
+declare const __APP_CACHE_VERSION__: string;
+
 // PWA types
 declare module 'virtual:pwa-register/react' {
   export interface RegisterSWOptions {
