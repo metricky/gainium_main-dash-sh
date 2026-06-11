@@ -290,8 +290,8 @@ const voCalc = (r, context, shortLength, longLength) => {
   const vo = f_0(a, c);
   return vo;
 };
-const cciCalc = (r, context, length) => {
-  const price = r.Std.hlc3(context);
+const cciCalc = (r, context, length, source = 'hlc3') => {
+  const price = r.Std[source](context);
   const f_0 = (e, t, i) => {
     return (e - t) / (0.015 * i);
   };
@@ -6147,6 +6147,12 @@ export const DIV = (r) => ({
       const v = pivotVar ?? this._context.new_var();
       const range = this.plFound(osc, left, right);
       v.set(range);
+      const inRange = this._inRange(
+        v.get(1),
+        rangeLower,
+        rangeUpper,
+        barssinceVar
+      );
       return (
         osc.get(right) >
           valuewhen(
@@ -6156,7 +6162,7 @@ export const DIV = (r) => ({
             osc.get(right),
             1,
             valuewhenVar
-          ) && this._inRange(v.get(1), rangeLower, rangeUpper, barssinceVar)
+          ) && inRange
       );
     };
     // Lower Low on Price
@@ -6228,10 +6234,14 @@ export const DIV = (r) => ({
         valuewhenVar
       );
 
-      return (
-        osc.get(right) < vw &&
-        this._inRange(v.get(1), rangeLower, rangeUpper, barssinceVar)
+      const inRange = this._inRange(
+        v.get(1),
+        rangeLower,
+        rangeUpper,
+        barssinceVar
       );
+
+      return osc.get(right) < vw && inRange;
     };
     // Higher High on Price
     this.priceHH = function (osc, left, right, currentHigh, valuewhenVar) {
@@ -6290,6 +6300,12 @@ export const DIV = (r) => ({
       const v = pivotVar ?? this._context.new_var();
       const range = this.plFound(osc, left, right);
       v.set(range);
+      const inRange = this._inRange(
+        v.get(1),
+        rangeLower,
+        rangeUpper,
+        barssinceVar
+      );
       return (
         osc.get(right) <
           valuewhen(
@@ -6299,7 +6315,7 @@ export const DIV = (r) => ({
             osc.get(right),
             1,
             valuewhenVar
-          ) && this._inRange(v.get(1), rangeLower, rangeUpper, barssinceVar)
+          ) && inRange
       );
     };
     // Higher Low on Price
@@ -6361,6 +6377,12 @@ export const DIV = (r) => ({
       const v = pivotVar ?? this._context.new_var();
       const range = this.phFound(osc, left, right);
       v.set(range);
+      const inRange = this._inRange(
+        v.get(1),
+        rangeLower,
+        rangeUpper,
+        barssinceVar
+      );
       return (
         osc.get(right) >
           valuewhen(
@@ -6370,7 +6392,7 @@ export const DIV = (r) => ({
             osc.get(right),
             1,
             valuewhenVar
-          ) && this._inRange(v.get(1), rangeLower, rangeUpper, barssinceVar)
+          ) && inRange
       );
     };
     // Lower High on Price
@@ -6449,7 +6471,9 @@ export const DIV = (r) => ({
         : null;
       const rsi = useRsi ? rsiCalc(r, this._context, 14) : null;
       /* const vo = useVo ? voCalc(r, this._context, 5, 10) : null */
-      const cci = useCci ? cciCalc(r, this._context, 20)?.[0]?.get() : null;
+      const cci = useCci
+        ? cciCalc(r, this._context, 10, 'close')?.[0]?.get()
+        : null;
       const ao = useAo ? aoCalc(r, this._context) : null;
       const wr = useWr ? wrCalc(r, this._context, 14) : null;
       const uo = useUo ? uoCalc(r, this._context, 7, 14, 28) : null;
@@ -7841,7 +7865,7 @@ export const DIV = (r) => ({
         posdivergence === 6 && minDiv < 7 ? 1 : 0,
         posdivergence === 7 && minDiv < 8 ? 1 : 0,
         posdivergence === 8 && minDiv < 9 ? 1 : 0,
-        posdivergence > 8 && minDiv > 8 ? 1 : 0,
+        posdivergence > 8 ? 1 : 0,
         negdivergence === 1 && minDiv < 2 ? 1 : 0,
         negdivergence === 2 && minDiv < 3 ? 1 : 0,
         negdivergence === 3 && minDiv < 4 ? 1 : 0,
@@ -7850,7 +7874,7 @@ export const DIV = (r) => ({
         negdivergence === 6 && minDiv < 7 ? 1 : 0,
         negdivergence === 7 && minDiv < 8 ? 1 : 0,
         negdivergence === 8 && minDiv < 9 ? 1 : 0,
-        negdivergence > 8 && minDiv > 8 ? 1 : 0,
+        negdivergence > 8 ? 1 : 0,
         posdivergencehidden === 1 && minDiv < 2 ? 1 : 0,
         posdivergencehidden === 2 && minDiv < 3 ? 1 : 0,
         posdivergencehidden === 3 && minDiv < 4 ? 1 : 0,
@@ -7859,7 +7883,7 @@ export const DIV = (r) => ({
         posdivergencehidden === 6 && minDiv < 7 ? 1 : 0,
         posdivergencehidden === 7 && minDiv < 8 ? 1 : 0,
         posdivergencehidden === 8 && minDiv < 9 ? 1 : 0,
-        posdivergencehidden > 8 && minDiv > 8 ? 1 : 0,
+        posdivergencehidden > 8 ? 1 : 0,
         negdivergencehidden === 1 && minDiv < 2 ? 1 : 0,
         negdivergencehidden === 2 && minDiv < 3 ? 1 : 0,
         negdivergencehidden === 3 && minDiv < 4 ? 1 : 0,
@@ -7868,7 +7892,7 @@ export const DIV = (r) => ({
         negdivergencehidden === 6 && minDiv < 7 ? 1 : 0,
         negdivergencehidden === 7 && minDiv < 8 ? 1 : 0,
         negdivergencehidden === 8 && minDiv < 9 ? 1 : 0,
-        negdivergencehidden > 8 && minDiv > 8 ? 1 : 0,
+        negdivergencehidden > 8 ? 1 : 0,
       ];
     };
   },
