@@ -44,6 +44,7 @@ import {
   GridBacktestTransactionsTab,
   ShareBacktestButton,
 } from '@/components/widgets/bots/backtest';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import { useShareContext } from '@/hooks/useShareContext';
 import { useAuthStore } from '@/stores/authStore';
 import { GraphQLClient } from '@/lib/api';
@@ -96,6 +97,9 @@ const GridBotNewWidget = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<GRIDBacktestingResultHistory | null>(null);
   const [activeInsightsTab, setActiveInsightsTab] = useState('backtests');
+  // Clicking a backtest row opens the redesigned full-screen results modal
+  // instead of rendering Overview/Transactions/Equity/Stats inline.
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
     null
   );
@@ -126,7 +130,7 @@ const GridBotNewWidget = () => {
     const found = gridBacktests.find((b) => b._id === pendingBacktestId);
     if (found) {
       setSelectedBacktest(found);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
       setPendingBacktestId(null);
       logger.info('[GridBotNew] Auto-selected completed backtest', {
         id: pendingBacktestId,
@@ -144,7 +148,7 @@ const GridBotNewWidget = () => {
     const local = gridBacktests.find((b) => b.shareId === backtestShareId);
     if (local) {
       setSelectedBacktest(local);
-      setActiveInsightsTab('bt-overview');
+      setActiveInsightsTab('backtests');
       return;
     }
 
@@ -173,7 +177,7 @@ const GridBotNewWidget = () => {
         const payload = response.getGridBacktestByShareId;
         if (payload?.status === 'OK' && payload.data) {
           setSelectedBacktest(payload.data);
-          setActiveInsightsTab('bt-overview');
+          setActiveInsightsTab('backtests');
         } else {
           toast.error(
             payload?.reason || 'Could not load shared backtest by link'
@@ -779,11 +783,11 @@ const GridBotNewWidget = () => {
     [handleDeleteBacktests, backtestNoteOverrides, handleSaveBacktestNote]
   );
 
-  // Handle row click to select a backtest and show detail subtabs
+  // Handle row click to select a backtest and open the full-screen modal
   const handleBacktestSelect = useCallback(
     (backtest: GRIDBacktestingResultHistory) => {
       setSelectedBacktest(backtest);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
     },
     []
   );
@@ -970,41 +974,8 @@ const GridBotNewWidget = () => {
             }}
           />
         ),
-        // Subtabs for backtest details - only show when a backtest is selected
-        subtabs: selectedBacktest
-          ? [
-              {
-                key: 'bt-overview',
-                title: 'Overview',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestOverviewTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-transactions',
-                title: 'Transactions',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestTransactionsTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-equity',
-                title: 'Equity Curve',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestEquityCurveTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-stats',
-                title: 'Stats',
-                bodyClassName: 'p-0',
-                content: <GridBacktestStatsTab backtest={selectedBacktest} />,
-              },
-            ]
-          : undefined,
+        // Results (Overview/Transactions/Equity/Stats) now open in the
+        // full-screen modal on row click — no inline subtabs in the widget.
       },
     ];
 
@@ -1014,7 +985,7 @@ const GridBotNewWidget = () => {
       (selectedBacktest as { userId?: string }).userId === user.id;
 
     return {
-      defaultTab: selectedBacktest ? 'bt-overview' : 'backtests',
+      defaultTab: 'backtests',
       resetKey: selectedBacktest?._id,
       actions: (
         <div className="flex items-center gap-xs">
@@ -1211,6 +1182,23 @@ const GridBotNewWidget = () => {
         cancelText="Cancel"
         variant="destructive"
       />
+
+      {/* Full-screen backtest results modal (opened from a table row click) */}
+      {selectedBacktest && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={selectedBacktest}
+          strategy="Grid"
+          meta={{
+            symbol: selectedBacktest.symbol,
+            exchange: String(selectedBacktest.exchange ?? ''),
+            baseAsset: selectedBacktest.baseAsset,
+            quoteAsset: selectedBacktest.quoteAsset,
+          }}
+          botName={selectedBacktest.settings?.name}
+        />
+      )}
     </MainLayout>
   );
 };

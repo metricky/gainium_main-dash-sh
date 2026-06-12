@@ -26,12 +26,7 @@ import {
   type BulkAction,
 } from '@/components/ui/data-table/data-table';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
-import {
-  GridBacktestEquityCurveTab,
-  GridBacktestOverviewTab,
-  GridBacktestStatsTab,
-  GridBacktestTransactionsTab,
-} from '@/components/widgets/bots/backtest';
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
 import {
@@ -88,6 +83,9 @@ const GridBotEditWidget = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<GRIDBacktestingResultHistory | null>(null);
   const [activeInsightsTab, setActiveInsightsTab] = useState('backtests');
+  // Clicking a backtest row opens the redesigned full-screen results modal
+  // instead of rendering Overview/Transactions/Equity/Stats inline.
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
     null
   );
@@ -119,7 +117,7 @@ const GridBotEditWidget = () => {
     const found = gridBacktests.find((b) => b._id === pendingBacktestId);
     if (found) {
       setSelectedBacktest(found);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
       setPendingBacktestId(null);
       logger.info('[GridBotEdit] Auto-selected completed backtest', {
         id: pendingBacktestId,
@@ -175,6 +173,10 @@ const GridBotEditWidget = () => {
         );
       }
     },
+    // Depend on the stable `mutateAsync` reference, not the whole mutation
+    // object — react-query returns a new mutation object on every render, so
+    // depending on it makes this callback (and `insightsTabs`/the DataTable
+    // columns built from it) churn every render and infinite-loop.
     [exportBacktestsMutation]
   );
 
@@ -236,6 +238,10 @@ const GridBotEditWidget = () => {
         }
       );
     },
+    // `.mutate` is a stable reference; the mutation object itself is recreated
+    // every render. `handleSaveBacktestNote` feeds `backtestColumns`, which is
+    // passed straight to the DataTable as `columns` — an unstable identity here
+    // makes the whole table re-render every commit and infinite-loop.
     [setBacktestNoteMutation]
   );
 
@@ -652,11 +658,11 @@ const GridBotEditWidget = () => {
     [handleDeleteBacktests, backtestNoteOverrides, handleSaveBacktestNote]
   );
 
-  // Handle row click to select a backtest and show detail subtabs
+  // Handle row click to select a backtest and open the full-screen modal
   const handleBacktestSelect = useCallback(
     (backtest: GRIDBacktestingResultHistory) => {
       setSelectedBacktest(backtest);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
     },
     []
   );
@@ -834,41 +840,8 @@ const GridBotEditWidget = () => {
             }}
           />
         ),
-        // Subtabs for backtest details - only shown when a backtest is selected
-        subtabs: selectedBacktest
-          ? [
-              {
-                key: 'bt-overview',
-                title: 'Overview',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestOverviewTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-transactions',
-                title: 'Transactions',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestTransactionsTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-equity',
-                title: 'Equity Curve',
-                bodyClassName: 'p-0',
-                content: (
-                  <GridBacktestEquityCurveTab backtest={selectedBacktest} />
-                ),
-              },
-              {
-                key: 'bt-stats',
-                title: 'Stats',
-                bodyClassName: 'p-0',
-                content: <GridBacktestStatsTab backtest={selectedBacktest} />,
-              },
-            ]
-          : undefined,
+        // Results (Overview/Transactions/Equity/Stats) now open in the
+        // full-screen modal on row click — no inline subtabs in the widget.
       },
     ];
   }, [
@@ -880,7 +853,6 @@ const GridBotEditWidget = () => {
     handleBacktestSelect,
     handleExportBacktests,
     handleDeleteBacktests,
-    selectedBacktest,
   ]);
 
   const loadingInsightsTabs = useMemo<BotPanelInsightsTab[]>(
@@ -1016,6 +988,23 @@ const GridBotEditWidget = () => {
         cancelText="Cancel"
         variant="destructive"
       />
+
+      {/* Full-screen backtest results modal (opened from a table row click) */}
+      {selectedBacktest && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={selectedBacktest}
+          strategy="Grid"
+          meta={{
+            symbol: selectedBacktest.symbol,
+            exchange: String(selectedBacktest.exchange ?? ''),
+            baseAsset: selectedBacktest.baseAsset,
+            quoteAsset: selectedBacktest.quoteAsset,
+          }}
+          botName={selectedBacktest.settings?.name}
+        />
+      )}
     </MainLayout>
   );
 };

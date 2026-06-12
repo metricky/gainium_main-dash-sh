@@ -105,8 +105,6 @@ const exchangeHandlers: Record<string, ExchangeHandler> = {
   paperkrakenall: krakenHandler,
   paperkrakenspot: krakenHandler,
   paperkrakenusdm: krakenHandler,
-
-  // Manual Backtesting loaded dynamically to avoid circular imports
 };
 
 interface ParsedSymbolName {
@@ -230,25 +228,6 @@ export const createDatafeed = (): IBasicDataFeed => ({
     _symbolType: string,
     onResult: SearchSymbolsCallback
   ) => {
-    // Manual Backtesting shortcut: if all available symbols are ManualBacktesting pairs
-    const allManual =
-      availableSymbols.length > 0 &&
-      availableSymbols.every(
-        (s) => s.exchange === ExchangeEnum.ManualBacktesting
-      );
-    if (allManual) {
-      // Ignore user input; always present full session list in original order.
-      const manualResults = availableSymbols.map((symbol) => ({
-        symbol: `${symbol.pair}@${symbol.exchange.toUpperCase()}`,
-        full_name: symbol.pair,
-        description: `${symbol.baseAsset.name} / ${symbol.quoteAsset.name}`,
-        exchange: symbol.exchange.toUpperCase(),
-        ticker: `${symbol.pair}@${symbol.exchange.toUpperCase()}`,
-        type: 'crypto' as const,
-      }));
-      onResult(manualResults);
-      return;
-    }
     // If no user input, show predefined symbols for better UX
     if (!userInput || userInput.length < 2) {
       const filteredSymbols = availableSymbols.filter(

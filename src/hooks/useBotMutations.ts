@@ -18,6 +18,13 @@ import {
 } from '@/stores/live';
 import { useHedgeDcaBotsStore } from '@/stores/live/hedgeDcaBotsStore';
 import { useHedgeComboBotsStore } from '@/stores/live/hedgeComboBotsStore';
+import { recordBotTombstone } from '@/stores/live/staleWriteGuard';
+import {
+  removeBotFromListCaches,
+  patchBotInListCaches,
+  invalidateListCaches,
+  BOT_LIST_QUERY_KEYS_BY_TYPE,
+} from '@/lib/queryCacheUtils';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { GraphQLClient, GraphQlQuery, type ReturnResult } from '../lib/api';
 import { GraphQLHttpError } from '../lib/api/GraphQLClient';
@@ -113,6 +120,35 @@ const serializeMutationError = (error: unknown) => {
   }
 
   return { value: error };
+};
+
+// The five persisted bot stores are keyed by the same string values the
+// BotTypesEnum members carry; `terminal` has no list-cache concept, so it
+// resolves to an empty key set (the helpers no-op on an empty array).
+const botListKeysFor = (type: BotTypesEnum): string[] =>
+  type === BotTypesEnum.terminal
+    ? []
+    : BOT_LIST_QUERY_KEYS_BY_TYPE[
+        type as keyof typeof BOT_LIST_QUERY_KEYS_BY_TYPE
+      ];
+
+// Pull a bot's `updated` (ISO string) from the matching live store and
+// convert to epoch ms for the bot tombstone (0 when unknown / unparseable).
+const botUpdatedMsFor = (type: BotTypesEnum, id: string): number => {
+  const store =
+    type === BotTypesEnum.dca
+      ? useDcaBotsStore.getState()
+      : type === BotTypesEnum.combo
+        ? useComboBotsStore.getState()
+        : type === BotTypesEnum.hedgeDca
+          ? useHedgeDcaBotsStore.getState()
+          : type === BotTypesEnum.hedgeCombo
+            ? useHedgeComboBotsStore.getState()
+            : useGridBotsStore.getState();
+  const updated = store.bots[id]?.updated;
+  if (!updated) return 0;
+  const ms = new Date(updated).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
 };
 
 /**
@@ -238,6 +274,14 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         }
       }
 
+      // Mirror the optimistic status into the persisted list cache so a
+      // stale cached response can't replay the pre-toggle status on remount.
+      patchBotInListCaches(
+        id,
+        { status: targetStatus },
+        botListKeysFor(type)
+      );
+
       return { previousStatus } as MutationContext;
     },
     onError: (err, { id }, context: MutationContext | undefined) => {
@@ -260,6 +304,12 @@ export function useBotStatusToggle(type: BotTypesEnum) {
           const bot = store.bots[id];
           if (bot) store.updateBot({ ...bot, status: rollbackStatus });
         }
+        // Re-patch the list cache back to the rolled-back status.
+        patchBotInListCaches(
+          id,
+          { status: context.previousStatus },
+          botListKeysFor(type)
+        );
       }
     },
     onSuccess: () => {
@@ -271,6 +321,9 @@ export function useBotStatusToggle(type: BotTypesEnum) {
             ? 'comboBotList'
             : 'botList';
       queryClient.invalidateQueries({ queryKey: [key] });
+      // Also re-sync every list variant under this bot type (covers the
+      // terminal list for dca, etc.); harmless overlap with the above.
+      invalidateListCaches(botListKeysFor(type));
       logger.debug(
         '[BotMutations] Status update successful - invalidated queries'
       );
@@ -1060,6 +1113,10 @@ export function useBotDelete() {
       if (result.deleteBot.status !== 'OK') {
         throw new Error(result.deleteBot.reason || 'Failed to delete bot');
       }
+      // Capture the bot's `updated` ms before the store drops it, so the
+      // tombstone can reject an older cached list replay (and accept a
+      // genuinely newer server update).
+      const botUpdatedMs = botUpdatedMsFor(type, id);
       if (type === BotTypesEnum.dca) {
         useDcaBotsStore.getState().removeBot(id);
       } else if (type === BotTypesEnum.combo) {
@@ -1071,6 +1128,9 @@ export function useBotDelete() {
       } else if (type === BotTypesEnum.hedgeCombo) {
         useHedgeComboBotsStore.getState().removeBot(id);
       }
+      recordBotTombstone(id, botUpdatedMs);
+      removeBotFromListCaches(id, botListKeysFor(type));
+      invalidateListCaches(botListKeysFor(type));
 
       return { id };
     },
@@ -1126,6 +1186,9 @@ export function useBotDelete() {
       if (context?.previousBots) {
         queryClient.setQueryData([key], context.previousBots);
       }
+      // The delete failed before any tombstone/removal ran (those only
+      // fire after the GraphQL OK), so just re-sync the list caches.
+      invalidateListCaches(botListKeysFor(type));
     },
     onSuccess: (data) => {
       logger.info(`[BotMutations] Successfully deleted bot ${data.id}`);
@@ -1190,6 +1253,18 @@ export function useBotArchive() {
         throw new Error(
           result.setArchive.reason || 'Failed to update archive status'
         );
+      }
+
+      // Archiving removes the bot from the active lists (delete-equivalent),
+      // so tombstone + evict from the list caches to block a stale replay.
+      // Unarchiving brings it back, so it must NOT record a tombstone.
+      if (archive) {
+        const botUpdatedMs = botUpdatedMsFor(type, id);
+        recordBotTombstone(id, botUpdatedMs);
+        removeBotFromListCaches(id, botListKeysFor(type));
+        invalidateListCaches(botListKeysFor(type));
+      } else {
+        invalidateListCaches(botListKeysFor(type));
       }
 
       return result.setArchive.data;

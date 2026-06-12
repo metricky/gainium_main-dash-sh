@@ -1,6 +1,12 @@
 import { type ColumnDef } from '@tanstack/react-table';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronUp, MoreHorizontal, Upload, X } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronUp,
+  MoreHorizontal,
+  Upload,
+  X,
+} from 'lucide-react';
 
 import CoinPair from '@/components/widgets/shared/CoinPair';
 import { Button } from '@/components/ui/button';
@@ -112,6 +118,7 @@ function botRoute(botType?: string): string {
   }
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 function SourceCell({
   botId,
   botType,
@@ -192,7 +199,9 @@ export function buildOrderColumns(
       header: 'Exchange',
       meta: { filterType: 'string' },
       cell: ({ row }) =>
-        row.original.exchangeName ? row.original.exchangeName : row.original.exchange,
+        row.original.exchangeName
+          ? row.original.exchangeName
+          : row.original.exchange,
     },
     {
       id: 'status',
@@ -393,7 +402,9 @@ export function buildPositionColumns(
       header: 'Exchange',
       meta: { filterType: 'string' },
       cell: ({ row }) =>
-        row.original.exchangeName ? row.original.exchangeName : row.original.exchange,
+        row.original.exchangeName
+          ? row.original.exchangeName
+          : row.original.exchange,
     },
     {
       id: 'price',

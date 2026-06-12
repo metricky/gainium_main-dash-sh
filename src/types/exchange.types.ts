@@ -21,6 +21,7 @@ export type ExchangeInUser = {
 
 export enum OKXSource {
   my = 'my',
+  app = 'app',
   com = 'com',
 }
 

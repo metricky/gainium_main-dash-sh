@@ -59,11 +59,15 @@ export type BotFormAlerts = Partial<
 type DCABot = Omit<DCABotSettings, 'pair' | 'name'> & {
   //TODO: remove when backend will be updated
   useExperimental?: boolean;
+  /** Deal-edit only: manual breakeven price override for an open deal. */
+  avgPrice?: number;
 };
 
 type ComboBot = Omit<ComboBotSettings, 'pair' | 'name'> & {
   //TODO: remove when backend will be updated
   useExperimental?: boolean;
+  /** Deal-edit only: manual breakeven price override for an open deal. */
+  avgPrice?: number;
 };
 
 type GridBot = Omit<BotSettings, 'pair' | 'name'>;

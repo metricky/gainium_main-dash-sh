@@ -34,11 +34,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
 import {
-  BacktestAnalysisTab,
-  BacktestDealsTab,
-  BacktestOverviewTab,
-  BacktestStatsTab,
-} from '@/components/widgets/bots/backtest';
+  BacktestResultsFullModal,
+} from '@/components/widgets/bots/backtest/redesign';
 import CoinPair from '@/components/widgets/shared/CoinPair';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
@@ -69,6 +66,7 @@ import {
   BotTypesEnum,
   type BotChartData,
   type DCABacktestingResultHistory,
+  type DCABotSettings,
 } from '@/types';
 import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
 import { removePaperPrefix } from '@/utils/exchangeUtils';
@@ -94,6 +92,9 @@ const TradingBotEditWidget = () => {
   const [selectedBacktest, setSelectedBacktest] =
     useState<DCABacktestingResultHistory | null>(null);
   const [activeInsightsTab, setActiveInsightsTab] = useState('backtests');
+  // Clicking a backtest row opens the redesigned full-screen results modal
+  // instead of rendering Overview/Stats/Deals/Analysis inline in the widget.
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
     null
   );
@@ -165,7 +166,7 @@ const TradingBotEditWidget = () => {
     const found = dcaBacktests.find((b) => b._id === pendingBacktestId);
     if (found) {
       setSelectedBacktest(found);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
       setPendingBacktestId(null);
       logger.info('[TradingBotEdit] Auto-selected completed backtest', {
         id: pendingBacktestId,
@@ -283,7 +284,7 @@ const TradingBotEditWidget = () => {
         );
       }
       setSelectedBacktest(backtest);
-      setActiveInsightsTab('bt-overview');
+      setResultsModalOpen(true);
     },
     [loadBacktestDetailsMutation]
   );
@@ -802,8 +803,9 @@ const TradingBotEditWidget = () => {
   const handleBacktestSelect = useCallback(
     (backtest: DCABacktestingResultHistory) => {
       setSelectedBacktest(backtest);
-      // Automatically open the Overview subtab when a backtest is selected
-      setActiveInsightsTab('bt-overview');
+      // Open the full-screen results modal (deals hydrate below; the modal's
+      // view model rebuilds reactively once they arrive).
+      setResultsModalOpen(true);
 
       if ((backtest.deals?.length ?? 0) === 0) {
         void loadBacktestDetailsMutation
@@ -989,38 +991,8 @@ const TradingBotEditWidget = () => {
             defaultPinnedColumns={{ left: [], right: ['actions'] }}
           />
         ),
-        // Subtabs for Backtests - only show when a backtest is selected
-        subtabs: selectedBacktest
-          ? [
-              {
-                key: 'bt-overview',
-                title: 'Overview',
-                bodyClassName: 'p-0',
-                content: <BacktestOverviewTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-stats',
-                title: 'Stats',
-                bodyClassName: 'p-0',
-                content: <BacktestStatsTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-deals',
-                title: 'Deals',
-                bodyClassName: 'p-0',
-                content: <BacktestDealsTab backtest={selectedBacktest} />,
-              },
-              {
-                key: 'bt-analysis',
-                title: 'Analysis',
-                enabled:
-                  (selectedBacktest.deals?.length ?? 0) > 0 ||
-                  (selectedBacktest.periodicStats?.length ?? 0) > 0,
-                bodyClassName: 'p-0',
-                content: <BacktestAnalysisTab backtest={selectedBacktest} />,
-              },
-            ]
-          : undefined,
+        // Results (Overview/Stats/Deals/Analysis) now open in the
+        // full-screen modal on row click — no inline subtabs in the widget.
       },
     ];
 
@@ -1032,7 +1004,6 @@ const TradingBotEditWidget = () => {
     dcaBacktestsError,
     backtestColumns,
     handleBacktestSelect,
-    selectedBacktest,
     handleExportBacktests,
     handleDeleteBacktests,
   ]);
@@ -1174,6 +1145,24 @@ const TradingBotEditWidget = () => {
         cancelText="Cancel"
         variant="destructive"
       />
+
+      {/* Full-screen backtest results modal (opened from a table row click) */}
+      {selectedBacktest && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={selectedBacktest}
+          strategy="DCA"
+          settings={(selectedBacktest.settings ?? {}) as DCABotSettings}
+          meta={{
+            symbol: selectedBacktest.symbol,
+            exchange: selectedBacktest.exchange,
+            baseAsset: selectedBacktest.baseAsset,
+            quoteAsset: selectedBacktest.quoteAsset,
+          }}
+          botName={selectedBacktest.settings?.name}
+        />
+      )}
     </MainLayout>
   );
 };

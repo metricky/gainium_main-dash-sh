@@ -19,6 +19,54 @@ const DB_NAME = 'ZustandStorage';
 const DB_VERSION = 1;
 const STORE_NAME = 'state';
 
+/**
+ * Return a structured-clone-safe deep copy of `input`, dropping values that
+ * IndexedDB's structured-clone algorithm rejects (functions, symbols, and
+ * anything left after those are removed) and breaking circular references.
+ *
+ * This is the recovery path for `setItem`: if a persisted blob picks up a
+ * non-cloneable value at runtime (e.g. a stray function/handle attached to a
+ * cached object), `store.put` throws `DataCloneError` and the write silently
+ * fails — which previously froze ALL persistence for that store (deletes and
+ * new items never landed). Sanitizing and retrying strips the offending data
+ * so the write succeeds and the cache self-heals.
+ */
+function makeCloneable<T>(input: T, seen: WeakSet<object> = new WeakSet()): T {
+  if (input === null) return input;
+  const t = typeof input;
+  if (t === 'function' || t === 'symbol' || t === 'undefined') {
+    return undefined as unknown as T;
+  }
+  if (t !== 'object') return input; // string | number | boolean | bigint
+  // Structured-clone supports these object types directly.
+  if (
+    input instanceof Date ||
+    input instanceof RegExp ||
+    input instanceof ArrayBuffer ||
+    ArrayBuffer.isView(input as unknown as ArrayBufferView)
+  ) {
+    return input;
+  }
+  if (seen.has(input as unknown as object)) {
+    return undefined as unknown as T; // break cycle
+  }
+  seen.add(input as unknown as object);
+  if (Array.isArray(input)) {
+    return input.map((v) => makeCloneable(v, seen)) as unknown as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(input as Record<string, unknown>)) {
+    const cleaned = makeCloneable(
+      (input as Record<string, unknown>)[key],
+      seen
+    );
+    if (cleaned !== undefined) {
+      out[key] = cleaned;
+    }
+  }
+  return out as unknown as T;
+}
+
 class IndexedDBStorage {
   private dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -107,27 +155,46 @@ class IndexedDBStorage {
         `[IndexedDBStorage] Attempting to save data for key: ${name}`
       );
       const db = await this.getDB();
-      const transaction = db.transaction([STORE_NAME], 'readwrite');
-      const store = transaction.objectStore(STORE_NAME);
 
-      return new Promise((resolve, reject) => {
-        const request = store.put(value, name);
+      // Single put attempt. `store.put` can throw DataCloneError *synchronously*
+      // (the structured clone happens before the request is queued), so we guard
+      // the put call itself, not just the async onerror.
+      const putValue = (val: unknown): Promise<void> =>
+        new Promise((resolve, reject) => {
+          let request: IDBRequest;
+          try {
+            const transaction = db.transaction([STORE_NAME], 'readwrite');
+            request = transaction.objectStore(STORE_NAME).put(val, name);
+          } catch (syncErr) {
+            reject(syncErr);
+            return;
+          }
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+        });
 
-        request.onsuccess = () => {
-          logger.debug(
-            `[IndexedDBStorage] Successfully saved data for key: ${name}`
-          );
-          resolve();
-        };
-
-        request.onerror = () => {
-          console.error(
-            '[IndexedDBStorage] Failed to set item:',
-            request.error
-          );
-          reject(request.error);
-        };
-      });
+      try {
+        await putValue(value);
+        logger.debug(
+          `[IndexedDBStorage] Successfully saved data for key: ${name}`
+        );
+        return;
+      } catch (putError) {
+        // A non-cloneable value poisoned the blob — strip it and retry so the
+        // write (e.g. a session delete/create) actually lands instead of
+        // silently failing and freezing all persistence for this key.
+        console.warn(
+          `[IndexedDBStorage] put failed for key "${name}" (${
+            (putError as Error)?.name || 'error'
+          }); sanitizing non-cloneable values and retrying`,
+          putError
+        );
+        await putValue(makeCloneable(value));
+        logger.debug(
+          `[IndexedDBStorage] Saved sanitized data for key: ${name}`
+        );
+        return;
+      }
     } catch (error) {
       console.error('[IndexedDBStorage] setItem error:', error);
       // Fallback to localStorage if IndexedDB fails

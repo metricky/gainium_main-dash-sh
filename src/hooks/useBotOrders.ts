@@ -169,7 +169,12 @@ export function useBotOrders(
     currentPageLoading,
     loadedPages,
     options.pageSize,
-    options,
+    // Depend on the specific primitive the effect reads, not the whole
+    // `options` object — callers (e.g. useGridPage) pass a fresh object
+    // literal every render, which made this effect re-run on every render
+    // and call setIntermediateOrders() with a new array reference,
+    // producing an infinite render loop once the query resolved.
+    options.autoPaginate,
   ]);
 
   // Debounced store update - only update when loading is complete

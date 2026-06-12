@@ -1,7 +1,9 @@
 import { track as posthogEvent } from '@/lib/analytics';
 import {
+  ArrowRight,
   BookmarkIcon,
   CalendarRange,
+  Check,
   ChevronDown,
   Clock,
   Coins,
@@ -49,7 +51,10 @@ import {
   type CloseTypeOption,
 } from '@/features/bots/shared/runtime/dialogs';
 import { isReadOnly } from '@/lib/demoMode';
+import { IS_CLOUD } from '@/config/mode';
+import { useAuthStore } from '@/stores/authStore';
 import { toast } from '@/lib/toast';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { cn } from '@/lib/utils';
 import type { BotTemplate } from '@/stores/botTemplatesStore';
 import {
@@ -115,6 +120,24 @@ export interface BotFormFooterProps {
   /** Cancel an in-progress local backtest. */
   onCancelBacktest?: () => void;
   backtestPending?: boolean;
+  /**
+   * Headline numbers for the "done" state. When non-null (and no run is in
+   * progress), the backtest box morphs from the run controls into a
+   * "VIEW RESULTS" summary chip showing net %, win rate, and deal count.
+   * Cleared (back to `null`) on the next run so it never shows stale data.
+   */
+  backtestSummary?: {
+    netPerc: number;
+    winRate: number;
+    deals: number;
+  } | null;
+  /** Open the full-screen results modal (the "done" chip's click handler). */
+  onViewResults?: () => void;
+  /**
+   * Dismiss the "done" chip and restore the backtest run controls so the
+   * user can run another backtest. Clears `backtestSummary` upstream.
+   */
+  onDismissResults?: () => void;
   onLoadTemplate?: (template: BotTemplate) => void;
   compactThreshold?: number;
   /**
@@ -537,6 +560,71 @@ const FundsChip: React.FC<{ isCompact: boolean; info: FundsInfo }> = ({
   );
 };
 
+/**
+ * "Done" state for the backtest box: a full-width summary chip that replaces
+ * the run controls once a local DCA backtest has completed. Shows the
+ * headline net %, win rate, and deal count, and opens the full results modal
+ * on click. Styled per DESIGN_SYSTEM §3 — a soft `bg-primary/10` fill with a
+ * `ring-1 ring-primary/30` (NOT a border); net % is tinted profit/loss.
+ */
+const ViewResultsButton: React.FC<{
+  summary: { netPerc: number; winRate: number; deals: number };
+  onClick?: () => void;
+  onDismiss?: () => void;
+}> = ({ summary, onClick, onDismiss }) => {
+  const up = summary.netPerc >= 0;
+  return (
+    // Card is a plain <div> so we can nest two real buttons (View / Dismiss)
+    // without invalid button-in-button nesting.
+    <div className="group flex w-full items-center gap-2 rounded-lg bg-primary/10 px-2 py-1.5 ring-1 ring-primary/30 transition-colors hover:bg-primary/15">
+      {/* main summary area opens the results modal */}
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label="View backtest results"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        {/* profit-circle check badge */}
+        <span className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-full bg-profit text-white">
+          <Check className="h-3.5 w-3.5" strokeWidth={3} />
+        </span>
+        {/* stacked eyebrow + headline numbers */}
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="text-xs font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            Backtest complete
+          </span>
+          <span className="truncate text-xs font-medium tabular-nums text-foreground">
+            <span className={up ? 'text-profit' : 'text-loss'}>
+              {up ? '+' : ''}
+              {fmtNumber(summary.netPerc, 2)}%
+            </span>
+            {' · '}
+            {fmtNumber(summary.winRate, 0)}% win
+            {' · '}
+            {summary.deals} {summary.deals === 1 ? 'deal' : 'deals'}
+          </span>
+        </span>
+        {/* right affordance */}
+        <span className="ml-auto flex shrink-0 items-center gap-1 text-xs font-semibold uppercase text-primary">
+          View results
+          <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+        </span>
+      </button>
+      {/* quiet dismiss — restores the run controls for another backtest */}
+      {onDismiss ? (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss results"
+          className="grid h-[26px] w-[26px] shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+};
+
 export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   onBacktest,
   formData,
@@ -565,6 +653,9 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   onRunBacktestDirect,
   backtestProgress,
   onCancelBacktest,
+  backtestSummary,
+  onViewResults,
+  onDismissResults,
 }) => {
   const indicators = useBotFormSelector('indicators', []);
   const maxNumberOfOpenDeals = useBotFormSelector('maxNumberOfOpenDeals');
@@ -605,6 +696,40 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const hasErrors = Object.keys(errors).length > 0;
   const shouldDisplayErrorSummary = showErrorSummary && hasErrors;
 
+  // Insufficient-credits guard. Creating a bot/terminal deal locks *bot
+  // credits*, so the backend rejects the request when the user can't cover the
+  // cost — block the submit up front with an explanatory tooltip. Bot credits
+  // live in the `subscription.credits` bucket (`balance` minus already-`locked`
+  // by running bots), matching legacy main-dash's bot-create gate. This is a
+  // DIFFERENT pool from the consumable `user.credits` bucket
+  // (`paid`/`subscription.amount`/`blocked`), which only funds server-side
+  // backtests and AI — using that bucket here wrongly blocked creation for
+  // users who had bot credits but no consumable balance. Credits are a
+  // cloud-only concept (sh has no billing), and only `create` consumes new
+  // credits — editing an existing bot doesn't. Affiliate exchanges cost 0, so
+  // `credits.total` is already 0 there and never trips this.
+  const user = useAuthStore((s) => s.user);
+  const availableCredits =
+    Number(user?.subscription?.credits?.balance ?? 0) -
+    Number(user?.subscription?.credits?.locked ?? 0);
+  const insufficientCredits =
+    IS_CLOUD &&
+    mode === 'create' &&
+    !!user &&
+    credits.total > 0 &&
+    credits.total > availableCredits;
+  const submitTitle = readOnly
+    ? 'Saving bots is not available in demo mode'
+    : insufficientCredits
+      ? `Not enough credits — this bot costs ${fmtNumber(
+          credits.total,
+          2
+        )} credits but you only have ${fmtNumber(
+          availableCredits,
+          2
+        )} available.`
+      : undefined;
+
   const normalizedStatus = useMemo(
     () => (botStatus ? botStatus.toLowerCase() : undefined),
     [botStatus]
@@ -621,6 +746,7 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
   const [startDialogOpen, setStartDialogOpen] = useState(false);
   const [stopGridDialogOpen, setStopGridDialogOpen] = useState(false);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // "Capital required" chip. Funds to fully fund the whole bot:
   //   - grid: the configured budget (already a whole-bot figure)
@@ -836,16 +962,19 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
             data-tour="botForm.launchButton"
             aria-busy={submitIsPending}
             onClick={handleSubmit}
-            disabled={submitDisabled || readOnly || shouldDisplayErrorSummary}
+            disabled={
+              submitDisabled ||
+              readOnly ||
+              shouldDisplayErrorSummary ||
+              insufficientCredits
+            }
             aria-label={submitLabel}
             fullwidth
             className={cn(
               'gradient-brand hover:opacity-90 text-white font-semibold shadow-lg hover:shadow-xl duration-200 transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed uppercase',
               mode === 'create' && 'fx-glow'
             )}
-            title={
-              readOnly ? 'Saving bots is not available in demo mode' : undefined
-            }
+            title={submitTitle}
           >
             {submitIsPending ? (
               <>
@@ -872,16 +1001,19 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
             data-tour="botForm.launchButton"
             aria-busy={submitIsPending}
             onClick={handleSubmit}
-            disabled={submitDisabled || readOnly || shouldDisplayErrorSummary}
+            disabled={
+              submitDisabled ||
+              readOnly ||
+              shouldDisplayErrorSummary ||
+              insufficientCredits
+            }
             aria-label={submitLabel}
             size="icon"
             className={cn(
               'gradient-brand hover:opacity-90 text-white font-semibold shadow-lg hover:shadow-xl duration-200 transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed uppercase',
               mode === 'create' && 'fx-glow'
             )}
-            title={
-              readOnly ? 'Saving bots is not available in demo mode' : undefined
-            }
+            title={submitTitle}
           >
             {submitIsPending ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -1061,6 +1193,8 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
     submitDisabled,
     readOnly,
     shouldDisplayErrorSummary,
+    insufficientCredits,
+    submitTitle,
     submitLabel,
     showCredits,
     credits,
@@ -1111,28 +1245,14 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
         label: 'Reset to defaults',
         icon: RotateCcw,
         onSelect: () => {
-          if (
-            // keep same wording as `BotForm` widget's Reset option
-            window.confirm(
-              'Are you sure you want to reset all settings to defaults? This cannot be undone.'
-            )
-          ) {
-            resetFormData();
-            toast.success('Settings reset to defaults');
-          }
+          setShowResetConfirm(true);
         },
         disabled: mode === 'edit',
       });
     }
 
     return items;
-  }, [
-    baseOverflowMenuItems,
-    isTerminal,
-    resetFormData,
-    mode,
-    showSaveAsTemplate,
-  ]);
+  }, [baseOverflowMenuItems, isTerminal, mode, showSaveAsTemplate]);
 
   const handleGridStartSubmit = useCallback(
     (buyType: BuyTypeEnum, buyCount?: string, buyAmount?: number) => {
@@ -1421,6 +1541,12 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
               </div>
               <ProgressBar value={progressPct} size="sm" variant="primary" />
             </div>
+          ) : backtestSummary ? (
+            <ViewResultsButton
+              summary={backtestSummary}
+              {...(onViewResults ? { onClick: onViewResults } : {})}
+              {...(onDismissResults ? { onDismiss: onDismissResults } : {})}
+            />
           ) : (
             <ResponsiveButtonRow
               buttons={backtestButtonConfigs}
@@ -1475,6 +1601,18 @@ export const BotFormFooter: React.FC<BotFormFooterProps> = ({
           currentFormData={formData}
         />
       )}
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          resetFormData();
+          toast.success('Settings reset to defaults');
+        }}
+      />
     </div>
   );
 };

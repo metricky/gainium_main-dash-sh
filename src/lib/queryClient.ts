@@ -1,10 +1,26 @@
-import { QueryClient } from '@tanstack/react-query';
+import { MutationCache, QueryClient } from '@tanstack/react-query';
 import {
   type PersistedClient,
   type Persister,
 } from '@tanstack/react-query-persist-client';
 import { del, get, set } from 'idb-keyval';
+import { toast } from './toast';
 // import { logger } from './loggerInstance';
+
+// Opt-in global error feedback for mutations. A mutation that sets
+// `meta: { errorToast: true }` surfaces its thrown error message (the backend
+// `reason`) as a toast; `meta: { errorToast: 'message' }` toasts a fixed
+// string instead. Mutations whose call sites already show their own error
+// feedback simply omit the meta, so this never double-toasts existing flows.
+// This is the redesign's equivalent of the legacy dashboard's central fetch
+// wrapper, which funnelled every NOTOK response into a snackbar.
+declare module '@tanstack/react-query' {
+  interface Register {
+    mutationMeta: {
+      errorToast?: boolean | string;
+    };
+  }
+}
 
 // Mock logger to replace removed logger calls
 const logger = {
@@ -28,7 +44,22 @@ const TWENTY_FOUR_HOURS = 1000 * 60 * 60 * 24;
 // Pattern: Show cache immediately on component mount, refetch if stale
 // No continuous polling - only fetch when user navigates to a view
 
+const mutationCache = new MutationCache({
+  onError: (error, _variables, _context, mutation) => {
+    const cfg = mutation.meta?.errorToast;
+    if (!cfg) return;
+    const message =
+      typeof cfg === 'string'
+        ? cfg
+        : error instanceof Error && error.message
+          ? error.message
+          : 'Something went wrong';
+    toast.error(message);
+  },
+});
+
 export const queryClient = new QueryClient({
+  mutationCache,
   defaultOptions: {
     queries: {
       // SHORT stale time: data becomes stale quickly in trading context

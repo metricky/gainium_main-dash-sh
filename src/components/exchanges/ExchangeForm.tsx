@@ -86,6 +86,10 @@ const getExchangeHelpPath = (name?: string): string | null => {
       return '/help/connect-to-coinbase';
     case 'hyperliquid':
       return '/help/connect-to-hyperliquid';
+    case 'bitget':
+      return '/help/connect-to-bitget';
+    case 'kraken':
+      return '/help/connect-to-kraken';
     default:
       return null;
   }
@@ -603,7 +607,22 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
         }
       }
 
-      if (!formData.secret.trim()) {
+      // Secret is required when adding, but OPTIONAL when editing. The
+      // backend never returns the stored secret, so an edit (e.g. just
+      // renaming the exchange) leaves the field blank and the server keeps
+      // the existing credential. Mirror main-dash: validate the format only
+      // when a secret was actually typed. Same reasoning for the passphrase.
+      if (mode === 'edit') {
+        if (formData.secret.trim()) {
+          const secretValidation = validateApiSecretFormat(
+            formData.provider,
+            formData.secret
+          );
+          if (!secretValidation.isValid && secretValidation.error) {
+            newErrors.secret = secretValidation.error;
+          }
+        }
+      } else if (!formData.secret.trim()) {
         newErrors.secret = 'API secret is required';
       } else {
         const secretValidation = validateApiSecretFormat(
@@ -615,8 +634,10 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
         }
       }
 
-      // Passphrase validation for exchanges that require it
+      // Passphrase validation for exchanges that require it (add mode only —
+      // like the secret, it isn't returned for an existing exchange).
       if (
+        mode !== 'edit' &&
         requiresPassphrase(formData.provider) &&
         !formData.passphrase?.trim()
       ) {
@@ -971,18 +992,24 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
               {errors.provider && (
                 <p className="text-sm text-destructive">{errors.provider}</p>
               )}
-              {(() => {
-                const helpPath = getExchangeHelpPath(exchangeConfig?.name);
-                if (!helpPath) {
-                  return null;
-                }
+              {/* Connect guide — only relevant for live exchanges. Paper
+                  exchanges need no API connection, so the "Connect to X"
+                  article is hidden there (the paper-trading guide link below
+                  covers that flow instead). */}
+              {!formData.isPaperTrading &&
+                !isPaperExchange(formData.provider) &&
+                (() => {
+                  const helpPath = getExchangeHelpPath(exchangeConfig?.name);
+                  if (!helpPath) {
+                    return null;
+                  }
 
-                return (
-                  <div className="mt-xs">
-                    <HelpArticlePill url={helpPath} />
-                  </div>
-                );
-              })()}
+                  return (
+                    <div className="mt-xs">
+                      <HelpArticlePill url={helpPath} />
+                    </div>
+                  );
+                })()}
             </div>
 
             {/* Exchange Name */}
@@ -1392,7 +1419,11 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
             {supportsHostSelection(formData.provider) &&
               hostOptions.length > 0 && (
                 <div className="space-y-xs">
-                  <Label htmlFor="host">Host</Label>
+                  <Label htmlFor="host">
+                    {exchangeConfig.name === 'okx'
+                      ? 'OKX Origin'
+                      : 'Bybit Origin'}
+                  </Label>
                   <Select
                     value={
                       exchangeConfig.name === 'okx'

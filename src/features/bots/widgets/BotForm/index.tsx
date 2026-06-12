@@ -29,6 +29,7 @@ import {
   ScrollableFormTabNavigation,
   type ScrollableTabItem,
 } from '@/components/ui/ScrollableFormTabNavigation';
+import { SectionHeader } from '@/features/bots/shared/components/SectionHeader';
 import { Switch } from '@/components/ui/switch';
 import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import WidgetWrapper, {
@@ -123,6 +124,7 @@ import {
   type DCABotSettings,
   type ExchangeInUser,
   type GRIDBacktestingInput,
+  type GRIDBacktestingResultHistory,
   type GridBacktestingResult,
   type Settings,
   type SettingsIndicatorGroup,
@@ -142,6 +144,11 @@ import { COMBO_BOT_TYPE_ID } from '../../registry';
 import BacktestSettingsDialog, {
   type BacktestConfig,
 } from './components/BacktestSettingsDialog';
+import {
+  BacktestResultsFullModal,
+  buildBacktestViewModel,
+  type BacktestViewModelMeta,
+} from '@/components/widgets/bots/backtest/redesign';
 import { BotFormAlertButton } from './components/BotFormAlertButton';
 import {
   BotFormFooter,
@@ -215,6 +222,21 @@ const resolveWidgetValue = (
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * A fresh local backtest result captured for the redesigned results modal.
+ * `strategy` tells the modal which view to render (DCA / Combo / Grid). The
+ * `summary` powers the footer "VIEW RESULTS" chip without re-deriving it.
+ */
+interface BacktestResultCapture {
+  result:
+    | DCABacktestingResult
+    | GRIDBacktestingResultHistory;
+  strategy: string;
+  settings: DCABotSettings;
+  meta: BacktestViewModelMeta;
+  summary: { netPerc: number; winRate: number; deals: number };
+}
 
 const isGridBotEntity = (
   value: DCABot | GridBot | ComboBot | null
@@ -545,6 +567,30 @@ const BotForm: React.FC<BotFormProps> = ({
   const [showBacktestDialog, setShowBacktestDialog] = useState(false);
   const [backtestProgress, setBacktestProgress] =
     useState<BacktestProgress | null>(null);
+  // Redesigned backtest results: the fresh in-memory result is captured the
+  // moment a local run completes (the deals/portfolio/transaction arrays are
+  // discarded after persistence, so this is the only place to capture them).
+  // The footer's "VIEW RESULTS" chip and the full-screen modal both render
+  // against it. Works for any bot type — `strategy` drives how the modal
+  // renders (DCA / Combo / Grid). Reset to null at the start of every run so
+  // it never shows stale data.
+  const [backtestResult, setBacktestResult] =
+    useState<BacktestResultCapture | null>(null);
+  const [resultsModalOpen, setResultsModalOpen] = useState(false);
+
+  // Footer summary chip (net %, win %, deals) — derived from the captured
+  // result. Grid has no deals/win-rate, so those read 0 there (acceptable).
+  const backtestSummary = useMemo(
+    () =>
+      backtestResult
+        ? {
+            netPerc: backtestResult.summary.netPerc,
+            winRate: backtestResult.summary.winRate,
+            deals: backtestResult.summary.deals,
+          }
+        : null,
+    [backtestResult]
+  );
   const backtesterInstanceRef = useRef<DCABacktesting | null>(null);
   const gridBacktesterInstanceRef = useRef<GridBacktestingEngine | null>(null);
   const cancelLocalBacktest = useCallback(() => {
@@ -1871,6 +1917,7 @@ const BotForm: React.FC<BotFormProps> = ({
 
 
   const [showRestartDialog, setShowRestartDialog] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
   /* const [showSmartOrderMergeDialog, setShowSmartOrderMergeDialog] =
     useState(false);
   const [smartOrderMergeDefaults, setSmartOrderMergeDefaults] = useState<
@@ -2498,15 +2545,7 @@ const BotForm: React.FC<BotFormProps> = ({
           label: 'Reset to defaults',
           icon: RotateCcw,
           onSelect: () => {
-            if (
-              window.confirm(
-                'Are you sure you want to reset all settings to defaults? This cannot be undone.'
-              )
-            ) {
-              // Reset formData to defaults
-              setFormData(createDefaultFormState(mode, isTerminal));
-              toast.success('Settings reset to defaults');
-            }
+            setShowResetConfirm(true);
           },
           disabled: mode === 'edit',
         }
@@ -2604,7 +2643,6 @@ const BotForm: React.FC<BotFormProps> = ({
     handleAddFundsClick,
     handleReduceFundsClick,
     fundsActionsDisabled,
-    setFormData,
     isTerminal,
   ]);
 
@@ -2808,6 +2846,9 @@ const BotForm: React.FC<BotFormProps> = ({
               ? getPeriod?.(cfg.periodId)?.name
               : undefined;
           toast.info('Local backtest start (this may take a while)');
+          // Clear any prior result so the footer's "VIEW RESULTS" chip never
+          // shows stale data while a fresh run is in flight.
+          setBacktestResult(null);
           logger.info('[backtester] Local backtest start', {
             exchange: currentExchange?.provider,
             interval: cfg.timeframe,
@@ -2981,6 +3022,37 @@ const BotForm: React.FC<BotFormProps> = ({
                   }
                   const typedResult =
                     result as unknown as GridBacktestingResult;
+
+                  // Capture the fresh grid result for the redesigned modal
+                  // BEFORE persistence strips its transaction/values arrays.
+                  // Synthesize the History identity fields the grid tabs read
+                  // (symbol / exchange / base / quote) from the run metadata.
+                  const gridMeta: BacktestViewModelMeta = {
+                    symbol: persistenceSymbol.pair,
+                    exchange: currentExchange.provider,
+                    baseAsset: persistenceSymbol.baseAsset?.name ?? '',
+                    quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
+                  };
+                  const gridHistory = {
+                    ...typedResult,
+                    symbol: persistenceSymbol.pair,
+                    baseAsset: persistenceSymbol.baseAsset?.name ?? '',
+                    quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
+                    exchange: currentExchange.provider,
+                  } as unknown as GRIDBacktestingResultHistory;
+                  setBacktestResult({
+                    result: gridHistory,
+                    strategy: 'Grid',
+                    settings: gridSettings as unknown as DCABotSettings,
+                    meta: gridMeta,
+                    summary: {
+                      netPerc: Number(
+                        typedResult.financial?.profitTotalPerc ?? 0
+                      ),
+                      winRate: 0,
+                      deals: 0,
+                    },
+                  });
 
                   const savedId = await persistGridBacktestResult({
                     result: typedResult,
@@ -3159,6 +3231,33 @@ const BotForm: React.FC<BotFormProps> = ({
                     name: formData.name,
                     pair: [formData.pair].flat() as string[],
                   };
+                  // Capture the fresh result BEFORE it's persisted (and its
+                  // deals/portfolio/buyAndHold stripped). Drives the footer
+                  // "VIEW RESULTS" chip + the full modal. The summary is
+                  // derived once from a VM so the chip needs no rebuild.
+                  const dcaMeta: BacktestViewModelMeta = {
+                    symbol: persistenceSymbol.pair,
+                    exchange: currentExchange.provider,
+                    baseAsset: persistenceSymbol.baseAsset?.name ?? '',
+                    quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
+                  };
+                  const dcaVm = buildBacktestViewModel(
+                    typedResult,
+                    historySettings,
+                    dcaMeta
+                  );
+                  setBacktestResult({
+                    result: typedResult,
+                    strategy:
+                      formData.type === BotTypesEnum.combo ? 'Combo' : 'DCA',
+                    settings: historySettings,
+                    meta: dcaMeta,
+                    summary: {
+                      netPerc: dcaVm.netPerc,
+                      winRate: dcaVm.winRate,
+                      deals: dcaVm.deals,
+                    },
+                  });
                   const savedId = await persistBacktestResult({
                     result: typedResult,
                     config: resolvedBacktestConfig,
@@ -3439,108 +3538,49 @@ const BotForm: React.FC<BotFormProps> = ({
                         }
                         data-section-id={descriptor.id}
                       >
-                        <div
+                        <SectionHeader
+                          icon={descriptor.icon}
+                          label={descriptor.label}
+                          {...(descriptor.tooltipText || descriptor.description
+                            ? {
+                                tooltip:
+                                  descriptor.tooltipText ??
+                                  descriptor.description ??
+                                  '',
+                              }
+                            : {})}
+                          {...(descriptor.tooltipUrl
+                            ? { tooltipUrl: descriptor.tooltipUrl }
+                            : {})}
+                          showRiskRewardAlert={
+                            (descriptor.id === 'stop-loss' ||
+                              descriptor.id === 'take-profit' ||
+                              descriptor.id === 'dca') &&
+                            !!useRiskReward
+                          }
+                          ariaControlsId={`section-${descriptor.id}`}
+                          showCollapse={hasToggle ? toggleEnabled : true}
+                          collapsed={isSectionCollapsed(descriptor.id)}
+                          onToggleCollapse={() =>
+                            toggleSectionCollapsed(descriptor.id)
+                          }
+                          collapseDisabled={isContentReadOnly}
+                          hasToggle={hasToggle}
+                          toggleChecked={toggleEnabled}
+                          onToggleChange={(checked) =>
+                            updateFormData(toggleField, checked)
+                          }
+                          toggleDisabled={
+                            isContentReadOnly || !!isFieldLocked(toggleField)
+                          }
+                          toggleId={`toggle-${descriptor.id}`}
                           className={cn(
-                            'mb-2 border-t-2 border-primary/60 pt-2 pb-2 bg-primary/10 rounded-lg px-2',
                             isTerminalSimpleSelected &&
                               descriptor.id === 'basic'
                               ? 'mt-2'
                               : ''
                           )}
-                        >
-                          <div className="flex items-start justify-between gap-md">
-                            <div className="flex-1">
-                              <div className="flex items-start gap-sm">
-                                <descriptor.icon className="h-5 w-5 shrink-0 text-primary mt-0.5" />
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-xs">
-                                    <h2 className="text-lg font-semibold leading-tight">
-                                      {descriptor.label}
-                                    </h2>
-                                    {(descriptor.tooltipText ||
-                                      descriptor.description) && (
-                                      <Tooltip
-                                        tooltip={
-                                          descriptor.tooltipText ??
-                                          descriptor.description ??
-                                          ''
-                                        }
-                                        {...(descriptor.tooltipUrl
-                                          ? {
-                                              tooltipURL: descriptor.tooltipUrl,
-                                            }
-                                          : {})}
-                                      >
-                                        <InfoIcon />
-                                      </Tooltip>
-                                    )}
-                                  </div>
-                                  {(descriptor.id === 'stop-loss' ||
-                                    descriptor.id === 'take-profit' ||
-                                    descriptor.id === 'dca') &&
-                                    useRiskReward && (
-                                      <SettingsAlert title="Disabled by Risk:Reward module" />
-                                    )}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-xs self-start pt-0.5">
-                              {
-                                // determine if collapse control should be shown: if the section has a toggle, only allow collapse when enabled; otherwise always allow
-                              }
-                              {(hasToggle ? toggleEnabled : true) && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  type="button"
-                                  aria-expanded={
-                                    !isSectionCollapsed(descriptor.id)
-                                  }
-                                  aria-controls={`section-${descriptor.id}`}
-                                  onClick={() =>
-                                    toggleSectionCollapsed(descriptor.id)
-                                  }
-                                  disabled={isContentReadOnly}
-                                  className={cn(
-                                    'p-0',
-                                    isContentReadOnly
-                                      ? 'opacity-50'
-                                      : 'opacity-100'
-                                  )}
-                                  title={
-                                    isSectionCollapsed(descriptor.id)
-                                      ? 'Expand section'
-                                      : 'Collapse section'
-                                  }
-                                >
-                                  <ChevronDown
-                                    className={cn(
-                                      'h-4 w-4 transition-transform',
-                                      isSectionCollapsed(descriptor.id)
-                                        ? 'rotate-0'
-                                        : 'rotate-180'
-                                    )}
-                                  />
-                                </Button>
-                              )}
-                              {hasToggle && (
-                                <div className="flex items-center gap-xs">
-                                  <Switch
-                                    checked={toggleEnabled}
-                                    onCheckedChange={(checked: boolean) =>
-                                      updateFormData(toggleField, checked)
-                                    }
-                                    disabled={
-                                      isContentReadOnly ||
-                                      !!isFieldLocked(toggleField)
-                                    }
-                                    id={`toggle-${descriptor.id}`}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
+                        />
                         {!isSectionCollapsed(descriptor.id) && (
                           <SectionComponent {...componentProps} />
                         )}
@@ -3605,6 +3645,20 @@ const BotForm: React.FC<BotFormProps> = ({
                 onCancelBacktest={
                   footerOverride?.onCancelBacktest ?? cancelLocalBacktest
                 }
+                backtestSummary={
+                  footerOverride?.backtestSummary ?? backtestSummary
+                }
+                onViewResults={
+                  footerOverride?.onViewResults ??
+                  (() => setResultsModalOpen(true))
+                }
+                onDismissResults={
+                  footerOverride?.onDismissResults ??
+                  (() => {
+                    setBacktestResult(null);
+                    setResultsModalOpen(false);
+                  })
+                }
                 onLoadTemplate={handleLoadTemplate}
                 onToggleStatus={
                   footerOverride?.onToggleStatus ??
@@ -3646,6 +3700,18 @@ const BotForm: React.FC<BotFormProps> = ({
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
       />
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          setFormData(createDefaultFormState(mode, isTerminal));
+          toast.success('Settings reset to defaults');
+        }}
+      />
       <BotSettingsImportExportDialog
         open={showImportExportDialog}
         onOpenChange={setShowImportExportDialog}
@@ -3680,6 +3746,16 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestResult && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={backtestResult.result}
+          strategy={backtestResult.strategy}
+          settings={backtestResult.settings}
+          meta={backtestResult.meta}
+        />
+      )}
       {/* <SmartOrderMergeDialog
         open={showSmartOrderMergeDialog}
         onOpenChange={handleSmartOrderMergeDialogChange}
@@ -3982,6 +4058,19 @@ const BotForm: React.FC<BotFormProps> = ({
             onRunBacktestDirect={onRunBacktest}
             backtestProgress={backtestProgress}
             onCancelBacktest={cancelLocalBacktest}
+            backtestSummary={
+              footerOverride?.backtestSummary ?? backtestSummary
+            }
+            onViewResults={
+              footerOverride?.onViewResults ?? (() => setResultsModalOpen(true))
+            }
+            onDismissResults={
+              footerOverride?.onDismissResults ??
+              (() => {
+                setBacktestResult(null);
+                setResultsModalOpen(false);
+              })
+            }
             onLoadTemplate={handleLoadTemplate}
             onToggleStatus={
               footerOverride?.onToggleStatus ??
@@ -4021,6 +4110,18 @@ const BotForm: React.FC<BotFormProps> = ({
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
       />
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets all settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={() => {
+          setFormData(createDefaultFormState(mode, isTerminal));
+          toast.success('Settings reset to defaults');
+        }}
+      />
       <BotSettingsImportExportDialog
         open={showImportExportDialog}
         onOpenChange={setShowImportExportDialog}
@@ -4053,6 +4154,16 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestResult && (
+        <BacktestResultsFullModal
+          open={resultsModalOpen}
+          onOpenChange={setResultsModalOpen}
+          result={backtestResult.result}
+          strategy={backtestResult.strategy}
+          settings={backtestResult.settings}
+          meta={backtestResult.meta}
+        />
+      )}
       {/* <SmartOrderMergeDialog
         open={showSmartOrderMergeDialog}
         onOpenChange={handleSmartOrderMergeDialogChange}

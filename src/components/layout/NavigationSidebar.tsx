@@ -1,3 +1,4 @@
+/* eslint-disable spacing/no-hardcoded-font-size */
 import { linkTo } from '@/lib/demoMode';
 import { logger } from '@/lib/loggerInstance';
 import {
@@ -17,10 +18,7 @@ import {
 } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import {
-  isNavigationItemEnabled,
-  useUIStore,
-} from '../../stores/uiStore';
+import { isNavigationItemEnabled, useUIStore } from '../../stores/uiStore';
 import {
   type PageCategory,
   useUserSessionsStore,
@@ -80,7 +78,10 @@ const HIDDEN_OVERLAY_GRACE_MS = 100;
 
 type SidebarMode = 'pinned' | 'unpinned' | 'hidden';
 
-const resolveTargetMode = (initial: SidebarMode, delta: number): SidebarMode => {
+const resolveTargetMode = (
+  initial: SidebarMode,
+  delta: number
+): SidebarMode => {
   if (initial === 'pinned') {
     if (delta <= -DRAG_HIDE_THRESHOLD) return 'hidden';
     if (delta <= -DRAG_PIN_THRESHOLD) return 'unpinned';
@@ -196,9 +197,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   const setNavigationItemEnabled = useUIStore(
     (s) => s.setNavigationItemEnabled
   );
-  const hasSeenSidebarEditNudge = useUIStore(
-    (s) => s.hasSeenSidebarEditNudge
-  );
+  const hasSeenSidebarEditNudge = useUIStore((s) => s.hasSeenSidebarEditNudge);
   const setHasSeenSidebarEditNudge = useUIStore(
     (s) => s.setHasSeenSidebarEditNudge
   );
@@ -214,7 +213,9 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
   const initialModeRef = useRef<SidebarMode>('unpinned');
 
   // Grace timer for hidden-mode overlay dismissal — see HIDDEN_OVERLAY_GRACE_MS.
-  const hiddenHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hiddenHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
 
   const cancelHiddenHideTimer = () => {
     if (hiddenHideTimeoutRef.current) {
@@ -634,11 +635,12 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
 
   const outerStyle = !isMobileVariant
     ? {
-        width: navigationSidebarHidden && !isEditMode
-          ? '0px'
-          : outerExpanded
-            ? 'var(--sidebar-width-expanded)'
-            : 'var(--sidebar-width-collapsed)',
+        width:
+          navigationSidebarHidden && !isEditMode
+            ? '0px'
+            : outerExpanded
+              ? 'var(--sidebar-width-expanded)'
+              : 'var(--sidebar-width-collapsed)',
       }
     : undefined;
 
@@ -655,7 +657,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
     : `bg-card border-r border-border h-full ${innerInvisible ? '' : 'transition-all duration-300 ease-in-out'} flex flex-col sidebar-container-constrained ${innerIsOverlay ? 'absolute left-0 top-0 z-100 shadow-xl' : ''} overflow-hidden`;
 
   const innerStyle = !isMobileVariant
-    ? ({
+    ? {
         width: innerInvisible
           ? '0px'
           : isExpanded
@@ -669,7 +671,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
         ...(innerInvisible
           ? { pointerEvents: 'none' as const, visibility: 'hidden' as const }
           : {}),
-      })
+      }
     : undefined;
 
   return (
@@ -734,15 +736,18 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
           <div className="px-2 py-4 border-b border-border">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 flex items-center justify-center shrink-0 mx-2">
+                <div className="w-8 h-8 flex items-center justify-center shrink-0 ml-2">
                   <LogoIcon className="w-8 h-8" />
                 </div>
                 <div
-                  className={`transition-opacity duration-300 ease-in-out whitespace-nowrap flex-1 ${
+                  className={`transition-opacity duration-300 ease-in-out whitespace-nowrap flex-1 flex items-center gap-2 ${
                     isExpanded ? 'opacity-100' : 'opacity-0'
                   }`}
                 >
                   <LogoWordmark className="h-6" />
+                  <span className="inline-flex items-center rounded-full border border-primary/50 bg-background/70 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground shadow-sm">
+                    v2
+                  </span>
                 </div>
               </div>
               {!isMobileVariant && (
@@ -816,773 +821,780 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                 );
               })
               .map((section) => (
-              <div key={section.title || 'root'} className="mb-4">
-                {/* Section Separator - only show if section has a title */}
-                {section.title && (
-                  <div className="flex items-center mt-5 px-2">
-                    <div className="flex items-center w-full">
-                      {/* Small separator line - always visible */}
-                      <div className="w-8 border-b border-border opacity-100" />
-                      <span
-                        className={`text-sm font-medium uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground transition-all duration-300 ease-in-out whitespace-nowrap ${
-                          isExpanded
-                            ? 'opacity-100 ml-2 mr-2'
-                            : 'opacity-0 ml-0 mr-0'
-                        }`}
-                        onClick={() =>
-                          toggleSection(section.title.toLowerCase())
-                        }
-                      >
-                        {section.title}
-                      </span>
-                      <div
-                        className={`flex-1 border-b border-border transition-all duration-300 ease-in-out ${
-                          isExpanded ? 'opacity-100' : 'opacity-0'
-                        }`}
-                      />
-                      <div
-                        className={`ml-2 cursor-pointer transition-opacity duration-300 ease-in-out ${
-                          isExpanded ? 'opacity-100' : 'opacity-0'
-                        }`}
-                        onClick={() =>
-                          toggleSection(section.title.toLowerCase())
-                        }
-                      >
-                        {openSections[section.title.toLowerCase()] ? (
-                          <ChevronDown className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
-                        ) : (
-                          <ChevronRight className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
-                        )}
+                <div key={section.title || 'root'} className="mb-4">
+                  {/* Section Separator - only show if section has a title */}
+                  {section.title && (
+                    <div className="flex items-center mt-5 px-2">
+                      <div className="flex items-center w-full">
+                        {/* Small separator line - always visible */}
+                        <div className="w-8 border-b border-border opacity-100" />
+                        <span
+                          className={`text-sm font-medium uppercase tracking-wider text-muted-foreground cursor-pointer hover:text-foreground transition-all duration-300 ease-in-out whitespace-nowrap ${
+                            isExpanded
+                              ? 'opacity-100 ml-2 mr-2'
+                              : 'opacity-0 ml-0 mr-0'
+                          }`}
+                          onClick={() =>
+                            toggleSection(section.title.toLowerCase())
+                          }
+                        >
+                          {section.title}
+                        </span>
+                        <div
+                          className={`flex-1 border-b border-border transition-all duration-300 ease-in-out ${
+                            isExpanded ? 'opacity-100' : 'opacity-0'
+                          }`}
+                        />
+                        <div
+                          className={`ml-2 cursor-pointer transition-opacity duration-300 ease-in-out ${
+                            isExpanded ? 'opacity-100' : 'opacity-0'
+                          }`}
+                          onClick={() =>
+                            toggleSection(section.title.toLowerCase())
+                          }
+                        >
+                          {openSections[section.title.toLowerCase()] ? (
+                            <ChevronDown className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4 text-muted-foreground hover:text-foreground transition-colors" />
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Section Items */}
-                <div
-                  className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                    section.title
-                      ? isSectionVisible(section.title.toLowerCase(), section)
-                        ? 'max-h-[2000px] opacity-100'
-                        : 'max-h-0 opacity-0'
-                      : 'max-h-[2000px] opacity-100'
-                  }`}
-                >
+                  {/* Section Items */}
                   <div
-                    className={`${section.title ? 'mt-2' : 'mt-0'} transform transition-transform duration-300 ease-in-out ${
+                    className={`overflow-hidden transition-all duration-300 ease-in-out ${
                       section.title
                         ? isSectionVisible(section.title.toLowerCase(), section)
-                          ? 'translate-y-0'
-                          : '-translate-y-2'
-                        : 'translate-y-0'
+                          ? 'max-h-[2000px] opacity-100'
+                          : 'max-h-0 opacity-0'
+                        : 'max-h-[2000px] opacity-100'
                     }`}
                   >
-                    {(isEditMode
-                      ? section.items
-                      : section.items.filter((it) =>
-                          isNavigationItemEnabled(
-                            navigationItemsEnabled,
-                            it.id
+                    <div
+                      className={`${section.title ? 'mt-2' : 'mt-0'} transform transition-transform duration-300 ease-in-out ${
+                        section.title
+                          ? isSectionVisible(
+                              section.title.toLowerCase(),
+                              section
+                            )
+                            ? 'translate-y-0'
+                            : '-translate-y-2'
+                          : 'translate-y-0'
+                      }`}
+                    >
+                      {(isEditMode
+                        ? section.items
+                        : section.items.filter((it) =>
+                            isNavigationItemEnabled(
+                              navigationItemsEnabled,
+                              it.id
+                            )
                           )
-                        )
-                    ).map((item, itemIndex) => {
-                      const hasSubmenu =
-                        item.children && item.children.length > 0;
-                      const hasActiveChild = hasSubmenu
-                        ? (item.children?.some((child) =>
-                            isItemActive(child)
-                          ) ?? false)
-                        : false;
-                      const isActive = isItemActive(item) || hasActiveChild;
-                      const itemKey = item.label
-                        .toLowerCase()
-                        .replace(/\s+/g, '-');
-                      const isSubmenuOpen = openSubmenus[itemKey];
-                      const shortcutId = getShortcutIdForItem(item);
+                      ).map((item, itemIndex) => {
+                        const hasSubmenu =
+                          item.children && item.children.length > 0;
+                        const hasActiveChild = hasSubmenu
+                          ? (item.children?.some((child) =>
+                              isItemActive(child)
+                            ) ?? false)
+                          : false;
+                        const isActive = isItemActive(item) || hasActiveChild;
+                        const itemKey = item.label
+                          .toLowerCase()
+                          .replace(/\s+/g, '-');
+                        const isSubmenuOpen = openSubmenus[itemKey];
+                        const shortcutId = getShortcutIdForItem(item);
 
-                      // Recent-visits behavior for top-level bot items
-                      // (Trading Bots, Grid Bots, Combo Bots, etc.) now
-                      // that those items are flat instead of submenu
-                      // children.
-                      const categoryForItem = item.href
-                        ? getCategoryFromPath(item.href)
-                        : null;
-                      const itemSupportsRecents = Boolean(
-                        categoryForItem &&
+                        // Recent-visits behavior for top-level bot items
+                        // (Trading Bots, Grid Bots, Combo Bots, etc.) now
+                        // that those items are flat instead of submenu
+                        // children.
+                        const categoryForItem = item.href
+                          ? getCategoryFromPath(item.href)
+                          : null;
+                        const itemSupportsRecents = Boolean(
+                          categoryForItem &&
                           BOT_RECENT_CATEGORY_SET.has(categoryForItem)
-                      );
-                      const itemRecentVisits = itemSupportsRecents
-                        ? getRecentVisitsByCategory(
-                            categoryForItem as PageCategory,
-                            10,
-                            tradingMode
-                          )
-                        : [];
-                      const itemIsClickExpanded = itemSupportsRecents
-                        ? clickExpandedCategories.has(
-                            categoryForItem as PageCategory
-                          )
-                        : false;
-                      const itemIsCategoryExpanded = itemSupportsRecents
-                        ? expandedCategories.has(
-                            categoryForItem as PageCategory
-                          )
-                        : false;
-                      const itemVisibleVisits = itemIsClickExpanded
-                        ? itemRecentVisits
-                        : itemRecentVisits.slice(0, 3);
-                      const itemHasMore = itemRecentVisits.length > 3;
-
-                      // Edit mode: render a checkbox row instead of the
-                      // normal nav link so the user can toggle visibility.
-                      if (isEditMode) {
-                        const enabled = isNavigationItemEnabled(
-                          navigationItemsEnabled,
-                          item.id
                         );
-                        return (
-                          <div key={itemIndex} className="mb-2 px-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!item.id) return;
-                                setNavigationItemEnabled(item.id, !enabled);
-                              }}
-                              disabled={!item.id}
-                              className="flex w-full items-center gap-3 rounded-lg px-1 py-1 text-left hover:bg-muted/50 transition-colors duration-150"
-                            >
-                              <span
-                                aria-hidden
-                                className="flex items-center justify-center w-8 h-8 shrink-0"
-                              >
-                                <Checkbox
-                                  checked={enabled}
-                                  // Click handled on the parent button
-                                  onCheckedChange={() => {
-                                    if (!item.id) return;
-                                    setNavigationItemEnabled(
-                                      item.id,
-                                      !enabled
-                                    );
-                                  }}
-                                />
-                              </span>
-                              <span
-                                className={`flex items-center justify-center w-6 h-6 shrink-0 ${
-                                  enabled
-                                    ? 'text-foreground'
-                                    : 'text-muted-foreground'
-                                }`}
-                              >
-                                {item.icon}
-                              </span>
-                              <span
-                                className={`flex-1 text-sm ${
-                                  enabled
-                                    ? 'text-foreground'
-                                    : 'text-muted-foreground'
-                                }`}
-                              >
-                                <TruncatedText
-                                  text={item.label}
-                                  maxWidth="min(160px, 10rem)"
-                                />
-                              </span>
-                            </button>
-                          </div>
-                        );
-                      }
+                        const itemRecentVisits = itemSupportsRecents
+                          ? getRecentVisitsByCategory(
+                              categoryForItem as PageCategory,
+                              10,
+                              tradingMode
+                            )
+                          : [];
+                        const itemIsClickExpanded = itemSupportsRecents
+                          ? clickExpandedCategories.has(
+                              categoryForItem as PageCategory
+                            )
+                          : false;
+                        const itemIsCategoryExpanded = itemSupportsRecents
+                          ? expandedCategories.has(
+                              categoryForItem as PageCategory
+                            )
+                          : false;
+                        const itemVisibleVisits = itemIsClickExpanded
+                          ? itemRecentVisits
+                          : itemRecentVisits.slice(0, 3);
+                        const itemHasMore = itemRecentVisits.length > 3;
 
-                      // Tour anchors for the Max onboarding walkthrough.
-                      // Only nav items referenced by the explore script
-                      // get a data-tour; others render unmarked. Smart
-                      // Trade / Markets aren't in this build, so the
-                      // tour script omits those steps.
-                      const tourKey =
-                        item.id === 'trading-bots'
-                          ? 'nav.bots'
-                          : item.id === 'portfolio'
-                            ? 'nav.portfolio'
-                            : undefined;
-                      return (
-                        <div
-                          key={itemIndex}
-                          className="mb-2 px-2"
-                          data-tour={tourKey}
-                          onMouseEnter={() => {
-                            if (itemSupportsRecents && categoryForItem) {
-                              setHoveredCategory(categoryForItem);
-                              setExpandedCategories((prev) => {
-                                const newSet = new Set(prev);
-                                newSet.add(categoryForItem);
-                                return newSet;
-                              });
-                            }
-                          }}
-                          onMouseLeave={() => {
-                            if (itemSupportsRecents) {
-                              setHoveredCategory(null);
-                            }
-                          }}
-                        >
-                          <div
-                            className={`flex items-center gap-3 rounded-lg transition-colors duration-200 ${
-                              isActive
-                                ? 'bg-primary/10 -mx-1 px-1 py-0.5'
-                                : ''
-                            }`}
-                          >
-                            {/* Icon - always visible and perfectly centered */}
-                            <Link
-                              to={item.href || '#'}
-                              className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors duration-200 shrink-0 ${
-                                isActive
-                                  ? 'gradient-brand text-primary-foreground'
-                                  : 'hover:bg-muted/50'
-                              }`}
-                              title={item.label}
-                              onClick={(e) => {
-                                if (hasSubmenu && !item.href) {
-                                  e.preventDefault();
-                                  toggleNavigationSubmenu(itemKey);
-                                  return;
-                                }
-                                if (shortcutId)
-                                  showShortcutHintById(shortcutId);
-                                onNavigate?.();
-                              }}
-                            >
-                              <span
-                                className={`transition-colors duration-200 ${
-                                  isActive
-                                    ? 'text-primary-foreground'
-                                    : 'text-muted-foreground hover:text-foreground'
-                                }`}
+                        // Edit mode: render a checkbox row instead of the
+                        // normal nav link so the user can toggle visibility.
+                        if (isEditMode) {
+                          const enabled = isNavigationItemEnabled(
+                            navigationItemsEnabled,
+                            item.id
+                          );
+                          return (
+                            <div key={itemIndex} className="mb-2 px-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!item.id) return;
+                                  setNavigationItemEnabled(item.id, !enabled);
+                                }}
+                                disabled={!item.id}
+                                className="flex w-full items-center gap-3 rounded-lg px-1 py-1 text-left hover:bg-muted/50 transition-colors duration-150"
                               >
-                                {item.icon}
-                              </span>
-                            </Link>
-
-                            {/* Text - only show when expanded */}
-                            {isExpanded && (
-                              <div className="flex-1 flex items-center justify-between">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Link
-                                    to={linkTo(item.href || '#')}
-                                    className={`transition-colors duration-200 cursor-pointer ${
-                                      isActive
-                                        ? 'text-primary font-medium'
-                                        : 'text-muted-foreground hover:text-foreground'
-                                    }`}
-                                    onClick={(e) => {
-                                      if (hasSubmenu && !item.href) {
-                                        e.preventDefault();
-                                        toggleNavigationSubmenu(itemKey);
-                                        return;
-                                      }
-                                      if (shortcutId)
-                                        showShortcutHintById(shortcutId);
-                                      onNavigate?.();
+                                <span
+                                  aria-hidden
+                                  className="flex items-center justify-center w-8 h-8 shrink-0"
+                                >
+                                  <Checkbox
+                                    checked={enabled}
+                                    // Click handled on the parent button
+                                    onCheckedChange={() => {
+                                      if (!item.id) return;
+                                      setNavigationItemEnabled(
+                                        item.id,
+                                        !enabled
+                                      );
                                     }}
-                                  >
-                                    <TruncatedText
-                                      text={item.label}
-                                      maxWidth="min(120px, 8rem)"
-                                    />
-                                  </Link>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  {item.action && (
-                                    <a
-                                      href={linkTo(item.action.href || '#')}
+                                  />
+                                </span>
+                                <span
+                                  className={`flex items-center justify-center w-6 h-6 shrink-0 ${
+                                    enabled
+                                      ? 'text-foreground'
+                                      : 'text-muted-foreground'
+                                  }`}
+                                >
+                                  {item.icon}
+                                </span>
+                                <span
+                                  className={`flex-1 text-sm ${
+                                    enabled
+                                      ? 'text-foreground'
+                                      : 'text-muted-foreground'
+                                  }`}
+                                >
+                                  <TruncatedText
+                                    text={item.label}
+                                    maxWidth="min(160px, 10rem)"
+                                  />
+                                </span>
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        // Tour anchors for the Max onboarding walkthrough.
+                        // Only nav items referenced by the explore script
+                        // get a data-tour; others render unmarked. Smart
+                        // Trade / Markets aren't in this build, so the
+                        // tour script omits those steps.
+                        const tourKey =
+                          item.id === 'trading-bots'
+                            ? 'nav.bots'
+                            : item.id === 'portfolio'
+                              ? 'nav.portfolio'
+                              : undefined;
+                        return (
+                          <div
+                            key={itemIndex}
+                            className="mb-2 px-2"
+                            data-tour={tourKey}
+                            onMouseEnter={() => {
+                              if (itemSupportsRecents && categoryForItem) {
+                                setHoveredCategory(categoryForItem);
+                                setExpandedCategories((prev) => {
+                                  const newSet = new Set(prev);
+                                  newSet.add(categoryForItem);
+                                  return newSet;
+                                });
+                              }
+                            }}
+                            onMouseLeave={() => {
+                              if (itemSupportsRecents) {
+                                setHoveredCategory(null);
+                              }
+                            }}
+                          >
+                            <div
+                              className={`flex items-center gap-3 rounded-lg transition-colors duration-200 ${
+                                isActive
+                                  ? 'bg-primary/10 -mx-1 px-1 py-0.5'
+                                  : ''
+                              }`}
+                            >
+                              {/* Icon - always visible and perfectly centered */}
+                              <Link
+                                to={item.href || '#'}
+                                className={`flex items-center justify-center w-8 h-8 rounded-lg transition-colors duration-200 shrink-0 ${
+                                  isActive
+                                    ? 'gradient-brand text-primary-foreground'
+                                    : 'hover:bg-muted/50'
+                                }`}
+                                title={item.label}
+                                onClick={(e) => {
+                                  if (hasSubmenu && !item.href) {
+                                    e.preventDefault();
+                                    toggleNavigationSubmenu(itemKey);
+                                    return;
+                                  }
+                                  if (shortcutId)
+                                    showShortcutHintById(shortcutId);
+                                  onNavigate?.();
+                                }}
+                              >
+                                <span
+                                  className={`transition-colors duration-200 ${
+                                    isActive
+                                      ? 'text-primary-foreground'
+                                      : 'text-muted-foreground hover:text-foreground'
+                                  }`}
+                                >
+                                  {item.icon}
+                                </span>
+                              </Link>
+
+                              {/* Text - only show when expanded */}
+                              {isExpanded && (
+                                <div className="flex-1 flex items-center justify-between">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <Link
+                                      to={linkTo(item.href || '#')}
+                                      className={`transition-colors duration-200 cursor-pointer ${
+                                        isActive
+                                          ? 'text-primary font-medium'
+                                          : 'text-muted-foreground hover:text-foreground'
+                                      }`}
                                       onClick={(e) => {
-                                        if (item.action?.onClick) {
+                                        if (hasSubmenu && !item.href) {
                                           e.preventDefault();
-                                          item.action.onClick();
-                                          onNavigate?.();
+                                          toggleNavigationSubmenu(itemKey);
                                           return;
                                         }
+                                        if (shortcutId)
+                                          showShortcutHintById(shortcutId);
                                         onNavigate?.();
-                                        // If no onClick function, allow default link behavior
                                       }}
-                                      className="flex items-center justify-center w-6 h-6 border border-border bg-inner-container hover:border-primary/20 hover:bg-primary/5 rounded transition-colors duration-200"
-                                      title={item.action.title}
                                     >
-                                      <span className="text-muted-foreground hover:text-primary transition-colors duration-200">
-                                        {item.action.icon}
-                                      </span>
-                                    </a>
-                                  )}
-                                  {item.badge && (
-                                    <Badge
-                                      variant={
-                                        item.badge.variant === 'pro'
-                                          ? 'secondary'
-                                          : 'secondary'
-                                      }
-                                      className={`text-xs px-1.5 py-0.5 border-0 font-medium ${
-                                        item.badge.variant === 'pro'
-                                          ? 'gradient-brand hover:opacity-90 text-card-foreground'
-                                          : item.badge.variant === 'default'
-                                            ? 'bg-primary text-primary-foreground'
-                                            : 'bg-muted-foreground/70 hover:bg-muted text-card-foreground'
-                                      }`}
-                                    >
-                                      {item.badge.text}
-                                    </Badge>
-                                  )}
-                                  {hasSubmenu && (
-                                    <button
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        toggleNavigationSubmenu(itemKey);
-                                      }}
-                                      data-size="icon"
-                                      className="flex items-center justify-center w-4 h-4 hover:bg-muted/50 rounded transition-colors duration-200"
-                                      title={
-                                        isSubmenuOpen
-                                          ? 'Collapse submenu'
-                                          : 'Expand submenu'
-                                      }
-                                    >
-                                      {isSubmenuOpen ? (
-                                        <ChevronDown className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
-                                      ) : (
-                                        <ChevronRight className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
-                                      )}
-                                    </button>
-                                  )}
+                                      <TruncatedText
+                                        text={item.label}
+                                        maxWidth="min(120px, 8rem)"
+                                      />
+                                    </Link>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    {item.action && (
+                                      <a
+                                        href={linkTo(item.action.href || '#')}
+                                        onClick={(e) => {
+                                          if (item.action?.onClick) {
+                                            e.preventDefault();
+                                            item.action.onClick();
+                                            onNavigate?.();
+                                            return;
+                                          }
+                                          onNavigate?.();
+                                          // If no onClick function, allow default link behavior
+                                        }}
+                                        className="flex items-center justify-center w-6 h-6 border border-border bg-inner-container hover:border-primary/20 hover:bg-primary/5 rounded transition-colors duration-200"
+                                        title={item.action.title}
+                                      >
+                                        <span className="text-muted-foreground hover:text-primary transition-colors duration-200">
+                                          {item.action.icon}
+                                        </span>
+                                      </a>
+                                    )}
+                                    {item.badge && (
+                                      <Badge
+                                        variant={
+                                          item.badge.variant === 'pro'
+                                            ? 'secondary'
+                                            : 'secondary'
+                                        }
+                                        className={`text-xs px-1.5 py-0.5 border-0 font-medium ${
+                                          item.badge.variant === 'pro'
+                                            ? 'gradient-brand hover:opacity-90 text-card-foreground'
+                                            : item.badge.variant === 'default'
+                                              ? 'bg-primary text-primary-foreground'
+                                              : 'bg-muted-foreground/70 hover:bg-muted text-card-foreground'
+                                        }`}
+                                      >
+                                        {item.badge.text}
+                                      </Badge>
+                                    )}
+                                    {hasSubmenu && (
+                                      <button
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          toggleNavigationSubmenu(itemKey);
+                                        }}
+                                        data-size="icon"
+                                        className="flex items-center justify-center w-4 h-4 hover:bg-muted/50 rounded transition-colors duration-200"
+                                        title={
+                                          isSubmenuOpen
+                                            ? 'Collapse submenu'
+                                            : 'Expand submenu'
+                                        }
+                                      >
+                                        {isSubmenuOpen ? (
+                                          <ChevronDown className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
+                                        ) : (
+                                          <ChevronRight className="w-3 h-3 text-muted-foreground hover:text-foreground transition-colors" />
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                            )}
-                          </div>
+                              )}
+                            </div>
 
-                          {/* Recent visits for top-level bot items */}
-                          {itemSupportsRecents &&
-                            itemRecentVisits.length > 0 &&
-                            isExpanded && (
+                            {/* Recent visits for top-level bot items */}
+                            {itemSupportsRecents &&
+                              itemRecentVisits.length > 0 &&
+                              isExpanded && (
+                                <div
+                                  className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                                    isActive ||
+                                    hoveredCategory === categoryForItem ||
+                                    itemIsCategoryExpanded
+                                      ? 'max-h-[2000px] opacity-100'
+                                      : 'max-h-0 opacity-0'
+                                  }`}
+                                >
+                                  <div
+                                    className={`mt-2 px-2 ml-8 transform transition-transform duration-300 ease-in-out ${
+                                      isActive ||
+                                      hoveredCategory === categoryForItem ||
+                                      itemIsCategoryExpanded
+                                        ? 'translate-y-0'
+                                        : '-translate-y-2'
+                                    }`}
+                                  >
+                                    <div className="flex flex-wrap gap-1">
+                                      {itemVisibleVisits.map((visit, idx) => {
+                                        const isActiveVisit =
+                                          activePage === visit.path;
+                                        const pathParts = visit.path.split('/');
+                                        const id =
+                                          pathParts[pathParts.length - 1];
+                                        const shortId =
+                                          id.length > 6
+                                            ? `...${id.slice(-6)}`
+                                            : id;
+                                        const statusConfig = visit.botStatus
+                                          ? getBotStatusConfig(visit.botStatus)
+                                          : null;
+                                        const pnlText =
+                                          typeof visit.botPnlPercentage ===
+                                          'number'
+                                            ? formatPnLPercentage(
+                                                visit.botPnlPercentage
+                                              )
+                                            : null;
+                                        const isProfitable =
+                                          (visit.botPnlPercentage ?? 0) >= 0;
+
+                                        return (
+                                          <Link
+                                            key={`${visit.path}-${idx}`}
+                                            to={visit.path}
+                                            onClick={() => onNavigate?.()}
+                                          >
+                                            <Badge
+                                              variant="outline"
+                                              className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
+                                                isActiveVisit
+                                                  ? 'bg-primary/10 text-primary border-primary/50'
+                                                  : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
+                                              }`}
+                                              style={{ opacity: 0.8 }}
+                                              title={visit.path}
+                                            >
+                                              {statusConfig && (
+                                                <span
+                                                  className="w-1.5 h-1.5 rounded-full"
+                                                  style={{
+                                                    backgroundColor:
+                                                      statusConfig.color ??
+                                                      'var(--muted-foreground)',
+                                                    opacity: 0.8,
+                                                  }}
+                                                  title={statusConfig.label}
+                                                />
+                                              )}
+                                              <span className="truncate max-w-[70px]">
+                                                {visit.displayName || shortId}
+                                              </span>
+                                              {pnlText && (
+                                                <span
+                                                  className={`font-semibold ${
+                                                    isProfitable
+                                                      ? 'text-profit'
+                                                      : 'text-loss'
+                                                  }`}
+                                                >
+                                                  {pnlText}
+                                                </span>
+                                              )}
+                                            </Badge>
+                                          </Link>
+                                        );
+                                      })}
+
+                                      {itemHasMore &&
+                                        !itemIsClickExpanded &&
+                                        itemIsCategoryExpanded && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              setClickExpandedCategories(
+                                                (prev) => {
+                                                  const newSet = new Set(prev);
+                                                  if (categoryForItem) {
+                                                    newSet.add(categoryForItem);
+                                                  }
+                                                  return newSet;
+                                                }
+                                              );
+                                            }}
+                                            className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
+                                          >
+                                            +{itemRecentVisits.length - 3} more
+                                          </button>
+                                        )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                            {/* Submenu Items */}
+                            {hasSubmenu && (
                               <div
-                                className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                                  isActive ||
-                                  hoveredCategory === categoryForItem ||
-                                  itemIsCategoryExpanded
+                                className={`overflow-hidden transition-all duration-300 ease-in-out ml-6 mt-1 ${
+                                  isSubmenuVisible(itemKey, item)
                                     ? 'max-h-[2000px] opacity-100'
                                     : 'max-h-0 opacity-0'
                                 }`}
                               >
                                 <div
-                                  className={`mt-2 px-2 ml-8 transform transition-transform duration-300 ease-in-out ${
-                                    isActive ||
-                                    hoveredCategory === categoryForItem ||
-                                    itemIsCategoryExpanded
+                                  className={`transform transition-transform duration-300 ease-in-out ${
+                                    isSubmenuVisible(itemKey, item)
                                       ? 'translate-y-0'
                                       : '-translate-y-2'
                                   }`}
                                 >
-                                  <div className="flex flex-wrap gap-1">
-                                    {itemVisibleVisits.map((visit, idx) => {
-                                      const isActiveVisit =
-                                        activePage === visit.path;
-                                      const pathParts = visit.path.split('/');
-                                      const id =
-                                        pathParts[pathParts.length - 1];
-                                      const shortId =
-                                        id.length > 6
-                                          ? `...${id.slice(-6)}`
-                                          : id;
-                                      const statusConfig = visit.botStatus
-                                        ? getBotStatusConfig(visit.botStatus)
-                                        : null;
-                                      const pnlText =
-                                        typeof visit.botPnlPercentage ===
-                                        'number'
-                                          ? formatPnLPercentage(
-                                              visit.botPnlPercentage
-                                            )
-                                          : null;
-                                      const isProfitable =
-                                        (visit.botPnlPercentage ?? 0) >= 0;
+                                  {item.children?.map((subItem, subIndex) => {
+                                    const isSubActive = isItemActive(subItem);
 
-                                      return (
-                                        <Link
-                                          key={`${visit.path}-${idx}`}
-                                          to={visit.path}
-                                          onClick={() => onNavigate?.()}
-                                        >
-                                          <Badge
-                                            variant="outline"
-                                            className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
-                                              isActiveVisit
-                                                ? 'bg-primary/10 text-primary border-primary/50'
-                                                : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
-                                            }`}
-                                            style={{ opacity: 0.8 }}
-                                            title={visit.path}
-                                          >
-                                            {statusConfig && (
-                                              <span
-                                                className="w-1.5 h-1.5 rounded-full"
-                                                style={{
-                                                  backgroundColor:
-                                                    statusConfig.color ??
-                                                    'var(--muted-foreground)',
-                                                  opacity: 0.8,
-                                                }}
-                                                title={statusConfig.label}
-                                              />
-                                            )}
-                                            <span className="truncate max-w-[70px]">
-                                              {visit.displayName || shortId}
-                                            </span>
-                                            {pnlText && (
-                                              <span
-                                                className={`font-semibold ${
-                                                  isProfitable
-                                                    ? 'text-profit'
-                                                    : 'text-loss'
-                                                }`}
-                                              >
-                                                {pnlText}
-                                              </span>
-                                            )}
-                                          </Badge>
-                                        </Link>
-                                      );
-                                    })}
-
-                                    {itemHasMore &&
-                                      !itemIsClickExpanded &&
-                                      itemIsCategoryExpanded && (
-                                        <button
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            setClickExpandedCategories(
-                                              (prev) => {
-                                                const newSet = new Set(prev);
-                                                if (categoryForItem) {
-                                                  newSet.add(categoryForItem);
-                                                }
-                                                return newSet;
-                                              }
-                                            );
-                                          }}
-                                          className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
-                                        >
-                                          +{itemRecentVisits.length - 3} more
-                                        </button>
-                                      )}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                          {/* Submenu Items */}
-                          {hasSubmenu && (
-                            <div
-                              className={`overflow-hidden transition-all duration-300 ease-in-out ml-6 mt-1 ${
-                                isSubmenuVisible(itemKey, item)
-                                  ? 'max-h-[2000px] opacity-100'
-                                  : 'max-h-0 opacity-0'
-                              }`}
-                            >
-                              <div
-                                className={`transform transition-transform duration-300 ease-in-out ${
-                                  isSubmenuVisible(itemKey, item)
-                                    ? 'translate-y-0'
-                                    : '-translate-y-2'
-                                }`}
-                              >
-                                {item.children?.map((subItem, subIndex) => {
-                                  const isSubActive = isItemActive(subItem);
-
-                                  const categoryForSubItem = subItem.href
-                                    ? getCategoryFromPath(subItem.href)
-                                    : null;
-                                  const supportsRecentItems = Boolean(
-                                    categoryForSubItem &&
-                                    BOT_RECENT_CATEGORY_SET.has(
-                                      categoryForSubItem
-                                    )
-                                  );
-                                  const allRecentVisits = supportsRecentItems
-                                    ? getRecentVisitsByCategory(
-                                        categoryForSubItem as PageCategory,
-                                        10,
-                                        tradingMode
+                                    const categoryForSubItem = subItem.href
+                                      ? getCategoryFromPath(subItem.href)
+                                      : null;
+                                    const supportsRecentItems = Boolean(
+                                      categoryForSubItem &&
+                                      BOT_RECENT_CATEGORY_SET.has(
+                                        categoryForSubItem
                                       )
-                                    : [];
-                                  const isClickExpanded = supportsRecentItems
-                                    ? clickExpandedCategories.has(
-                                        categoryForSubItem as PageCategory
-                                      )
-                                    : false;
-                                  const isCategoryExpanded = supportsRecentItems
-                                    ? expandedCategories.has(
-                                        categoryForSubItem as PageCategory
-                                      )
-                                    : false;
-                                  // Show 3 items on hover, all items when click-expanded
-                                  const visibleVisits = isClickExpanded
-                                    ? allRecentVisits
-                                    : allRecentVisits.slice(0, 3);
-                                  const hasMore = allRecentVisits.length > 3;
-
-                                  return (
-                                    <div
-                                      key={subIndex}
-                                      className="mb-1 px-2"
-                                      onMouseEnter={() => {
-                                        if (supportsRecentItems) {
-                                          setHoveredCategory(
+                                    );
+                                    const allRecentVisits = supportsRecentItems
+                                      ? getRecentVisitsByCategory(
+                                          categoryForSubItem as PageCategory,
+                                          10,
+                                          tradingMode
+                                        )
+                                      : [];
+                                    const isClickExpanded = supportsRecentItems
+                                      ? clickExpandedCategories.has(
+                                          categoryForSubItem as PageCategory
+                                        )
+                                      : false;
+                                    const isCategoryExpanded =
+                                      supportsRecentItems
+                                        ? expandedCategories.has(
                                             categoryForSubItem as PageCategory
-                                          );
-                                          // Expand the category on hover (to show 3 items)
-                                          setExpandedCategories((prev) => {
-                                            const newSet = new Set(prev);
-                                            if (categoryForSubItem) {
-                                              newSet.add(
-                                                categoryForSubItem as PageCategory
-                                              );
-                                            }
-                                            return newSet;
-                                          });
-                                        }
-                                      }}
-                                      onMouseLeave={() => {
-                                        if (supportsRecentItems) {
-                                          // Only reset hovered category, keep expanded state
-                                          setHoveredCategory(null);
-                                        }
-                                      }}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        <Link
-                                          to={subItem.href || '#'}
-                                          className={`flex-1 flex items-center gap-2 py-1.5 px-2 rounded-md transition-colors duration-200 text-sm ${
-                                            isSubActive
-                                              ? 'bg-primary/10 text-primary font-medium'
-                                              : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
-                                          }`}
-                                          title={subItem.label}
-                                          onClick={() => onNavigate?.()}
-                                        >
-                                          <span
-                                            className={`transition-colors duration-200 ${
-                                              isSubActive
-                                                ? 'text-primary'
-                                                : 'text-muted-foreground'
-                                            }`}
-                                          >
-                                            {subItem.icon}
-                                          </span>
-                                          <span
-                                            className={`transition-opacity duration-300 ease-in-out whitespace-nowrap ${
-                                              isExpanded
-                                                ? 'opacity-100'
-                                                : 'opacity-0'
-                                            }`}
-                                          >
-                                            <TruncatedText
-                                              text={subItem.label}
-                                              maxWidth="min(100px, 6rem)"
-                                            />
-                                          </span>
-                                        </Link>
-                                        {subItem.action && (
-                                          <button
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              if (subItem.action?.onClick) {
-                                                subItem.action.onClick();
-                                                onNavigate?.();
-                                              } else if (subItem.action?.href) {
-                                                navigate(subItem.action.href);
-                                                onNavigate?.();
-                                              }
-                                            }}
-                                            data-size="icon"
-                                            className="flex items-center justify-center w-5 h-5 border border-border bg-inner-container hover:border-primary/20 hover:bg-primary/5 rounded transition-all duration-200 shrink-0"
-                                            title={subItem.action.title}
-                                            type="button"
-                                          >
-                                            <span className="text-muted-foreground hover:text-primary transition-colors duration-200">
-                                              {subItem.action.icon}
-                                            </span>
-                                          </button>
-                                        )}
-                                      </div>
+                                          )
+                                        : false;
+                                    // Show 3 items on hover, all items when click-expanded
+                                    const visibleVisits = isClickExpanded
+                                      ? allRecentVisits
+                                      : allRecentVisits.slice(0, 3);
+                                    const hasMore = allRecentVisits.length > 3;
 
-                                      {supportsRecentItems &&
-                                        allRecentVisits.length > 0 && (
-                                          <div
-                                            className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                                              isSubActive ||
-                                              hoveredCategory ===
-                                                categoryForSubItem ||
-                                              isCategoryExpanded
-                                                ? 'max-h-[2000px] opacity-100'
-                                                : 'max-h-0 opacity-0'
+                                    return (
+                                      <div
+                                        key={subIndex}
+                                        className="mb-1 px-2"
+                                        onMouseEnter={() => {
+                                          if (supportsRecentItems) {
+                                            setHoveredCategory(
+                                              categoryForSubItem as PageCategory
+                                            );
+                                            // Expand the category on hover (to show 3 items)
+                                            setExpandedCategories((prev) => {
+                                              const newSet = new Set(prev);
+                                              if (categoryForSubItem) {
+                                                newSet.add(
+                                                  categoryForSubItem as PageCategory
+                                                );
+                                              }
+                                              return newSet;
+                                            });
+                                          }
+                                        }}
+                                        onMouseLeave={() => {
+                                          if (supportsRecentItems) {
+                                            // Only reset hovered category, keep expanded state
+                                            setHoveredCategory(null);
+                                          }
+                                        }}
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <Link
+                                            to={subItem.href || '#'}
+                                            className={`flex-1 flex items-center gap-2 py-1.5 px-2 rounded-md transition-colors duration-200 text-sm ${
+                                              isSubActive
+                                                ? 'bg-primary/10 text-primary font-medium'
+                                                : 'text-muted-foreground hover:text-foreground hover:bg-muted/30'
                                             }`}
+                                            title={subItem.label}
+                                            onClick={() => onNavigate?.()}
                                           >
+                                            <span
+                                              className={`transition-colors duration-200 ${
+                                                isSubActive
+                                                  ? 'text-primary'
+                                                  : 'text-muted-foreground'
+                                              }`}
+                                            >
+                                              {subItem.icon}
+                                            </span>
+                                            <span
+                                              className={`transition-opacity duration-300 ease-in-out whitespace-nowrap ${
+                                                isExpanded
+                                                  ? 'opacity-100'
+                                                  : 'opacity-0'
+                                              }`}
+                                            >
+                                              <TruncatedText
+                                                text={subItem.label}
+                                                maxWidth="min(100px, 6rem)"
+                                              />
+                                            </span>
+                                          </Link>
+                                          {subItem.action && (
+                                            <button
+                                              onClick={(e) => {
+                                                e.preventDefault();
+                                                if (subItem.action?.onClick) {
+                                                  subItem.action.onClick();
+                                                  onNavigate?.();
+                                                } else if (
+                                                  subItem.action?.href
+                                                ) {
+                                                  navigate(subItem.action.href);
+                                                  onNavigate?.();
+                                                }
+                                              }}
+                                              data-size="icon"
+                                              className="flex items-center justify-center w-5 h-5 border border-border bg-inner-container hover:border-primary/20 hover:bg-primary/5 rounded transition-all duration-200 shrink-0"
+                                              title={subItem.action.title}
+                                              type="button"
+                                            >
+                                              <span className="text-muted-foreground hover:text-primary transition-colors duration-200">
+                                                {subItem.action.icon}
+                                              </span>
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {supportsRecentItems &&
+                                          allRecentVisits.length > 0 && (
                                             <div
-                                              className={`mt-2 px-2 ml-4 transform transition-transform duration-300 ease-in-out ${
+                                              className={`overflow-hidden transition-all duration-300 ease-in-out ${
                                                 isSubActive ||
                                                 hoveredCategory ===
                                                   categoryForSubItem ||
                                                 isCategoryExpanded
-                                                  ? 'translate-y-0'
-                                                  : '-translate-y-2'
+                                                  ? 'max-h-[2000px] opacity-100'
+                                                  : 'max-h-0 opacity-0'
                                               }`}
                                             >
-                                              <div className="flex flex-wrap gap-1">
-                                                {visibleVisits.map(
-                                                  (visit, idx) => {
-                                                    const isActiveVisit =
-                                                      activePage === visit.path;
-                                                    const pathParts =
-                                                      visit.path.split('/');
-                                                    const id =
-                                                      pathParts[
-                                                        pathParts.length - 1
-                                                      ];
-                                                    const shortId =
-                                                      id.length > 6
-                                                        ? `...${id.slice(-6)}`
-                                                        : id;
+                                              <div
+                                                className={`mt-2 px-2 ml-4 transform transition-transform duration-300 ease-in-out ${
+                                                  isSubActive ||
+                                                  hoveredCategory ===
+                                                    categoryForSubItem ||
+                                                  isCategoryExpanded
+                                                    ? 'translate-y-0'
+                                                    : '-translate-y-2'
+                                                }`}
+                                              >
+                                                <div className="flex flex-wrap gap-1">
+                                                  {visibleVisits.map(
+                                                    (visit, idx) => {
+                                                      const isActiveVisit =
+                                                        activePage ===
+                                                        visit.path;
+                                                      const pathParts =
+                                                        visit.path.split('/');
+                                                      const id =
+                                                        pathParts[
+                                                          pathParts.length - 1
+                                                        ];
+                                                      const shortId =
+                                                        id.length > 6
+                                                          ? `...${id.slice(-6)}`
+                                                          : id;
 
-                                                    logger.debug(
-                                                      '[recent-items] Rendering sidebar visit label',
-                                                      {
-                                                        category:
-                                                          categoryForSubItem,
-                                                        path: visit.path,
-                                                        displayName:
-                                                          visit.displayName,
-                                                        fallbackLabel:
-                                                          visit.displayName
-                                                            ? undefined
-                                                            : shortId,
-                                                      }
-                                                    );
-
-                                                    const statusConfig =
-                                                      visit.botStatus
-                                                        ? getBotStatusConfig(
-                                                            visit.botStatus
-                                                          )
-                                                        : null;
-                                                    const pnlText =
-                                                      typeof visit.botPnlPercentage ===
-                                                      'number'
-                                                        ? formatPnLPercentage(
-                                                            visit.botPnlPercentage
-                                                          )
-                                                        : null;
-                                                    const isProfitable =
-                                                      (visit.botPnlPercentage ??
-                                                        0) >= 0;
-
-                                                    return (
-                                                      <Link
-                                                        key={`${visit.path}-${idx}`}
-                                                        to={visit.path}
-                                                        onClick={() =>
-                                                          onNavigate?.()
+                                                      logger.debug(
+                                                        '[recent-items] Rendering sidebar visit label',
+                                                        {
+                                                          category:
+                                                            categoryForSubItem,
+                                                          path: visit.path,
+                                                          displayName:
+                                                            visit.displayName,
+                                                          fallbackLabel:
+                                                            visit.displayName
+                                                              ? undefined
+                                                              : shortId,
                                                         }
-                                                      >
-                                                        <Badge
-                                                          variant="outline"
-                                                          className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
-                                                            isActiveVisit
-                                                              ? 'bg-primary/10 text-primary border-primary/50'
-                                                              : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
-                                                          }`}
-                                                          style={{
-                                                            opacity: 0.8,
-                                                          }}
-                                                          title={visit.path}
-                                                        >
-                                                          {statusConfig && (
-                                                            <span
-                                                              className="w-1.5 h-1.5 rounded-full"
-                                                              style={{
-                                                                backgroundColor:
-                                                                  statusConfig.color ??
-                                                                  'var(--muted-foreground)',
-                                                                opacity: 0.8,
-                                                              }}
-                                                              title={
-                                                                statusConfig.label
-                                                              }
-                                                            />
-                                                          )}
-                                                          <span className="truncate max-w-[70px]">
-                                                            {visit.displayName ||
-                                                              shortId}
-                                                          </span>
-                                                          {pnlText && (
-                                                            <span
-                                                              className={`font-semibold ${
-                                                                isProfitable
-                                                                  ? 'text-profit'
-                                                                  : 'text-loss'
-                                                              }`}
-                                                            >
-                                                              {pnlText}
-                                                            </span>
-                                                          )}
-                                                        </Badge>
-                                                      </Link>
-                                                    );
-                                                  }
-                                                )}
+                                                      );
 
-                                                {hasMore &&
-                                                  !isClickExpanded &&
-                                                  isCategoryExpanded && (
-                                                    <button
-                                                      onClick={(e) => {
-                                                        e.preventDefault();
-                                                        setClickExpandedCategories(
-                                                          (prev) => {
-                                                            const newSet =
-                                                              new Set(prev);
-                                                            if (
-                                                              categoryForSubItem
-                                                            ) {
-                                                              newSet.add(
-                                                                categoryForSubItem as PageCategory
-                                                              );
-                                                            }
-                                                            return newSet;
+                                                      const statusConfig =
+                                                        visit.botStatus
+                                                          ? getBotStatusConfig(
+                                                              visit.botStatus
+                                                            )
+                                                          : null;
+                                                      const pnlText =
+                                                        typeof visit.botPnlPercentage ===
+                                                        'number'
+                                                          ? formatPnLPercentage(
+                                                              visit.botPnlPercentage
+                                                            )
+                                                          : null;
+                                                      const isProfitable =
+                                                        (visit.botPnlPercentage ??
+                                                          0) >= 0;
+
+                                                      return (
+                                                        <Link
+                                                          key={`${visit.path}-${idx}`}
+                                                          to={visit.path}
+                                                          onClick={() =>
+                                                            onNavigate?.()
                                                           }
-                                                        );
-                                                      }}
-                                                      className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
-                                                    >
-                                                      +
-                                                      {allRecentVisits.length -
-                                                        3}{' '}
-                                                      more
-                                                    </button>
+                                                        >
+                                                          <Badge
+                                                            variant="outline"
+                                                            className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
+                                                              isActiveVisit
+                                                                ? 'bg-primary/10 text-primary border-primary/50'
+                                                                : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
+                                                            }`}
+                                                            style={{
+                                                              opacity: 0.8,
+                                                            }}
+                                                            title={visit.path}
+                                                          >
+                                                            {statusConfig && (
+                                                              <span
+                                                                className="w-1.5 h-1.5 rounded-full"
+                                                                style={{
+                                                                  backgroundColor:
+                                                                    statusConfig.color ??
+                                                                    'var(--muted-foreground)',
+                                                                  opacity: 0.8,
+                                                                }}
+                                                                title={
+                                                                  statusConfig.label
+                                                                }
+                                                              />
+                                                            )}
+                                                            <span className="truncate max-w-[70px]">
+                                                              {visit.displayName ||
+                                                                shortId}
+                                                            </span>
+                                                            {pnlText && (
+                                                              <span
+                                                                className={`font-semibold ${
+                                                                  isProfitable
+                                                                    ? 'text-profit'
+                                                                    : 'text-loss'
+                                                                }`}
+                                                              >
+                                                                {pnlText}
+                                                              </span>
+                                                            )}
+                                                          </Badge>
+                                                        </Link>
+                                                      );
+                                                    }
                                                   )}
+
+                                                  {hasMore &&
+                                                    !isClickExpanded &&
+                                                    isCategoryExpanded && (
+                                                      <button
+                                                        onClick={(e) => {
+                                                          e.preventDefault();
+                                                          setClickExpandedCategories(
+                                                            (prev) => {
+                                                              const newSet =
+                                                                new Set(prev);
+                                                              if (
+                                                                categoryForSubItem
+                                                              ) {
+                                                                newSet.add(
+                                                                  categoryForSubItem as PageCategory
+                                                                );
+                                                              }
+                                                              return newSet;
+                                                            }
+                                                          );
+                                                        }}
+                                                        className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
+                                                      >
+                                                        +
+                                                        {allRecentVisits.length -
+                                                          3}{' '}
+                                                        more
+                                                      </button>
+                                                    )}
+                                                </div>
                                               </div>
                                             </div>
-                                          </div>
-                                        )}
-                                    </div>
-                                  );
-                                })}
+                                          )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
 
             {/* Discovery footer: shows how many items are hidden and
                 opens edit mode on click. Hidden in edit mode and when
@@ -1603,10 +1615,7 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                     acc +
                     section.items.filter(
                       (it) =>
-                        !isNavigationItemEnabled(
-                          navigationItemsEnabled,
-                          it.id
-                        )
+                        !isNavigationItemEnabled(navigationItemsEnabled, it.id)
                     ).length,
                   0
                 );
@@ -1652,66 +1661,66 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
         {/* Trading Mode Toggle at bottom — hidden in edit mode so the
             sidebar focuses on item selection. */}
         {!isEditMode && (
-        <div
-          className="border-t border-border p-2 mt-auto"
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-        >
-          <div className="flex items-center gap-3 px-2 mb-2">
-            <div className="flex items-center gap-3 w-full">
-              {/* Trading icon - exact same structure as navigation items */}
-              <TradingModeIcon
-                size="lg"
-                showTooltip={true}
-                onClick={isDemoMode ? undefined : toggleTradingMode}
-              />
+          <div
+            className="border-t border-border p-2 mt-auto"
+            onMouseEnter={handleMouseEnter}
+            onMouseLeave={handleMouseLeave}
+          >
+            <div className="flex items-center gap-3 px-2 mb-2">
+              <div className="flex items-center gap-3 w-full">
+                {/* Trading icon - exact same structure as navigation items */}
+                <TradingModeIcon
+                  size="lg"
+                  showTooltip={true}
+                  onClick={isDemoMode ? undefined : toggleTradingMode}
+                />
 
-              {/* Trading mode details - exact same structure as navigation text */}
-              <div
-                className={`flex-1 transition-opacity duration-300 ease-in-out whitespace-nowrap ${
-                  isExpanded ? 'opacity-100' : 'opacity-0'
-                }`}
-              >
-                {isDemoMode ? (
-                  // Demo mode: Show indicator with exit button
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-primary">
-                      Demo Mode
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        // Navigate to add-exchange page (will exit demo mode there)
-                        navigate('/add-exchange', { replace: true });
-                      }}
-                      className="h-6 px-2 text-xs hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      Exit
-                    </Button>
-                  </div>
-                ) : (
-                  // Live/Paper mode: Show switch
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-xs transition-colors duration-200 cursor-pointer text-muted-foreground hover:text-foreground text-sm">
-                      {isLiveTrading ? 'Live Trading' : 'Paper Trading'}
-                      {isTradingModeSwitching && (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      )}
-                    </span>
-                    <Switch
-                      checked={isLiveTrading}
-                      onCheckedChange={toggleTradingMode}
-                      className="h-5 w-9 data-[state=checked]:bg-success"
-                    />
-                  </div>
-                )}
+                {/* Trading mode details - exact same structure as navigation text */}
+                <div
+                  className={`flex-1 transition-opacity duration-300 ease-in-out whitespace-nowrap ${
+                    isExpanded ? 'opacity-100' : 'opacity-0'
+                  }`}
+                >
+                  {isDemoMode ? (
+                    // Demo mode: Show indicator with exit button
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-primary">
+                        Demo Mode
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          // Navigate to add-exchange page (will exit demo mode there)
+                          navigate('/add-exchange', { replace: true });
+                        }}
+                        className="h-6 px-2 text-xs hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        Exit
+                      </Button>
+                    </div>
+                  ) : (
+                    // Live/Paper mode: Show switch
+                    <div className="flex items-center justify-between">
+                      <span className="flex items-center gap-xs transition-colors duration-200 cursor-pointer text-muted-foreground hover:text-foreground text-sm">
+                        {isLiveTrading ? 'Live Trading' : 'Paper Trading'}
+                        {isTradingModeSwitching && (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        )}
+                      </span>
+                      <Switch
+                        checked={isLiveTrading}
+                        onCheckedChange={toggleTradingMode}
+                        className="h-5 w-9 data-[state=checked]:bg-success"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
         )}
 
         {/* Compact Help & Resources strip — single icon-only row below

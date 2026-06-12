@@ -75,6 +75,7 @@ import {
   ProfitAndPerc,
   ProfitLossPercChip,
   StatusChip,
+  StrategyChip,
 } from '../../../ui/chip';
 import { ConfirmationDialog } from '../../../ui/confirmation-dialog';
 import { DataTable, type BulkAction } from '../../../ui/data-table/data-table';
@@ -488,14 +489,18 @@ const DealActionsMenu: React.FC<{
             <BookOpen className="w-4 h-4 mr-2" />
             Add to Journal
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleAddFunds}>
-            <PlusCircle className="w-4 h-4 mr-2" />
-            Add Funds
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleReduceFunds}>
-            <MinusCircle className="w-4 h-4 mr-2" />
-            Reduce Funds
-          </DropdownMenuItem>
+          {botType !== BotTypesEnum.combo && (
+            <>
+              <DropdownMenuItem onClick={handleAddFunds}>
+                <PlusCircle className="w-4 h-4 mr-2" />
+                Add Funds
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleReduceFunds}>
+                <MinusCircle className="w-4 h-4 mr-2" />
+                Reduce Funds
+              </DropdownMenuItem>
+            </>
+          )}
           <DropdownMenuItem onClick={handleEdit}>
             <Edit className="w-4 h-4 mr-2" />
             Edit
@@ -1853,6 +1858,66 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         enableColumnFilter: true,
       },
       {
+        id: 'strategy',
+        accessorKey: 'strategy',
+        header: 'Strategy',
+        cell: ({ row }) => {
+          const strategy = row.original.strategy;
+          if (!strategy)
+            return <span className="text-muted-foreground">-</span>;
+          return (
+            <StrategyChip strategy={strategy} size="xs" chipStyle="solid" />
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+      },
+      {
+        id: 'avgPrice',
+        accessorKey: 'avgPrice',
+        header: 'Avg Price',
+        cell: ({ row }) => {
+          const trade = row.original;
+          const value = Number(trade.avgPrice || 0);
+          const symbolObj = trade.symbol;
+          const quoteAsset =
+            typeof symbolObj === 'string' ? '' : symbolObj.quoteAsset || '';
+          if (!value) return <span className="text-muted-foreground">-</span>;
+          return (
+            <div className="text-sm font-medium">
+              {formatNumber(value, true)} {quoteAsset}
+            </div>
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+        sortingFn: 'basic',
+      },
+      {
+        id: 'initialPrice',
+        accessorFn: (row) =>
+          Number(row.initialPrice || row.entryPrice || row.avgPrice || 0),
+        header: 'Entry Price',
+        cell: ({ row }) => {
+          const trade = row.original;
+          const value = Number(
+            trade.initialPrice || trade.entryPrice || trade.avgPrice || 0
+          );
+          const symbolObj = trade.symbol;
+          const quoteAsset =
+            typeof symbolObj === 'string' ? '' : symbolObj.quoteAsset || '';
+          if (!value) return <span className="text-muted-foreground">-</span>;
+          return (
+            <div className="text-sm font-medium">
+              {formatNumber(value, true)} {quoteAsset}
+            </div>
+          );
+        },
+        enableSorting: true,
+        enableColumnFilter: true,
+        sortingFn: 'basic',
+      },
+      {
         id: 'cost',
         accessorKey: 'cost',
         header: 'Cost',
@@ -2387,6 +2452,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Unrealized P&L',
       cell: ({ row }) => {
         const trade = row.original;
+        // Closed/canceled deals have no unrealized P&L (legacy parity).
+        if (!trade.active) {
+          return <span className="text-muted-foreground">-</span>;
+        }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
@@ -2426,6 +2495,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Unrealized P&L, %',
       cell: ({ row }) => {
         const trade = row.original;
+        // Closed/canceled deals have no unrealized P&L (legacy parity).
+        if (!trade.active) {
+          return <span className="text-muted-foreground">-</span>;
+        }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
@@ -2628,6 +2701,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       gridProfitPercentage: false,
       netPnl: false,
       netPnlPercentage: false,
+      dealId: false,
     }),
     []
   );

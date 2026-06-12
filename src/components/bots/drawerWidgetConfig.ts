@@ -154,6 +154,10 @@ const COMBO_LAYOUT: LayoutDefinition[] = [
   // Configuration
   { type: 'drawer-webhook-info' },
   ADDITIONAL_DETAILS_DEFINITION,
+
+  // DCA Analysis (projection + deal-level usage) — always shown for combo
+  // bots, which always run a DCA leg.
+  { type: 'drawer-risk-metrics' },
 ];
 
 const DCA_LAYOUT: LayoutDefinition[] = [

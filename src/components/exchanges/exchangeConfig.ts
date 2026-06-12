@@ -812,20 +812,38 @@ export const paperTradingAssets: Record<string, PaperTradingAsset[]> = {
   ],
 };
 
-// Exchange host options
+// Exchange host options — mirrors main-dash exactly (bybitHostMap /
+// okxHostMap in main-dash/types/exchange.types.ts). The label is the
+// bare origin URL on purpose: these are API origins, not regions, so we
+// do NOT decorate them with country names (e.g. my.okx.com is NOT a
+// Malaysia-only host). `value` must stay the legacy enum value — the
+// backend maps it to the origin and hasn't changed.
 export const exchangeHostOptions: Record<string, ExchangeHostOption[]> = {
+  // bybitHostMap order, with `nl` filtered out (legacy filters it too).
   bybit: [
-    { value: 'com', label: 'Global (bybit.com)', url: 'https://api.bybit.com' },
+    { value: 'eu', label: 'https://bybit.eu', url: 'https://bybit.eu' },
+    { value: 'com', label: 'https://bybit.com', url: 'https://bybit.com' },
     {
       value: 'tr',
-      label: 'Turkey (bybit.com.tr)',
-      url: 'https://api.bybit.com.tr',
+      label: 'https://bybit-tr.com',
+      url: 'https://bybit-tr.com',
     },
-    { value: 'ae', label: 'UAE (bybit.ae)', url: 'https://api.bybit.ae' },
+    {
+      value: 'kz',
+      label: 'https://www.bybit.kz/',
+      url: 'https://www.bybit.kz/',
+    },
+    {
+      value: 'ge',
+      label: 'https://www.bybitgeorgia.ge/',
+      url: 'https://www.bybitgeorgia.ge/',
+    },
   ],
+  // okxHostMap order: my, app, com.
   okx: [
-    { value: 'com', label: 'Global (okx.com)', url: 'https://www.okx.com' },
-    { value: 'my', label: 'Malaysia (my.okx.com)', url: 'https://my.okx.com' },
+    { value: 'my', label: 'https://my.okx.com', url: 'https://my.okx.com' },
+    { value: 'app', label: 'https://app.okx.com', url: 'https://app.okx.com' },
+    { value: 'com', label: 'https://okx.com', url: 'https://okx.com' },
   ],
 };
 
@@ -835,10 +853,11 @@ export const coinbaseKeyTypes = [
   { value: CoinbaseKeysType.cloud, label: 'Cloud Trading Keys' },
 ];
 
-// OKX source options
+// OKX source options — mirrors okxHostMap order/labels (bare URLs).
 export const okxSourceOptions = [
-  { value: OKXSource.com, label: 'okx.com' },
-  { value: OKXSource.my, label: 'my.okx.com' },
+  { value: OKXSource.my, label: 'https://my.okx.com' },
+  { value: OKXSource.app, label: 'https://app.okx.com' },
+  { value: OKXSource.com, label: 'https://okx.com' },
 ];
 
 // Helper functions

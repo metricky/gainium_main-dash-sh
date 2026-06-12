@@ -10,10 +10,17 @@ import {
   type DCADealsSettings,
 } from '@/types';
 import { dealQueries } from '@/lib/api/GraphQLQueries-deal-queries';
+import { toast } from '@/lib/toast';
 import type { AdjustFundsDialogMode } from '@/features/bots/shared/runtime';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useDealStore } from '@/stores/live';
+import { recordDealTombstone } from '@/stores/live/staleWriteGuard';
+import {
+  removeDealFromListCaches,
+  invalidateListCaches,
+  DEAL_LIST_QUERY_KEYS,
+} from '@/lib/queryCacheUtils';
 
 interface CloseDealInput {
   dealId: string;
@@ -70,6 +77,8 @@ function optimisticallyMarkDealClosed(
           type === CloseDCATypeEnum.closeByMarket
         ? DCADealStatusEnum.closed
         : null;
+  // `closeByLimit` yields a null status (deal stays open until the limit
+  // order fills) — bailing here means no tombstone / cache eviction for it.
   if (!newStatus || !botId || !dealId) {
     return;
   }
@@ -78,6 +87,12 @@ function optimisticallyMarkDealClosed(
   if (existing) {
     store.updateDeal(botId, { ...existing, status: newStatus }, existing.dealType);
   }
+  // Tombstone + evict from the persisted RQ list caches so a stale cached
+  // active-deal response can't replay this just-closed deal back into the
+  // store on the next mount/reload.
+  recordDealTombstone(botId, dealId, newStatus, existing?.updateTime ?? 0);
+  removeDealFromListCaches(dealId, DEAL_LIST_QUERY_KEYS);
+  invalidateListCaches(DEAL_LIST_QUERY_KEYS);
 }
 
 // Hook for closing DCA deals
@@ -149,6 +164,9 @@ export function useAdjustFunds() {
   );
 
   return useMutation<DealResponse, Error, AdjustFundsInput>({
+    // The call sites fire this mutation without awaiting it, so surface
+    // failures through the global error net rather than at the call site.
+    meta: { errorToast: true },
     mutationFn: async (input) => {
       logger.info('[useAdjustFunds] Adjust DCA Deals funds:', input);
 
@@ -185,12 +203,24 @@ export function useAdjustFunds() {
 
       return { status: 'NOTOK', reason: 'Invalid operation' };
     },
-    onSuccess: (data, variables) => {
-      logger.info('[useAdjustFunds] Funds in DCA deal adjusted successfully:', {
+    onSuccess: (response, variables) => {
+      logger.info('[useAdjustFunds] Adjust-funds request accepted:', {
         dealId: variables.dealId,
         mode: variables.mode,
-        response: data,
+        response,
       });
+      // The OK response only means the request was QUEUED — the order is
+      // placed on the exchange later and may still be rejected there (that
+      // rejection arrives asynchronously as a `bot sends message` error,
+      // surfaced by LiveMessageToaster). So echo the backend's "scheduled"
+      // message instead of implying the funds already moved.
+      const scheduledMsg =
+        typeof response?.data === 'string' && response.data.trim()
+          ? response.data
+          : variables.mode === 'add'
+            ? 'Add funds scheduled'
+            : 'Reduce funds scheduled';
+      toast.info(scheduledMsg);
     },
     onError: (error, variables) => {
       logger.error('[useCloseDCADeal] Failed to adjust funds in DCA deal:', {
@@ -365,8 +395,27 @@ export function useMoveDealToTerminal() {
         response: data,
       });
       // The deal is no longer one of this bot's deals (it now lives under
-      // terminal), so drop it from the bot's list immediately.
+      // terminal), so drop it from the bot's list immediately. Capture its
+      // updateTime first so the tombstone can arbitrate a stale cached replay.
+      const existing = useDealStore
+        .getState()
+        .getDeal(variables.botId, variables.dealId);
       useDealStore.getState().removeDeal(variables.botId, variables.dealId);
+      // Unlike a close, moving to terminal does NOT change the deal's status,
+      // so a stale active-list replay would still carry the pre-move status.
+      // Record the tombstone with a sentinel status that no real deal status
+      // can equal — otherwise consultDealTombstone's status-equality accept
+      // branch would treat the stale replay as a harmless echo and resurrect
+      // the moved deal. A genuinely newer server update still clears the
+      // tombstone via the updateTime branch.
+      recordDealTombstone(
+        variables.botId,
+        variables.dealId,
+        'moved-to-terminal',
+        existing?.updateTime ?? 0
+      );
+      removeDealFromListCaches(variables.dealId, DEAL_LIST_QUERY_KEYS);
+      invalidateListCaches(DEAL_LIST_QUERY_KEYS);
     },
     onError: (error, variables) => {
       logger.error('[useMoveDealToTerminal] Failed to move deal to terminal', {

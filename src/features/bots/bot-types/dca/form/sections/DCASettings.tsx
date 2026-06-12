@@ -30,6 +30,10 @@ import {
   useDealOverviewData,
 } from '@/components/widgets/trading/DealOverview';
 import {
+  useBotDcaProjection,
+  type BotDcaProjection,
+} from '@/hooks/bots/dca/useBotDcaProjection';
+import {
   useBotFormSelector,
   useBotFormState,
   useOptionalBotFormState,
@@ -452,7 +456,31 @@ interface DCASectionProps {
   terminalControls: TerminalControlsToolkit;
   updateFieldError: (field: keyof BotFormErrors, error?: string) => void;
   mode: BotFormMode;
+  /** Read-only projection of the saved bot, used to render the DCA overview
+   *  when there's no live form store to read (settings-readonly mode). */
+  projection: BotDcaProjection;
 }
+
+// Picks the deal-overview source for the DCA overview stats / table / graph.
+// In create/edit the live `exampleOrdersStore` (driven by the mounted form) is
+// the source of truth. The read-only settings view has no form pipeline feeding
+// that store, so it projects the saved bot directly (`projection`) and renders
+// the stats / table / graph from those orders instead — matching the form's
+// numbers without depending on the shared, form-owned store.
+const useDcaOverviewSource = (
+  mode: BotFormMode,
+  projection: BotDcaProjection
+) => {
+  const { summary: storeSummary } = useDealOverviewData();
+  const isReadonly = mode === 'settings-readonly';
+  return {
+    isReadonly,
+    summary: isReadonly ? projection.summary : storeSummary,
+    // Passed to the table/graph as an override only in read-only mode; the live
+    // form leaves it undefined so those components read the store.
+    ordersOverride: isReadonly ? projection.orders : undefined,
+  };
+};
 
 // Scaled DCA Component (percentage-based)
 const ScaledDCA: React.FC<DCASectionProps> = ({
@@ -462,6 +490,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   errors,
   tradingContext,
   terminalControls,
+  projection,
   //updateFieldError,
 }) => {
   const isComboBot = useMemo(() => formData.type === 'combo', [formData.type]);
@@ -584,7 +613,10 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary } = useDealOverviewData();
+  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+    mode,
+    projection
+  );
   const showTpLines = useTp === true || useMultiTp === true;
 
   const clampOrdersCount = useCallback(
@@ -1911,6 +1943,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                       className="h-full w-full"
                       full
                       showTpLines={showTpLines}
+                      orders={ordersOverride}
                     />
                   </TabsContent>
                 )}
@@ -1918,6 +1951,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                   <DealOverviewTableTab
                     className="h-full w-full"
                     widgetId="dca-settings-deal-overview-table"
+                    orders={ordersOverride}
                   />
                 </TabsContent>
               </div>
@@ -1966,6 +2000,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
   terminalControls,
   updateFieldError,
   mode,
+  projection,
 }) => {
   const isComboBot = useMemo(() => formData.type === 'combo', [formData.type]);
   const indicatorGroups = useBotFormSelector('indicatorGroups');
@@ -2217,7 +2252,10 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary } = useDealOverviewData();
+  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+    mode,
+    projection
+  );
   const showTpLines = useTp === true || useMultiTp === true;
 
   // Compute a fallback TP % for the graph when deal close is not fixed TP
@@ -2516,6 +2554,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                     className="h-full w-full"
                     full
                     showTpLines={showTpLines}
+                    orders={ordersOverride}
                     indicatorMode
                     fallbackTpPercent={fallbackTpPercent}
                   />
@@ -2525,6 +2564,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                 <DealOverviewTableTab
                   className="h-full w-full"
                   widgetId="dca-settings-deal-overview-table"
+                  orders={ordersOverride}
                 />
               </TabsContent>
             </div>
@@ -3262,6 +3302,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
   terminalControls,
   updateFieldError,
   mode,
+  projection,
 }) => {
   const isComboBot = useMemo(() => formData.type === 'combo', [formData.type]);
   const { coordinates, setCoordinates } = useTradingTerminalUtils();
@@ -3548,7 +3589,10 @@ const CustomDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary } = useDealOverviewData();
+  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+    mode,
+    projection
+  );
   const showTpLines = useTp === true || useMultiTp === true;
 
   const addCustomOrder = () => {
@@ -3791,6 +3835,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                     className="h-full w-full"
                     full
                     showTpLines={showTpLines}
+                    orders={ordersOverride}
                   />
                 </TabsContent>
               )}
@@ -3798,6 +3843,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                 <DealOverviewTableTab
                   className="h-full w-full"
                   widgetId="dca-settings-deal-overview-table"
+                  orders={ordersOverride}
                 />
               </TabsContent>
             </div>
@@ -3863,6 +3909,16 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
     bot: (queryBot ?? null) as DcaBot | null,
   });
 
+  // In the read-only settings view there's no live form store feeding the DCA
+  // overview, so project the saved bot directly and render the stats / table /
+  // graph from it. Disabled (null) in create/edit, where the store is the
+  // source of truth.
+  const projection = useBotDcaProjection(
+    mode === 'settings-readonly'
+      ? (queryBot as unknown as Parameters<typeof useBotDcaProjection>[0])
+      : null
+  );
+
   const terminalControls = useTerminalControls({
     formData,
     tradingContext,
@@ -3903,6 +3959,7 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
       terminalControls,
       updateFieldError,
       mode,
+      projection,
     };
     if (
       isDealEdit &&

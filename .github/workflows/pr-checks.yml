@@ -1,0 +1,39 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  type-check-and-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # `@gainium/backtester` and `@gainium/kucoin-api` resolve through git URLs
+      # in package.json; `--legacy-peer-deps` matches the project's documented
+      # install command (see CONTRIBUTING.md / README).
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Type-check
+        run: npm run type-check
+
+      # Run lint even if type-check failed so contributors see both reports
+      # in one PR run.
+      - name: Lint
+        if: always()
+        run: npm run lint

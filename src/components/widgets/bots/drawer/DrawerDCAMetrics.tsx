@@ -1,7 +1,15 @@
 import { useBotSpecificDeals } from '@/hooks/useBotSpecificDeals';
-import { BotTypesEnum, DCADealStatusEnum } from '@/types';
+import { useBotDcaProjection } from '@/hooks/bots/dca/useBotDcaProjection';
+import { formatTotalFunds } from '@/utils/bots/dca/deal-summary';
+import { BotTypesEnum, DCADealStatusEnum, type StrategyEnum } from '@/types';
 import type { DrawerBot } from '@/types/bots/drawer';
-import { Activity, GitBranch } from 'lucide-react';
+import {
+  Activity,
+  DollarSign,
+  GitBranch,
+  TrendingDown,
+  TrendingUp,
+} from 'lucide-react';
 import React, { useMemo } from 'react';
 import { ProgressBar } from '../../../ui/ProgressBar';
 import { DrawerSection } from './DrawerSection';
@@ -39,6 +47,40 @@ export const DrawerDCAMetrics: React.FC<DrawerDCAMetricsProps> = ({
     () => bot?.type === BotTypesEnum.combo,
     [bot?.type]
   );
+
+  // Config-based projection (coverage / avg down power / capital needed),
+  // derived straight from the saved settings — available even before the bot
+  // has any deals, and identical to the bot form's DCA overview figures.
+  const { summary: projection } = useBotDcaProjection(bot);
+  const projectionTiles = useMemo(() => {
+    const settings = bot?.settings as
+      | { strategy?: StrategyEnum; futures?: boolean; coinm?: boolean }
+      | undefined;
+    const [baseAsset = '', quoteAsset = ''] = (bot?.pair ?? '').split(/[/-]/);
+    return [
+      {
+        label: 'Deviation Covered',
+        value: `${projection.coverage}%`,
+        icon: TrendingDown,
+      },
+      {
+        label: 'Avg Down Power',
+        value: `${parseFloat(projection.avgDownPower || '0').toFixed(1)}%`,
+        icon: TrendingUp,
+      },
+      {
+        label: 'Capital Needed',
+        value: formatTotalFunds(projection, {
+          strategy: settings?.strategy,
+          futures: settings?.futures,
+          coinm: settings?.coinm,
+          baseAsset,
+          quoteAsset,
+        }),
+        icon: DollarSign,
+      },
+    ];
+  }, [projection, bot?.settings, bot?.pair]);
 
   const useDealsOpenInput = useMemo(
     () => ({
@@ -198,28 +240,12 @@ export const DrawerDCAMetrics: React.FC<DrawerDCAMetricsProps> = ({
     };
   }, [bot, botDeals]);
 
-  if (activeLoading || closedLoading) {
-    return (
-      <DrawerSection
-        widgetId={widgetId}
-        widgetType="drawer-risk-metrics"
-        title="DCA Analysis"
-        icon={GitBranch}
-        minSize={{ w: 6, h: 10 }}
-        maxSize={{ w: 12, h: 16 }}
-        hasOptions={false}
-      >
-        <div className="p-lg">
-          <div className="text-center text-muted-foreground py-8">
-            Loading DCA analysis...
-          </div>
-        </div>
-      </DrawerSection>
-    );
-  }
+  const isLoadingDeals = activeLoading || closedLoading;
 
-  // Hide widget completely when no data is available (instead of showing misleading message)
-  if (!bot || !riskMetrics) {
+  // The projection is config-based, so the section renders for any bot the
+  // layout includes it for — even one with no deals yet. The deal-based
+  // analysis below only appears once deals exist.
+  if (!bot) {
     return null;
   }
 
@@ -234,134 +260,169 @@ export const DrawerDCAMetrics: React.FC<DrawerDCAMetricsProps> = ({
       hasOptions={false}
     >
       <div className="p-sm md:p-md space-y-md">
-        <div className="grid grid-cols-2 gap-sm">
-          <div className="rounded-lg border border-border/40 bg-background/40 p-sm">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Avg DCAs (Finished)
-            </p>
-            <div className="mt-1 text-sm font-semibold text-foreground">
-              {riskMetrics.avgDcasFinished.toFixed(1)}
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-border/40 bg-background/40 p-sm">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Max DCAs (Finished)
-            </p>
-            <div className="mt-1 text-sm font-semibold text-foreground">
-              {riskMetrics.maxDcasFinished}
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-sm rounded-lg border border-border/40 bg-background/40 p-sm">
-          <div className="flex items-center gap-xs">
-            <Activity className="w-4 h-4 text-muted-foreground" />
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              DCA Coverage
-            </h4>
-          </div>
-
-          <div className="space-y-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                Finished Deals Coverage
-              </span>
-              <span className="text-xs font-medium text-foreground">
-                {riskMetrics.avgFinishedDcaCoverage.toFixed(1)}%
-              </span>
-            </div>
-            <ProgressBar
-              value={riskMetrics.avgFinishedDcaCoverage}
-              max={100}
-              className="h-2"
-              variant="success"
-            />
-            <p className="text-xs text-muted-foreground">
-              Average percentage of configured DCA levels used in finished deals
-            </p>
-          </div>
-
-          <div className="space-y-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                Active Deals Coverage
-              </span>
-              <span className="text-xs font-medium text-foreground">
-                {riskMetrics.avgActiveDcaCoverage.toFixed(1)}%
-              </span>
-            </div>
-            <ProgressBar
-              value={riskMetrics.avgActiveDcaCoverage}
-              max={100}
-              className="h-2"
-              variant="warning"
-            />
-            <p className="text-xs text-muted-foreground">
-              Average percentage of configured DCA levels currently used
-            </p>
-          </div>
-        </div>
-
-        <div className="space-y-sm">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Finished Deals by DCA Count
-            </p>
-            <span className="text-xs text-muted-foreground">
-              Total: {riskMetrics.totalFinishedDeals} / {riskMetrics.totalDeals}
-            </span>
-          </div>
-
-          <div className="space-y-xs">
-            {riskMetrics.finishedDistribution.length > 0 ? (
-              riskMetrics.finishedDistribution.map((bucket) => (
-                <div
-                  key={`dca-finished-${bucket.dcaCount}`}
-                  className="space-y-1"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">
-                      {bucket.dcaCount} DCA{bucket.dcaCount === 1 ? '' : 's'}
-                    </span>
-                    <span className="text-xs font-medium text-foreground">
-                      {bucket.deals} deals ({bucket.percentage.toFixed(1)}%)
-                    </span>
-                  </div>
-                  <ProgressBar
-                    value={bucket.percentage}
-                    max={100}
-                    className="h-2"
-                    variant="success"
-                  />
+        {/* Configured projection — coverage / avg down power / capital needed */}
+        <div className="grid grid-cols-3 gap-sm">
+          {projectionTiles.map((tile) => {
+            const Icon = tile.icon;
+            return (
+              <div
+                key={tile.label}
+                className="rounded-lg border border-border/40 bg-background/40 p-sm"
+              >
+                <div className="flex items-center gap-xs text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <Icon className="h-3 w-3" /> {tile.label}
                 </div>
-              ))
-            ) : (
-              <div className="text-xs text-muted-foreground py-2">
-                No finished deals available yet.
+                <div className="mt-1 text-sm font-semibold text-foreground">
+                  {tile.value}
+                </div>
               </div>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 gap-sm rounded-lg border border-border/40 bg-background/40 p-sm">
-            <div className="text-center">
-              <div className="text-lg font-bold text-foreground">
-                {riskMetrics.maxConfiguredDcas}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Max Configured DCAs
-              </div>
-            </div>
-            <div className="text-center">
-              <div className="text-lg font-bold text-foreground">
-                {riskMetrics.avgFinishedDcaCoverage.toFixed(1)}%
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Avg Finished Coverage
-              </div>
-            </div>
-          </div>
+            );
+          })}
         </div>
+
+        {isLoadingDeals ? (
+          <div className="text-center text-muted-foreground py-6 text-sm">
+            Loading DCA analysis...
+          </div>
+        ) : !riskMetrics ? (
+          <div className="text-xs text-muted-foreground py-2">
+            Deal-level analysis appears once this bot opens deals.
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-sm">
+              <div className="rounded-lg border border-border/40 bg-background/40 p-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Avg DCAs (Finished)
+                </p>
+                <div className="mt-1 text-sm font-semibold text-foreground">
+                  {riskMetrics.avgDcasFinished.toFixed(1)}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/40 bg-background/40 p-sm">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Max DCAs (Finished)
+                </p>
+                <div className="mt-1 text-sm font-semibold text-foreground">
+                  {riskMetrics.maxDcasFinished}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-sm rounded-lg border border-border/40 bg-background/40 p-sm">
+              <div className="flex items-center gap-xs">
+                <Activity className="w-4 h-4 text-muted-foreground" />
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  DCA Coverage
+                </h4>
+              </div>
+
+              <div className="space-y-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">
+                    Finished Deals Coverage
+                  </span>
+                  <span className="text-xs font-medium text-foreground">
+                    {riskMetrics.avgFinishedDcaCoverage.toFixed(1)}%
+                  </span>
+                </div>
+                <ProgressBar
+                  value={riskMetrics.avgFinishedDcaCoverage}
+                  max={100}
+                  className="h-2"
+                  variant="success"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Average percentage of configured DCA levels used in finished
+                  deals
+                </p>
+              </div>
+
+              <div className="space-y-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">
+                    Active Deals Coverage
+                  </span>
+                  <span className="text-xs font-medium text-foreground">
+                    {riskMetrics.avgActiveDcaCoverage.toFixed(1)}%
+                  </span>
+                </div>
+                <ProgressBar
+                  value={riskMetrics.avgActiveDcaCoverage}
+                  max={100}
+                  className="h-2"
+                  variant="warning"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Average percentage of configured DCA levels currently used
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-sm">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Finished Deals by DCA Count
+                </p>
+                <span className="text-xs text-muted-foreground">
+                  Total: {riskMetrics.totalFinishedDeals} /{' '}
+                  {riskMetrics.totalDeals}
+                </span>
+              </div>
+
+              <div className="space-y-xs">
+                {riskMetrics.finishedDistribution.length > 0 ? (
+                  riskMetrics.finishedDistribution.map((bucket) => (
+                    <div
+                      key={`dca-finished-${bucket.dcaCount}`}
+                      className="space-y-1"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted-foreground">
+                          {bucket.dcaCount} DCA
+                          {bucket.dcaCount === 1 ? '' : 's'}
+                        </span>
+                        <span className="text-xs font-medium text-foreground">
+                          {bucket.deals} deals ({bucket.percentage.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <ProgressBar
+                        value={bucket.percentage}
+                        max={100}
+                        className="h-2"
+                        variant="success"
+                      />
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-xs text-muted-foreground py-2">
+                    No finished deals available yet.
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-sm rounded-lg border border-border/40 bg-background/40 p-sm">
+                <div className="text-center">
+                  <div className="text-lg font-bold text-foreground">
+                    {riskMetrics.maxConfiguredDcas}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Max Configured DCAs
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="text-lg font-bold text-foreground">
+                    {riskMetrics.avgFinishedDcaCoverage.toFixed(1)}%
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Avg Finished Coverage
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </DrawerSection>
   );

@@ -88,6 +88,11 @@ export interface TradingViewChartCoreProps {
    * widget closes over it during init and won't pick up new references.
    */
   indicatorValueCallback?: (value: number, id: string) => void;
+  /**
+   * Optional custom datafeed. Defaults to the shared live createDatafeed()
+   * when omitted, so all existing (live) consumers are unaffected.
+   */
+  datafeed?: import('@/utils/tradingView/types').IBasicDataFeed;
 }
 
 export interface OrderLineInstance {

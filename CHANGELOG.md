@@ -5,6 +5,437 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.24] - 2026-06-12
+
+### Added
+
+- Connect guide in the add-exchange dialog now also covers Bitget and Kraken
+  (previously only Binance, Bybit, KuCoin, OKX, Coinbase and Hyperliquid).
+
+### Removed
+
+- Combo bot deal menu no longer shows "Add Funds" / "Reduce Funds" — combo
+  bots don't support adjusting deal funds.
+
+### Fixed
+
+- Portfolio "My Accounts" list now scrolls, so exchanges past the bottom of
+  the panel are reachable again.
+- The connect guide is no longer shown for paper exchanges, which need no
+  API connection.
+- Editing a live exchange (e.g. renaming it) no longer forces re-entering the
+  API secret.
+
+## [2.10.23] - 2026-06-11
+
+### Fixed
+
+- DIV indicator logic.
+
+## [2.10.22] - 2026-06-10
+
+### Changed
+
+- Backtester performance fix.
+
+## [2.10.21] - 2026-06-10
+
+### Changed
+
+- Backtest results deal chart now fills its panel directly with rounded
+  corners, instead of sitting inside a padded inner card.
+
+### Fixed
+
+- Bot detail side panels now use the base-canvas surface, so deal cards and
+  overview widgets stay visually distinct from the panel instead of blending
+  into it (regression from the 2.10.20 solid-panel change).
+- Backtest results "Deals" list: the open deal now shows its unrealized P&L
+  (coloured by sign) instead of a flat 0.00% / $0.00.
+- Backtest results "Deals" header: add a little spacing between the "Deals"
+  label and the deal count.
+- Backtest results "DCA ladder": safety-order deviation now reads cumulatively
+  from entry (and rung prices follow), instead of showing each order's step
+  from the previous one — every rung past the first was sitting too close to
+  entry.
+
+## [2.10.20] - 2026-06-10
+
+### Added
+
+- Bot detail drawer "DCA Analysis" now shows the configured projection
+  (deviation covered, average down power, capital needed) alongside the
+  deal-level usage stats, and is shown for Combo bots too — not just DCA.
+
+### Fixed
+
+- DCA overview (coverage / average down power / total funds, plus the orders
+  table and graph) no longer reads 0 / empty when viewing an existing bot's
+  settings; it now projects the saved configuration, matching the create/edit
+  form's figures for both DCA and Combo bots.
+
+### Changed
+
+- Bot detail side panels use a solid background instead of a translucent glass
+  surface, so the form and content underneath are easier to read.
+
+## [2.10.19] - 2026-06-10
+
+### Added
+
+- Bot tables (DCA, Combo, Grid, Hedge DCA, Hedge Combo) now expose a "BOT ID"
+  column, hidden by default and toggleable from the Columns menu.
+
+### Changed
+
+- The deal table's "Deal ID" column is now hidden by default (still
+  toggleable from the Columns menu) instead of always shown.
+- Replaced the remaining native browser dialogs (confirm/alert/prompt) with
+  in-app React dialogs and toasts across Global Variables, bot form reset and
+  save-as-template, widget reset, tag editing, Notes link insertion, order
+  notes, and API key rename/restrict/delete.
+
+### Fixed
+
+- Combo bot "Total Profit" in the bot table/card now matches the bot
+  drawer. The table was showing the asset-blended `profit.total` figure
+  under the "$" column instead of the USD value, so list and detail views
+  disagreed.
+- Global Variables: editing a variable no longer leaves the Type and Value
+  fields blank. A stray empty change event from the type dropdown was
+  clearing both when the edit dialog opened.
+
+## [2.10.18] - 2026-06-10
+
+### Fixed
+
+- Closing several deals in a row from the deals card view no longer crashes
+  the page (React error #185). The deal-card price sparkline and the bot-card
+  equity chart had their mount animation enabled; recharts fires a state
+  update from that animation's unmount cleanup, so a batch of cards
+  unmounting mid-animation tripped React's nested-update limit.
+
+### Changed
+
+- The Bots/Deals toggle on the DCA and Combo bot pages is now reflected in
+  the URL (`?view=deals`), so reloads, deep links, and closing the bot
+  drawer land back on the same view. Legacy `?view=<botId>` links on the
+  DCA page still redirect to the bot drawer.
+
+## [2.10.17] - 2026-06-10
+
+### Fixed
+
+- Existing stale deals/bots now actually clear on upgrade. The stale-write
+  guards (2.10.15–16) prevented _new_ contamination but couldn't evict
+  entities already resurrected into the persisted caches before the fix
+  shipped. This release busts both persisted layers on deploy: the live
+  Zustand stores (deals + all bot types) wipe and refetch on version bump,
+  and the React Query persisted cache is now keyed to the app version so a
+  pre-deploy snapshot can no longer replay after an upgrade.
+- The combo-deal list reconciliation now works against the production
+  backend, which returns the full active set without pagination counts
+  (`totalResults`/`totalPages` are null). Pruning was previously gated on a
+  numeric `totalResults` and so never ran in production, leaving closed combo
+  deals in the list. It now treats a response as complete unless it
+  explicitly signals more pages, while still only pruning against a fresh
+  snapshot.
+
+## [2.10.16] - 2026-06-10
+
+### Fixed
+
+- Hardened deal-list reconciliation against stale cached responses: the
+  absence-delete that prunes closed deals now runs only against a snapshot
+  proven fresh (each query response is stamped with its network fetch time),
+  and never removes a deal updated after that snapshot was taken. A replayed
+  cache entry — even one that looks complete — can no longer prune live deals
+  that arrived after it was cached. Closes the last window in which an open
+  deal could briefly vanish on navigating back to a deals list.
+
+## [2.10.15] - 2026-06-10
+
+### Fixed
+
+- Closed/canceled deals and stopped/deleted bots no longer reappear in lists
+  after navigating away and back (or reloading within the cache window). The
+  cached list responses replayed into the live stores could resurrect
+  entities that were just mutated locally. All store write paths (query
+  write-backs, websocket events) now go through freshness arbitration plus
+  short-lived tombstones for locally closed deals / deleted bots, and
+  close/stop/delete actions immediately patch the cached list responses
+  themselves. Covers DCA, Combo, Grid, both Hedge bot types, and the bot and
+  deal views.
+- Deal lists now reconcile against the server snapshot: a deal the backend no
+  longer returns as active is removed from the local store (previously stale
+  Combo deals could linger indefinitely), without pruning when the response
+  is known to be page-capped.
+
+## [2.10.14] - 2026-06-10
+
+### Fixed
+
+- Editing and saving a DCA or Combo bot no longer fails with
+  `Field "avgPrice" is not defined by type "changeDCABotInput"`. The
+  deal-edit-only **Breakeven price** (`avgPrice`) seeded into the form
+  defaults was leaking into the bot **update** payload — the same leak that
+  2.10.9 fixed for bot **create**. It's now stripped (alongside
+  `useExperimental`) before the update mutation. Grid bots and hedge legs are
+  unaffected.
+- The bot-create "insufficient credits" guard now reads the **bot credits**
+  pool (`subscription.credits.balance` minus `locked`) instead of the
+  consumable `user.credits` pool. Users who had bot credits but no consumable
+  balance were wrongly blocked from creating bots.
+
+## [2.10.13] - 2026-06-09
+
+### Fixed
+
+- New-bot page no longer gets stuck on "No trading pairs available" (and a
+  0 available balance) until a hard refresh. When the trading-pairs cache was
+  emptied — by the hourly cleanup or a live/paper context switch — while the
+  pairs query result was still cached, the store wasn't being repopulated and
+  stayed empty. `useTradingPairs` now re-syncs from the cached result the
+  moment the store is marked stale, matching how exchanges already recover.
+
+### Changed
+
+- New-bot wizard: the combo bot card now describes it as blending DCA and grid
+  strategies, and the selected bot-type card uses a ring highlight instead of a
+  filled background.
+
+## [2.10.12] - 2026-06-09
+
+### Fixed
+
+- Closed and canceled deals no longer report an unrealized P&L on the
+  bot deals table — they show "-" instead of the stale value the server
+  keeps after a deal closes, and sorting/totals treat them as neutral.
+
+## [2.10.11] - 2026-06-09
+
+### Fixed
+
+- Replaced `document.body.removeChild(tmp)` with `tmp.remove()` in `getCSSVar` color-resolution utility to prevent a DOM exception when the temporary measurement element is no longer a direct child of `document.body`.
+- Bot error messages now reach the live toast (the WS payload is
+  unwrapped like every sibling event handler, and the toast header uses
+  the bot name) and the Notifications panel refreshes on every open
+  instead of serving a 5-minute stale cache.
+
+## [2.10.10] - 2026-06-09
+
+### Fixed
+
+- Adding or reducing funds on a deal now reports "Add funds scheduled"
+  (the backend's actual response) instead of falsely claiming the funds were
+  added — the request is only queued at that point, and the order can still
+  be rejected by the exchange.
+- That later exchange-side rejection (insufficient balance, min notional,
+  ...) is now surfaced in the terminal: live bot error/warning messages are
+  shown as toasts as they arrive, instead of being swallowed. Routine
+  info-level bot messages stay quiet (kept in the message store for a
+  notification panel) to avoid noise.
+- A synchronous add/reduce-funds failure (rejected before scheduling) now
+  surfaces the backend reason instead of failing silently.
+
+### Added
+
+- Mutations can opt into global error feedback with
+  `meta: { errorToast: true }` (toasts the thrown reason) or
+  `meta: { errorToast: 'message' }` (fixed text), giving a single place to
+  surface failures for fire-and-forget mutations.
+
+## [2.10.9] - 2026-06-09
+
+### Fixed
+
+- Placing a Trading Terminal order (or creating a DCA/Combo bot) no longer
+  fails with `Field "avgPrice" is not defined by type "createDCABotInput"`.
+  The deal-edit-only **Breakeven price** (`avgPrice`) added in 2.10.7 was
+  leaking from the form defaults into the bot-create payload; it's now
+  stripped before the create mutation, alongside `useExperimental`.
+
+## [2.10.8] - 2026-06-08
+
+### Fixed
+
+- Toolbar action rows no longer crash with "Maximum update depth exceeded"
+  after a tab is left open in the background. `ResponsiveButtonRow` now
+  rounds its measured button widths to whole pixels, so sub-pixel jitter
+  from `getBoundingClientRect` can't defeat the change-detection guard and
+  spin the measure→render loop forever. Affects the Overview tables, bot
+  form footer, and every other consumer of the shared button row.
+
+## [2.10.7] - 2026-06-08
+
+### Added
+
+- Deal Edit now exposes a **Strategy** section with the manual **Breakeven
+  price** (single-deal edit, with a Reset to the live average) and the
+  **Profit currency** selector, matching the legacy deal editor.
+- The combo Stop Loss view now shows the weighted **Average stop loss**
+  readout (already present on regular bots), so it appears for combo deals
+  in Deal Edit too.
+- Exchange connection form: Bybit and OKX **origin host** options now match
+  the legacy dashboard (Bybit eu/com/tr/kz/ge; OKX my/app/com, including the
+  new `app` origin), shown as bare origin URLs under an "OKX Origin" /
+  "Bybit Origin" label.
+
+### Changed
+
+- Deal Edit tab bar now uses the same rounded floating style as the new bot
+  form, and the section order is now Strategy, Take Profit, Stop Loss, DCA
+  (DCA moved last).
+- Deal Edit no longer shows the "Edit Deal" heading — the tab bar sits at the
+  top of the drawer with the close button on the right.
+- The bot form and Deal Edit now render section headers from a single shared
+  `SectionHeader` component, so the two stay visually identical.
+
+### Fixed
+
+- The Actions column now stays pinned to the right even on tables with
+  nested-accessor columns. The default column order and the resize lookup
+  now mirror react-table's id resolution (`a.b` → `a_b`); the hedge bot
+  tables pin Actions right; and a one-time table-preferences migration (v2)
+  drops stale saved column order/pins so the right pin re-applies (widths,
+  visibility, sorting, filters, pagination and view mode are kept).
+
+## [2.10.6] - 2026-06-08
+
+### Fixed
+
+- The Actions column now stays pinned to the right edge of every data table.
+  Columns with a nested accessor (e.g. `settings.startCondition`) were
+  rendering to the right of Actions because the table built its default column
+  order from the raw accessor key, while react-table registers nested keys
+  with underscores (`settings_startCondition`) — so those columns looked
+  "missing" and got appended past the right pin. The default order (and the
+  resize lookup) now mirror react-table's id resolution. Also pinned Actions by
+  default on the two hedge bot tables that were missing it, and reset saved
+  column order/pins once (keeping widths, visibility, sorting, and filters) so
+  existing layouts pick up the fix.
+
+## [2.10.5] - 2026-06-07
+
+### Fixed
+
+- Grid bot edit page no longer crashes with a React "Maximum update depth
+  exceeded" error. `BotFormWidget` mounted its own `GridPageProvider` even when
+  the grid edit page already wrapped the whole layout in one, giving the page
+  two `useGridPage` instances that fired duplicate queries and raced on the
+  shared live stores — an infinite render loop. The form now reuses an existing
+  provider and only mounts its own when there isn't one (e.g. the grid _new_
+  page).
+- Hardened several render-stability bugs surfaced while tracking the above:
+  the bot-orders store-sync effect no longer depends on the whole (per-render)
+  `options` object; `useGridBacktests` no longer returns a freshly-filtered
+  array on every render; and the grid edit page's backtest table callbacks now
+  depend on stable mutation references instead of the per-render mutation
+  objects.
+
+### Changed
+
+- Crash reports now decode minified React error codes (e.g. "#185") into a
+  human-readable description before they're logged, so production error
+  reports are legible without cross-referencing react.dev.
+
+## [2.10.4] - 2026-06-07
+
+### Fixed
+
+- Combo/short bot cards no longer show absurd unrealized P&L percentages
+  (e.g. -4273%). For short positions the ROI is now measured against the
+  quote value of the position instead of the realized profit, and the
+  "Cost (Invested)" figure is shown in the quote asset.
+- Dev only: localhost no longer renders a stale precached bundle. A leftover
+  service worker is unregistered (with its caches cleared) at app entry, the
+  app never registers a service worker in dev, and a service-worker update
+  only forces a reload when it replaces an existing one (not on first visit).
+
+## [2.10.3] - 2026-06-07
+
+### Fixed
+
+- TradingView chart: support an optional injected datafeed so a host app can
+  supply its own data source per chart instance, and skip the shared-exchange
+  history prefetch and global symbol-state writes when one is supplied;
+  removed the manual-backtesting→Binance fallback alias from the shared
+  candle path.
+- IndexedDB persistence no longer freezes when a cached blob picks up a
+  non-cloneable value: `setItem` now strips the offending data and retries,
+  so manual-backtesting session deletes/creates (and other persisted-store
+  writes) save reliably instead of silently failing on older caches.
+
+## [2.10.2] - 2026-06-07
+
+### Fixed
+
+- Live and paper deals no longer mix, and already-closed deals no longer
+  linger, after upgrading. Persisted deal/order/transaction/bot caches are
+  now versioned and wiped once on load so each device refetches cleanly
+  (the old cache held mis-tagged and stale deals from before the
+  paperContext fix).
+
+### Added
+
+- Bot create submit is disabled when the account has insufficient credits.
+
+## [2.10.1] - 2026-06-07
+
+### Fixed
+
+- Combo per-deal chart lines are now capped at each minigrid's close time and kept separate across minigrids that share the same price level. The backtest export now carries `minigridId` (and `type`) on order entries (backtester ≥ 1.6.2); DCA and grid charts are unaffected.
+
+## [2.10.0] - 2026-06-06
+
+### Added
+
+- Grid and Combo bots now open in the redesigned full-screen results modal — on both the create and edit pages, and from the bot Backtests widget (which loads the full local result first) — replacing the old inline backtest result tabs. Grid shows Overview / Transactions / Equity / Stats; Combo shows the DCA tabs (Overview / Stats / Deals / Analysis). The per-deal chart draws orders and fills straight from the deal's order history (`filledOrders` / `ordersHistory`), matching the legacy main-dash deal chart for DCA.
+- Grid bots now show a price chart in the backtest results Transactions tab: horizontal lines for each resting grid level plus buy/sell fill markers, with clickable transaction rows that pan the chart to that execution.
+
+### Fixed
+
+- Combo per-deal chart order lines are now robust. Resting orders are no longer deleted when a new minigrid opens (their exchange orders aren't cancelled, so the lines run on), and a buy line no longer continues past where it filled. Lines are reconstructed from the actual price path — `ordersHistory[].filledTime` conflates real fills with minigrid regrids — so each line ends where the price genuinely crosses it.
+- DCA per-deal chart now renders the single take-profit as one stepping line (instead of a stack of separate TP lines) and ends each safety-order line at its fill, matching how DCA bots actually work.
+- Changing the exchange or symbol on the new bot page no longer freezes the tab. The chart's symbol could ping-pong between the form's exchange (`hyperliquid`) and TradingView's resolved form (`hyperliquidLinear`) indefinitely; the prop-driven update now reacts only to genuine form changes and lets TradingView's resolution settle.
+
+## [2.9.2] - 2026-06-06
+
+### Fixed
+
+- Profit widget on Overview crashes ("xe.split is not a function") when the backend returns a weekly or monthly date value as a number instead of a string; `as string` assertions replaced with `String()` runtime conversions.
+
+## [2.9.1] - 2026-06-05
+
+### Changed
+
+- Backtest results Deals view now renders a real TradingView chart per deal — actual candles with a buy/sell icon for each filled order and the safety-order, averaged-entry, and take-profit levels drawn as time-bounded segments that step with each DCA fill; switching deals pans the chart to the new deal's window.
+- Order-line segments on the TradingView chart now stay visible while panning as long as they cross the viewport, instead of vanishing once their start scrolls off-screen.
+- The bot form footer's "View results" summary chip is now dismissible (× on the right), restoring the backtest run controls so another backtest can be run.
+- The backtest results modal is now mobile-friendly: full-bleed (no margins) on phones, a taller deal chart, a deal list that stacks above the inspector, single-column detail panels, and a header whose close button sits top-right with the tabs wrapping below.
+
+### Added
+
+- Clicking a backtest row on the DCA bot create/edit page now opens the full-screen results modal instead of rendering the results inline in the widget; the same modal also opens from the backtest history table and the bot Backtests widget.
+
+## [2.9.0] - 2026-06-05
+
+### Added
+
+- Redesigned full-screen backtest results modal for DCA bots, with an Overview tab (headline KPIs, win-rate and profit-factor donuts, equity curve, P&L scatter) and a split-inspector Deals view (selectable deal rail with prev/next and arrow-key navigation, per-deal price chart, deal detail, and safety-order ladder); Stats and Analysis reuse the existing tabs.
+- "VIEW RESULTS" summary chip in the bot form footer: when a local DCA backtest finishes, the backtest controls morph into a chip showing net %, win rate, and deal count that opens the new results modal.
+
+## [2.8.7] - 2026-06-05
+
+### Added
+
+- Shift-click range selection in data tables
+- Strategy column in the bot deals drawer
+
+### Fixed
+
+- Restore the reports params in `getNavigationSections` (they were commented out while call sites still passed them, breaking the build)
+
 ## [2.8.6] - 2026-06-04
 
 ### Changed

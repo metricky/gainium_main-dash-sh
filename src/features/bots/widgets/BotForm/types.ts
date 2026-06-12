@@ -85,6 +85,17 @@ export interface BotFormProps {
     /** Cancel hook for the inline progress bar. */
     onCancelBacktest?: () => void;
     backtestPending?: boolean;
+    /** Headline numbers for the footer's "VIEW RESULTS" done-state chip.
+     *  When null/undefined the footer shows the run controls instead. */
+    backtestSummary?: {
+      netPerc: number;
+      winRate: number;
+      deals: number;
+    } | null;
+    /** Open the full-screen results modal from the done-state chip. */
+    onViewResults?: () => void;
+    /** Dismiss the done-state chip and restore the backtest run controls. */
+    onDismissResults?: () => void;
     showCredits?: boolean;
     /** Hide the "Save as preset" templates menu. Used for hedge bots. */
     hideTemplates?: boolean;

@@ -182,9 +182,13 @@ const buildCreatePayload = (
   const pairs = normalizePairs(formData);
   const isComboBot = formData.type === BotTypesEnum.combo;
   //TODO: remove when backend will be updated
-  const { useExperimental: _useExperimental, ...rest } = isComboBot
-    ? formData.combo
-    : formData.dca;
+  // avgPrice is a deal-edit-only breakeven override; createDCABotInput has no
+  // such field, so strip it (like useExperimental) before building the payload.
+  const {
+    useExperimental: _useExperimental,
+    avgPrice: _avgPrice,
+    ...rest
+  } = isComboBot ? formData.combo : formData.dca;
 
   const pairAssetTuples = pairs.map((pair) =>
     resolvePairAssetTuple(pair, formData.pairMetadata)
@@ -309,8 +313,17 @@ const mergeCreatePayload = (
   ) as unknown as CreateDCABotPayload;
 
   //TODO: remove when backend will be updated
-  //@ts-expect-error not prepared backend
-  const { useExperimental: _useExperimental, ...rest } = apiSafeMerged;
+  // avgPrice (deal-edit-only breakeven override) is re-introduced here via the
+  // DCA_FORM_DEFAULTS spread in mapFormDataToBackend; createDCABotInput has no
+  // such field, so strip it alongside useExperimental.
+  const {
+    useExperimental: _useExperimental,
+    avgPrice: _avgPrice,
+    ...rest
+  } = apiSafeMerged as CreateDCABotPayload & {
+    useExperimental?: boolean;
+    avgPrice?: number;
+  };
 
   return rest;
 };
@@ -533,7 +546,20 @@ export const mapFormDataToPayload = (
     return failureResult;
   }
 
-  const updatePayload = mappingResult.data ?? {};
+  //TODO: remove when backend will be updated
+  // avgPrice is a deal-edit-only breakeven override seeded into the form
+  // defaults; it rides the DCA_FORM_DEFAULTS spread into mappingResult.data but
+  // change{DCA,Combo}BotInput has no such field, so strip it (like the create
+  // path does) before building the update payload. useExperimental is stripped
+  // alongside for the same reason.
+  const {
+    avgPrice: _avgPrice,
+    useExperimental: _useExperimental,
+    ...updatePayload
+  } = (mappingResult.data ?? {}) as DCABotSettings & {
+    avgPrice?: number;
+    useExperimental?: boolean;
+  };
 
   const sanitizedUpdatePayload = sanitizeSettingsForApi(
     sanitizeUpdateSettings(updatePayload)

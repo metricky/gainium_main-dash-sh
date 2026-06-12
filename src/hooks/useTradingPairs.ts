@@ -88,7 +88,15 @@ export function useTradingPairs() {
     }
   );
 
-  // Update store when API data arrives
+  // Update store when API data arrives.
+  // Also include `initialLoaded` in deps so that when the store is emptied or
+  // marked stale (initialLoaded: false) — e.g. by the hourly `clearExpiredPairs`
+  // cleanup or a trading-context switch — while TanStack Query still holds the
+  // same cached `getAllPairs` data reference, we immediately repopulate the
+  // store from that cached data instead of leaving it stuck empty until a hard
+  // refresh. This mirrors the identical guard in useExchanges; without it the
+  // pairs store and the query cache desync and the bot form shows "No trading
+  // pairs available" / a 0 balance until reload.
   useEffect(() => {
     if (
       apiResult.data?.data?.result &&
@@ -109,6 +117,7 @@ export function useTradingPairs() {
     apiResult.error,
     setPairs,
     setLoading,
+    initialLoaded,
   ]);
 
   // Update store loading state.

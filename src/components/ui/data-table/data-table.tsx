@@ -1974,12 +1974,18 @@ function DataTableComponent<TData, TValue>(
     [props]
   );
   // Get default column order and visibility.
-  // Prefer `id` over `accessorKey` to match react-table's internal column ID
-  // resolution. When a column defines both (e.g. id: 'currentBalances',
-  // accessorKey: 'currentBalance'), react-table registers the column under
-  // `id`. If we emit `accessorKey` here, our columnOrder state refers to an ID
-  // react-table doesn't know, and it auto-appends the "missing" column at the
-  // tail — past anything we tried to pin right.
+  // Mirror react-table's own column-ID resolution (table-core `createColumn`):
+  //   id ?? (accessorKey with dots replaced by underscores) ?? header-string
+  // Two things matter here:
+  //   1. Prefer `id` over `accessorKey`. When a column defines both (e.g.
+  //      id: 'currentBalances', accessorKey: 'currentBalance'), react-table
+  //      registers it under `id`.
+  //   2. A *nested* accessorKey like `settings.startCondition` is registered
+  //      by react-table under `settings_startCondition` (dots → underscores).
+  // If we emit a raw dotted key (or the wrong field) here, our columnOrder
+  // references an ID react-table doesn't know, and it auto-appends the
+  // "missing" column at the tail — past anything we tried to pin right (this
+  // is what pushed nested-accessor columns to the right of the Actions column).
   const defaultColumnOrder = useMemo(
     () =>
       initialColumns.map((col: ColumnDef<TData, TValue>) => {
@@ -1987,7 +1993,11 @@ function DataTableComponent<TData, TValue>(
           accessorKey?: string;
           id?: string;
         };
-        return columnWithId.id ?? columnWithId.accessorKey ?? '';
+        if (columnWithId.id) return columnWithId.id;
+        if (typeof columnWithId.accessorKey === 'string') {
+          return columnWithId.accessorKey.replace(/\./g, '_');
+        }
+        return '';
       }),
     [initialColumns]
   );
@@ -2103,6 +2113,16 @@ function DataTableComponent<TData, TValue>(
   const [rowSelection, setRowSelection] = useState<RowSelectionState>(
     () => ({})
   );
+
+  // Shift-click range selection + live-data flicker control.
+  // Refs (not state) so reading/writing them never triggers a re-render and the
+  // memoized selection column can close over them without being recreated.
+  // - lastSelectedRowIdRef: anchor row for the next shift-click range.
+  // - hasAnimatedEntranceRef: true once the table has painted its first set of
+  //   rows, so rows that appear later (e.g. during a bulk merge) snap in
+  //   instead of replaying the staggered entrance animation = no flicker.
+  const lastSelectedRowIdRef = useRef<string | null>(null);
+  const hasAnimatedEntranceRef = useRef(false);
 
   // Reset table handler - clears all stored preferences for this table
   const handleResetTable = useCallback(() => {
@@ -2404,20 +2424,66 @@ function DataTableComponent<TData, TValue>(
           />
         </div>
       ),
-      cell: ({ row }) => (
+      cell: ({ row, table: t }) => (
         <div
-          className="flex items-center justify-center px-2"
+          className="flex items-center justify-center px-2 select-none"
           onClick={(e) => {
             // CRITICAL: Stop propagation to prevent onRowClick from firing
             e.stopPropagation();
             e.preventDefault();
+          }}
+          // Intercept SHIFT-click in the capture phase — this fires before the
+          // Radix checkbox's own click toggle, so stopping propagation here
+          // prevents the single-row toggle and lets us run a range select
+          // instead. Reading e.shiftKey straight off the click avoids any
+          // timing games with onCheckedChange (which gets no mouse event).
+          onClickCapture={(e) => {
+            if (!e.shiftKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+
+            const anchorId = lastSelectedRowIdRef.current;
+            const rows = t.getRowModel().rows;
+            // The clicked row decides the target state: if it's currently
+            // unselected, the range becomes selected, otherwise deselected.
+            const nextSelected = !row.getIsSelected();
+
+            const fromIndex = anchorId
+              ? rows.findIndex((r) => r.id === anchorId)
+              : -1;
+            const toIndex = rows.findIndex((r) => r.id === row.id);
+
+            if (anchorId && anchorId !== row.id && fromIndex !== -1 && toIndex !== -1) {
+              const [start, end] =
+                fromIndex < toIndex ? [fromIndex, toIndex] : [toIndex, fromIndex];
+              setRowSelection((prev) => {
+                const next = { ...prev };
+                for (let i = start; i <= end; i++) {
+                  const id = rows[i].id;
+                  if (nextSelected) {
+                    next[id] = true;
+                  } else {
+                    next[id] = false;
+                  }
+                }
+                return next;
+              });
+            } else {
+              // No anchor yet (or same row) — behave like a normal toggle.
+              row.toggleSelected(nextSelected);
+            }
+
+            // This row becomes the anchor for the next shift-click.
+            lastSelectedRowIdRef.current = row.id;
           }}
           onMouseDown={(e) => e.stopPropagation()} // Prevent drag handlers
         >
           <Checkbox
             checked={row.getIsSelected()}
             onCheckedChange={(value) => {
+              // Normal (non-shift) mouse click or keyboard toggle.
               row.toggleSelected(!!value);
+              lastSelectedRowIdRef.current = row.id;
             }}
             aria-label="Select row"
           />
@@ -2524,8 +2590,41 @@ function DataTableComponent<TData, TValue>(
    * - If selection persists when it shouldn't, verify data reference changes
    * - If selection clears too often, check if data is being unnecessarily recreated
    */
+  // Keep getRowId reachable from the prune effect below without making the
+  // effect re-run when callers pass an inline (non-memoized) getRowId.
+  const getRowIdRef = useRef(getRowId);
+  getRowIdRef.current = getRowId;
+
   useEffect(() => {
-    setRowSelection({});
+    // Live data (e.g. unrealized-PnL ticks, websocket deal updates) gives `data`
+    // a fresh array reference very frequently. Wiping the whole selection on
+    // every such tick made the selection — and bulk-action toolbar — flicker
+    // and made multi-row selection unusable while prices moved. Instead, prune
+    // only the selected rows that no longer exist (e.g. deals merged away),
+    // preserving the rest. Return the previous state unchanged when nothing was
+    // dropped so we don't trigger an extra render on benign ticks.
+    setRowSelection((prev) => {
+      const selectedIds = Object.keys(prev);
+      if (selectedIds.length === 0) return prev;
+
+      const resolveId = getRowIdRef.current;
+      const currentIds = new Set(
+        data.map((row, index) =>
+          resolveId ? (resolveId(row) ?? String(index)) : String(index)
+        )
+      );
+
+      let changed = false;
+      const next: RowSelectionState = {};
+      for (const id of selectedIds) {
+        if (currentIds.has(id)) {
+          next[id] = prev[id];
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, [data]);
 
   /**
@@ -2946,9 +3045,13 @@ function DataTableComponent<TData, TValue>(
           accessorKey?: string;
           id?: string;
         };
-        return (
-          columnWithId.id === columnId || columnWithId.accessorKey === columnId
-        );
+        // Match react-table's leaf-id resolution: prefer `id`, otherwise a
+        // nested accessorKey (`a.b`) is registered as `a_b`.
+        if (columnWithId.id) return columnWithId.id === columnId;
+        if (typeof columnWithId.accessorKey === 'string') {
+          return columnWithId.accessorKey.replace(/\./g, '_') === columnId;
+        }
+        return false;
       }) as
         | (ColumnDef<TData, TValue> & {
             size?: number;
@@ -3331,10 +3434,21 @@ function DataTableComponent<TData, TValue>(
     [viewMode, enableCardView]
   );
 
-  const onClearSection = useCallback(
-    () => setRowSelection({}),
-    [setRowSelection]
-  );
+  const onClearSection = useCallback(() => {
+    setRowSelection({});
+    lastSelectedRowIdRef.current = null;
+  }, [setRowSelection]);
+
+  // Mark the entrance animation as "done" once the first set of rows has
+  // painted. After that, rows that appear later (e.g. the merged deal after a
+  // bulk merge, or a status-filter switch) snap into place instead of replaying
+  // the staggered slide-in — which otherwise reads as flicker during the churn.
+  const renderedRowCount = table.getRowModel().rows.length;
+  useEffect(() => {
+    if (renderedRowCount > 0) {
+      hasAnimatedEntranceRef.current = true;
+    }
+  }, [renderedRowCount]);
 
   return (
     <div className={clsx('w-full h-full min-h-0 flex flex-col', className)}>
@@ -3852,7 +3966,11 @@ function DataTableComponent<TData, TValue>(
                       return (
                         <motion.tr
                           key={row.id}
-                          initial={{ opacity: 0, x: -20 }}
+                          initial={
+                            hasAnimatedEntranceRef.current
+                              ? false
+                              : { opacity: 0, x: -20 }
+                          }
                           animate={{ opacity: 1, x: 0 }}
                           transition={{
                             duration: 0.3,

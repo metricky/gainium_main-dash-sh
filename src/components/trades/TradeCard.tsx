@@ -331,7 +331,15 @@ const EnhancedCard = React.memo(
         );
 
         const profitUsd = trade.profit?.totalUsd || 0;
-        const initialInvestment = trade.cost || 0;
+        // Cost basis in quote terms. Shorts hold base, so trade.cost and
+        // usage.current.quote are 0; value the base position instead (mirrors
+        // investedAmount used for the card ROI).
+        const initialInvestment =
+          trade.cost ||
+          (!isLongTrade
+            ? (trade.usage?.current?.base || 0) *
+              (currentPrice || trade.avgPrice || trade.entryPrice || 0)
+            : trade.usage?.current?.quote || 0);
         const calculatedROI =
           initialInvestment > 0 ? (profitUsd / initialInvestment) * 100 : 0;
 
@@ -582,14 +590,32 @@ const EnhancedCard = React.memo(
       );
     }, [yMin, yMax]);
 
-    const investedAmount = useMemo(
-      () => trade.cost || trade.value || trade.usage.current.quote || 0,
-      [trade.cost, trade.value, trade.usage]
-    );
-    const investedCurrencySymbol = useMemo(
-      () => (isLongTrade ? symbolAssets.quoteAsset : symbolAssets.baseAsset),
-      [isLongTrade, symbolAssets.baseAsset, symbolAssets.quoteAsset]
-    );
+    // Quote-denominated cost basis used as the ROI denominator and the
+    // "Cost (Invested)" display. A SHORT spot position holds BASE (its
+    // usage.current.quote is 0), so the old `trade.cost || trade.value || …`
+    // fell through to trade.value — the *realized profit* in USD — yielding
+    // absurd ROIs (e.g. -10 USD ÷ 0.24 = -4273%) and a "0.24 DOGE" label.
+    // Value the base position in quote terms instead.
+    const investedAmount = useMemo(() => {
+      if (trade.cost) return trade.cost;
+      if (!isLongTrade) {
+        const baseQty = trade.usage?.current?.base || 0;
+        const px = currentPrice || trade.avgPrice || trade.entryPrice || 0;
+        if (baseQty > 0 && px > 0) return baseQty * px;
+      }
+      return trade.usage?.current?.quote || 0;
+    }, [
+      trade.cost,
+      trade.usage,
+      trade.avgPrice,
+      trade.entryPrice,
+      isLongTrade,
+      currentPrice,
+    ]);
+    // investedAmount is always quote-denominated, so label it in the quote asset
+    // for both long and short (a short previously mislabelled a USD figure as
+    // the base coin, e.g. "0.24 DOGE").
+    const investedCurrencySymbol = symbolAssets.quoteAsset;
     const investedDisplay = useMemo(
       () =>
         privacyMode
@@ -1077,12 +1103,19 @@ const EnhancedCard = React.memo(
                           />
                         )}
 
+                        {/* isAnimationActive must stay false on every series
+                            in this sparkline: recharts' JavascriptAnimate
+                            calls setState from its unmount cleanup, and a
+                            batch of cards unmounting mid-animation (e.g.
+                            closing deals from card view) trips React's
+                            nested-update limit (minified error #185). */}
                         <Line
                           type="monotone"
                           dataKey="price"
                           stroke={colors.chart3}
                           strokeWidth={2}
                           dot={false}
+                          isAnimationActive={false}
                           activeDot={{
                             r: 4,
                             fill: colors.chart3,

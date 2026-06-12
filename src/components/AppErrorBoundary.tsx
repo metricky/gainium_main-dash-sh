@@ -6,6 +6,34 @@ import { otherQueries } from '@/lib/api/GraphQLQueries-other-queries';
 import { useAuthStore } from '@/stores/authStore';
 import { logger } from '@/lib/loggerInstance';
 
+/**
+ * Friendly text for the React production "minified error" codes we actually
+ * see in the wild. Production React ships error *numbers* (e.g. "Minified
+ * React error #185") to keep the bundle small; this maps the common ones to a
+ * human description so the stored crash reports are readable without visiting
+ * react.dev. Unknown codes are left untouched (the message already carries the
+ * react.dev/errors/<n> link).
+ */
+const REACT_ERROR_MESSAGES: Record<string, string> = {
+  '130': 'Element type is invalid — a component rendered as undefined (bad or circular import / missing export)',
+  '185': 'Maximum update depth exceeded — infinite render loop (a component updates state on every render)',
+  '300': 'Rendered more hooks than during the previous render (hooks called conditionally)',
+  '310': 'Rendered fewer hooks than expected (a hook is skipped by an early return or conditional)',
+  '418': 'Hydration failed — server-rendered HTML did not match the client',
+  '423': 'Hydration error — React recovered by client-rendering the subtree',
+  '425': 'Text content did not match the server-rendered HTML',
+};
+
+/**
+ * If `message` is a minified React error, append the decoded description so the
+ * backend crash log is human-readable. No-op for everything else.
+ */
+function decodeReactError(message: string): string {
+  const match = message.match(/Minified React error #(\d+)/);
+  const friendly = match && REACT_ERROR_MESSAGES[match[1]];
+  return friendly ? `${message} [React #${match[1]}: ${friendly}]` : message;
+}
+
 interface Props {
   children: ReactNode;
 }
@@ -33,7 +61,7 @@ export class AppErrorBoundary extends Component<Props, State> {
   override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     const token = useAuthStore.getState().tokens?.accessToken;
 
-    const errorMessage = `Page: ${window.location.href}, Message: ${error.message || ''}`;
+    const errorMessage = `Page: ${window.location.href}, Message: ${decodeReactError(error.message || '')}`;
     const errorStack = error.stack || '';
     const componentStack = errorInfo.componentStack || '';
 

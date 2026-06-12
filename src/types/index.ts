@@ -663,6 +663,10 @@ export type PreparedGrid = {
   filledTime?: number;
   startTime?: number;
   dealId?: string;
+  /** Order origin — `DCAOrderTypeEnum.grid` marks a combo minigrid order. */
+  type?: DCAOrderTypeEnum;
+  /** Ties a grid order to its `mingrids[]` entry. */
+  minigridId?: string;
 };
 
 //TODO: install github:Gainium/backtester

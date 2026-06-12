@@ -154,7 +154,10 @@ export function useNotifications(
         // Retry up to 2 times for other errors
         return failureCount < 2;
       },
-      staleTime: 5 * 60 * 1000, // 5 minutes
+      // Bot messages are realtime push data — never let a stale React Query
+      // cache hide a newly-arrived error. Always refetch on mount.
+      staleTime: 0,
+      refetchOnMount: 'always',
       gcTime: 10 * 60 * 1000, // 10 minutes
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
     }

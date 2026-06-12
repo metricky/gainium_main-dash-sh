@@ -116,17 +116,9 @@ export function useGridBacktests(
     return merged;
   }, [backtestsArray, local.backtests]);
 
-  // Apply client-side filtering if needed
-  const filteredBacktests = mergedBacktests.filter(
-    (_backtest: GRIDBacktestingResultHistory) => {
-      // Apply any necessary filtering here
-      return true;
-    }
-  );
-
   // Create display names for backtests using the requested format: {start-date} to {end-date} - {coin}
   const transformedBacktests = useMemo(() => {
-    return filteredBacktests.map((backtest: GRIDBacktestingResultHistory) => {
+    return mergedBacktests.map((backtest: GRIDBacktestingResultHistory) => {
       const startDate = backtest.duration?.firstDataTime
         ? new Date(backtest.duration.firstDataTime).toLocaleDateString(
             'en-US',
@@ -154,7 +146,7 @@ export function useGridBacktests(
         displayName: `${startDate} to ${endDate} - ${coin}`,
       };
     });
-  }, [filteredBacktests]);
+  }, [mergedBacktests]);
 
   // Enhanced logging for debugging
   logger.debug('[useGridBacktests] Summary:', {

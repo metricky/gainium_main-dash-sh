@@ -1,6 +1,8 @@
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
+import type { DCABotSettings } from '@/types';
 import { type ColumnDef } from '@tanstack/react-table';
 import { BarChart3, Download, MoreVertical, Trash2 } from 'lucide-react';
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Card, CardContent } from '../../ui/card';
 import { DataTable } from '../../ui/data-table/data-table';
@@ -9,9 +11,12 @@ import WidgetWrapper, { type WidgetMenuActions } from '../WidgetWrapper';
 import {
   useDeleteBacktests,
   useExportBacktests,
+  useLoadBacktestDetails,
 } from '../../../hooks/useBacktestDataManagement';
 import { useBacktests, type BacktestData } from '../../../hooks/useBacktests';
+import { logger } from '../../../lib/loggerInstance';
 import { toast } from '../../../lib/toast';
+import { getById as getLocalBacktestById } from '../../../utils/backtest/db';
 import { Button } from '../../ui/button';
 import {
   DropdownMenu,
@@ -19,7 +24,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
-import { BacktestDetailDrawer } from './BacktestDetailDrawer';
 
 // Transform BacktestData to UI format
 interface UIBacktest {
@@ -98,6 +102,57 @@ const Backtests: React.FC<BacktestsProps> = ({
       pageSize: 25,
     },
   });
+
+  // Redesigned full-screen results modal — opened from a row/card click.
+  // We no longer render results inline in the widget (the old
+  // `BacktestDetailDrawer`); a click now opens the shared modal.
+  const [resultsRow, setResultsRow] = useState<BacktestData | null>(null);
+  const [resultsOpen, setResultsOpen] = useState(false);
+
+  // Lookup from display-row id (`_id`) back to the raw `BacktestData`, which
+  // still carries financial/numerical/ratios/settings the modal renders from
+  // (the flattened `Backtest` display type drops those nested objects).
+  const rawById = useMemo(() => {
+    const map = new Map<string, BacktestData>();
+    for (const bt of rawBacktests ?? []) {
+      if (bt._id) map.set(bt._id, bt);
+    }
+    return map;
+  }, [rawBacktests]);
+
+  const loadBacktestDetailsMutation = useLoadBacktestDetails();
+
+  // Open the bot-type-aware modal from a raw row. The list rows from the
+  // server are SHORT (no deals/transaction/values), so we hydrate the full
+  // result from the local IndexedDB cache — where dca/combo/grid runs are all
+  // saved — before the per-deal / transactions views can render. We open
+  // immediately with the short row (header is valid) and swap in the full
+  // result when it resolves.
+  const openResults = useCallback(
+    async (raw: BacktestData) => {
+      setResultsRow(raw);
+      setResultsOpen(true);
+      if (!raw._id) return;
+      try {
+        let store = await getLocalBacktestById(raw._id, true);
+        if (!store?.data) {
+          // Not cached yet — fetch + persist locally, then re-read.
+          await loadBacktestDetailsMutation.mutateAsync({ id: raw._id });
+          store = await getLocalBacktestById(raw._id, true);
+        }
+        if (store?.data) {
+          const full = JSON.parse(store.data) as BacktestData;
+          // Only apply if the user hasn't navigated to a different row.
+          setResultsRow((cur) =>
+            cur && cur._id === raw._id ? { ...raw, ...full } : cur,
+          );
+        }
+      } catch (e) {
+        logger.warn('[Backtests] could not load full backtest details', e);
+      }
+    },
+    [loadBacktestDetailsMutation],
+  );
 
   // Transform backend data to UI format
   const transformBacktestData = (data: BacktestData): Backtest => {
@@ -180,8 +235,16 @@ const Backtests: React.FC<BacktestsProps> = ({
     item: backtest,
     index: _index,
   }) => {
+    const raw = rawById.get(backtest.id);
     return (
-      <BacktestDetailDrawer backtest={backtest}>
+      <button
+        type="button"
+        className="w-full text-left"
+        disabled={!raw}
+        onClick={() => {
+          if (raw) void openResults(raw);
+        }}
+      >
         <Card className="cursor-pointer hover:shadow-md transition-shadow">
           <CardContent className="p-md">
             <div className="flex justify-between items-start mb-3">
@@ -249,7 +312,7 @@ const Backtests: React.FC<BacktestsProps> = ({
             </div>
           </CardContent>
         </Card>
-      </BacktestDetailDrawer>
+      </button>
     );
   };
 
@@ -520,76 +583,104 @@ const Backtests: React.FC<BacktestsProps> = ({
         </div>
       </div>
     ) : (
-      <DataTable
-        tableId={`backtests-${widgetId}`}
-        columns={columns}
-        data={backtestData}
-        // Bulk actions for exporting / deleting selected backtests
-        bulkActions={[
-          {
-            id: 'export-selected',
-            label: 'Export Selected',
-            onAction: async (selectedRows: Backtest[]) => {
-              const ids = selectedRows.map((r) => r.id);
-              try {
-                await exportBacktestsMutation.mutateAsync({
-                  ids,
-                  format: 'json',
-                });
-                toast.success(
-                  `Exported ${ids.length} backtest${ids.length > 1 ? 's' : ''}`
-                );
-              } catch (err) {
-                toast.error(
-                  err instanceof Error
-                    ? err.message
-                    : 'Failed to export selected backtests.'
-                );
-              }
+      <>
+        <DataTable
+          tableId={`backtests-${widgetId}`}
+          columns={columns}
+          data={backtestData}
+          // Row click opens the shared full-screen results modal (replaces the
+          // old inline `BacktestDetailDrawer`).
+          onRowClick={(rowData: Backtest) => {
+            const raw = rawById.get(rowData.id);
+            if (raw) void openResults(raw);
+          }}
+          // Bulk actions for exporting / deleting selected backtests
+          bulkActions={[
+            {
+              id: 'export-selected',
+              label: 'Export Selected',
+              onAction: async (selectedRows: Backtest[]) => {
+                const ids = selectedRows.map((r) => r.id);
+                try {
+                  await exportBacktestsMutation.mutateAsync({
+                    ids,
+                    format: 'json',
+                  });
+                  toast.success(
+                    `Exported ${ids.length} backtest${ids.length > 1 ? 's' : ''}`
+                  );
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to export selected backtests.'
+                  );
+                }
+              },
             },
-          },
-          {
-            id: 'delete-selected',
-            label: 'Delete Selected',
-            destructive: true,
-            onAction: async (selectedRows: Backtest[]) => {
-              const ids = selectedRows.map((r) => r.id);
-              try {
-                await deleteBacktestsMutation.mutateAsync({ ids });
-                toast.success(
-                  `Deleted ${ids.length} backtest${ids.length > 1 ? 's' : ''}`
-                );
-              } catch (err) {
-                toast.error(
-                  err instanceof Error
-                    ? err.message
-                    : 'Failed to delete selected backtests.'
-                );
-              }
+            {
+              id: 'delete-selected',
+              label: 'Delete Selected',
+              destructive: true,
+              onAction: async (selectedRows: Backtest[]) => {
+                const ids = selectedRows.map((r) => r.id);
+                try {
+                  await deleteBacktestsMutation.mutateAsync({ ids });
+                  toast.success(
+                    `Deleted ${ids.length} backtest${ids.length > 1 ? 's' : ''}`
+                  );
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to delete selected backtests.'
+                  );
+                }
+              },
             },
-          },
-        ]}
-        enableGlobalFilter={true}
-        enableColumnFilters={true}
-        enableSorting={true}
-        enableColumnReordering={true}
-        enableColumnVisibility={true}
-        enableColumnResizing={true}
-        enableGrouping={true}
-        showPagination={true}
-        className="flex-1"
-        emptyMessage="No backtest results match your search criteria."
-        defaultPinnedColumns={{ left: [], right: ['actions'] }}
-        enableCardView={true}
-        cardComponent={BacktestCard}
-        cardViewBreakpoints={{
-          default: 1,
-          600: 2,
-          900: 3,
-          1200: 4,
-        }}
-        cardViewGap={16}
-      />
+          ]}
+          enableGlobalFilter={true}
+          enableColumnFilters={true}
+          enableSorting={true}
+          enableColumnReordering={true}
+          enableColumnVisibility={true}
+          enableColumnResizing={true}
+          enableGrouping={true}
+          showPagination={true}
+          className="flex-1"
+          emptyMessage="No backtest results match your search criteria."
+          defaultPinnedColumns={{ left: [], right: ['actions'] }}
+          enableCardView={true}
+          cardComponent={BacktestCard}
+          cardViewBreakpoints={{
+            default: 1,
+            600: 2,
+            900: 3,
+            1200: 4,
+          }}
+          cardViewGap={16}
+        />
+        {resultsRow && (
+          <BacktestResultsFullModal
+            open={resultsOpen}
+            onOpenChange={setResultsOpen}
+            result={resultsRow}
+            strategy={resultsRow.settings?.strategy}
+            settings={resultsRow.settings as unknown as DCABotSettings}
+            meta={{
+              symbol: resultsRow.symbol,
+              exchange: resultsRow.exchange,
+              baseAsset: resultsRow.baseAsset,
+              quoteAsset: resultsRow.quoteAsset,
+            }}
+            botName={
+              (resultsRow.settings?.name as string | undefined) ||
+              resultsRow.symbol ||
+              undefined
+            }
+          />
+        )}
+      </>
     );
 
   return renderWithChrome(mainContent, {

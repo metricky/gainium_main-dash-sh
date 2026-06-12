@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNotesStore } from '../../../stores/notesStore';
+import { InputDialog } from '../../ui/confirmation-dialog';
 import WidgetWrapper from '../WidgetWrapper';
 
 export interface NotesWidgetProps {
@@ -282,6 +283,13 @@ const NotesWidget: React.FC<NotesWidgetProps> = ({
   const { getNote, setNote, updateNoteContent } = useNotesStore();
   const note = getNote(widgetId);
   const [isEditing, setIsEditing] = useState(false);
+  // Link insertion: capture the textarea selection before opening the React
+  // dialog (focus moves away once the dialog mounts), then apply on confirm.
+  const [linkDialog, setLinkDialog] = useState<{
+    value: string;
+    start: number;
+    end: number;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -377,9 +385,12 @@ const NotesWidget: React.FC<NotesWidgetProps> = ({
   };
   const makeLink = () => {
     if (!note) return;
-    const url = window.prompt('Enter URL');
-    if (!url) return;
-    const { value, start, end } = getSelection();
+    // Snapshot the current selection now; the dialog steals focus.
+    setLinkDialog(getSelection());
+  };
+  const applyLink = (url: string) => {
+    if (!linkDialog) return;
+    const { value, start, end } = linkDialog;
     const selected = value.slice(start, end) || 'link text';
     const before = value.slice(0, start);
     const after = value.slice(end);
@@ -387,6 +398,7 @@ const NotesWidget: React.FC<NotesWidgetProps> = ({
     const newValue = before + insertion + after;
     const caretStart = before.length + 1;
     commit(newValue, caretStart, caretStart + selected.length);
+    setLinkDialog(null);
   };
 
   useEffect(() => {
@@ -608,6 +620,18 @@ const NotesWidget: React.FC<NotesWidgetProps> = ({
           </div>
         </div>
       )}
+
+      <InputDialog
+        open={linkDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setLinkDialog(null);
+        }}
+        title="Insert link"
+        description="Enter the URL to link to."
+        placeholder="https://example.com"
+        confirmText="Insert"
+        onConfirm={applyLink}
+      />
     </div>
   );
 

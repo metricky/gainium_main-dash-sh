@@ -5,6 +5,22 @@ import { useQuery, type UseQueryOptions } from '@tanstack/react-query';
 import { useCacheKey } from './useCacheKey';
 import logger from '@/lib/loggerInstance';
 
+/** Epoch ms at which a query response actually came from the network. Cache
+ *  replays keep the original stamp (the persister and setQueriesData patches
+ *  preserve enumerable fields), so consumers can tell a fresh server snapshot
+ *  from a replayed one — required before treating a list response as
+ *  authoritative for deletions (see reconcileDeals' snapshotAt). */
+export interface FetchStamped {
+  __fetchedAt?: number;
+}
+
+function stampFetchedAt<T>(payload: T): T {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    return { ...payload, __fetchedAt: Date.now() };
+  }
+  return payload;
+}
+
 export function useGraphQL<TData = unknown, TVars = unknown>(
   key: string,
   gql: { query: string; variables?: TVars },
@@ -170,7 +186,7 @@ export function useGraphQL<TData = unknown, TVars = unknown>(
             data: 'hidden',
           });
         }
-        return result[resultKey];
+        return stampFetchedAt(result[resultKey]);
       } else if (result[key] !== undefined) {
         // Fallback to original behavior if extracted key doesn't work
         if (import.meta.env.DEV) {
@@ -180,7 +196,7 @@ export function useGraphQL<TData = unknown, TVars = unknown>(
               ?.status,
           });
         }
-        return result[key];
+        return stampFetchedAt(result[key]);
       } else {
         // If neither works, log available keys and throw an error
 

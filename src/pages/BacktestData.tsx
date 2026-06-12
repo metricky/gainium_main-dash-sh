@@ -1,7 +1,9 @@
+import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import { BACKTEST_DB_UPDATED_EVENT } from '@/constants/backtest';
 import type {
   BacktestingSettings,
   DCABacktestingResult,
+  DCABotSettings,
   StoreBacktest,
 } from '@/types';
 import {
@@ -101,6 +103,20 @@ const BacktestDataPage: React.FC = () => {
   const [showDetailDrawer, setShowDetailDrawer] = useState(false);
   const [selectedBacktest, setSelectedBacktest] =
     useState<BacktestDisplayData | null>(null);
+  // Redesigned full-screen results modal — opened from a row's action.
+  // The modal reads `strategy` from the row's `settings.strategy` and renders
+  // the right view (DCA / Combo / Grid) internally. Saved rows may have
+  // `deals`/`portfolio`/`transaction` stripped (short history) — the modal
+  // degrades gracefully.
+  const [resultsRow, setResultsRow] = useState<BacktestDisplayData | null>(
+    null
+  );
+  const [resultsOpen, setResultsOpen] = useState(false);
+
+  const openResults = useCallback((row: BacktestDisplayData) => {
+    setResultsRow(row);
+    setResultsOpen(true);
+  }, []);
 
   // Enhanced Widget Component (same as TradingBots page)
   const EnhancedStatsWidget: React.FC<{
@@ -755,7 +771,14 @@ const BacktestDataPage: React.FC = () => {
       id: 'actions',
       header: 'Actions',
       cell: ({ row }) => (
-        <div className="py-xs">
+        <div className="flex gap-xs py-xs">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => openResults(row.original)}
+          >
+            View Results
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -1533,7 +1556,16 @@ const BacktestDataPage: React.FC = () => {
                       <Button variant="outline" size="sm">
                         Duplicate
                       </Button>
-                      <Button variant="outline" size="sm">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          if (selectedBacktest) {
+                            setShowDetailDrawer(false);
+                            openResults(selectedBacktest);
+                          }
+                        }}
+                      >
                         View Results
                       </Button>
                     </div>
@@ -1542,6 +1574,24 @@ const BacktestDataPage: React.FC = () => {
               </div>
             </DetailDrawerContent>
           </DetailDrawer>
+
+          {/* Redesigned full-screen results modal */}
+          {resultsRow && (
+            <BacktestResultsFullModal
+              open={resultsOpen}
+              onOpenChange={setResultsOpen}
+              result={resultsRow}
+              strategy={resultsRow.settings?.strategy}
+              settings={resultsRow.settings as unknown as DCABotSettings}
+              meta={{
+                symbol: resultsRow.symbol,
+                exchange: resultsRow.exchange,
+                baseAsset: resultsRow.baseAsset,
+                quoteAsset: resultsRow.quoteAsset,
+              }}
+              botName={resultsRow.displayName || resultsRow.symbol || undefined}
+            />
+          )}
         </WidgetContainer>
       </PageTransition>
     </MainLayout>

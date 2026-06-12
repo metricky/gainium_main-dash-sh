@@ -1,7 +1,9 @@
 import { NumberInput } from '@/components/ui';
 import { Button } from '@/components/ui/button';
-import { formatNumberWithTrim } from '@/features/bots/shared/utils/order-guard';
-import type { PrecisionGuard } from '@/features/bots/shared/utils/order-guard';
+import {
+  formatNumberWithTrim,
+  type PrecisionGuard,
+} from '@/features/bots/shared/utils/order-guard';
 import { OrderSizeTypeEnum } from '@/types';
 import { Lock } from 'lucide-react';
 import React, { useState } from 'react';

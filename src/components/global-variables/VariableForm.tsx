@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import {
   Select,
   SelectContent,
@@ -82,6 +83,7 @@ const VariableForm: React.FC<VariableFormProps> = ({
     message?: string;
   } | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
 
   // Validation hooks
   const { validateValue } = useVariableFormValidation();
@@ -225,15 +227,13 @@ const VariableForm: React.FC<VariableFormProps> = ({
     ]
   );
 
-  // Handle dialog close
+  // Handle dialog close. When there are unsaved changes we surface a React
+  // confirmation dialog instead of the native window.confirm and keep the
+  // form open until the user decides.
   const handleClose = useCallback(() => {
     if (hasUnsavedChanges && mode !== 'view') {
-      const shouldClose = window.confirm(
-        'You have unsaved changes. Are you sure you want to close without saving?'
-      );
-      if (!shouldClose) {
-        return;
-      }
+      setShowUnsavedConfirm(true);
+      return;
     }
     onClose();
   }, [hasUnsavedChanges, mode, onClose]);
@@ -267,7 +267,8 @@ const VariableForm: React.FC<VariableFormProps> = ({
     !isValidatingName;
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
+    <>
+      <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto w-[95vw] max-w-[95vw] sm:w-full sm:max-w-[500px]">
         <DialogHeader className="p-lg pb-0">
           <DialogTitle className="flex items-center gap-xs">
@@ -355,12 +356,20 @@ const VariableForm: React.FC<VariableFormProps> = ({
             <Select
               value={formData.type}
               onValueChange={(v) => {
+                // Radix Select can emit an empty/transient value on remount
+                // (and under some browser/extension conditions). Guard against
+                // it so a stray emission can't blank a valid type — and with
+                // it the value — when the edit dialog opens. Also ignore no-op
+                // re-selections of the current type.
                 const value = v as GlobalVariablesTypeEnum;
-                handleInputChange('type', value);
-                // Clear value when type changes to avoid validation issues
-                if (formData.value && value !== formData.type) {
-                  handleInputChange('value', '');
+                if (!value || value === formData.type) {
+                  return;
                 }
+                // Note: do NOT clear the value on type change. A numeric value
+                // is valid across int/float, and the value-validation effect
+                // already re-checks it on type change. (Matches main-dash,
+                // which never wiped the value.)
+                handleInputChange('type', value);
               }}
               disabled={mode === 'view' || isLoading}
             >
@@ -472,7 +481,22 @@ const VariableForm: React.FC<VariableFormProps> = ({
           )}
         </DialogFooter>
       </DialogContent>
-    </Dialog>
+      </Dialog>
+
+      <ConfirmationDialog
+        open={showUnsavedConfirm}
+        onOpenChange={setShowUnsavedConfirm}
+        title="Discard unsaved changes?"
+        description="You have unsaved changes. Are you sure you want to close without saving?"
+        confirmText="Discard"
+        cancelText="Keep editing"
+        variant="destructive"
+        onConfirm={() => {
+          setShowUnsavedConfirm(false);
+          onClose();
+        }}
+      />
+    </>
   );
 };
 

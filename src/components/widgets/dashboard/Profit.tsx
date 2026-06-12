@@ -227,7 +227,7 @@ export const Profit: React.FC<ProfitProps> = ({
         return new Date(dateValue as string);
       } else if (timeframe === 1) {
         // Weekly: format like "2025-27" (year-week)
-        const [year, week] = (dateValue as string).split('-').map(Number);
+        const [year, week] = String(dateValue).split('-').map(Number);
         // Calculate the first day of the given week
         // January 1st of the year
         const jan1 = new Date(year, 0, 1);
@@ -242,7 +242,7 @@ export const Profit: React.FC<ProfitProps> = ({
         return targetWeekStart;
       } else if (timeframe === 2) {
         // Monthly: format like "2024-8" (year-month)
-        const [year, month] = (dateValue as string).split('-').map(Number);
+        const [year, month] = String(dateValue).split('-').map(Number);
         return new Date(year, month - 1, 1);
       } else {
         // Total: timestamp
@@ -469,7 +469,7 @@ export const Profit: React.FC<ProfitProps> = ({
         fullDateForTooltip = date.toISOString();
       } else if (timeframe === 1) {
         // Weekly format
-        const weekNum = (item.date as string).split('-')[1];
+        const weekNum = String(item.date).split('-')[1];
         shortDate = `W${weekNum}`;
         label = `Week ${weekNum}, ${date.getFullYear()}`;
         // Use the Monday of the week for the tooltip

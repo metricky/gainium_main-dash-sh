@@ -748,7 +748,7 @@ export function transformDcaBotToBot(
       freeTotal: 0,
       freeTotalUsd: 0,
     },
-    totalProfitUsd: math.round(res.profit.total, 2),
+    totalProfitUsd: totalUsd,
     workingTimeNumber: workingTime,
     workingTime: resWork,
     unPnl,
