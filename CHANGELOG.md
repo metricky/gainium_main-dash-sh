@@ -5,17 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.24] - 2026-06-12
+
+### Added
+
+- Connect guide in the add-exchange dialog now also covers Bitget and Kraken
+  (previously only Binance, Bybit, KuCoin, OKX, Coinbase and Hyperliquid).
+
+### Removed
+
+- Combo bot deal menu no longer shows "Add Funds" / "Reduce Funds" — combo
+  bots don't support adjusting deal funds.
+
+### Fixed
+
+- Portfolio "My Accounts" list now scrolls, so exchanges past the bottom of
+  the panel are reachable again.
+- The connect guide is no longer shown for paper exchanges, which need no
+  API connection.
+- Editing a live exchange (e.g. renaming it) no longer forces re-entering the
+  API secret.
+
 ## [2.10.23] - 2026-06-11
 
 ### Fixed
 
-- DIV indicator logic. 
+- DIV indicator logic.
 
 ## [2.10.22] - 2026-06-10
 
 ### Changed
 
-- Backtester performance fix. 
+- Backtester performance fix.
 
 ## [2.10.21] - 2026-06-10
 
@@ -106,7 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Existing stale deals/bots now actually clear on upgrade. The stale-write
-  guards (2.10.15–16) prevented *new* contamination but couldn't evict
+  guards (2.10.15–16) prevented _new_ contamination but couldn't evict
   entities already resurrected into the persisted caches before the fix
   shipped. This release busts both persisted layers on deploy: the live
   Zustand stores (deals + all bot types) wipe and refetch on version bump,
@@ -303,7 +324,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the grid edit page already wrapped the whole layout in one, giving the page
   two `useGridPage` instances that fired duplicate queries and raced on the
   shared live stores — an infinite render loop. The form now reuses an existing
-  provider and only mounts its own when there isn't one (e.g. the grid *new*
+  provider and only mounts its own when there isn't one (e.g. the grid _new_
   page).
 - Hardened several render-stability bugs surfaced while tracking the above:
   the bot-orders store-sync effect no longer depends on the whole (per-render)

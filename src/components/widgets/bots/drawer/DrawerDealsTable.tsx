@@ -489,14 +489,18 @@ const DealActionsMenu: React.FC<{
             <BookOpen className="w-4 h-4 mr-2" />
             Add to Journal
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleAddFunds}>
-            <PlusCircle className="w-4 h-4 mr-2" />
-            Add Funds
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleReduceFunds}>
-            <MinusCircle className="w-4 h-4 mr-2" />
-            Reduce Funds
-          </DropdownMenuItem>
+          {botType !== BotTypesEnum.combo && (
+            <>
+              <DropdownMenuItem onClick={handleAddFunds}>
+                <PlusCircle className="w-4 h-4 mr-2" />
+                Add Funds
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleReduceFunds}>
+                <MinusCircle className="w-4 h-4 mr-2" />
+                Reduce Funds
+              </DropdownMenuItem>
+            </>
+          )}
           <DropdownMenuItem onClick={handleEdit}>
             <Edit className="w-4 h-4 mr-2" />
             Edit

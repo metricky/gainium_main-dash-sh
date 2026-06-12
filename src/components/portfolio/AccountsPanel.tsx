@@ -206,7 +206,7 @@ export const AccountsPanel: React.FC<AccountsPanelProps> = ({
 
   return (
     <Widget className="p-sm">
-      <div className="flex items-center justify-between mb-3 sm:mb-4">
+      <div className="flex items-center justify-between mb-3 sm:mb-4 shrink-0">
         <h3 className="font-semibold text-sm sm:text-base">My Accounts</h3>
         <div className="flex items-center gap-1">
           <Button
@@ -238,7 +238,7 @@ export const AccountsPanel: React.FC<AccountsPanelProps> = ({
         </div>
       </div>
 
-      <div className="space-y-1.5 sm:space-y-xs">
+      <div className="space-y-1.5 sm:space-y-xs flex-1 min-h-0 overflow-y-auto">
         {exchanges.map((exchange) => (
           <div
             key={exchange.id}
