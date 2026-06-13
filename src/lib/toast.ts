@@ -117,9 +117,7 @@ export const showToast = (
 const dismissToast = (toast: HTMLElement): void => {
   toast.style.transform = 'translateX(100%)';
   setTimeout(() => {
-    if (toast.parentNode) {
-      toast.parentNode.removeChild(toast);
-    }
+    toast.remove();
   }, 300);
 };
 
