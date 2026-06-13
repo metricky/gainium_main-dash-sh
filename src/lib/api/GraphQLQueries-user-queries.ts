@@ -358,6 +358,7 @@ export const userQueries = {
                                     name
                                     paperContext
                                     botId
+                                    oauthClientId
                                 }
                             }
                         }
@@ -596,6 +597,7 @@ export const userQueries = {
                                     name
                                     paperContext
                                     botId
+                                    oauthClientId
                                 }
                             }
                         }

@@ -14,6 +14,9 @@ export interface APIKey {
   name?: string;
   paperContext?: boolean | null;
   botId?: string | null;
+  /** Present when this key backs an OAuth "connected app"; hidden from the
+   *  regular API Keys list and managed under Connected apps instead. */
+  oauthClientId?: string | null;
 }
 
 export interface APIKeyInput {

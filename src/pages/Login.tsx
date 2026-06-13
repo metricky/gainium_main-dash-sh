@@ -22,7 +22,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import type { User } from '@/types/auth';
 import { Eye, EyeOff, Loader2, Mail } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface LoginResponse {
@@ -40,12 +40,27 @@ const Login: React.FC = () => {
   const navigate = useNavigate();
   const { login, setLoading, isLoading, isAuthenticated } = useAuthStore();
 
+  // Where to land after a successful sign-in. Honors a same-origin `redirectTo`
+  // query param (used by the OAuth consent flow to return the user to the
+  // consent screen with its params intact); defaults to /overview. Captured
+  // once at mount via a ref: a fresh login navigates to the target and the
+  // `isAuthenticated` effect below can fire a second time *after* the URL has
+  // already changed — reading the live URL there would lose redirectTo and
+  // bounce the user to /overview. The ref keeps the original target stable.
+  const redirectToRef = useRef<string | null>(
+    new URLSearchParams(window.location.search).get('redirectTo'),
+  );
+  const postLoginTarget = (): string => {
+    const rt = redirectToRef.current;
+    return rt && rt.startsWith('/') ? rt : '/overview';
+  };
+
   // Already signed in? Bounce to overview. Effect (not Navigate) so the
   // existing login flows can still mount briefly and trigger their own
   // navigation when they complete a fresh sign-in.
   useEffect(() => {
     if (isAuthenticated) {
-      navigate('/overview', { replace: true });
+      navigate(postLoginTarget(), { replace: true });
     }
   }, [isAuthenticated, navigate]);
   const { google: googleEnabled, registration: registrationEnabled } =
@@ -155,7 +170,7 @@ const Login: React.FC = () => {
         password
       );
       login(response.accessToken, response.user);
-      navigate('/overview');
+      navigate(postLoginTarget());
     } catch (error) {
       console.error('Login failed:', error);
       let errorMessage = 'Login failed. Please try again.';
@@ -210,7 +225,7 @@ const Login: React.FC = () => {
         ...(registerForm.picture && { picture: registerForm.picture }),
       });
       login(response.accessToken, response.user);
-      navigate('/overview');
+      navigate(postLoginTarget());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed.');
     } finally {
@@ -236,7 +251,7 @@ const Login: React.FC = () => {
       setError('Please accept the terms and conditions to continue.');
       return;
     }
-    navigate('/overview');
+    navigate(postLoginTarget());
   };
 
   const handleGoogleError = (errorMessage: string) => setError(errorMessage);

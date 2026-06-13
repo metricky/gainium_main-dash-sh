@@ -19,6 +19,7 @@ import {
   Loader2,
   Palette,
   Play,
+  Plug,
   RotateCcw,
   Settings as SettingsIcon,
   Shield,
@@ -70,6 +71,7 @@ import {
   useRegenerateRecoveryCodes,
 } from '../hooks/use2FA';
 import { useAPIKeysOperations } from '../hooks/useAPIKeys';
+import ConnectedAppsSection from '@/components/settings/ConnectedAppsSection';
 import { useLicenseKeyOperations } from '../hooks/useLicenseKey';
 import { usePasswordOperations } from '../hooks/usePasswordChange';
 import { useUserSettingsOperations } from '../hooks/useUserSettings';
@@ -233,6 +235,11 @@ const settingsSections: SettingsSection[] = [
     id: 'notification-preferences',
     title: 'Notification Preferences',
     icon: <Bell className="w-4 h-4" />,
+  },
+  {
+    id: 'connected-apps',
+    title: 'Connected Apps',
+    icon: <Plug className="w-4 h-4" />,
   },
   {
     id: 'danger-zone',
@@ -1291,7 +1298,10 @@ const Settings: React.FC = () => {
   };
 
   const renderAPIKeys = () => {
-    const apiKeys = user?.apiKeys || [];
+    // OAuth "connected app" keys are managed under Connected apps, not here.
+    const apiKeys = (user?.apiKeys || []).filter(
+      (k) => !(k as { oauthClientId?: string | null }).oauthClientId,
+    );
 
     const formatDate = (dateString: string) => {
       try {
@@ -1974,6 +1984,8 @@ const Settings: React.FC = () => {
         return renderLicenseKey();
       case 'notification-preferences':
         return renderNotificationPreferences();
+      case 'connected-apps':
+        return <ConnectedAppsSection />;
       case 'danger-zone':
         return renderDangerZone();
       default:
