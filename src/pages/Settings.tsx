@@ -71,7 +71,6 @@ import {
   useRegenerateRecoveryCodes,
 } from '../hooks/use2FA';
 import { useAPIKeysOperations } from '../hooks/useAPIKeys';
-import ConnectedAppsSection from '@/components/settings/ConnectedAppsSection';
 import { useLicenseKeyOperations } from '../hooks/useLicenseKey';
 import { usePasswordOperations } from '../hooks/usePasswordChange';
 import { useUserSettingsOperations } from '../hooks/useUserSettings';
@@ -1958,6 +1957,14 @@ const Settings: React.FC = () => {
     </div>
   );
 
+  const renderConnectedApps = () => (
+    <div className="max-w-4xl">
+      {/* Cloud fills with the OAuth grants list; sh has no OAuth
+          provider, so the slot renders nothing. */}
+      <Slot name="settings.connectedApps" />
+    </div>
+  );
+
   const renderDangerZone = () => (
     <div className="max-w-4xl">
       <div className={`grid ${pageGap}`}>
@@ -1985,7 +1992,7 @@ const Settings: React.FC = () => {
       case 'notification-preferences':
         return renderNotificationPreferences();
       case 'connected-apps':
-        return <ConnectedAppsSection />;
+        return renderConnectedApps();
       case 'danger-zone':
         return renderDangerZone();
       default:

@@ -275,6 +275,34 @@ export function useBotSpecificDeals(
     setIsLoadingComplete(false); // Reset loading completion state
   }, [filter.botId, filter.status, filter.dealType, filter.shareId]);
 
+  // Periodically re-snapshot so deals that left the requested-status scope on
+  // the backend (e.g. a take-profit-filled DCA deal that closed) get pruned and
+  // disappear from the Open list. The deal store is otherwise only patched by
+  // websocket updates, which carry price/PnL deltas but not a status→closed
+  // transition; with no fresh snapshot the reconcile's `updateTime > snapshotAt`
+  // guard keeps protecting the stale 'open' copy indefinitely. We reset to page
+  // 0 and force a full refetch rather than using react-query's refetchInterval,
+  // which would only re-hit the *current* page and make reconcileDeals
+  // absence-delete the other pages' deals on multi-page bots.
+  const { refetch } = queryResult;
+  useEffect(() => {
+    if (!filter.botId) return undefined;
+    const intervalId = setInterval(() => {
+      setLoadedPages(new Set([0]));
+      setIntermediateDeals([]);
+      if (currentPageLoading !== 0) {
+        // Off page 0 (multi-page bot): resetting the page changes the query
+        // variables, which re-runs the sequential load from page 0 on its own.
+        setCurrentPageLoading(0);
+      } else {
+        // Already on page 0: variables are unchanged, so force a network
+        // refetch to obtain a fresh snapshot stamp that prunes closed deals.
+        void refetch();
+      }
+    }, 30_000);
+    return () => clearInterval(intervalId);
+  }, [filter.botId, filter.status, filter.dealType, currentPageLoading, refetch]);
+
   // Merge the live store with the last-fetched snapshot, deduped by id. The
   // store wins on conflict so active deals keep their live updates; the
   // snapshot backfills any deals the store dropped (e.g. closed deals wiped by
