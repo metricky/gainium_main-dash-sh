@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.25] - 2026-06-14
+
+### Fixed
+
+- Bot deals list now drops a deal from the Open list once its take-profit
+  fills, instead of leaving a sold deal showing as open until the page is
+  reloaded. The drawer re-checks its deals periodically so closed deals are
+  reconciled away.
+- Open and Closed deal lists now keep their column layout and sort order
+  independently — hiding a column (e.g. Unrealized P&L) or changing the sort
+  on one list no longer affects the other.
+- Cached query data is now kept for 5 minutes instead of 24 hours, matching
+  the persisted-cache window so a re-opened view can't briefly show a much
+  older snapshot.
+- Settings "Connected Apps" tab no longer hard-imports a cloud-only
+  component, so the self-hosted build type-checks and builds again. The
+  section is now rendered through the `settings.connectedApps` extension
+  slot, empty on self-hosted (no OAuth provider).
+
 ## [2.10.24] - 2026-06-12
 
 ### Added

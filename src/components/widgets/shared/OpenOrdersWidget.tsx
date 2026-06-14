@@ -3069,7 +3069,14 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         </TradeDetailDrawer>
       )}
       <DataTable
-        tableId={`${widgetId}-trades`}
+        // Key table preferences (column visibility, sort, order) per status so
+        // the Open and Closed lists keep independent layouts — e.g. hiding the
+        // Unrealized P&L column or sorting only affects the list it was set on.
+        tableId={
+          enableStatusToggle
+            ? `${widgetId}-trades-${statusFilter}`
+            : `${widgetId}-trades`
+        }
         columns={columns}
         data={trades}
         onRowClick={(row) => {

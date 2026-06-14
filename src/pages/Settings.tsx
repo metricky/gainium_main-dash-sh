@@ -19,6 +19,7 @@ import {
   Loader2,
   Palette,
   Play,
+  Plug,
   RotateCcw,
   Settings as SettingsIcon,
   Shield,
@@ -233,6 +234,11 @@ const settingsSections: SettingsSection[] = [
     id: 'notification-preferences',
     title: 'Notification Preferences',
     icon: <Bell className="w-4 h-4" />,
+  },
+  {
+    id: 'connected-apps',
+    title: 'Connected Apps',
+    icon: <Plug className="w-4 h-4" />,
   },
   {
     id: 'danger-zone',
@@ -1291,7 +1297,10 @@ const Settings: React.FC = () => {
   };
 
   const renderAPIKeys = () => {
-    const apiKeys = user?.apiKeys || [];
+    // OAuth "connected app" keys are managed under Connected apps, not here.
+    const apiKeys = (user?.apiKeys || []).filter(
+      (k) => !(k as { oauthClientId?: string | null }).oauthClientId,
+    );
 
     const formatDate = (dateString: string) => {
       try {
@@ -1948,6 +1957,14 @@ const Settings: React.FC = () => {
     </div>
   );
 
+  const renderConnectedApps = () => (
+    <div className="max-w-4xl">
+      {/* Cloud fills with the OAuth grants list; sh has no OAuth
+          provider, so the slot renders nothing. */}
+      <Slot name="settings.connectedApps" />
+    </div>
+  );
+
   const renderDangerZone = () => (
     <div className="max-w-4xl">
       <div className={`grid ${pageGap}`}>
@@ -1974,6 +1991,8 @@ const Settings: React.FC = () => {
         return renderLicenseKey();
       case 'notification-preferences':
         return renderNotificationPreferences();
+      case 'connected-apps':
+        return renderConnectedApps();
       case 'danger-zone':
         return renderDangerZone();
       default:
