@@ -1686,7 +1686,11 @@ const ComboBots: React.FC = () => {
         exchange: deal.exchange || 'Unknown',
         exchangeUUID: deal.exchangeUUID,
         botId: deal.botId,
-        botName: deal.botName || undefined,
+        // Fall back to the loaded bot's name when the deal record itself
+        // doesn't carry one (some closed combo deals come back without
+        // botName populated), so the column doesn't render a bare "—".
+        botName:
+          deal.botName || botDataMap.get(deal.botId)?.name || undefined,
         currentBalance: {
           base: deal.currentBalances?.base || 0,
           quote: deal.currentBalances?.quote || 0,
@@ -1766,13 +1770,16 @@ const ComboBots: React.FC = () => {
         updateTime: deal.updateTime
           ? new Date(deal.updateTime).toLocaleString()
           : undefined,
+        // ISO string so the Close Time column can re-parse it
+        // unambiguously. A locale string (e.g. "10.6.2026") gets misparsed
+        // by new Date() and swaps day/month in the rendered cell.
         closeTime: deal.closeTime
-          ? new Date(deal.closeTime).toLocaleString()
+          ? new Date(deal.closeTime).toISOString()
           : undefined,
         trailingMode: deal.trailingMode,
       };
     });
-  }, [comboDealsForTab]);
+  }, [comboDealsForTab, botDataMap]);
 
   // Only show the loading skeleton when we don't have any cached data yet
   if ((botsLoading || statsLoading) && comboBots.length === 0) {

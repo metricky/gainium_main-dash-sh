@@ -37,7 +37,6 @@ const THIRTY_SECONDS = 1000 * 30;
 const ONE_MINUTE = 1000 * 60;
 const FIVE_MINUTES = 1000 * 60 * 5;
 const ONE_HOUR = 1000 * 60 * 60;
-const TWENTY_FOUR_HOURS = 1000 * 60 * 60 * 24;
 
 // ⚠️ IMPORTANT: This is a TRADING PLATFORM
 // Data like bots, orders, deals, balances, statuses change FREQUENTLY
@@ -66,8 +65,11 @@ export const queryClient = new QueryClient({
       // When component mounts, if data is stale, trigger refetch
       staleTime: FIFTEEN_SECONDS,
 
-      // Keep in memory for 5 minutes max to avoid excessive memory usage
-      gcTime: TWENTY_FOUR_HOURS,
+      // Keep in memory for 5 minutes max to avoid excessive memory usage.
+      // Matches the persisted-cache maxAge (also 5 min) so a backgrounded
+      // query can't hand back a much older snapshot (e.g. a stale deal list)
+      // when its view is re-opened.
+      gcTime: FIVE_MINUTES,
 
       // Retry logic for failed requests
       retry: (failureCount, error) => {

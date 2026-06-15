@@ -2867,34 +2867,62 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
             firstToolbarActionsCompact={firstToolbarActionCompact}
           />
         ) : (
-          <div className="text-center py-8 text-muted-foreground">
-            {selectedTab === 'active' ? (
-              <Handshake className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            ) : (
-              <Square className="w-8 h-8 mx-auto mb-2 opacity-50" />
-            )}
-            <p>
-              {selectedTab === 'active' ? 'No active deals' : 'No closed deals'}
-            </p>
-            <p className="text-sm">
-              {selectedTab === 'active'
-                ? 'Deals will appear here when the bot starts trading'
-                : 'Completed deals will appear here'}
-            </p>
-            {selectedTab === 'active' ? (
-              <div className="flex items-center justify-center gap-4 ">
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={handleOpenNewDeal}
-                  disabled={isOpenDealPending || !botId}
-                  className="mt-4 gap-1"
-                >
-                  <Plus className="w-4 h-4" />
-                  Open New Deal
-                </Button>
-              </div>
-            ) : null}
+          <div className="flex flex-col">
+            {/* Keep the Open/Closed status filter reachable even when the
+                current tab has no deals — otherwise closed deals are
+                stranded behind an empty "Open" tab (e.g. a combo bot with
+                0 open but 42 closed deals). */}
+            <div className="flex items-center py-2">
+              <Select
+                value={selectedTab}
+                onValueChange={(value) =>
+                  setSelectedTab(value as 'active' | 'closed')
+                }
+              >
+                <SelectTrigger className="h-9 w-40">
+                  <SelectValue placeholder={`Open (${activeDealsCount})`} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">
+                    Open ({activeDealsCount})
+                  </SelectItem>
+                  <SelectItem value="closed">
+                    Closed ({closedDealsCount})
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="text-center py-8 text-muted-foreground">
+              {selectedTab === 'active' ? (
+                <Handshake className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              ) : (
+                <Square className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              )}
+              <p>
+                {selectedTab === 'active'
+                  ? 'No active deals'
+                  : 'No closed deals'}
+              </p>
+              <p className="text-sm">
+                {selectedTab === 'active'
+                  ? 'Deals will appear here when the bot starts trading'
+                  : 'Completed deals will appear here'}
+              </p>
+              {selectedTab === 'active' ? (
+                <div className="flex items-center justify-center gap-4 ">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={handleOpenNewDeal}
+                    disabled={isOpenDealPending || !botId}
+                    className="mt-4 gap-1"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Open New Deal
+                  </Button>
+                </div>
+              ) : null}
+            </div>
           </div>
         )}
       </div>

@@ -120,6 +120,12 @@ export interface SlotPropsMap {
    *  the Personal Data section in core's Settings page. */
   'settings.dangerZone': Record<string, unknown>;
 
+  /** "Connected apps" section on the Settings page — OAuth grants the
+   *  user has authorized. Cloud fills with `ConnectedAppsSection`; sh
+   *  has no OAuth provider, so it leaves the slot empty. Mounted as the
+   *  Connected Apps tab body in core's Settings page. */
+  'settings.connectedApps': Record<string, unknown>;
+
   /** Banner shown app-wide when an account-delete request is pending.
    *  Cloud only; sh renders nothing. Mounted once in MainLayout above
    *  the page content. */

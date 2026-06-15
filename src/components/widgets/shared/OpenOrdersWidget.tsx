@@ -1373,8 +1373,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         transactionsTotal:
           (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
         updateTime: new Date(deal.updateTime).toLocaleString(),
+        // ISO string so the Close Time column re-parses it unambiguously;
+        // a locale string gets misparsed by new Date() and swaps day/month.
         closeTime: deal.closeTime
-          ? new Date(deal.closeTime).toLocaleString()
+          ? new Date(deal.closeTime).toISOString()
           : undefined,
         trailingMode: deal.trailingMode,
       };
@@ -1946,7 +1948,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
 
           return (
             <div className="flex items-center gap-xs">
-              <div className="text-sm text-muted-foreground truncate max-w-32">
+              <div
+                className="text-sm text-muted-foreground truncate max-w-52"
+                title={botName}
+              >
                 {botName}
               </div>
               {botId && (
@@ -3069,7 +3074,14 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         </TradeDetailDrawer>
       )}
       <DataTable
-        tableId={`${widgetId}-trades`}
+        // Key table preferences (column visibility, sort, order) per status so
+        // the Open and Closed lists keep independent layouts — e.g. hiding the
+        // Unrealized P&L column or sorting only affects the list it was set on.
+        tableId={
+          enableStatusToggle
+            ? `${widgetId}-trades-${statusFilter}`
+            : `${widgetId}-trades`
+        }
         columns={columns}
         data={trades}
         onRowClick={(row) => {

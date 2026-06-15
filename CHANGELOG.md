@@ -5,11 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.10.25] - 2026-06-13
+## [2.10.27] - 2026-06-16
 
 ### Fixed
 
 - Toast dismiss no longer throws "removeChild: not a child of this node" when a toast is removed while its parent container has already been detached (e.g. on the Combo bots page during rapid drawer open/close).
+## [2.10.26] - 2026-06-15
+
+### Fixed
+
+- Hyperliquid "Add Exchange": the "Connect Web3 Wallet" button is shown for
+  the Regular (paid) integration type again, not only for Free — paid users
+  can set up Hyperliquid via their wallet without entering keys manually.
+- A bot's closed deals are reachable again when it has no open deals. The
+  Open/Closed filter now stays visible on the empty deals state, so closed
+  deals are no longer stranded behind an empty "Open" tab.
+- Deals overview "Close Time" column now shows the correct date — day and
+  month are no longer swapped (the value was formatted to a locale string
+  and then re-parsed ambiguously).
+- Deals overview "Bot Name" falls back to the loaded bot's name when the
+  deal record doesn't carry one, instead of rendering a bare "—".
+- Deals overview "Bot Name" column is wider and shows the full name on
+  hover, so longer bot names aren't cut off at ~15 characters.
+
+## [2.10.25] - 2026-06-14
+
+### Fixed
+
+- Bot deals list now drops a deal from the Open list once its take-profit
+  fills, instead of leaving a sold deal showing as open until the page is
+  reloaded. The drawer re-checks its deals periodically so closed deals are
+  reconciled away.
+- Open and Closed deal lists now keep their column layout and sort order
+  independently — hiding a column (e.g. Unrealized P&L) or changing the sort
+  on one list no longer affects the other.
+- Cached query data is now kept for 5 minutes instead of 24 hours, matching
+  the persisted-cache window so a re-opened view can't briefly show a much
+  older snapshot.
+- Settings "Connected Apps" tab no longer hard-imports a cloud-only
+  component, so the self-hosted build type-checks and builds again. The
+  section is now rendered through the `settings.connectedApps` extension
+  slot, empty on self-hosted (no OAuth provider).
 
 ## [2.10.24] - 2026-06-12
 
