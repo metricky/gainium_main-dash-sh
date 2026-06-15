@@ -1174,9 +1174,10 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                 </a>
               </p>
 
-              {/* Web3 Wallet Connection */}
-              {formData.useApproveBuilderFees && (
-                <div className="space-y-sm">
+              {/* Web3 Wallet Connection — available for both Regular (paid)
+                  and Free integration types. Builder fees are only approved
+                  in Free mode. */}
+              <div className="space-y-sm">
                   <p className="text-sm">
                     Connect your Web3 wallet to automatically set up Hyperliquid
                     trading. This will:
@@ -1187,13 +1188,14 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                     </li>
                     <li>Switch to Arbitrum network</li>
                     <li>Create and approve an agent wallet for trading</li>
-                    <li>Approve builder fees</li>
+                    {formData.useApproveBuilderFees && <li>Approve builder fees</li>}
                   </ul>
 
                   <div className="flex gap-sm mt-sm">
                     <Button
                       type="button"
                       variant="outline"
+                      className="border-primary text-primary hover:bg-primary/10 hover:text-primary"
                       onClick={handleOpenWalletSelector}
                       disabled={
                         hyperliquidSetupStatus === 'connecting' ||
@@ -1261,8 +1263,7 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                       </p>
                     </div>
                   )}
-                </div>
-              )}
+              </div>
             </div>
           )}
 

@@ -18,6 +18,13 @@
     <meta name="google" content="notranslate" />
     <meta http-equiv="Content-Language" content="en" />
 
+    <!-- Keep the app out of search indexes. This is a logged-in dashboard,
+         not public content, and analytics tools (PostHog) append
+         ph_distinct_id / ph_session_id query params that otherwise show up
+         as hundreds of "duplicate" indexable URLs. The SPA serves this same
+         shell for every route, so one noindex covers all of them. -->
+    <meta name="robots" content="noindex, nofollow" />
+
     <!-- PWA Meta Tags -->
     <meta name="theme-color" content="#1f2937" />
     <meta

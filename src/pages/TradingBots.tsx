@@ -2312,8 +2312,10 @@ const TradingBots: React.FC = () => {
         updateTime: deal.updateTime
           ? new Date(deal.updateTime).toLocaleString()
           : undefined,
+        // ISO string so the Close Time column re-parses it unambiguously;
+        // a locale string gets misparsed by new Date() and swaps day/month.
         closeTime: deal.closeTime
-          ? new Date(deal.closeTime).toLocaleString()
+          ? new Date(deal.closeTime).toISOString()
           : undefined,
         trailingMode: deal.trailingMode,
       };

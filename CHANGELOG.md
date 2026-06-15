@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.30] - 2026-06-15
+
+### Changed
+
+- Disable TradingView's built-in Google Analytics usage telemetry on the chart widget (it sent anonymized pageviews to a TradingView Google Analytics property). Analytics is handled exclusively through PostHog.
+
+## [2.10.29] - 2026-06-15
+
+### Changed
+
+- Mark the app shell `noindex, nofollow`. The dashboard is logged-in and not meant to be indexed; this also clears the search-console "duplicate pages without canonical" warnings caused by PostHog `ph_distinct_id` / `ph_session_id` query params.
+
+## [2.10.28] - 2026-06-16
+
+### Fixed
+
+- Bot performance chart: data points are now sorted by time, so the Equity / Realized Profit / Buy & Hold lines no longer zigzag and "Realized Profit" no longer appears to fall over time (the backend serves the points unsorted).
+- Bot performance chart: the "Realized Profit" line and its hover tooltip now show the true realized profit (starting at 0) instead of a value offset by the bot's starting balance, and the right-hand axis it is plotted against is now visible — so the plotted line and the info box value finally agree.
+
+## [2.10.27] - 2026-06-16
+
+### Fixed
+
+- Toast dismiss no longer throws "removeChild: not a child of this node" when a toast is removed while its parent container has already been detached (e.g. on the Combo bots page during rapid drawer open/close).
+## [2.10.26] - 2026-06-15
+
+### Fixed
+
+- Hyperliquid "Add Exchange": the "Connect Web3 Wallet" button is shown for
+  the Regular (paid) integration type again, not only for Free — paid users
+  can set up Hyperliquid via their wallet without entering keys manually.
+- A bot's closed deals are reachable again when it has no open deals. The
+  Open/Closed filter now stays visible on the empty deals state, so closed
+  deals are no longer stranded behind an empty "Open" tab.
+- Deals overview "Close Time" column now shows the correct date — day and
+  month are no longer swapped (the value was formatted to a locale string
+  and then re-parsed ambiguously).
+- Deals overview "Bot Name" falls back to the loaded bot's name when the
+  deal record doesn't carry one, instead of rendering a bare "—".
+- Deals overview "Bot Name" column is wider and shows the full name on
+  hover, so longer bot names aren't cut off at ~15 characters.
+
 ## [2.10.25] - 2026-06-14
 
 ### Fixed
