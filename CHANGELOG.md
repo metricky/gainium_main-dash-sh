@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.26] - 2026-06-15
+
+### Fixed
+
+- Hyperliquid "Add Exchange": the "Connect Web3 Wallet" button is shown for
+  the Regular (paid) integration type again, not only for Free — paid users
+  can set up Hyperliquid via their wallet without entering keys manually.
+- A bot's closed deals are reachable again when it has no open deals. The
+  Open/Closed filter now stays visible on the empty deals state, so closed
+  deals are no longer stranded behind an empty "Open" tab.
+- Deals overview "Close Time" column now shows the correct date — day and
+  month are no longer swapped (the value was formatted to a locale string
+  and then re-parsed ambiguously).
+- Deals overview "Bot Name" falls back to the loaded bot's name when the
+  deal record doesn't carry one, instead of rendering a bare "—".
+- Deals overview "Bot Name" column is wider and shows the full name on
+  hover, so longer bot names aren't cut off at ~15 characters.
+
 ## [2.10.25] - 2026-06-14
 
 ### Fixed
