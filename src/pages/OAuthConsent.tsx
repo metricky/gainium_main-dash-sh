@@ -4,12 +4,7 @@ import { Loader2, ShieldCheck } from 'lucide-react';
 
 import { useAuthStore } from '@/stores/authStore';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-} from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
@@ -50,6 +45,7 @@ function readParams(): ConsentParams {
 const OAuthConsent: React.FC = () => {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading, tokens } = useAuthStore();
+  // eslint-disable-next-line react-hooks/use-memo
   const params = useMemo(readParams, []);
 
   const writeRequested = params.scope.split(/\s+/).includes('write');
@@ -69,7 +65,8 @@ const OAuthConsent: React.FC = () => {
     }
   }, [isLoading, isAuthenticated, navigate]);
 
-  const invalid = !params.clientId || !params.redirectUri || !params.codeChallenge;
+  const invalid =
+    !params.clientId || !params.redirectUri || !params.codeChallenge;
 
   async function submit(approved: boolean) {
     setSubmitting(true);
@@ -84,7 +81,8 @@ const OAuthConsent: React.FC = () => {
         body: JSON.stringify({
           client_id: params.clientId,
           redirect_uri: params.redirectUri,
-          scope: approved && writeRequested && allowWrite ? params.scope : 'read',
+          scope:
+            approved && writeRequested && allowWrite ? params.scope : 'read',
           code_challenge: params.codeChallenge,
           code_challenge_method: params.codeChallengeMethod,
           state: params.state,
@@ -95,7 +93,9 @@ const OAuthConsent: React.FC = () => {
       });
       const data = await res.json();
       if (!res.ok || data.error) {
-        setError(data.error_description || data.error || 'Authorization failed');
+        setError(
+          data.error_description || data.error || 'Authorization failed'
+        );
         setSubmitting(false);
         return;
       }
