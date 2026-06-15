@@ -378,6 +378,11 @@ export function useInitializeWidget({
           'volume_force_overlay',
           'create_volume_indicator_by_default',
           'create_volume_indicator_by_default_once',
+          // Disable TradingView's built-in Google Analytics usage telemetry
+          // (gated on featureset '14851' inside library.js — it loads
+          // analytics.js / UA-112911840-1 for ~2% of chart loads). We use
+          // PostHog exclusively, so opt out of Google Analytics entirely.
+          '14851',
         ],
         enabled_features: [
           // In TV CL v28.5 the chunk that reads `disabledFeatures` / `enabledFeatures`

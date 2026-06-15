@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.30] - 2026-06-15
+
+### Changed
+
+- Disable TradingView's built-in Google Analytics usage telemetry on the chart widget (it sent anonymized pageviews to a TradingView Google Analytics property). Analytics is handled exclusively through PostHog.
+
 ## [2.10.29] - 2026-06-15
 
 ### Changed
