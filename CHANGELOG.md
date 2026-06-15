@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.28] - 2026-06-16
+
+### Fixed
+
+- Bot performance chart: data points are now sorted by time, so the Equity / Realized Profit / Buy & Hold lines no longer zigzag and "Realized Profit" no longer appears to fall over time (the backend serves the points unsorted).
+- Bot performance chart: the "Realized Profit" line and its hover tooltip now show the true realized profit (starting at 0) instead of a value offset by the bot's starting balance, and the right-hand axis it is plotted against is now visible — so the plotted line and the info box value finally agree.
+
 ## [2.10.27] - 2026-06-16
 
 ### Fixed

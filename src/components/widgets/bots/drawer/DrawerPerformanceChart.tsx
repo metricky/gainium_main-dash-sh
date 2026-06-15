@@ -141,31 +141,47 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
   // Generate chart data - use same data source as card for consistency
   // Falls back to profitChartData API when stats.chart is insufficient
   const chartData = useMemo(() => {
-    const chartSource = (() => {
+    // The backend seeds the chart's `realizedProfit` at the starting balance and
+    // accumulates realized PnL on top of it, so the series shares the equity
+    // scale (a legacy single-axis trick). Recover the *true* realized profit by
+    // removing that starting-balance offset; equity and buyAndHold are genuine
+    // portfolio values and stay absolute, each on the left axis.
+    const startBalanceUsd =
+      liveStats?.numerical?.general?.startBalance?.usd ??
+      (bot as DCABot)?.stats?.numerical?.general?.startBalance?.usd ??
+      0;
+
+    const { source: chartSource, realizedOffset } = (() => {
       if (Array.isArray(liveStats?.chart) && liveStats.chart.length > 1) {
-        return liveStats.chart;
+        return { source: liveStats.chart, realizedOffset: startBalanceUsd };
       }
       if (
         Array.isArray((bot as DCABot)?.stats?.chart) &&
         (bot as DCABot)?.stats?.chart?.length &&
         ((bot as DCABot).stats?.chart.length ?? 0) > 1
       ) {
-        return (bot as DCABot)?.stats?.chart;
+        return {
+          source: (bot as DCABot)?.stats?.chart,
+          realizedOffset: startBalanceUsd,
+        };
       }
       if (Array.isArray(initialChartData) && initialChartData.length > 0) {
-        return initialChartData;
+        return { source: initialChartData, realizedOffset: startBalanceUsd };
       }
-      // Fallback: use profitChartData API (returns {value, time} points)
-      // Convert to chart format with value as realizedProfit/equity
+      // Fallback: profitChartData returns pure per-deal values (already
+      // un-offset), so the starting-balance subtraction does not apply here.
       if (Array.isArray(profitChartData) && profitChartData.length > 0) {
-        return profitChartData.map((p: BotProfitDataPoint) => ({
-          time: p.time,
-          equity: p.value,
-          realizedProfit: p.value,
-          buyAndHold: 0,
-        }));
+        return {
+          source: profitChartData.map((p: BotProfitDataPoint) => ({
+            time: p.time,
+            equity: p.value,
+            realizedProfit: p.value,
+            buyAndHold: 0,
+          })),
+          realizedOffset: 0,
+        };
       }
-      return [];
+      return { source: [], realizedOffset: 0 };
     })();
 
     const sanitized = (chartSource ?? [])
@@ -185,14 +201,20 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
         return {
           equity: typeof point.equity === 'number' ? point.equity : 0,
           realizedProfit:
-            typeof point.realizedProfit === 'number' ? point.realizedProfit : 0,
+            typeof point.realizedProfit === 'number'
+              ? point.realizedProfit - realizedOffset
+              : 0,
           buyAndHold:
             typeof point.buyAndHold === 'number' ? point.buyAndHold : 0,
           time: timeValue,
           formattedTime: new Date(timeValue).toLocaleDateString(),
         };
       })
-      .filter((p: { time: number }) => Number.isFinite(p.time));
+      .filter((p: { time: number }) => Number.isFinite(p.time))
+      // The backend builds stats.chart via filter/push churn (and trims by
+      // insertion order, not time), so points arrive unsorted. Without this
+      // the lines zigzag and "Realized Profit" appears to fall over time.
+      .sort((a: { time: number }, b: { time: number }) => a.time - b.time);
 
     return sanitized;
   }, [bot, initialChartData, liveStats, profitChartData]);
@@ -401,11 +423,20 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                   yAxisId="profit"
                   orientation="right"
                   domain={['auto', 'auto']}
-                  tick={false}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(value) => formatCurrency(value, 0)}
-                  width={15}
+                  tick={{
+                    fontSize: 8,
+                    fill: isPositiveProfit ? colors.success : colors.destructive,
+                  }}
+                  tickLine={{
+                    stroke: isPositiveProfit ? colors.success : colors.destructive,
+                  }}
+                  axisLine={{
+                    stroke: isPositiveProfit ? colors.success : colors.destructive,
+                  }}
+                  tickFormatter={(value) =>
+                    privacyMode ? '***' : formatCurrency(value, 0)
+                  }
+                  width={28}
                 />
                 <Tooltip
                   content={
