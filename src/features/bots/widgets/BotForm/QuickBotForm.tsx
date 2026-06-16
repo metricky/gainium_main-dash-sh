@@ -65,6 +65,11 @@ const SummaryRow: React.FC<{ label: string; value: string }> = ({
  *  `split('/')` returns the whole pair as base. Prefer pairMetadata
  *  whenever it's available; only use this as a last resort. */
 const splitPair = (pair: string): [string, string] => {
+  // `formData.pair` is typed `string | string[]`, but malformed/legacy
+  // form state can surface a non-string element (e.g. a number), which
+  // would throw "pair.split is not a function" inside the calibration
+  // useMemos. Guard the crashing input so the Quick form stays mounted.
+  if (typeof pair !== 'string') return ['', ''];
   const [base = '', quote = ''] = pair.split('/');
   return [base, quote];
 };
