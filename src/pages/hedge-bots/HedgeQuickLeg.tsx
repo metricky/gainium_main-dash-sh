@@ -15,6 +15,7 @@ import {
   BotFormProvider,
   useBotFormSelector,
   useBotFormState,
+  type BotFormMode,
   type BotFormUpdateValue,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
@@ -103,13 +104,17 @@ const QuickLegChartPublisher: React.FC = () => {
  * `footerOverride`.
  */
 export const HedgeQuickFooter: React.FC<{
-  footerOverride: Partial<BotFormFooterProps>;
-}> = ({ footerOverride }) => {
+  footerOverride: Partial<BotFormFooterProps> & { activeDeals?: number };
+  /** Force the footer's create/edit mode (the shared-settings tab mounts a
+   *  throwaway create provider but still needs the edit footer in edit mode:
+   *  Save + start/stop instead of Create). Falls back to the provider mode. */
+  modeOverride?: BotFormMode;
+}> = ({ footerOverride, modeOverride }) => {
   const { formData, errors, mode } = useBotFormState();
   const { currentExchange } = useBotFormQuery();
   return (
     <BotFormFooter
-      mode={mode}
+      mode={modeOverride ?? mode}
       errors={errors}
       formData={formData}
       botType={BotTypesEnum.dca}
@@ -134,7 +139,71 @@ export const HedgeQuickFooter: React.FC<{
       hideTemplates={footerOverride.hideTemplates ?? true}
       showCredits={!!footerOverride.showCredits}
       creditsMultiplier={footerOverride.creditsMultiplier ?? 2}
+      {...(footerOverride.menuConfig !== undefined
+        ? { menuConfig: footerOverride.menuConfig }
+        : {})}
+      {...(footerOverride.onToggleStatus
+        ? { onToggleStatus: footerOverride.onToggleStatus }
+        : {})}
+      {...(footerOverride.botStatus !== undefined
+        ? { botStatus: footerOverride.botStatus }
+        : {})}
+      {...(footerOverride.toggleDisabled !== undefined
+        ? { toggleDisabled: footerOverride.toggleDisabled }
+        : {})}
+      {...(footerOverride.togglePending !== undefined
+        ? { togglePending: footerOverride.togglePending }
+        : {})}
+      {...(footerOverride.activeDeals !== undefined
+        ? { activeDealsOverride: footerOverride.activeDeals }
+        : {})}
     />
+  );
+};
+
+/**
+ * Mounts the BotFormProvider stack so a non-leg surface (the hedge tab with
+ * the shared TP/SL settings) can render the same BACKTEST + Create/Save
+ * footer the leg tabs have. The provider is a throwaway DCA context seeded
+ * with the long leg so the footer's credits + exchange read sensibly; the
+ * actual Save/Backtest/Start behaviour comes from `footerOverride` (the
+ * hedge handlers). `children` is the tab body, rendered above the footer.
+ */
+export const HedgeFooterShell: React.FC<{
+  widgetId: string;
+  mode: BotFormMode;
+  footerOverride: Partial<BotFormFooterProps> & { activeDeals?: number };
+  initialFormData?: Partial<BotFormData> | undefined;
+  children: ReactNode;
+}> = ({ widgetId, mode, footerOverride, initialFormData, children }) => {
+  const experience = tryGetBotExperience(BotTypesEnum.dca);
+  if (!experience) return null;
+
+  return (
+    <BotFormRegistryContext.Provider
+      value={{ botExperience: experience, widgetId }}
+    >
+      <BotFormProvider
+        mode="create"
+        botType={BotTypesEnum.dca}
+        isNestedLeg
+        {...(initialFormData ? { initialFormData } : {})}
+      >
+        <BotFormQueryProvider mode="create">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-md">
+              {children}
+            </div>
+            <div className="shrink-0 pt-2">
+              <HedgeQuickFooter
+                footerOverride={footerOverride}
+                modeOverride={mode}
+              />
+            </div>
+          </div>
+        </BotFormQueryProvider>
+      </BotFormProvider>
+    </BotFormRegistryContext.Provider>
   );
 };
 

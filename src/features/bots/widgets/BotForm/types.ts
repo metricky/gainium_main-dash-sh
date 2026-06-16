@@ -129,6 +129,12 @@ export interface BotFormProps {
      *  for a hedge points at the leg's own counter — but a hedge stop
      *  applies to *both* legs, so the layout passes the summed count. */
     activeDeals?: number;
+    /** Replace the footer's overflow (⋮) menu items. The leg's own menu is
+     *  leg-scoped (import/export/reset of a single leg); the hedge layout
+     *  supplies hedge-level items (import/export both legs + shared, reset
+     *  the whole hedge, save/load hedge templates) here instead. When
+     *  provided (including `null`) it wins over the leg's computed menu. */
+    menuConfig?: PanelMenuConfig | null;
   };
   onCollapse?: () => void;
   onTabMove?: (

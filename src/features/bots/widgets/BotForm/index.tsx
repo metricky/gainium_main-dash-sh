@@ -3674,7 +3674,13 @@ const BotForm: React.FC<BotFormProps> = ({
                 }
                 botStatus={footerOverride?.botStatus ?? bot?.status ?? null}
                 bot={botForOperations}
-                menuConfig={variant === 'panel' ? panelMenuConfig : null}
+                menuConfig={
+                  footerOverride?.menuConfig !== undefined
+                    ? footerOverride.menuConfig
+                    : variant === 'panel'
+                      ? panelMenuConfig
+                      : null
+                }
                 showCredits={
                   footerOverride?.showCredits ??
                   (mode === 'create' &&
@@ -4085,7 +4091,11 @@ const BotForm: React.FC<BotFormProps> = ({
             }
             botStatus={footerOverride?.botStatus ?? bot?.status ?? null}
             bot={botForOperations}
-            menuConfig={panelMenuConfig}
+            menuConfig={
+              footerOverride?.menuConfig !== undefined
+                ? footerOverride.menuConfig
+                : panelMenuConfig
+            }
             showCredits={
               footerOverride?.showCredits ??
               (mode === 'create' && !(isTerminal && isTerminalSimpleSelected))
