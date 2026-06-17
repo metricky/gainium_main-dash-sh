@@ -799,14 +799,16 @@ const Navbar: React.FC<NavbarProps> = ({
                           <span>Subscription</span>
                         </div>
                       </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onSelect={() => handleNavigate('/affiliate')}
-                      >
-                        <div className="flex items-center gap-xs">
-                          <Users className="h-4 w-4" />
-                          <span>Affiliate</span>
-                        </div>
-                      </DropdownMenuItem>
+                      {!user?.isEuRegion && (
+                        <DropdownMenuItem
+                          onSelect={() => handleNavigate('/affiliate')}
+                        >
+                          <div className="flex items-center gap-xs">
+                            <Users className="h-4 w-4" />
+                            <span>Affiliate</span>
+                          </div>
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         onSelect={() => handleNavigate('/rewards')}
                       >

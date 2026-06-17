@@ -71,6 +71,7 @@ export interface User {
     earnProfit: boolean | null;
   } | null;
   paperContext: boolean | null;
+  isEuRegion?: boolean | null;
   affiliate: {
     affiliateId: string | null;
     totalBonuses: number | null;

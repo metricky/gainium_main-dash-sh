@@ -85,6 +85,7 @@ const CLOUD_USER_FIELDS = IS_CLOUD
                                 }
                                 importAsPaper
                                 switchPaperIcon
+                                isEuRegion
                                 affiliate {
                                   affiliateId
                                   totalBonuses
