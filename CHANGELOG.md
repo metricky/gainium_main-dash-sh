@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-06-17
+
+### Added
+
+- Login & Security: "Allowed Login Methods" — choose which methods (password, Google, email link, passkey) can sign in to your account. Disabling a method blocks it everywhere; at least one method must stay enabled. (Cloud only.)
+
+### Fixed
+
+- Two-Factor Authentication: the setup flow now shows the scannable QR code (previously only the secret key was shown).
+- Two-Factor Authentication: the 2FA toggle now reflects the real enabled state — the user query now fetches `otp.otp_enabled`, so enabling 2FA (in either dashboard) is reflected on refresh/login instead of always appearing off.
+
 ## [2.11.1] - 2026-06-17
 
 ### Changed

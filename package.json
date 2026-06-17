@@ -1,7 +1,7 @@
 {
   "name": "@gainium/main-dash-sh",
   "private": false,
-  "version": "2.11.1",
+  "version": "2.12.0",
   "description": "Gainium self-hosted dashboard. React + TS UI with feature flags and a license-key gate for premium features.",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -73,6 +73,7 @@
     "react-error-boundary": "^6.0.1",
     "react-grid-layout": "^1.5.2",
     "react-markdown": "^10.1.0",
+    "react-qr-code": "^2.2.0",
     "react-resizable-panels": "^3.0.6",
     "react-router-dom": "^7.9.6",
     "recharts": "^3.5.1",

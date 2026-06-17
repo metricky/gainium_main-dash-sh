@@ -6,6 +6,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { logger } from '@/lib/loggerInstance';
 
+// Per-user allowed login methods (cloud-only). Missing when the backend
+// doesn't expose the field (self-hosted) — treat absent as all-allowed.
+export interface AllowedLoginMethods {
+  password: boolean;
+  google: boolean;
+  emailLink: boolean;
+  passkey: boolean;
+}
+
 // Types for user settings - matches full user query response
 export interface UserSettingsData {
   _id: string;
@@ -24,6 +33,7 @@ export interface UserSettingsData {
   otp?: {
     otp_enabled: boolean;
   };
+  allowedLoginMethods?: AllowedLoginMethods;
   apiKeys?: Array<{
     _id: string;
     created: string;
@@ -213,6 +223,56 @@ export function useUpdateTimezone() {
       logger.error('Failed to update timezone', {
         error: error instanceof Error ? error.message : 'Unknown error',
         variables,
+      });
+    },
+  });
+}
+
+/**
+ * Hook for updating the per-user allowed login methods (cloud-only).
+ * The backend rejects sets that would lock the user out; surface that
+ * reason to the caller so the UI can revert the optimistic toggle.
+ */
+export function useSetAllowedLoginMethods() {
+  const { tokens } = useAuthStore();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: AllowedLoginMethods) => {
+      if (!tokens?.accessToken) {
+        throw new Error('No authentication token available');
+      }
+
+      const endpoint =
+        import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+      const client = new GraphQLClient(endpoint, tokens.accessToken);
+
+      const { query, variables } =
+        GraphQlQuery.setAllowedLoginMethods(input);
+
+      const result = await client.request<{
+        setAllowedLoginMethods: ReturnResult<AllowedLoginMethods>;
+      }>(query, variables);
+
+      if (result.setAllowedLoginMethods.status !== 'OK') {
+        throw new Error(
+          result.setAllowedLoginMethods.reason ||
+            'Failed to update login methods'
+        );
+      }
+
+      return result.setAllowedLoginMethods.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'user' ||
+          query.queryKey[0] === 'user-settings',
+      });
+    },
+    onError: (error) => {
+      logger.error('Failed to update allowed login methods', {
+        error: error instanceof Error ? error.message : 'Unknown error',
       });
     },
   });
