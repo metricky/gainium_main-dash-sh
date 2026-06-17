@@ -20,6 +20,7 @@ interface ConsentParams {
   codeChallenge: string;
   codeChallengeMethod: string;
   state?: string;
+  resource?: string;
 }
 
 function readParams(): ConsentParams {
@@ -32,6 +33,7 @@ function readParams(): ConsentParams {
     codeChallenge: q.get('code_challenge') ?? '',
     codeChallengeMethod: q.get('code_challenge_method') ?? 'S256',
     state: q.get('state') ?? undefined,
+    resource: q.get('resource') ?? undefined,
   };
 }
 
@@ -86,6 +88,7 @@ const OAuthConsent: React.FC = () => {
           code_challenge: params.codeChallenge,
           code_challenge_method: params.codeChallengeMethod,
           state: params.state,
+          resource: params.resource,
           approved,
           paper_context: approved && paperOnly ? true : undefined,
           bot_id: approved && botId.trim() ? botId.trim() : undefined,
