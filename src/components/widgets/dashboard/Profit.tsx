@@ -250,6 +250,13 @@ export const Profit: React.FC<ProfitProps> = ({
       }
     };
 
+    // parseDate can yield an Invalid Date when a result row carries a missing
+    // or malformed `date` (e.g. undefined timestamp, unparseable string). Calling
+    // toISOString() on an invalid Date throws "Invalid time value" and crashes
+    // the whole widget, so fall back to an empty tooltip date instead.
+    const safeISO = (d: Date): string =>
+      Number.isNaN(d.getTime()) ? '' : d.toISOString();
+
     // Create a map of existing data points
     const dataMap = new Map<string, number>();
     results.forEach((item: ProfitResultItem) => {
@@ -466,14 +473,14 @@ export const Profit: React.FC<ProfitProps> = ({
           month: 'short',
           day: 'numeric',
         });
-        fullDateForTooltip = date.toISOString();
+        fullDateForTooltip = safeISO(date);
       } else if (timeframe === 1) {
         // Weekly format
         const weekNum = String(item.date).split('-')[1];
         shortDate = `W${weekNum}`;
         label = `Week ${weekNum}, ${date.getFullYear()}`;
         // Use the Monday of the week for the tooltip
-        fullDateForTooltip = date.toISOString();
+        fullDateForTooltip = safeISO(date);
       } else if (timeframe === 2) {
         // Monthly format
         shortDate = date.toLocaleDateString('en-US', {
@@ -483,7 +490,7 @@ export const Profit: React.FC<ProfitProps> = ({
           month: 'long',
           year: 'numeric',
         });
-        fullDateForTooltip = date.toISOString();
+        fullDateForTooltip = safeISO(date);
       } else {
         // Total format
         shortDate = 'Total';

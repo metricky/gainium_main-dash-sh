@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.2] - 2026-06-18
+
+### Fixed
+
+- Overview: the Profit widget no longer crashes ("Invalid time value") when a profit row has a missing or malformed date — such rows now render with an empty tooltip date instead of taking down the widget.
+- Bot tables: fixed an infinite render loop ("Maximum update depth exceeded") in the data table's selected-rows tracking that could spike CPU on pages with selectable tables (e.g. bot edit panels).
+
 ## [2.12.1] - 2026-06-17
 
 ### Fixed
