@@ -1,5 +1,16 @@
 # Agent guide — main-dash-sh
 
+## 📚 Platform knowledge base
+
+A curated, auto-updated AI-agent knowledge base for the **whole Gainium platform** lives in the
+private repo **`gainium-0-knowledge`** (`github.com/aressanch/gainium-0-knowledge`).
+Local checkouts — Mac: `~/Git/Gainium Local/0-knowledge` · VPS: `/root/git/0-knowledge`.
+
+Consult it before non-trivial work: `ARCHITECTURE.md` (service graph + danger boundaries),
+`subsystems/<area>.md` (how each area works & breaks), `bug-patterns/`, `runbooks/`,
+`domain/glossary.md`. Query 3.7k historical bugs by symptom:
+`python3 <kb>/_raw/scripts/bugs.py find "<terms>"`. It is auto-enriched daily from agent session digests.
+
 This is the self-hosted Gainium dashboard. Public repo, FCL-1.0-Apache-2.0
 licensed. Cloud overlay (`main-dash-redesign`) consumes this repo as a
 `core/` submodule, so changes here ship to both self-hosted users and the
