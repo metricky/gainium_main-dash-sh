@@ -46,6 +46,18 @@ const CLOUD_CREDITS_SELECTION = IS_CLOUD
                                 }`
   : '';
 
+// Per-user allowed login methods. Backed by the cloud `main-app` resolver;
+// app-sh has no enforcement and doesn't expose the field, so gate behind
+// IS_CLOUD to avoid a 400 on self-hosted.
+const ALLOWED_LOGIN_METHODS_SELECTION = IS_CLOUD
+  ? `allowedLoginMethods {
+                                  password
+                                  google
+                                  emailLink
+                                  passkey
+                                }`
+  : '';
+
 // Cloud-only user fields. App-sh doesn't expose subscription, credits,
 // balance, affiliate, notifications, rewards, tg, alerts, etc. — those
 // belong to the paid SaaS layer. Requesting them on sh would 400, so
@@ -85,6 +97,7 @@ const CLOUD_USER_FIELDS = IS_CLOUD
                                 }
                                 importAsPaper
                                 switchPaperIcon
+                                isEuRegion
                                 affiliate {
                                   affiliateId
                                   totalBonuses
@@ -345,9 +358,13 @@ export const userQueries = {
                                 name
                                 lastName
                                 picture
+                                otp {
+                                    otp_enabled
+                                }
                                 ${LICENSE_KEY_SELECTION}
                                 ${DELETED_ACCOUNT_SELECTION}
                                 ${CLOUD_CREDITS_SELECTION}
+                                ${ALLOWED_LOGIN_METHODS_SELECTION}
                                 shouldOnBoard
                                 shouldOnBoardExchange
                                 apiKeys {
@@ -484,10 +501,34 @@ export const userQueries = {
     nickname?: string;
     adminRole?: boolean;
   }) => {
-    const query = `mutation setUserSettings($input: userSettingsInput!) { 
+    const query = `mutation setUserSettings($input: userSettingsInput!) {
                         userSettings(input: $input) {
                             status
                             reason
+                        }
+                    }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  // Cloud-only: per-user gate on allowed login methods. The backend
+  // validates >=1 enabled + lockout safety and returns the saved set.
+  setAllowedLoginMethods: (input: {
+    password: boolean;
+    google: boolean;
+    emailLink: boolean;
+    passkey: boolean;
+  }) => {
+    const query = `mutation setAllowedLoginMethods($input: allowedLoginMethodsInput!) {
+                        setAllowedLoginMethods(input: $input) {
+                            status
+                            reason
+                            data {
+                                password
+                                google
+                                emailLink
+                                passkey
+                            }
                         }
                     }`;
     const variables = { input };

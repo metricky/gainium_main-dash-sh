@@ -2860,7 +2860,13 @@ function DataTableComponent<TData, TValue>(
     });
 
     return selected;
-  }, [rowSelection, table, tableId]);
+    // `table` is intentionally omitted: react-table hands us a fresh `table`
+    // object on every render, so listing it here makes this memo recompute each
+    // render and feeds the toolbar a new array, driving a "Maximum update depth
+    // exceeded" loop (React #185). rowSelection/tableId are the real inputs; the
+    // memo reads the current table via closure when selection changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowSelection, tableId]);
 
   // Compute the visual column order from the table's header groups
   // This ensures SortableContext items match the actual rendered order

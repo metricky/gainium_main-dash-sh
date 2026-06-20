@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.3] - 2026-06-18
+
+### Fixed
+
+- New-bot page: the Quick setup no longer crashes ("split is not a function") and blanks out when the selected trading pair value is malformed (non-string) — the form stays mounted and usable.
+
+## [2.12.2] - 2026-06-18
+
+### Fixed
+
+- Overview: the Profit widget no longer crashes ("Invalid time value") when a profit row has a missing or malformed date — such rows now render with an empty tooltip date instead of taking down the widget.
+- Bot tables: fixed an infinite render loop ("Maximum update depth exceeded") in the data table's selected-rows tracking that could spike CPU on pages with selectable tables (e.g. bot edit panels).
+
+## [2.12.1] - 2026-06-17
+
+### Fixed
+
+- OAuth consent: forward the `resource` indicator to the authorization decision so the issued grant is bound to the target MCP resource. Combined with the backend scope clamp, the read-only connector (`mcp.gainium.io/read`) no longer shows or grants a write toggle.
+
+## [2.12.0] - 2026-06-17
+
+### Added
+
+- Login & Security: "Allowed Login Methods" — choose which methods (password, Google, email link, passkey) can sign in to your account. Disabling a method blocks it everywhere; at least one method must stay enabled. (Cloud only.)
+
+### Fixed
+
+- Two-Factor Authentication: the setup flow now shows the scannable QR code (previously only the secret key was shown).
+- Two-Factor Authentication: the 2FA toggle now reflects the real enabled state — the user query now fetches `otp.otp_enabled`, so enabling 2FA (in either dashboard) is reflected on refresh/login instead of always appearing off.
+
+## [2.11.1] - 2026-06-17
+
+### Changed
+
+- Affiliate program: hide the Affiliate page and nav entry for users in the EU (the program is not available there), driven by the new `isEuRegion` user flag.
+
+## [2.11.0] - 2026-06-16
+
+### Added
+
+- Hedge bots: Import / Export settings — export both legs plus the shared TP/SL settings to JSON (copy, download, or edit inline) and import them back, with a guard that rejects files from the wrong hedge type.
+- Hedge bots: a footer options (⋮) menu, matching regular bots — Reset to defaults, plus full template support (Save as template, Load template, and global template hotkeys).
+- Hedge bots: the Hedge (shared settings) tab now shows the same Backtest and Create/Save footer as the Long and Short leg tabs.
+
 ## [2.10.30] - 2026-06-15
 
 ### Changed

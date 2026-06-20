@@ -20,6 +20,7 @@
  *  - Create-from-template flow (`?load=<botId>`) still uses defaults; will
  *    use getHedge*BotSettings in a follow-up slice.
  */
+import { ArrowLeftRight, Bookmark, FolderOpen, RotateCcw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -30,8 +31,19 @@ import {
 } from '@/components/bots/panels';
 import { type PanelContentConfig } from '@/components/bots/panels/PanelContainer';
 import { Celebration } from '@/components/onboarding/Celebration';
+import { mapWidgetMenuItemsToPanelMenu } from '@/components/bots/panels/menuUtils';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import type { WidgetMenuActionItem } from '@/components/widgets/WidgetWrapper';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -42,6 +54,7 @@ import {
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import { useBotFormState } from '@/contexts/bots/form/BotFormProvider';
 import {
+  SHARED_SETTINGS_DEFAULTS,
   useHedgeBotForm,
   type HedgeLeg,
 } from '@/contexts/bots/form/HedgeBotFormProvider';
@@ -59,6 +72,8 @@ import {
   BacktestSettingsDialog,
   type BacktestConfig,
 } from '@/features/bots/widgets/BotForm/components/BacktestSettingsDialog';
+import { BotFormSaveTemplateDialog } from '@/features/bots/widgets/BotForm/components/BotFormSaveTemplateDialog';
+import { BotSettingsImportExportDialog } from '@/features/bots/widgets/BotForm/components/BotSettingsImportExportDialog';
 import { QuickModeToggle } from '@/features/bots/widgets/BotForm/components/QuickModeToggle';
 import {
   useHedgeBacktestRunner,
@@ -76,8 +91,13 @@ import {
 import { toast } from '@/lib/toast';
 import { mapFormDataToPayload } from '@/mappers/bots/dca/map-form-data-to-payload';
 import { useAuthStore } from '@/stores/authStore';
+import {
+  useBotTemplatesStore,
+  type BotTemplate,
+} from '@/stores/botTemplatesStore';
 import { useHedgeComboBotsStore } from '@/stores/live/hedgeComboBotsStore';
 import { useHedgeDcaBotsStore } from '@/stores/live/hedgeDcaBotsStore';
+import { useShortcutStore } from '@/stores/shortcutStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
   BotTypesEnum,
@@ -86,10 +106,14 @@ import {
   type ComboBot,
   type DCABot,
   type HedgeBot,
+  type HedgeBotSettings,
 } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 import HedgeChartPanel from './HedgeChartPanel';
-import HedgeQuickLeg, { HedgeQuickFooter } from './HedgeQuickLeg';
+import HedgeQuickLeg, {
+  HedgeFooterShell,
+  HedgeQuickFooter,
+} from './HedgeQuickLeg';
 
 /**
  * Publishes the active leg's current pair + exchangeUUID up to the outer
@@ -160,6 +184,7 @@ export const HedgeBotEditLayout: React.FC = () => {
     legBotType,
     botId,
     sharedSettings,
+    setSharedSettings,
     updateSharedSetting,
     longInitialFormData,
     shortInitialFormData,
@@ -1145,6 +1170,281 @@ export const HedgeBotEditLayout: React.FC = () => {
     [footerOverride, writeSeeds, handleSave]
   );
 
+  // ── Import / Export hedge settings ──────────────────────────────────
+  // A hedge bot is two leg BotFormData objects + sharedSettings. We
+  // serialize all three into a single envelope and reseed them on import.
+  // Legacy never shipped hedge import/export, so there's no external
+  // contract to match — we round-trip the redesign's own form shape for
+  // maximum fidelity (no lossy settings↔form mapping in the middle).
+  const [showImportExport, setShowImportExport] = useState(false);
+  const [importExportInitial, setImportExportInitial] = useState<
+    string | undefined
+  >(undefined);
+
+  const importExportLabel =
+    botType === BotTypesEnum.hedgeCombo ? 'Hedge Combo' : 'Hedge DCA';
+
+  // Read a leg's freshest BotFormData. Mirrors handleSave / the backtest
+  // snapshot: Quick mode publishes into *QuickRef, Manual's active leg
+  // into *FormDataRef, and the inactive leg falls back to its *SeedRef.
+  const readLegData = useCallback(
+    (leg: HedgeLeg): BotFormData | null => {
+      if (hedgeMode === 'quick') {
+        const live = leg === 'long' ? longQuickRef.current : shortQuickRef.current;
+        const seed = (
+          leg === 'long' ? longSeedRef.current : shortSeedRef.current
+        ) as BotFormData | null;
+        const base = live ?? seed ?? null;
+        if (!base) return null;
+        // Quick mode keeps Investment as a separate hedge-level field that's
+        // only folded into each leg's order size at submit time (see
+        // writeSeeds). Mirror that fold here so export + templates capture the
+        // investment the user actually entered, not the leg's default.
+        const investment = quickInvestment || '10';
+        return {
+          ...base,
+          dca: {
+            ...(base.dca ?? {}),
+            baseOrderSize: investment,
+            orderSize: investment,
+          },
+        } as BotFormData;
+      }
+      const ref = leg === 'long' ? longFormDataRef.current : shortFormDataRef.current;
+      const seed = (
+        leg === 'long' ? longSeedRef.current : shortSeedRef.current
+      ) as BotFormData | null;
+      return (activeTab === leg ? ref : (ref ?? seed)) ?? seed ?? null;
+    },
+    [hedgeMode, activeTab, quickInvestment]
+  );
+
+  const buildExportJson = useCallback((): string => {
+    const envelope = {
+      schemaVersion: 'hedge-1',
+      type: botType,
+      sharedSettings,
+      long: readLegData('long'),
+      short: readLegData('short'),
+    };
+    return JSON.stringify(envelope, null, 2);
+  }, [botType, sharedSettings, readLegData]);
+
+  const openImportExport = useCallback(() => {
+    setImportExportInitial(buildExportJson());
+    setShowImportExport(true);
+  }, [buildExportJson]);
+
+  const applyHedgeImport = useCallback(
+    (parsed: unknown) => {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('Unsupported JSON payload for import.');
+      }
+      const payload = parsed as Record<string, unknown>;
+
+      const importedType = payload['type'];
+      if (typeof importedType === 'string' && importedType !== botType) {
+        throw new Error(
+          `Imported settings target "${importedType}" but this form is for "${botType}".`
+        );
+      }
+
+      // Accept either the flat leg shape (`long: <BotFormData>`) or a
+      // `{ form: <BotFormData> }` wrapper, so a future enveloped export
+      // still imports cleanly.
+      const extractLeg = (value: unknown): Partial<BotFormData> | null => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+          return null;
+        }
+        const obj = value as Record<string, unknown>;
+        if (
+          obj['form'] &&
+          typeof obj['form'] === 'object' &&
+          !Array.isArray(obj['form'])
+        ) {
+          return obj['form'] as Partial<BotFormData>;
+        }
+        return obj as Partial<BotFormData>;
+      };
+
+      const longForm = extractLeg(payload['long']);
+      const shortForm = extractLeg(payload['short']);
+      if (!longForm || !shortForm) {
+        throw new Error(
+          'Imported JSON must include both "long" and "short" leg settings.'
+        );
+      }
+
+      const importedShared = payload['sharedSettings'];
+      if (
+        importedShared &&
+        typeof importedShared === 'object' &&
+        !Array.isArray(importedShared)
+      ) {
+        setSharedSettings({
+          ...sharedSettings,
+          ...(importedShared as Partial<HedgeBotSettings>),
+        });
+      }
+
+      // Pin each leg's strategy so the seed lines up with its tab even if
+      // the source file had it wrong (the per-leg publisher also corrects
+      // this on mount, but seeding it avoids a flash of the wrong side).
+      const withStrategy = (
+        form: Partial<BotFormData>,
+        strategy: StrategyEnum
+      ): Partial<BotFormData> => {
+        const next = { ...form } as Record<string, unknown>;
+        if (next['dca'] && typeof next['dca'] === 'object') {
+          next['dca'] = { ...(next['dca'] as object), strategy };
+        }
+        if (next['combo'] && typeof next['combo'] === 'object') {
+          next['combo'] = { ...(next['combo'] as object), strategy };
+        }
+        return next as Partial<BotFormData>;
+      };
+
+      longSeedRef.current = withStrategy(longForm, StrategyEnum.long);
+      shortSeedRef.current = withStrategy(shortForm, StrategyEnum.short);
+
+      // Force Manual so the full imported config is visible/editable, then
+      // remount both leg widgets (the widgetIds include quickSeedSeq) so
+      // they pick up the new seeds — same mechanism Quick presets use.
+      setHedgeMode('manual');
+      setActiveTab('long');
+      setQuickSeedSeq((n) => n + 1);
+    },
+    [botType, sharedSettings, setSharedSettings]
+  );
+
+  // ── Templates (save / load / hotkeys) ───────────────────────────────
+  // Full template integration for hedge: a hedge template stores both legs
+  // + shared settings (see HedgeTemplatePayload). Save goes through the
+  // shared BotFormSaveTemplateDialog (with the hedge payload); load + the
+  // global template hotkeys reseed both legs here.
+  const [showSaveTemplate, setShowSaveTemplate] = useState(false);
+  const [showLoadTemplate, setShowLoadTemplate] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const allTemplates = useBotTemplatesStore((s) => s.templates);
+  const deleteTemplate = useBotTemplatesStore((s) => s.deleteTemplate);
+  const hedgeTemplates = useMemo(
+    () => allTemplates.filter((t) => t.botType === botType && t.hedge),
+    [allTemplates, botType]
+  );
+
+  // Full hedge config for "Save as template": both legs + shared settings.
+  // The dialog's `currentFormData` (back-compat field) gets the long leg.
+  const buildHedgeTemplatePayload = useCallback(
+    () => ({
+      long: (readLegData('long') ?? {}) as Partial<BotFormData>,
+      short: (readLegData('short') ?? {}) as Partial<BotFormData>,
+      sharedSettings,
+    }),
+    [readLegData, sharedSettings]
+  );
+
+  // Reseed both legs + shared from a saved hedge template. Mirrors the
+  // import path: force Manual so the full config shows, then remount.
+  const applyHedgeTemplate = useCallback(
+    (template: BotTemplate) => {
+      if (!template.hedge) return;
+      longSeedRef.current = template.hedge.long;
+      shortSeedRef.current = template.hedge.short;
+      setSharedSettings({
+        ...SHARED_SETTINGS_DEFAULTS,
+        ...template.hedge.sharedSettings,
+      });
+      setHedgeMode('manual');
+      setActiveTab('long');
+      setQuickSeedSeq((n) => n + 1);
+      setShowLoadTemplate(false);
+      toast.success(`Template "${template.name}" loaded`);
+    },
+    [setSharedSettings]
+  );
+
+  // Global template hotkeys dispatch `bot-template-load` with the template
+  // id. The standard BotForm listener ignores hedge types (it gates on
+  // dca/combo/grid), so hedge templates are applied here instead.
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as { id?: string } | undefined;
+      if (!detail?.id) return;
+      const template = useBotTemplatesStore.getState().getTemplate(detail.id);
+      if (!template || template.botType !== botType || !template.hedge) return;
+      applyHedgeTemplate(template);
+    };
+    window.addEventListener('bot-template-load', handler as EventListener);
+    return () =>
+      window.removeEventListener('bot-template-load', handler as EventListener);
+  }, [botType, applyHedgeTemplate]);
+
+  // Reset the whole hedge to catalog defaults: clear both leg seeds (so the
+  // remounted BotFormProviders initialise from defaults) and restore shared
+  // settings. Create-mode only — matches the standalone bot footer, where
+  // Reset is disabled in edit mode.
+  const handleHedgeReset = useCallback(() => {
+    longSeedRef.current = undefined;
+    shortSeedRef.current = undefined;
+    longQuickRef.current = null;
+    shortQuickRef.current = null;
+    longFormDataRef.current = null;
+    shortFormDataRef.current = null;
+    setSharedSettings({ ...SHARED_SETTINGS_DEFAULTS });
+    setQuickInvestment('10');
+    setSelectedHedgePreset(null);
+    setActiveTab('long');
+    setQuickSeedSeq((n) => n + 1);
+    toast.success('Settings reset to defaults');
+  }, [setSharedSettings]);
+
+  // Footer overflow (⋮) menu — hedge-level actions replacing the leg's own
+  // leg-scoped menu. Mirrors the standalone bot footer (Import/Export,
+  // Reset, Save as template) plus a Load entry since hedge has no Quick
+  // template picker.
+  const hedgeFooterMenuConfig = useMemo(() => {
+    const items: WidgetMenuActionItem[] = [
+      {
+        label: 'Import / Export settings',
+        icon: ArrowLeftRight,
+        onSelect: openImportExport,
+      },
+      {
+        label: 'Reset to defaults',
+        icon: RotateCcw,
+        onSelect: () => setShowResetConfirm(true),
+        disabled: mode === 'edit',
+      },
+      {
+        label: 'Save as template',
+        icon: Bookmark,
+        onSelect: () => setShowSaveTemplate(true),
+      },
+      {
+        label: 'Load template',
+        icon: FolderOpen,
+        onSelect: () => setShowLoadTemplate(true),
+        disabled: hedgeTemplates.length === 0,
+      },
+    ];
+    return mapWidgetMenuItemsToPanelMenu(items, {
+      triggerAriaLabel: 'Hedge bot options',
+      idPrefix: 'hedge-form-menu',
+    });
+  }, [openImportExport, mode, hedgeTemplates.length]);
+
+  // Inject the hedge menu into the leg footers (footerOverride/quick are
+  // defined above without it).
+  const footerOverrideWithMenu = useMemo(
+    () => ({ ...footerOverride, menuConfig: hedgeFooterMenuConfig }),
+    [footerOverride, hedgeFooterMenuConfig]
+  );
+  const quickFooterOverrideWithMenu = useMemo(
+    () => ({ ...quickFooterOverride, menuConfig: hedgeFooterMenuConfig }),
+    [quickFooterOverride, hedgeFooterMenuConfig]
+  );
+
   const hedgeQuickContent = (
     <div className="flex h-full min-h-0 flex-col">
       <HedgeQuickLeg
@@ -1154,7 +1454,9 @@ export const HedgeBotEditLayout: React.FC = () => {
           ? { initialFormData: longSeedRef.current }
           : {})}
         formDataRef={longQuickRef}
-        footerSlot={<HedgeQuickFooter footerOverride={quickFooterOverride} />}
+        footerSlot={
+          <HedgeQuickFooter footerOverride={quickFooterOverrideWithMenu} />
+        }
       >
         <HedgeQuickLeg
           legId="short"
@@ -1282,7 +1584,17 @@ export const HedgeBotEditLayout: React.FC = () => {
 
           <div className="flex min-h-0 flex-1 flex-col">
             {activeTab === 'hedge' ? (
-              hedgeSharedContent
+              <HedgeFooterShell
+                key={`hedge-shared-${botType}-${botId ?? 'new'}-${postSaveSeq}-${quickSeedSeq}`}
+                widgetId={`hedge-shared-${botType}-${botId ?? 'new'}-${postSaveSeq}-${quickSeedSeq}`}
+                mode={mode}
+                footerOverride={footerOverrideWithMenu}
+                {...(longSeedRef.current
+                  ? { initialFormData: longSeedRef.current }
+                  : {})}
+              >
+                {hedgeSharedContent}
+              </HedgeFooterShell>
             ) : !seedReady ? (
               <div className="px-md py-lg text-sm text-muted-foreground">
                 {loadError
@@ -1302,7 +1614,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 formDataRef={longFormDataRef}
                 forceSubmitDisabled
                 isNestedLeg
-                footerOverride={footerOverride}
+                footerOverride={footerOverrideWithMenu}
                 initialBot={longLegBot}
                 innerSlot={<HedgeLegActiveChartPublisher leg="long" />}
                 {...(longSeedRef.current
@@ -1320,7 +1632,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 formDataRef={shortFormDataRef}
                 forceSubmitDisabled
                 isNestedLeg
-                footerOverride={footerOverride}
+                footerOverride={footerOverrideWithMenu}
                 initialBot={shortLegBot}
                 innerSlot={<HedgeLegActiveChartPublisher leg="short" />}
                 {...(shortSeedRef.current
@@ -1449,6 +1761,100 @@ export const HedgeBotEditLayout: React.FC = () => {
           }}
         />
       )}
+
+      <BotSettingsImportExportDialog
+        open={showImportExport}
+        onOpenChange={setShowImportExport}
+        botTypeLabel={importExportLabel}
+        mode={mode}
+        initialJson={importExportInitial}
+        onImport={({ parsed }) => {
+          applyHedgeImport(parsed);
+        }}
+        onExport={() => buildExportJson()}
+      />
+
+      {showSaveTemplate && (
+        <BotFormSaveTemplateDialog
+          open
+          onOpenChange={setShowSaveTemplate}
+          botType={botType}
+          currentFormData={(readLegData('long') ?? {}) as Partial<BotFormData>}
+          hedge={buildHedgeTemplatePayload()}
+        />
+      )}
+
+      <Dialog open={showLoadTemplate} onOpenChange={setShowLoadTemplate}>
+        <DialogContent className="sm:max-w-md max-w-[95vw]">
+          <DialogHeader>
+            <DialogTitle>Load {importExportLabel} template</DialogTitle>
+            <DialogDescription>
+              Applies a saved template to both legs and the shared settings.
+              This replaces the current form — review before saving.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-80 overflow-y-auto py-1">
+            {hedgeTemplates.length === 0 ? (
+              <p className="px-sm py-6 text-center text-sm text-muted-foreground">
+                No saved {importExportLabel} templates yet.
+              </p>
+            ) : (
+              hedgeTemplates.map((t) => (
+                <div
+                  key={t.id}
+                  className="group flex items-center gap-sm rounded-sm pr-1 text-left text-sm hover:bg-muted"
+                >
+                  <button
+                    type="button"
+                    onClick={() => applyHedgeTemplate(t)}
+                    className="flex min-w-0 flex-1 items-center gap-sm px-sm py-2"
+                  >
+                    <Bookmark className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium">{t.name}</div>
+                      {t.description && (
+                        <div className="truncate text-xs text-muted-foreground">
+                          {t.description}
+                        </div>
+                      )}
+                    </div>
+                    {t.shortcut && (
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {t.shortcut}
+                      </span>
+                    )}
+                  </button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                    aria-label={`Delete template ${t.name}`}
+                    onClick={() => {
+                      deleteTemplate(t.id);
+                      useShortcutStore
+                        .getState()
+                        .deleteShortcut(`bot-template-${t.id}`);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmationDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        title="Reset to defaults?"
+        description="This resets both legs and the shared hedge settings to their defaults and cannot be undone."
+        confirmText="Reset"
+        variant="destructive"
+        onConfirm={handleHedgeReset}
+      />
 
       <Celebration
         open={showCelebration}

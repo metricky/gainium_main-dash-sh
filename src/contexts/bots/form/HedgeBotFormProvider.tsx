@@ -55,7 +55,7 @@ export type HedgeBotType = BotTypesEnum.hedgeDca | BotTypesEnum.hedgeCombo;
 
 export type HedgeLeg = 'long' | 'short';
 
-const SHARED_SETTINGS_DEFAULTS: HedgeBotSettings = {
+export const SHARED_SETTINGS_DEFAULTS: HedgeBotSettings = {
   useTp: false,
   tpPerc: '0',
   useSl: false,

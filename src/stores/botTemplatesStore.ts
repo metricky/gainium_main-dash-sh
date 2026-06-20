@@ -1,10 +1,24 @@
 import { logger } from '@/lib/loggerInstance';
 import { getBotTemplatesPouchDB } from '@/lib/pouchdb/botTemplates';
 import { useShortcutStore } from '@/stores/shortcutStore';
-import { BotTypesEnum } from '@/types';
+import { BotTypesEnum, type HedgeBotSettings } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
+
+/**
+ * A hedge template can't be a single `formData` slice the way dca/combo/grid
+ * templates are — a hedge bot is two leg forms plus a shared-settings object.
+ * When `botType` is `hedgeDca`/`hedgeCombo`, the full configuration lives here
+ * and `formData` carries the long leg only (kept for back-compat with any
+ * generic code that reads `formData`). The hedge edit layout reseeds both legs
+ * + shared settings from this payload on load.
+ */
+export interface HedgeTemplatePayload {
+  long: Partial<BotFormData>;
+  short: Partial<BotFormData>;
+  sharedSettings: HedgeBotSettings;
+}
 
 export interface BotTemplate {
   id: string;
@@ -12,6 +26,8 @@ export interface BotTemplate {
   description?: string;
   botType: BotTypesEnum;
   formData: Partial<BotFormData>;
+  /** Present only for hedge templates (botType hedgeDca/hedgeCombo). */
+  hedge?: HedgeTemplatePayload;
   shortcut?: string; // e.g., "Ctrl+1", "Cmd+1"
   createdAt: number;
   updatedAt: number;
@@ -33,6 +49,7 @@ interface BotTemplatesActions {
       description?: string;
       shortcut?: string;
       isFavorite?: boolean;
+      hedge?: HedgeTemplatePayload;
     }
   ) => BotTemplate;
 
@@ -76,6 +93,7 @@ export const useBotTemplatesStore = create<BotTemplatesStore>()(
             name,
             botType,
             formData,
+            ...(options?.hedge ? { hedge: options.hedge } : {}),
             ...(options?.description
               ? { description: options.description }
               : {}),
@@ -216,6 +234,7 @@ export const useBotTemplatesStore = create<BotTemplatesStore>()(
             {
               description: template.description,
               isFavorite: false,
+              ...(template.hedge ? { hedge: template.hedge } : {}),
             }
           );
 

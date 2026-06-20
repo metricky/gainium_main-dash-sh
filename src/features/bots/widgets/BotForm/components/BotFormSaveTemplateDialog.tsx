@@ -9,7 +9,10 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { useBotTemplatesStore } from '@/stores/botTemplatesStore';
+import {
+  useBotTemplatesStore,
+  type HedgeTemplatePayload,
+} from '@/stores/botTemplatesStore';
 import { areShortcutKeysEqual, useShortcutStore } from '@/stores/shortcutStore';
 import { BotTypesEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
@@ -21,6 +24,12 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   botType: BotTypesEnum;
   currentFormData: Partial<BotFormData>;
+  /**
+   * Hedge templates carry both legs + shared settings here. When present it's
+   * stored on the template so the hedge edit layout can reseed both legs on
+   * load; `currentFormData` then holds the long leg only (for back-compat).
+   */
+  hedge?: HedgeTemplatePayload;
 }
 
 /**
@@ -39,6 +48,7 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
   onOpenChange,
   botType,
   currentFormData,
+  hedge,
 }) => {
   const saveTemplate = useBotTemplatesStore((s) => s.saveTemplate);
   const updateTemplate = useBotTemplatesStore((s) => s.updateTemplate);
@@ -73,6 +83,7 @@ export const BotFormSaveTemplateDialog: React.FC<Props> = ({
       {
         description: templateDescription || undefined,
         isFavorite: false,
+        ...(hedge ? { hedge } : {}),
       }
     );
 

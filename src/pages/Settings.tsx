@@ -58,6 +58,7 @@ import { Switch } from '../components/ui/switch';
 import { InfoIcon, Tooltip } from '../components/ui/tooltip';
 import VisualSettings from '../components/VisualSettings';
 import PasskeyManager from '../components/auth/PasskeyManager';
+import QRCode from 'react-qr-code';
 import {
   Dialog,
   DialogBody,
@@ -73,7 +74,11 @@ import {
 import { useAPIKeysOperations } from '../hooks/useAPIKeys';
 import { useLicenseKeyOperations } from '../hooks/useLicenseKey';
 import { usePasswordOperations } from '../hooks/usePasswordChange';
-import { useUserSettingsOperations } from '../hooks/useUserSettings';
+import {
+  useUserSettingsOperations,
+  useSetAllowedLoginMethods,
+  type AllowedLoginMethods,
+} from '../hooks/useUserSettings';
 import logger from '../lib/loggerInstance';
 import { toast } from '../lib/toast';
 import { useLocalUserSettingsStore } from '../stores/localUserSettingsStore';
@@ -314,6 +319,7 @@ const Settings: React.FC = () => {
   const regenerateRecoveryCodes = useRegenerateRecoveryCodes();
   const apiKeysOps = useAPIKeysOperations();
   const licenseKeyOps = useLicenseKeyOperations();
+  const setAllowedLoginMethods = useSetAllowedLoginMethods();
 
   // Regenerate-recovery-codes dialog state.
   // Pending API-key action driving the React rename/restrict/delete dialogs
@@ -820,9 +826,120 @@ const Settings: React.FC = () => {
   const renderLoginSecurity = () => {
     const is2FAEnabled = user?.otp?.otp_enabled || false;
 
+    // Per-user allowed login methods (cloud-only). Absent field => all
+    // allowed (the backend default), so coerce undefined to true.
+    const allowedMethods: AllowedLoginMethods = {
+      password: user?.allowedLoginMethods?.password !== false,
+      google: user?.allowedLoginMethods?.google !== false,
+      emailLink: user?.allowedLoginMethods?.emailLink !== false,
+      passkey: user?.allowedLoginMethods?.passkey !== false,
+    };
+    const enabledMethodCount =
+      Object.values(allowedMethods).filter(Boolean).length;
+    const loginMethodMeta: {
+      key: keyof AllowedLoginMethods;
+      label: string;
+      description: string;
+    }[] = [
+      {
+        key: 'password',
+        label: 'Password',
+        description: 'Sign in with your email and password.',
+      },
+      {
+        key: 'google',
+        label: 'Google',
+        description: 'Sign in with your linked Google account.',
+      },
+      {
+        key: 'emailLink',
+        label: 'Email link',
+        description:
+          'Sign in with a one-time link sent to your email — no password.',
+      },
+      {
+        key: 'passkey',
+        label: 'Passkey',
+        description:
+          'Sign in with a passkey (Face ID, fingerprint, or security key).',
+      },
+    ];
+    const handleToggleLoginMethod = (
+      key: keyof AllowedLoginMethods,
+      next: boolean
+    ) => {
+      // Never let the user disable the last remaining method. The backend
+      // also enforces this (and a stronger lockout guard), but blocking
+      // here avoids a doomed round-trip.
+      if (!next && enabledMethodCount <= 1) {
+        toast.error('At least one login method must stay enabled.');
+        return;
+      }
+      const desired: AllowedLoginMethods = { ...allowedMethods, [key]: next };
+      setAllowedLoginMethods.mutate(desired, {
+        onSuccess: () => toast.success('Login methods updated'),
+        onError: (err) =>
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : 'Failed to update login methods'
+          ),
+      });
+    };
+
     return (
       <div className="max-w-4xl">
         <div className={`grid ${pageGap}`}>
+          {/* Allowed Login Methods Card — cloud-only (enforcement lives in
+              the cloud backend; self-hosted has no per-user gate yet). */}
+          {IS_CLOUD && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-xs text-primary">
+                  <Shield className="w-4 h-4" />
+                  Allowed Login Methods
+                  {setAllowedLoginMethods.isPending && (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-md">
+                <p className="text-sm text-muted-foreground">
+                  Choose which methods can sign in to your account. Disabling a
+                  method blocks it everywhere — at least one must stay enabled.
+                </p>
+                {loginMethodMeta.map((m) => {
+                  const checked = allowedMethods[m.key];
+                  const isLastEnabled = checked && enabledMethodCount <= 1;
+                  return (
+                    <div
+                      key={m.key}
+                      className="flex items-center justify-between gap-md"
+                    >
+                      <div className="space-y-xs">
+                        <Label className="text-muted-foreground uppercase text-xs tracking-wider">
+                          {m.label}
+                        </Label>
+                        <p className="text-sm text-muted-foreground">
+                          {m.description}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={checked}
+                        disabled={
+                          setAllowedLoginMethods.isPending || isLastEnabled
+                        }
+                        onCheckedChange={(next) =>
+                          handleToggleLoginMethod(m.key, next)
+                        }
+                      />
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Change Password Card */}
           <Card>
             <CardHeader>
@@ -1010,6 +1127,19 @@ const Settings: React.FC = () => {
                     <p className="text-sm text-muted-foreground">
                       2. Scan this QR code or enter the secret key manually:
                     </p>
+
+                    {twoFAOps.otpData.otp_auth_url && (
+                      <div className="flex justify-center">
+                        {/* White backdrop + quiet zone so the code scans in
+                            both light and dark themes. */}
+                        <div className="bg-white p-md rounded-lg">
+                          <QRCode
+                            value={twoFAOps.otpData.otp_auth_url}
+                            size={176}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     <div className="bg-background p-sm md:p-md rounded-lg">
                       <p className="text-xs font-mono break-all">
