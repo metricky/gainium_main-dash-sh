@@ -10,13 +10,16 @@
  *
  * Routes: `/hedge/bot`.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useMemo, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Bot, Plus } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
 
-import { BotDetailsDrawer } from '@/components/bots/BotDetailsDrawer';
+import {
+  BotDetailsDrawer,
+  type HedgeDrawerContext,
+} from '@/components/bots/BotDetailsDrawer';
 import { HedgeBotCard } from '@/components/bots/HedgeBotCard';
 import { PremiumUpgrade } from '@/components/license/PremiumUpgrade';
 import MainLayout from '@/components/layout/MainLayout';
@@ -32,21 +35,24 @@ import { DataTable } from '@/components/ui/data-table/data-table';
 import EmptyState from '@/components/ui/empty-state';
 import { HedgeBotActionsCell } from './HedgeBotActionsCell';
 import { MotionButton } from '@/components/ui/MotionWrapper';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Widget from '@/components/ui/widget';
+import OpenOrdersWidget from '@/components/widgets/shared/OpenOrdersWidget';
 import BotListStatsBoxes from '@/components/ui/BotListStatsBoxes';
-import {
-  computeBotListStats,
-  sumQuoteValues,
-  type BotForStats,
-} from '@/hooks/useBotListStats';
+import { computeBotListStats, type BotForStats } from '@/hooks/useBotListStats';
 import { useUIStore } from '@/stores/uiStore';
+import { useHedgeDcaDeals } from '@/hooks/useHedgeDeals';
+import { dcaDealToOpenTrade } from '@/lib/utils/dcaDealToOpenTrade';
 import { useHedgeDcaBots } from '@/hooks/useHedgeDcaBots';
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import { getLocalPrices } from '@/helper/price';
 import { useHedgeUnPnlMap } from '@/utils/bots/hedge/useHedgeUnPnlMap';
+import { computeHedgeUnPnl } from '@/utils/bots/hedge/computeHedgeUnPnl';
+import { useHedgeLegUnrealized } from '@/hooks/useHedgeLegUnrealized';
+import type { DrawerBot } from '@/types/bots/drawer';
 import {
   BotTypesEnum,
+  DCADealStatusEnum,
   StrategyEnum,
   type DCABot,
   type HedgeBot,
@@ -157,13 +163,22 @@ const HedgeDcaBots = () => {
   const privacyMode = useUIStore((s) => s.privacyMode);
 
   /** Unified KPI stats for the bot-list header. Sums per-leg fields up to
-   * the hedge wrapper because the backend leaves `profit/assets/dealsInBot`
-   * un-aggregated on the wrapper itself. */
+   * the hedge wrapper because the backend leaves `profit/dealsInBot`
+   * un-aggregated on the wrapper itself.
+   *
+   * Capital deployed / required come from the SAME `unPnlMap` the table's
+   * "Cost" and "Max cost" columns read (`currentValue` / `maxValue`), not the
+   * raw `assets.used.quote`. The raw assets sum ignores `usdRate` and isn't
+   * leg-direction-aware, so on hedge bots — which always carry a short leg
+   * valued off its base balance — it diverged from the per-bot cost shown in
+   * the table. Sourcing both from `unPnlMap` keeps the stat reconciled with
+   * the column it summarizes. */
   const botListStats = useMemo(
     () =>
       computeBotListStats(
         bots.map<BotForStats>((bot) => {
           const legs = bot.bots ?? [];
+          const u = unPnlMap.get(bot._id);
           return {
             status: bot.status,
             totalProfitUsd: legs.reduce(
@@ -174,14 +189,8 @@ const HedgeDcaBots = () => {
               (sum, leg) => sum + (leg.profitToday?.totalTodayUsd || 0),
               0
             ),
-            usedQuote: legs.reduce(
-              (sum, leg) => sum + sumQuoteValues(leg.assets?.used?.quote),
-              0
-            ),
-            requiredQuote: legs.reduce(
-              (sum, leg) => sum + sumQuoteValues(leg.assets?.required?.quote),
-              0
-            ),
+            usedQuote: u?.currentValue ?? 0,
+            requiredQuote: u?.maxValue ?? 0,
             activeDeals: legs.reduce(
               (sum, leg) => sum + (leg.dealsInBot?.active || 0),
               0
@@ -189,10 +198,15 @@ const HedgeDcaBots = () => {
           };
         })
       ),
-    [bots]
+    [bots, unPnlMap]
   );
   const { data: exchangesData } = useExchangesFromContext();
   const exchanges = exchangesData?.data?.exchanges;
+
+  // Server-accurate per-leg unrealized (the client price calc reads 0 for
+  // bots on price-feed-less exchanges like Kraken futures). Overrides the
+  // unrealized fields below so cards + table match the drawer.
+  const legUnrealized = useHedgeLegUnrealized(false);
 
   const enrichedBots = useMemo<EnrichedHedgeBot[]>(
     () =>
@@ -207,10 +221,24 @@ const HedgeDcaBots = () => {
           (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
           0
         );
+        // Deal-derived unrealized per leg + combined.
+        const longLeg = (bot.bots ?? []).find(
+          (l) => l.settings?.strategy === StrategyEnum.long
+        );
+        const shortLeg = (bot.bots ?? []).find(
+          (l) => l.settings?.strategy === StrategyEnum.short
+        );
+        const longUn = longLeg ? (legUnrealized.get(longLeg._id) ?? 0) : 0;
+        const shortUn = shortLeg ? (legUnrealized.get(shortLeg._id) ?? 0) : 0;
+        const combinedUn = longUn + shortUn;
+        const longCost = u?.legCost?.long ?? 0;
+        const shortCost = u?.legCost?.short ?? 0;
+        const currentCost = u?.currentValue ?? 0;
         return {
           ...bot,
-          __unPnl: u?.unPnl,
-          __unPnlPerc: u?.unPnlPerc,
+          __unPnl: combinedUn,
+          __unPnlPerc:
+            currentCost > 0 ? (combinedUn / currentCost) * 100 : 0,
           __totalProfitUsd: totalProfitUsd,
           __currentCost: u?.currentValue,
           __maxCost: u?.maxValue,
@@ -220,11 +248,14 @@ const HedgeDcaBots = () => {
           ...(u?.legUsage ? { __legUsage: u.legUsage } : {}),
           ...(u?.legCost ? { __legCost: u.legCost } : {}),
           ...(u?.legMaxCost ? { __legMaxCost: u.legMaxCost } : {}),
-          ...(u?.legUnPnl ? { __legUnPnl: u.legUnPnl } : {}),
-          ...(u?.legUnPnlPerc ? { __legUnPnlPerc: u.legUnPnlPerc } : {}),
+          __legUnPnl: { long: longUn, short: shortUn },
+          __legUnPnlPerc: {
+            long: longCost > 0 ? (longUn / longCost) * 100 : 0,
+            short: shortCost > 0 ? (shortUn / shortCost) * 100 : 0,
+          },
         };
       }),
-    [bots, unPnlMap]
+    [bots, unPnlMap, legUnrealized]
   );
 
   const currentUser = useAuthStore((s) => s.user);
@@ -245,54 +276,55 @@ const HedgeDcaBots = () => {
     return null;
   }, [bots, selectedBotId, shareId, sharedBotResult.bot]);
 
-  // Active leg for the drawer (long / short). Reset to "long" whenever
-  // the selected hedge bot changes so reopening the drawer doesn't carry
-  // over the leg from a previous bot.
-  const [drawerLeg, setDrawerLeg] = useState<'long' | 'short'>('long');
-  useEffect(() => {
-    setDrawerLeg('long');
-  }, [selectedBotId]);
-
-  // Reuse BotDetailsDrawer with the active leg transformed via the same
-  // formula the regular trading-bots page uses. Switching legs swaps
-  // the bot prop — the drawer's queries (deals / orders / settings)
-  // re-key off `bot._id`, so the panels update without remounting the
-  // drawer chrome itself.
-  const drawerBot = useMemo(() => {
-    if (!selectedHedgeBot) return null;
-    const targetStrategy =
-      drawerLeg === 'long' ? StrategyEnum.long : StrategyEnum.short;
-    const leg = selectedHedgeBot.bots?.find(
-      (b) => b.settings?.strategy === targetStrategy
-    );
-    if (!leg) return null;
-    try {
-      return transformDcaBotToBot(
-        leg as DCABot,
-        [],
-        getLocalPrices(),
-        false,
-        exchanges
+  // Both legs transformed via the same formula the trading-bots page uses.
+  // The drawer renders them together (combined view, no leg switcher).
+  const { longBot, shortBot } = useMemo(() => {
+    const build = (strategy: StrategyEnum): DrawerBot | null => {
+      const leg = selectedHedgeBot?.bots?.find(
+        (b) => b.settings?.strategy === strategy
       );
-    } catch {
-      return null;
-    }
-  }, [selectedHedgeBot, exchanges, drawerLeg]);
+      if (!leg) return null;
+      try {
+        return transformDcaBotToBot(
+          leg as DCABot,
+          [],
+          getLocalPrices(),
+          false,
+          exchanges
+        );
+      } catch {
+        return null;
+      }
+    };
+    return {
+      longBot: build(StrategyEnum.long),
+      shortBot: build(StrategyEnum.short),
+    };
+  }, [selectedHedgeBot, exchanges]);
 
-  const legSwitcher = useMemo(
-    () => (
-      <Tabs
-        value={drawerLeg}
-        onValueChange={(v) => setDrawerLeg(v as 'long' | 'short')}
-      >
-        <TabsList>
-          <TabsTrigger value="long">Long leg</TabsTrigger>
-          <TabsTrigger value="short">Short leg</TabsTrigger>
-        </TabsList>
-      </Tabs>
-    ),
-    [drawerLeg]
-  );
+  const drawerPrimaryBot = longBot ?? shortBot;
+
+  const hedgeDrawerContext = useMemo<HedgeDrawerContext | null>(() => {
+    if (!selectedHedgeBot || !drawerPrimaryBot) return null;
+    // Live unPnl for list bots; snapshot fallback for share-mode bots not in
+    // the list (and thus absent from the price-subscribed map).
+    const unPnl =
+      unPnlMap.get(selectedHedgeBot._id) ??
+      computeHedgeUnPnl(selectedHedgeBot, getLocalPrices(), [], false, exchanges);
+    const totalProfitUsd = (selectedHedgeBot.bots ?? []).reduce(
+      (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
+      0
+    );
+    return {
+      longBot,
+      shortBot,
+      unPnl,
+      totalProfitUsd,
+      isCombo: false,
+      wrapperId: selectedHedgeBot._id,
+      sharedSettings: selectedHedgeBot.sharedSettings,
+    };
+  }, [selectedHedgeBot, drawerPrimaryBot, longBot, shortBot, unPnlMap, exchanges]);
 
   const handleSelectBot = useCallback(
     (botId: string) => navigate(`/hedge/bot/view/${botId}`),
@@ -301,6 +333,47 @@ const HedgeDcaBots = () => {
   const handleCloseDrawer = useCallback(
     () => navigate('/hedge/bot'),
     [navigate]
+  );
+
+  // ----- Deals tab -----
+  // `?view=deals` drives the page-level Bots/Deals toggle so reloads and deep
+  // links land on the right view — same contract the regular `/bot` page uses.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pageTab: 'bots' | 'deals' =
+    searchParams.get('view') === 'deals' ? 'deals' : 'bots';
+  const setPageTab = useCallback(
+    (tab: 'bots' | 'deals') => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (tab === 'deals') next.set('view', 'deals');
+          else next.delete('view');
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+
+  // Drive the deal fetch by the widget's open/closed toggle (backend defaults
+  // to open-only, so the Closed view is empty without this). Fetch only while
+  // the Deals tab is active — the dedicated `hedgeDcaDealList` query keeps its
+  // own react-query cache and never touches the shared DCA deal store, so it
+  // can't be clobbered by the list page's `useDcaDeals` reconcile (which is
+  // what made these deals appear then vanish).
+  const [dealsStatus, setDealsStatus] = useState<'open' | 'closed'>('open');
+  const { deals: hedgeDealsForTab } = useHedgeDcaDeals({
+    status:
+      dealsStatus === 'closed'
+        ? DCADealStatusEnum.closed
+        : DCADealStatusEnum.open,
+    enabled: pageTab === 'deals',
+  });
+
+  const hedgeDealsAsOpenTrades = useMemo(
+    () => hedgeDealsForTab.map(dcaDealToOpenTrade),
+    [hedgeDealsForTab]
   );
 
   const columns = useMemo<ColumnDef<EnrichedHedgeBot>[]>(
@@ -457,18 +530,17 @@ const HedgeDcaBots = () => {
       {
         id: 'unPnl',
         header: 'Unrealized PnL',
-        accessorFn: (row) => unPnlMap.get(row._id)?.unPnl ?? 0,
-        cell: ({ row }) => {
-          const u = unPnlMap.get(row.original._id);
-          return (
-            <ProfitAndPerc
-              value={u?.unPnl ?? 0}
-              percentage={u?.unPnlPerc ?? 0}
-              privacyMode={false}
-              size="sm"
-            />
-          );
-        },
+        // Use the deal-derived unrealized enriched onto the row (the
+        // unPnlMap/client value reads 0 for price-feed-less exchanges).
+        accessorFn: (row) => row.__unPnl ?? 0,
+        cell: ({ row }) => (
+          <ProfitAndPerc
+            value={row.original.__unPnl ?? 0}
+            percentage={row.original.__unPnlPerc ?? 0}
+            privacyMode={false}
+            size="sm"
+          />
+        ),
         meta: { filterType: 'number' as const },
       },
       {
@@ -529,7 +601,10 @@ const HedgeDcaBots = () => {
         ),
       },
     ],
-    [unPnlMap]
+    // Column defs read each row's already-enriched bot, not unPnlMap directly
+    // (the unrealized values are baked into `enrichedBots`), so the table
+    // structure has no reactive deps.
+    []
   );
 
   if (!isPremium) {
@@ -550,12 +625,12 @@ const HedgeDcaBots = () => {
       (selectedHedgeBot as unknown as { userId?: string })?.userId;
     return (
       <MainLayout pageTitle="Shared hedge bot" activePage="/hedge/bot">
-        {drawerBot && selectedHedgeBot ? (
+        {drawerPrimaryBot && selectedHedgeBot && hedgeDrawerContext ? (
           <BotDetailsDrawer
             type={BotTypesEnum.hedgeDca}
-            bot={drawerBot}
+            bot={drawerPrimaryBot}
             parentBotId={selectedHedgeBot._id}
-            legSwitcher={legSwitcher}
+            hedge={hedgeDrawerContext}
             open
             privacyMode={false}
             onClose={handleCloseDrawer}
@@ -590,6 +665,10 @@ const HedgeDcaBots = () => {
               noPadding
               overflow="auto"
             >
+              <Tabs
+                value={pageTab}
+                onValueChange={(v) => setPageTab(v as 'bots' | 'deals')}
+              >
               <div className="flex h-full min-h-[500px] flex-col">
                 <motion.div
                   className="mb-md shrink-0"
@@ -598,13 +677,19 @@ const HedgeDcaBots = () => {
                   {/* Small screens: title + New stacked, stats row below */}
                   <div className="flex items-center justify-between gap-xs sm:hidden">
                     <h2 className="text-xl font-semibold">Hedge DCA Bots</h2>
-                    <MotionButton
-                      variant="default"
-                      onClick={() => navigate('/hedge/bot/new')}
-                    >
-                      <Plus className="mr-xs h-4 w-4" />
-                      New
-                    </MotionButton>
+                    <div className="flex items-center gap-xs">
+                      <TabsList className="w-auto!" fullWidth={false}>
+                        <TabsTrigger value="bots">Bots</TabsTrigger>
+                        <TabsTrigger value="deals">Deals</TabsTrigger>
+                      </TabsList>
+                      <MotionButton
+                        variant="default"
+                        onClick={() => navigate('/hedge/bot/new')}
+                      >
+                        <Plus className="mr-xs h-4 w-4" />
+                        New
+                      </MotionButton>
+                    </div>
                   </div>
                   <div className="w-full sm:hidden mt-2">
                     <BotListStatsBoxes
@@ -625,16 +710,26 @@ const HedgeDcaBots = () => {
                         isLoading={isLoading}
                       />
                     </div>
-                    <MotionButton
-                      variant="default"
-                      onClick={() => navigate('/hedge/bot/new')}
-                    >
-                      <Plus className="mr-xs h-4 w-4" />
-                      New
-                    </MotionButton>
+                    <div className="flex items-center gap-xs justify-end">
+                      <TabsList className="w-auto!" fullWidth={false}>
+                        <TabsTrigger value="bots">Bots</TabsTrigger>
+                        <TabsTrigger value="deals">Deals</TabsTrigger>
+                      </TabsList>
+                      <MotionButton
+                        variant="default"
+                        onClick={() => navigate('/hedge/bot/new')}
+                      >
+                        <Plus className="mr-xs h-4 w-4" />
+                        New
+                      </MotionButton>
+                    </div>
                   </div>
                 </motion.div>
 
+                <TabsContent
+                  value="bots"
+                  className="flex-1 min-h-[400px] overflow-hidden mt-0"
+                >
                 <motion.div
                   className="flex-1 min-h-[400px] overflow-hidden"
                   {...HEDGE_BOTS_TABLE_MOTION}
@@ -680,11 +775,27 @@ const HedgeDcaBots = () => {
                     />
                   )}
                 </motion.div>
+                </TabsContent>
+
+                <TabsContent
+                  value="deals"
+                  className="flex-1 min-h-[400px] overflow-hidden mt-0"
+                >
+                  <OpenOrdersWidget
+                    widgetId="hedge-dca-bot-deals"
+                    data={{ trades: hedgeDealsAsOpenTrades }}
+                    rawDeals={hedgeDealsForTab}
+                    enableStatusToggle={true}
+                    onStatusFilterChange={setDealsStatus}
+                    privacyMode={privacyMode}
+                  />
+                </TabsContent>
               </div>
+              </Tabs>
             </Widget>
           </motion.div>
 
-          {drawerBot && selectedHedgeBot && (() => {
+          {drawerPrimaryBot && selectedHedgeBot && hedgeDrawerContext && (() => {
             const sharedOwnerId =
               (selectedHedgeBot as unknown as { userId?: string })?.userId;
             const viewOnly =
@@ -693,9 +804,9 @@ const HedgeDcaBots = () => {
             return (
               <BotDetailsDrawer
                 type={BotTypesEnum.hedgeDca}
-                bot={drawerBot}
+                bot={drawerPrimaryBot}
                 parentBotId={selectedHedgeBot._id}
-                legSwitcher={legSwitcher}
+                hedge={hedgeDrawerContext}
                 open
                 privacyMode={false}
                 onClose={handleCloseDrawer}

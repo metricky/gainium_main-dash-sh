@@ -79,17 +79,68 @@ export const isCoinmExchange = (
   return normalized.includes('coinm') || normalized.includes('inverse');
 };
 
-const KUCOIN_SPOT_ENUM_SET = new Set<ExchangeEnum>([
+// Hyperliquid spot bridges a few assets under synthetic / Unit symbols that
+// differ from the symbol the app shows in the trading pair. The clearest case:
+// the BTC spot market trades as the "BTC-USDC" pair, but the wallet holds the
+// position as "UBTC" (Unit BTC) — and "SBTC"/"SUSD"/"SUSDT" are the older
+// synthetic names. Because balances are matched to the pair's base/quote
+// asset by symbol, a wallet asset of "UBTC" never matches a pair base of
+// "BTC", so the balance reads 0 (user can't sell their spot BTC; forum #4860).
+//
+// Most Unit tokens KEEP their "U" prefix in the pair name too ("UETH-USDC",
+// "USOL-USDC"), so those already match — only the handful below are renamed
+// on one side. Hence an explicit, exact-match alias table rather than a blanket
+// "strip leading U" (which would wrongly rewrite real tickers like "UP" or
+// "USDC"). Mirrors the same remap already applied in `findUSDRate`.
+const SPOT_BALANCE_ASSET_ALIASES: Record<string, string> = {
+  UBTC: 'BTC',
+  SBTC: 'BTC',
+  SUSD: 'USD',
+  SUSDT: 'USDT',
+};
+
+/**
+ * Canonicalize a wallet balance asset symbol to the symbol the app uses in
+ * trading pairs, so per-asset balances reconcile against the selected pair.
+ * Exact-match only; unknown symbols pass through upper-cased.
+ */
+export const normalizeBalanceAsset = (asset?: string | null): string => {
+  if (!asset) return '';
+  const upper = asset.toUpperCase().trim();
+  return SPOT_BALANCE_ASSET_ALIASES[upper] ?? upper;
+};
+
+// Exchanges whose candle API expects the dashed native pair ("BTC-USDT")
+// rather than the concatenated form ("BTCUSDT") the app stores internally.
+//
+// - KuCoin **spot** ("BTC-USDT"). KuCoin futures (linear/inverse) use contract
+//   symbols and are intentionally excluded.
+// - Kraken **spot and futures** — Kraken's `/candles` backend rejects the
+//   concatenated form ("Unknown asset pair" on spot, "Bad Request" on
+//   krakenUsdm) and only resolves the dashed pair (`BTC-USDT`, `BTC-USD`). The
+//   legacy dashboard never hit this because it carried the dashed pair through;
+//   the redesign normalizes bot pairs to the concatenated form, so the dash has
+//   to be restored here. Paper variants are included because callers may pass an
+//   un-stripped exchange.
+const DASHED_CANDLE_SYMBOL_ENUM_SET = new Set<ExchangeEnum>([
   ExchangeEnum.kucoin,
   ExchangeEnum.paperKucoin,
+  ExchangeEnum.kraken,
+  ExchangeEnum.krakenSpot,
+  ExchangeEnum.krakenAll,
+  ExchangeEnum.krakenUsdm,
+  ExchangeEnum.paperKraken,
+  ExchangeEnum.paperKrakenSpot,
+  ExchangeEnum.paperKrakenAll,
+  ExchangeEnum.paperKrakenUsdm,
 ]);
 
 /**
  * Convert our normalized concatenated pair (e.g. "BTCUSDT") into the symbol an
- * exchange's candle API expects. KuCoin **spot** identifies pairs with a dash
- * ("BTC-USDT"); Binance/Bybit/etc. use the concatenated form natively and pass
- * through unchanged, as do symbols that already carry a separator. KuCoin
- * futures (linear/inverse) use contract symbols and are intentionally excluded.
+ * exchange's candle API expects. KuCoin spot and Kraken (spot + futures)
+ * identify pairs with a dash ("BTC-USDT"); Binance/Bybit/etc. use the
+ * concatenated form natively and pass through unchanged, as do symbols that
+ * already carry a separator.
  *
  * Applied at the single `requestCandles` chokepoint so every candle consumer
  * (chart, backtest, market-stats / quick-panel risk calc, …) is covered.
@@ -98,7 +149,10 @@ export const toExchangeCandleSymbol = (
   exchange: ExchangeEnum | string | null | undefined,
   symbol: string
 ): string => {
-  if (!KUCOIN_SPOT_ENUM_SET.has(exchange as ExchangeEnum) || symbol.includes('-')) {
+  if (
+    !DASHED_CANDLE_SYMBOL_ENUM_SET.has(exchange as ExchangeEnum) ||
+    symbol.includes('-')
+  ) {
     return symbol;
   }
   const { baseAsset, quoteAsset } = extractPairAssets(symbol);

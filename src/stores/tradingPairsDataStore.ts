@@ -1,6 +1,8 @@
+import type { AssetClass } from '@/hooks/useTradingPairs';
 import logger from '@/lib/loggerInstance';
 import { createIndexedDBStorage } from '@/lib/zustand-indexeddb-storage';
 import type { ExchangeEnum } from '@/types';
+import type { OKXSource } from '@/types/exchange.types';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
@@ -19,6 +21,16 @@ export interface TradingPair {
   };
   priceAssetPrecision: number;
   crossAvailable: boolean;
+  // Normalized asset class from the backend (default 'crypto'). Preserved
+  // through the store so consumers (pair-picker, icons) can read it.
+  assetCategory?: AssetClass;
+  // Canonical/curated-listing flag (HL spot only; absent elsewhere => canonical).
+  // Preserved through the store for the pair-picker "Canonical only" toggle.
+  isCanonical?: boolean;
+  // OKX account-origin owning this pair. `my` = OKX Europe (eea.okx.com) USDC/EUR
+  // spot universe; unset for the global feed + all other exchanges. The bot form
+  // serves an account its pairs by matching this to the account's okxSource.
+  source?: OKXSource;
 }
 
 export interface TradingPairsByExchange {

@@ -1,7 +1,9 @@
 import { ChevronDown, Search, Star, X as CloseIcon } from 'lucide-react';
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { type AssetClass } from '../../../hooks/useTradingPairs';
 import { formatExchangeProvider } from '../../../utils/exchangeUtils';
+import { Chip } from '../../ui/chip';
 import { Checkbox } from '../../ui/checkbox';
 import ProfitLossPercChip from '../../ui/chip/ProfitLossPercChip';
 import {
@@ -11,6 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../../ui/select';
+import { Switch } from '../../ui/switch';
+import { Tooltip, InfoIcon } from '../../ui/tooltip';
 import CoinIcon from './CoinIcon';
 import CoinPair from './CoinPair';
 import ExchangeIcon from './ExchangeIcon';
@@ -30,6 +34,15 @@ interface ListItem {
   // Exchange-specific properties
   isExchange?: boolean;
   isHelper?: boolean;
+  // Normalized asset class (crypto/stock/etf/commodity/metal/forex/index),
+  // used by the optional asset-class filter. Missing => treated as crypto.
+  assetCategory?: AssetClass;
+  // Canonical/curated-listing flag (HL spot only; missing elsewhere =>
+  // canonical). Drives the "Canonical only" toggle. `false` = permissionless.
+  isCanonical?: boolean;
+  // Base pair's exchange (ExchangeEnum value). Forwarded to CoinIcon to
+  // venue-gate tokenized-stock ticker normalization. Only relevant for stock/etf.
+  exchange?: string;
   // Optional market-data enrichment (cloud only — see pairMarketData
   // provider). All optional so sh / coins-mode lists are unaffected.
   // (`price` is already declared above for coin/exchange rows.)
@@ -75,7 +88,36 @@ interface ListModalProps {
   /** Active quote/base filter shown as a removable chip by the title. */
   activeFilterLabel?: string;
   onClearFilter?: () => void;
+  /**
+   * Asset-class filter. When `assetClassOptions` has >= 2 entries, a row of
+   * filter chips (All + each class) renders below the search; selecting one
+   * narrows the list to items whose `assetCategory` matches (missing => crypto).
+   */
+  assetClassOptions?: AssetClass[];
+  selectedAssetClass?: AssetClass | 'all';
+  onAssetClassChange?: (cls: AssetClass | 'all') => void;
 }
+
+/** Canonical order + labels for the asset-class filter chips. */
+const ASSET_CLASS_ORDER: AssetClass[] = [
+  'crypto',
+  'stock',
+  'etf',
+  'commodity',
+  'metal',
+  'forex',
+  'index',
+];
+const ASSET_CLASS_LABELS: Record<AssetClass | 'all', string> = {
+  all: 'All',
+  crypto: 'Crypto',
+  stock: 'Stocks',
+  etf: 'ETFs',
+  commodity: 'Commodities',
+  metal: 'Metals',
+  forex: 'Forex',
+  index: 'Indices',
+};
 
 const renderItemIcon = (item: ListItem) => {
   if (item.isHelper) {
@@ -92,6 +134,8 @@ const renderItemIcon = (item: ListItem) => {
       <CoinPair
         baseAsset={item.baseAsset}
         quoteAsset={item.quoteAsset}
+        assetClass={item.assetCategory}
+        exchange={item.exchange}
         iconSize="md"
         showText={false}
       />
@@ -120,7 +164,14 @@ const renderItemIcon = (item: ListItem) => {
   }
 
   // Default: single token/coin
-  return <CoinIcon symbol={item.symbol} size="lg" />;
+  return (
+    <CoinIcon
+      symbol={item.symbol}
+      size="lg"
+      assetClass={item.assetCategory}
+      exchange={item.exchange}
+    />
+  );
 };
 
 const formatRoi = (roi: number): string =>
@@ -516,17 +567,63 @@ export const ListModal: React.FC<ListModalProps> = ({
   selectionMode = 'single',
   activeFilterLabel,
   onClearFilter,
+  assetClassOptions,
+  selectedAssetClass = 'all',
+  onAssetClassChange,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  // "Canonical only" filter — ON by default. Hides permissionless
+  // (non-canonical) listings, currently Hyperliquid HIP-1 spot tokens. Only
+  // relevant when the list actually contains non-canonical items.
+  const [canonicalOnly, setCanonicalOnly] = useState(true);
   const deferredItems = useDeferredValue(items);
-  const showSort = Boolean(sortOptions?.length && sortMode && onSortModeChange);
+  const hasNonCanonical = useMemo(
+    () => deferredItems.some((i) => i.isCanonical === false),
+    [deferredItems]
+  );
+  const assetChips = useMemo<AssetClass[]>(
+    () =>
+      assetClassOptions?.length
+        ? ASSET_CLASS_ORDER.filter((c) => assetClassOptions.includes(c))
+        : [],
+    [assetClassOptions]
+  );
+  const showAssetFilter = assetChips.length > 1 && Boolean(onAssetClassChange);
+  // The market-data sort (market cap / volume / ROI / …) is only populated for
+  // crypto, so the sort dropdown only makes sense when Crypto (or the mixed
+  // 'All') view is active. For Stocks/Metals/Indices/etc. it's hidden — the
+  // asset-class selector is the primary control, the sort is secondary.
+  const sortApplies =
+    selectedAssetClass === 'all' || selectedAssetClass === 'crypto';
+  const showSort =
+    Boolean(sortOptions?.length && sortMode && onSortModeChange) && sortApplies;
 
   const filteredItems = useMemo(() => {
     if (isLoading) {
       return [] as ListItem[];
     }
 
-    if (!searchTerm.trim()) return deferredItems;
+    // "Canonical only" (default on): drop permissionless listings
+    // (isCanonical === false). The ALL header + items with no flag (every
+    // non-HL exchange => canonical) are always kept.
+    const canonicalFiltered =
+      canonicalOnly && hasNonCanonical
+        ? deferredItems.filter(
+            (item) => item.symbol === 'ALL' || item.isCanonical !== false
+          )
+        : deferredItems;
+
+    const classFiltered =
+      showAssetFilter && selectedAssetClass !== 'all'
+        ? canonicalFiltered.filter(
+            (item) =>
+              // Keep the pinned ALL header; match class (missing => crypto).
+              item.symbol === 'ALL' ||
+              (item.assetCategory ?? 'crypto') === selectedAssetClass
+          )
+        : canonicalFiltered;
+
+    if (!searchTerm.trim()) return classFiltered;
 
     const searchLower = searchTerm.toLowerCase().trim();
 
@@ -535,7 +632,7 @@ export const ListModal: React.FC<ListModalProps> = ({
       .split(/\s+/)
       .filter((word) => word.length > 0);
 
-    return deferredItems.filter((item) => {
+    return classFiltered.filter((item) => {
       // Combine all searchable text into one string
       const searchableText = [item.name, item.symbol, item.subtitle || '']
         .join(' ')
@@ -544,7 +641,15 @@ export const ListModal: React.FC<ListModalProps> = ({
       // All search words must appear somewhere in the combined text
       return searchWords.every((word) => searchableText.includes(word));
     });
-  }, [deferredItems, isLoading, searchTerm]);
+  }, [
+    deferredItems,
+    isLoading,
+    searchTerm,
+    showAssetFilter,
+    selectedAssetClass,
+    canonicalOnly,
+    hasNonCanonical,
+  ]);
 
   // Apply the active sort (and optional favorites-first float). The `ALL`
   // header pseudo-item, when present, always stays pinned at the very top.
@@ -633,6 +738,57 @@ export const ListModal: React.FC<ListModalProps> = ({
               <CloseIcon className="w-5 h-5" />
             </button>
           </div>
+
+          {/* Asset-class filter — the PRIMARY control. Selecting a class
+              narrows the list and (for non-crypto) hides the market-data sort,
+              which only has data for crypto. Only renders with >= 2 classes. */}
+          {showAssetFilter && (
+            <div className="flex flex-wrap gap-xs">
+              {(['all', ...assetChips] as Array<AssetClass | 'all'>).map(
+                (cls) => {
+                  const isActive = selectedAssetClass === cls;
+                  return (
+                    <button
+                      key={cls}
+                      type="button"
+                      onClick={() => onAssetClassChange?.(cls)}
+                      className="focus:outline-none"
+                      aria-pressed={isActive}
+                    >
+                      <Chip
+                        variant={isActive ? 'primary' : 'default'}
+                        chipStyle={isActive ? 'soft' : 'ghost'}
+                        size="sm"
+                        className="cursor-pointer"
+                      >
+                        {ASSET_CLASS_LABELS[cls]}
+                      </Chip>
+                    </button>
+                  );
+                }
+              )}
+            </div>
+          )}
+
+          {/* Canonical-only toggle — only when the list has permissionless
+              listings (Hyperliquid HIP-1 spot). ON by default; filters them out
+              but never blocks selection (toggle off to trade them). */}
+          {hasNonCanonical && (
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={canonicalOnly}
+                onCheckedChange={setCanonicalOnly}
+                aria-label="Canonical only"
+              />
+              <span className="text-sm text-foreground">Canonical only</span>
+              <Tooltip
+                side="bottom"
+                tooltip="Non-canonical pairs are permissionless listings — they can impersonate real tickers or carry liquidity/rug risk. Turn off to show them."
+              >
+                <InfoIcon />
+              </Tooltip>
+            </div>
+          )}
 
           {/* Search + sort */}
           <div className="flex items-center gap-sm">

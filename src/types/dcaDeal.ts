@@ -67,6 +67,23 @@ export type TransformedTrade = {
         pureQuote: number;
       }
     | undefined;
+  funding?:
+    | {
+        /** Cumulative funding in quote asset (signed; negative = paid) */
+        total: number;
+        totalUsd: number;
+        /** Last applied settlement time (ms) */
+        lastTime?: number;
+        history?: {
+          time: number;
+          rate: number;
+          markPrice?: number;
+          qty: number;
+          feeQuote: number;
+          feeUsd: number;
+        }[];
+      }
+    | undefined;
   unrealizedProfit?: number | undefined;
   avgPrice?: number | undefined;
   levels: {
@@ -141,7 +158,12 @@ export const transformDealToTrade = (
     max: { quote: 0 },
   };
   const levels = deal.levels || { complete: 0, all: 0 };
-  const combo = bot?.type === BotTypesEnum.combo;
+  // Hedge-combo legs are combo deals too, so they must use the combo
+  // unrealized-P&L formula (legacy parity: main-dash's hedge view passes
+  // `combo = true`). Treating them as non-combo runs the generic spot
+  // formula, which is wildly wrong for COIN-M legs.
+  const combo =
+    bot?.type === BotTypesEnum.combo || bot?.type === BotTypesEnum.hedgeCombo;
   // Derive futures/coinm at the function level so they're available in the
   // return statement for cost/value/size helpers.
   const futures =
@@ -215,14 +237,18 @@ export const transformDealToTrade = (
       (p) => p.symbol === deal.symbol.symbol && p.exchange === deal.exchange
     )?.price;
 
-    // Legacy parity: for spot deals the formula result is always in quote
-    // terms, so we convert quoteAsset → USD for both LONG and SHORT.
-    // For futures: COIN-M uses baseAsset, USD-M uses quoteAsset.
-    const usdRate = deal.settings.futures
-      ? deal.settings.coinm
-        ? findUSDRate(deal.symbol.baseAsset, latestPrices, deal.exchange)
-        : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange)
-      : findUSDRate(deal.symbol.quoteAsset, latestPrices, deal.exchange);
+    // Legacy parity: the deal-table unrealized-P&L formula always converts
+    // via the QUOTE asset, for spot, USD-M, AND COIN-M alike (see main-dash
+    // terminal/utils.ts and hedge/new.tsx, which call findUSDRate(quoteAsset)
+    // unconditionally). For COIN-M the formula's own `* price` term performs
+    // the coin→USD conversion, so the rate must stay quote-based (= 1 for
+    // USD-settled pairs). Using the base asset here double-converted COIN-M
+    // legs by ~the coin price, inflating unrealized P&L by orders of magnitude.
+    const usdRate = findUSDRate(
+      deal.symbol.quoteAsset,
+      latestPrices,
+      deal.exchange
+    );
     unrealizedPnL =
       deal.strategy && price && usdRate && isActiveDeal
         ? (long
@@ -379,6 +405,7 @@ export const transformDealToTrade = (
       pureBase: ('pureBase' in profit ? profit.pureBase : 0) || 0,
       pureQuote: ('pureQuote' in profit ? profit.pureQuote : 0) || 0,
     },
+    ...(deal.funding && { funding: deal.funding }),
     avgPrice: deal.avgPrice || 0,
     levels,
     created: createTime,

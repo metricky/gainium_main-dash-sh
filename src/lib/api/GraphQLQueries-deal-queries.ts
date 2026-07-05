@@ -75,6 +75,11 @@ export const dealQueries = {
                         pureBase
                         pureQuote
                       }
+                      funding {
+                        total
+                        totalUsd
+                        lastTime
+                      }
                         exchangeUUID
                         initialPrice
                         createTime
@@ -147,6 +152,11 @@ export const dealQueries = {
                       totalUsd
                       pureBase
                       pureQuote
+                    }
+                    funding {
+                      total
+                      totalUsd
+                      lastTime
                     }
                     feePaid {
                       base
@@ -231,6 +241,11 @@ export const dealQueries = {
                       pureBase
                       pureQuote
                     }
+                    funding {
+                      total
+                      totalUsd
+                      lastTime
+                    }
                     feePaid {
                       base
                       quote
@@ -303,6 +318,11 @@ export const dealQueries = {
                       totalUsd
                       pureBase
                       pureQuote
+                    }
+                    funding {
+                      total
+                      totalUsd
+                      lastTime
                     }
                     feePaid {
                       base
@@ -448,6 +468,11 @@ export const dealQueries = {
   profit{
   totalUsd
   total
+  }
+  funding{
+  totalUsd
+  total
+  lastTime
   }
   avgPrice
   commission
@@ -607,6 +632,11 @@ export const dealQueries = {
   profit{
   totalUsd
   total
+  }
+  funding{
+  totalUsd
+  total
+  lastTime
   }
   avgPrice
   commission
@@ -1075,6 +1105,78 @@ export const dealQueries = {
   }
   }`;
     const variables = { input };
+    return { query, variables };
+  },
+
+  // Toggle whether a backtest is kept permanently (not auto-deleted). One
+  // mutation per bot family — mirrors legacy main-dash/fetch/query.ts. The
+  // `setBacktestPermanentStatusInput` shape (`{ id, savePermanent }`) is
+  // shared across all of them.
+  setBacktestPermanentStatus: (input: { id: string; savePermanent: boolean }) => {
+    const query = `mutation setBacktestPermanentStatus($input: setBacktestPermanentStatusInput!) {
+  setBacktestPermanentStatus(input: $input) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = { input: { ...input, savePermanent: !!input.savePermanent } };
+    return { query, variables };
+  },
+  setComboBacktestPermanentStatus: (input: {
+    id: string;
+    savePermanent: boolean;
+  }) => {
+    const query = `mutation setComboBacktestPermanentStatus($input: setBacktestPermanentStatusInput!) {
+  setComboBacktestPermanentStatus(input: $input) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = { input: { ...input, savePermanent: !!input.savePermanent } };
+    return { query, variables };
+  },
+  setGridBacktestPermanentStatus: (input: {
+    id: string;
+    savePermanent: boolean;
+  }) => {
+    const query = `mutation setGridBacktestPermanentStatus($input: setBacktestPermanentStatusInput!) {
+  setGridBacktestPermanentStatus(input: $input) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = { input: { ...input, savePermanent: !!input.savePermanent } };
+    return { query, variables };
+  },
+  setHedgeDCABacktestPermanentStatus: (input: {
+    id: string;
+    savePermanent: boolean;
+  }) => {
+    const query = `mutation setHedgeDCABacktestPermanentStatus($input: setBacktestPermanentStatusInput!) {
+  setHedgeDCABacktestPermanentStatus(input: $input) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = { input: { ...input, savePermanent: !!input.savePermanent } };
+    return { query, variables };
+  },
+  setHedgeComboBacktestPermanentStatus: (input: {
+    id: string;
+    savePermanent: boolean;
+  }) => {
+    const query = `mutation setHedgeComboBacktestPermanentStatus($input: setBacktestPermanentStatusInput!) {
+  setHedgeComboBacktestPermanentStatus(input: $input) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = { input: { ...input, savePermanent: !!input.savePermanent } };
     return { query, variables };
   },
 };

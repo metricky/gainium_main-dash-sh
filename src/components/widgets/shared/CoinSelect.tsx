@@ -1,7 +1,7 @@
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
 import { useBotFormState } from '@/features/bots';
 import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
-import { type TradingPair } from '@/hooks/useTradingPairs';
+import { type AssetClass, type TradingPair } from '@/hooks/useTradingPairs';
 import {
   usePairMarketData,
   type PairRoiContext,
@@ -59,6 +59,13 @@ export interface CoinFilterProps {
    * can start over with a different anchor.
    */
   onClearSelection?: () => void;
+  /**
+   * Clicking a selected pair chip's body (not the remove/change button)
+   * fires this with the chip's selection symbol (e.g. `BTC-USDT`). Used
+   * to switch the form chart to that pair. Pairs mode only; omit to keep
+   * chips non-interactive.
+   */
+  onPairClick?: (selectionSymbol: string) => void;
 }
 
 export const CoinFilter: React.FC<CoinFilterProps> = ({
@@ -73,6 +80,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   showAllOption = true,
   pairFilter,
   onClearSelection,
+  onPairClick,
 }) => {
   const [showCoinDialog, setShowCoinDialog] = useState(false);
   // When the dialog is opened via the change/swap icon on the only chip,
@@ -82,6 +90,10 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // `pairs` from a captured ref and would write `[old, new]`).
   const [replacingSymbol, setReplacingSymbol] = useState<string | null>(null);
   const [showAllSelected, setShowAllSelected] = useState(false);
+  // Asset-class filter for the picker modal (crypto / stocks / metals / …).
+  const [selectedAssetClass, setSelectedAssetClass] = useState<
+    AssetClass | 'all'
+  >('all');
 
   // Sort + favorites for the pair selector. Market-data sort is cloud
   // only (provider-injected); favorites are local (Zustand + localStorage).
@@ -133,6 +145,25 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
     error: tradingPairsError,
     refresh: refreshTradingPairs,
   } = useTradingPairsFromContext();
+
+  // Map base asset → normalized asset class (from the trading pairs). Used only
+  // as a FALLBACK for coins mode (which is exchange-agnostic) and for the ALL
+  // header. Pairs-mode items carry their own per-exchange `assetCategory` and
+  // must be preferred — a base like `CAT` is a stock on Bitget but crypto on
+  // OKX/Hyperliquid, so a cross-exchange base→class map would misclassify it.
+  const assetCategoryByBase = useMemo<Record<string, AssetClass>>(() => {
+    const map: Record<string, AssetClass> = {};
+    if (!pairsByExchange) return map;
+    Object.values(pairsByExchange).forEach((pairs) => {
+      pairs.forEach((pair) => {
+        const base = pair.baseAsset?.name?.toUpperCase();
+        if (base && pair.assetCategory && !map[base]) {
+          map[base] = pair.assetCategory;
+        }
+      });
+    });
+    return map;
+  }, [pairsByExchange]);
 
   const [isRetrying, setIsRetrying] = useState(false);
 
@@ -260,6 +291,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
       icon: '📊',
       color: 'var(--color-primary)',
       subtitle: isPairsMode ? 'All trading pairs' : 'All assets',
+      assetCategory: undefined as AssetClass | undefined,
     } as const;
 
     if (modalItems.length === 0) {
@@ -274,11 +306,25 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
         // helpers and the ALL header get no enrichment (lookup → null).
         const datum =
           isPairsMode && item.baseAsset ? marketLookup(item.baseAsset) : null;
+        // Tag with normalized asset class. Prefer the item's OWN per-exchange
+        // class (pairs mode carries it); fall back to the cross-exchange
+        // base→class map only for coins mode / helpers, which have none.
+        const classKey = (item.baseAsset ?? item.symbol)?.toUpperCase();
+        const assetCategory =
+          item.assetCategory ??
+          (classKey ? assetCategoryByBase[classKey] : undefined);
         return {
           symbol: item.symbol,
           name: item.name,
           icon: '',
           color: item.color,
+          assetCategory,
+          // Preserve the canonical flag (false is meaningful; undefined =>
+          // canonical) so the picker's "Canonical only" toggle can filter.
+          isCanonical: item.isCanonical,
+          // Forward the venue so the modal's CoinIcon can venue-gate
+          // tokenized-stock ticker normalization (Bitget reality / Bybit spot).
+          ...(item.exchange ? { exchange: item.exchange } : {}),
           ...(item.baseAsset && item.quoteAsset
             ? { baseAsset: item.baseAsset, quoteAsset: item.quoteAsset }
             : {}),
@@ -294,7 +340,25 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
         };
       }),
     ];
-  }, [modalItems, isPairsMode, showAllOption, marketLookup, starredPairIds]);
+  }, [
+    modalItems,
+    isPairsMode,
+    showAllOption,
+    marketLookup,
+    starredPairIds,
+    assetCategoryByBase,
+  ]);
+
+  // Asset classes actually present among the modal items (drives which filter
+  // chips render). Missing class counts as crypto.
+  const availableAssetClasses = useMemo<AssetClass[]>(() => {
+    const present = new Set<AssetClass>();
+    listModalItems.forEach((item) => {
+      if (item.symbol === 'ALL') return;
+      present.add(item.assetCategory ?? 'crypto');
+    });
+    return Array.from(present);
+  }, [listModalItems]);
 
   // Only surface the market-data sort dropdown when the provider actually
   // returned data (cloud build). In sh the lookup is empty, so the
@@ -320,6 +384,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   const handleDialogClose = useCallback(() => {
     setShowCoinDialog(false);
     setReplacingSymbol(null);
+    setSelectedAssetClass('all');
   }, []);
 
   // When the dialog was opened in replace mode, picking any coin must
@@ -414,22 +479,43 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
     if (isPairsMode) {
       const [baseAsset = '?', quoteAsset = '?'] = symbol.split('-');
       const label = item?.name ?? `${baseAsset}/${quoteAsset}`;
+      const pairBody = (
+        <>
+          <CoinPair
+            baseAsset={baseAsset}
+            quoteAsset={quoteAsset}
+            assetClass={
+              item?.assetCategory ?? assetCategoryByBase[baseAsset.toUpperCase()]
+            }
+            exchange={item?.exchange}
+            iconSize="sm"
+            showText={false}
+          />
+          <span className="text-foreground text-xs font-medium truncate">
+            {label}
+          </span>
+        </>
+      );
       return (
         <div
           key={`${symbol}-${index}`}
           className="bg-card rounded-lg p-xs flex items-center gap-xs min-w-0"
         >
-          <div className="flex items-center gap-xs flex-1 min-w-0">
-            <CoinPair
-              baseAsset={baseAsset}
-              quoteAsset={quoteAsset}
-              iconSize="sm"
-              showText={false}
-            />
-            <span className="text-foreground text-xs font-medium truncate">
-              {label}
-            </span>
-          </div>
+          {onPairClick ? (
+            <button
+              type="button"
+              onClick={() => onPairClick(symbol)}
+              className="flex items-center gap-xs flex-1 min-w-0 text-left cursor-pointer hover:opacity-80 transition-opacity"
+              title={`Show ${label} on chart`}
+              aria-label={`Show ${label} on chart`}
+            >
+              {pairBody}
+            </button>
+          ) : (
+            <div className="flex items-center gap-xs flex-1 min-w-0">
+              {pairBody}
+            </div>
+          )}
           {renderRemoveOrChange(symbol, label)}
         </div>
       );
@@ -442,7 +528,14 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
         className="bg-card rounded-lg p-xs flex items-center gap-xs min-w-0"
       >
         <div className="flex items-center gap-xs flex-1 min-w-0">
-          <CoinIcon symbol={symbol} size="w-4 h-4" />
+          <CoinIcon
+            symbol={symbol}
+            size="w-4 h-4"
+            assetClass={
+              item?.assetCategory ?? assetCategoryByBase[symbol.toUpperCase()]
+            }
+            exchange={item?.exchange}
+          />
           <span className="text-foreground text-xs font-medium truncate">
             {label}
           </span>
@@ -574,6 +667,9 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
             : 'Preparing assets…'
         }
         selectionMode={replacingSymbol !== null ? 'single' : 'multi'}
+        assetClassOptions={availableAssetClasses}
+        selectedAssetClass={selectedAssetClass}
+        onAssetClassChange={setSelectedAssetClass}
         enableFavorites={isPairsMode}
         onToggleFavorite={toggleStarredPair}
         favoritesFirst={favoritesFirst}

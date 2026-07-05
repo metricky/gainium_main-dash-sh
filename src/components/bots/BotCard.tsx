@@ -58,6 +58,7 @@ import {
 import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { DualArcProgressGauge } from '../ui/DualArcProgressGauge';
 import CoinPair from '../widgets/shared/CoinPair';
+import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
 import { BotActionsMenuItems } from './BotActionsMenuItems';
 /* import { useBotSpecificDeals } from '@/hooks/useBotSpecificDeals'; */
 
@@ -157,6 +158,24 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
 }) => {
   const colors = useChartColors();
   const navigate = useNavigate();
+  const resolvePairAsset = useResolvePairAsset();
+  // Header pair base/quote — resolve its asset class + venue so tokenized
+  // stocks render their real logo (not a letter tile) on the card.
+  const headerBaseAsset =
+    bot.baseAsset ??
+    (Array.isArray(bot.symbol)
+      ? bot.symbol[0]?.value?.baseAsset
+      : bot.symbol?.baseAsset);
+  const headerQuoteAsset =
+    bot.quoteAsset ??
+    (Array.isArray(bot.symbol)
+      ? bot.symbol[0]?.value?.quoteAsset
+      : bot.symbol?.quoteAsset);
+  const headerStockMeta = resolvePairAsset(
+    bot.exchange,
+    headerBaseAsset,
+    headerQuoteAsset
+  );
 
   const statsChart = useMemo(() => (bot.stats as BotStats)?.chart, [bot.stats]);
 
@@ -368,8 +387,20 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
       mutationLoading: cloneMutation.isPending,
     });
 
+    // Parity with legacy: clone opens an unsaved, pre-filled create form so
+    // the exchange (and everything else) is still editable before saving.
+    // Landing on the edit page instead locks the exchange (`isExchangeLocked
+    // = !!id`), which is the regression users hit when cloning combo/grid.
     if (type === BotTypesEnum.dca) {
       navigate(`/bot/new?load=${bot.id}`);
+      return;
+    }
+    if (type === BotTypesEnum.combo) {
+      navigate(`/combo/new?load=${bot.id}`);
+      return;
+    }
+    if (type === BotTypesEnum.grid) {
+      navigate(`/grid/new?load=${bot.id}`);
       return;
     }
 
@@ -717,24 +748,16 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   />
                 )}
                 <CoinPair
-                  baseAsset={
-                    bot.baseAsset ??
-                    (Array.isArray(bot.symbol)
-                      ? bot.symbol[0]?.value?.baseAsset
-                      : bot.symbol?.baseAsset)
-                  }
-                  quoteAsset={
-                    bot.quoteAsset ??
-                    (Array.isArray(bot.symbol)
-                      ? bot.symbol[0]?.value?.quoteAsset
-                      : bot.symbol?.quoteAsset)
-                  }
+                  baseAsset={headerBaseAsset}
+                  quoteAsset={headerQuoteAsset}
                   symbols={bot.settings?.pair ? [bot.settings.pair].flat() : []}
                   maxDisplay={1}
                   iconSize="sm"
                   showText={true}
                   layout="horizontal"
                   className="text-sm font-medium text-muted-foreground"
+                  assetClass={headerStockMeta.assetClass}
+                  exchange={headerStockMeta.exchange}
                 />
               </div>
             </div>

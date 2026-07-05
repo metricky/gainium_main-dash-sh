@@ -1,4 +1,5 @@
 import { extractPairAssets } from '@/utils/pairs';
+import { type AssetClass } from '@/hooks/useTradingPairs';
 import React, {
   useCallback,
   useEffect,
@@ -15,12 +16,26 @@ export interface CoinPairProps {
   // Primary method - use separate assets (universal solution)
   baseAsset?: string;
   quoteAsset?: string;
+  // Asset class of the BASE asset — drives base icon resolution (crypto →
+  // CoinGecko, stock/etf → logo.dev, etc.). The quote is always crypto/fiat.
+  assetClass?: AssetClass;
+  // The BASE pair's `exchange` (ExchangeEnum value). Forwarded to the base
+  // CoinIcon so it can venue-gate the tokenized-stock ticker normalization
+  // (Bitget reality / Bybit-spot xstocks). Optional; only relevant for stock/etf.
+  exchange?: string;
   // Fallback method - parse from pair string (backward compatibility)
   pair?: string;
   // Support multiple symbols (new unified behavior)
   symbols?: string[];
   maxDisplay?: number;
   showQuote?: boolean;
+  /**
+   * Multi-symbol mode only: makes each rendered pair clickable and fires
+   * this with the pair's full symbol string (the matching `symbols[]`
+   * entry). Used to switch a chart to the clicked pair. Omit to keep the
+   * pairs purely presentational.
+   */
+  onPairClick?: (symbol: string) => void;
 
   className?: string;
   iconSize?: 'sm' | 'md' | 'lg';
@@ -41,6 +56,8 @@ const sanitizeSymbol = (value = '') =>
 const CoinPair: React.FC<CoinPairProps> = ({
   baseAsset,
   quoteAsset,
+  assetClass,
+  exchange,
   pair,
   symbols = [],
   maxDisplay = 3,
@@ -51,6 +68,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
   //textVariant = 'symbol',
   layout = 'stacked',
   reverseOrder = false,
+  onPairClick,
 }) => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -254,7 +272,12 @@ const CoinPair: React.FC<CoinPairProps> = ({
     if (layout === 'vertical') {
       return (
         <div className="flex flex-col items-center gap-1 px-2 py-1 bg-background rounded-md border border-border/30">
-          <CoinIcon symbol={base} size={sizes.base} />
+          <CoinIcon
+            symbol={base}
+            size={sizes.base}
+            assetClass={assetClass}
+            exchange={exchange}
+          />
           {quote && <CoinIcon symbol={quote} size={sizes.quote} />}
           {showText && (
             <span className="font-mono text-xs font-medium text-foreground whitespace-nowrap">
@@ -270,7 +293,13 @@ const CoinPair: React.FC<CoinPairProps> = ({
       return (
         <div className="flex flex-col items-center gap-1 px-1 py-1 bg-background rounded-md border border-border/30">
           <div className="relative flex items-center">
-            <CoinIcon symbol={base} size={sizes.base} isQuote={false} />
+            <CoinIcon
+              symbol={base}
+              size={sizes.base}
+              isQuote={false}
+              assetClass={assetClass}
+              exchange={exchange}
+            />
             {quote && (
               <div className={sizes.overlap}>
                 <CoinIcon symbol={quote} size={sizes.quote} isQuote={true} />
@@ -304,7 +333,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
         )}
       </div>
     );
-  }, [layout, base, quote, sizes, showText]);
+  }, [layout, base, quote, sizes, showText, assetClass, exchange]);
 
   // Render icons for multi mode - now renders full pairs (BASE/QUOTE) individually
   const renderIconsMulti = () => {
@@ -319,11 +348,42 @@ const CoinPair: React.FC<CoinPairProps> = ({
                 ? 'flex flex-col items-center gap-1 px-1 py-1 bg-background rounded-lg border border-border/30'
                 : 'flex items-center gap-1 px-1 py-1 bg-background rounded-lg border border-border/30';
 
+          const pairSymbol = symbols[idx];
+          const interactive = Boolean(onPairClick && pairSymbol);
           return (
-            <div key={`${b}-${idx}`} className={wrapperClass} data-pair="true">
+            <div
+              key={`${b}-${idx}`}
+              className={`${wrapperClass}${
+                interactive
+                  ? ' cursor-pointer transition-colors hover:border-primary/60'
+                  : ''
+              }`}
+              data-pair="true"
+              {...(interactive
+                ? {
+                    role: 'button',
+                    tabIndex: 0,
+                    title: `Show ${b}/${quoteSymbol} on chart`,
+                    'aria-label': `Show ${b}/${quoteSymbol} on chart`,
+                    onClick: () => onPairClick?.(pairSymbol),
+                    onKeyDown: (e: React.KeyboardEvent) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onPairClick?.(pairSymbol);
+                      }
+                    },
+                  }
+                : {})}
+            >
               {/* Base icon with quote overlapped */}
               <div className="relative flex items-center">
-                <CoinIcon symbol={b} size={sizes.base} isQuote={false} />
+                <CoinIcon
+                  symbol={b}
+                  size={sizes.base}
+                  isQuote={false}
+                  assetClass={assetClass}
+                  exchange={exchange}
+                />
                 {/* Quote icon overlapped */}
                 <div className={sizes.overlap}>
                   <CoinIcon
@@ -369,26 +429,59 @@ const CoinPair: React.FC<CoinPairProps> = ({
                   Additional pairs ({remainingCount}):
                 </div>
                 <div className="grid gap-xs">
-                  {remainingBases.map((base, idx) => (
-                    <div
-                      key={`${base}-${idx}`}
-                      className="flex items-center gap-xs"
-                    >
-                      <div className="relative flex items-center">
-                        <CoinIcon symbol={base} size="sm" isQuote={false} />
-                        <div className="-ml-2">
+                  {remainingBases.map((base, idx) => {
+                    const pairSymbol = symbols[effectiveMaxDisplay + idx];
+                    const interactive = Boolean(onPairClick && pairSymbol);
+                    return (
+                      <div
+                        key={`${base}-${idx}`}
+                        className={`flex items-center gap-xs${
+                          interactive
+                            ? ' cursor-pointer rounded-md px-1 py-0.5 transition-colors hover:bg-muted/50'
+                            : ''
+                        }`}
+                        {...(interactive
+                          ? {
+                              role: 'button',
+                              tabIndex: 0,
+                              title: `Show ${base}/${quoteSymbol} on chart`,
+                              'aria-label': `Show ${base}/${quoteSymbol} on chart`,
+                              onClick: () => {
+                                onPairClick?.(pairSymbol);
+                                setIsPopoverOpen(false);
+                              },
+                              onKeyDown: (e: React.KeyboardEvent) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  onPairClick?.(pairSymbol);
+                                  setIsPopoverOpen(false);
+                                }
+                              },
+                            }
+                          : {})}
+                      >
+                        <div className="relative flex items-center">
                           <CoinIcon
-                            symbol={quoteSymbol}
+                            symbol={base}
                             size="sm"
-                            isQuote={true}
+                            isQuote={false}
+                            assetClass={assetClass}
+                            exchange={exchange}
                           />
+                          <div className="-ml-2">
+                            <CoinIcon
+                              symbol={quoteSymbol}
+                              size="sm"
+                              isQuote={true}
+                            />
+                          </div>
                         </div>
+                        <span className="text-sm font-medium">
+                          {base}/{quoteSymbol}
+                        </span>
                       </div>
-                      <span className="text-sm font-medium">
-                        {base}/{quoteSymbol}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </PopoverContent>

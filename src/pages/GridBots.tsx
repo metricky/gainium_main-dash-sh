@@ -4,10 +4,12 @@ import { useStarredBotsStore } from '@/stores/starredBotsStore';
 import {
   BotTypesEnum,
   CloseGRIDTypeEnum,
+  PositionSide,
   type Bot,
   type BotStatus,
   type ExchangeInUser,
 } from '@/types';
+import { isFuturesExchange } from '@/utils/exchangeUtils';
 import {
   areAllBotsDeletable,
   filterDeletableBots,
@@ -51,6 +53,7 @@ import {
   type BotTypeId,
 } from '../components/bots/BotActionsMenuItems';
 import { BotCard } from '../components/bots/BotCard';
+import { Skeleton } from '@/components/ui/skeleton';
 import { BotDetailsDrawer } from '../components/bots/BotDetailsDrawer';
 import MainLayout from '../components/layout/MainLayout';
 import WidgetContainer from '../components/layout/WidgetContainer';
@@ -80,6 +83,7 @@ import Widget from '../components/ui/widget';
 import CoinPair from '../components/widgets/shared/CoinPair';
 import StaleIndicator from '../components/widgets/shared/StaleIndicator';
 import { CARD_VIEW_COLUMNS } from '../config/responsive';
+import { useBotModeGuard } from '../hooks/bots/base/useBotModeGuard';
 import {
   useBotArchive,
   useBotDelete,
@@ -140,7 +144,10 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     setStatusModalOpen(true);
   };
 
-  const handleConfirmStatusChange = (closeType?: string) => {
+  const handleConfirmStatusChange = (
+    closeType?: string,
+    cancelPartiallyFilled?: boolean
+  ) => {
     const isActive = isBotActive(bot.status);
     const newStatus = getTargetStatus(bot.status);
 
@@ -149,6 +156,7 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
         id: bot.id,
         status: newStatus,
         closeGridType: closeType as CloseGRIDTypeEnum | undefined,
+        cancelPartiallyFilled,
       },
       {
         onSuccess: () => {
@@ -279,6 +287,7 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
         description="Are you sure you want to delete this bot? This action cannot be undone."
         itemType="bot"
         itemName={bot.name}
+        requireConfirmation={false}
       />
 
       <BotStatusConfirmationModal
@@ -293,6 +302,10 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
             (originalBotData?.levels?.active?.sell || 0) >
           0
         }
+        botType={BotTypesEnum.grid}
+        gridFutures={isFuturesExchange(bot.exchange)}
+        gridHasOpenPosition={(originalBotData?.position?.price ?? 0) !== 0}
+        gridIsShort={originalBotData?.position?.side === PositionSide.SHORT}
         isLoading={statusToggleMutation.isPending}
       />
 
@@ -332,6 +345,13 @@ const GridBots: React.FC = () => {
   const params = useParams<{ id?: string }>();
   const selectedBot = params.id ?? null;
   const privacyMode = useUIStore((state) => state.privacyMode);
+
+  // When opening a specific bot via /grid/view/:id, keep the bot's real
+  // paper/live mode authoritative over the global toggle so a refresh doesn't
+  // flip the drawer to the wrong mode (and the bot vanishes). Thread 4872.
+  useBotModeGuard(selectedBot ?? undefined, BotTypesEnum.grid, {
+    enabled: !!selectedBot,
+  });
 
   // Check if in demo mode (read-only)
   const readOnly = isReadOnly();
@@ -504,18 +524,22 @@ const GridBots: React.FC = () => {
   };
 
   // Confirm bulk status change
-  const handleConfirmBulkStatusChange = async (closeType?: string) => {
+  const handleConfirmBulkStatusChange = async (
+    closeType?: string,
+    cancelPartiallyFilled?: boolean
+  ) => {
     setBulkStatusLoading(true);
     try {
       const newStatus = bulkStatusAction === 'start' ? 'open' : 'closed';
+      const isStop = bulkStatusAction === 'stop';
       for (const b of bulkStatusTargets) {
         await statusToggleMutation.mutateAsync({
           id: b.id,
           status: newStatus,
-          closeGridType:
-            bulkStatusAction === 'stop'
-              ? (closeType as CloseGRIDTypeEnum | undefined)
-              : undefined,
+          closeGridType: isStop
+            ? (closeType as CloseGRIDTypeEnum | undefined)
+            : undefined,
+          cancelPartiallyFilled: isStop ? cancelPartiallyFilled : undefined,
         });
       }
       toast.success(
@@ -884,7 +908,10 @@ const GridBots: React.FC = () => {
             totalsDefaultAggregation: 'sum',
           },
           aggregationFn: 'sum',
-          cell: ({ getValue }) => {
+          cell: ({ row, getValue }) => {
+            if (row.original.isActive && row.original.loadedPrices === false) {
+              return <Skeleton className="h-4 w-16" />;
+            }
             const value = getValue() as number;
             return privacyMode ? '***' : `$${value.toFixed(2)}`;
           },
@@ -905,6 +932,9 @@ const GridBots: React.FC = () => {
           },
           aggregationFn: 'sum',
           cell: ({ row }) => {
+            if (row.original.isActive && row.original.loadedPrices === false) {
+              return <Skeleton className="h-4 w-16" />;
+            }
             const bot = row.original;
             const valueChangeUsd = +(bot.valueChangeUsd || 0);
             const valueChangePerc = +(bot.valueChange || 0);
@@ -1790,6 +1820,11 @@ const GridBots: React.FC = () => {
                     bulkStatusAction === 'start' ? 'open' : 'closed'
                   }
                   hasActiveDeals={bulkHasActiveDeals}
+                  botType={BotTypesEnum.grid}
+                  // Bulk targets are heterogeneous — use the generic
+                  // "close position" wording and always offer the options.
+                  gridFutures
+                  gridHasOpenPosition
                   isLoading={bulkStatusLoading}
                 />
               </motion.div>

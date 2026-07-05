@@ -12,6 +12,7 @@ import {
   BotPanelInsights,
   type BotPanelInsightsTab,
 } from '@/components/bots/panels';
+import BotNotFoundNotice from '@/components/bots/BotNotFoundNotice';
 import { BotPanelLayout } from '@/components/bots/panels/BotPanelLayout';
 import BotChartPanel from '@/components/bots/panels/contents/chart/BotChartPanel';
 import BotFormPanel from '@/components/bots/panels/contents/form/BotFormPanel';
@@ -26,6 +27,7 @@ import {
   type BulkAction,
 } from '@/components/ui/data-table/data-table';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
+import { BacktestPermanentCheckbox } from '@/components/widgets/bots/backtest';
 import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
@@ -34,6 +36,7 @@ import {
   useTradingTerminalUtils,
 } from '@/context/TradingTerminalUtilsContext';
 import { GridPageProvider } from '@/contexts/bots/grid/GridPageProvider';
+import { useBotModeGuard } from '@/hooks/bots/base/useBotModeGuard';
 import { useBotPageLoading } from '@/hooks/bots/base/useBotPageLoading';
 import { useBotPageRedirect } from '@/hooks/bots/base/useBotPageRedirect';
 import {
@@ -100,6 +103,13 @@ const GridBotEditWidget = () => {
 
   const hasBotId = Boolean(id);
   const safeBotId = id ?? '';
+
+  // Keep this bot's real paper/live mode authoritative over the global
+  // toggle so a refresh doesn't flip it (and surface a clear error when the
+  // bot exists in neither mode instead of "Unknown exchange"). Thread 4872.
+  const modeGuard = useBotModeGuard(safeBotId, BotTypesEnum.grid, {
+    enabled: hasBotId,
+  });
 
   // Hooks for delete and export
   const deleteBacktestsMutation = useDeleteBacktests();
@@ -279,9 +289,11 @@ const GridBotEditWidget = () => {
         accessorKey: 'savePermanent',
         header: 'Save Permanently',
         cell: ({ row }) => (
-          <div className="text-sm">
-            {row.original.savePermanent ? 'yes' : 'no'}
-          </div>
+          <BacktestPermanentCheckbox
+            id={row.original._id ?? ''}
+            type={BotTypesEnum.grid}
+            checked={!!row.original.savePermanent}
+          />
         ),
       },
       {
@@ -925,6 +937,18 @@ const GridBotEditWidget = () => {
             No bot ID provided.
           </div>
         </div>
+      </MainLayout>
+    );
+  }
+
+  if (modeGuard.notFound) {
+    return (
+      <MainLayout pageTitle="Grid Bot - Edit" activePage="/grid" navigationBack>
+        <BotNotFoundNotice
+          backTo="/grid"
+          backLabel="grid bots"
+          botId={safeBotId}
+        />
       </MainLayout>
     );
   }

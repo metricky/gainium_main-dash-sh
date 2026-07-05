@@ -4,104 +4,105 @@
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { ColumnDef } from '@tanstack/react-table';
 import {
-  ArrowRightLeft,
-  BookOpen,
-  Check,
-  Edit,
-  Eye,
-  Handshake,
-  MinusCircle,
-  MoreHorizontal,
-  Plus,
-  PlusCircle,
-  Search,
-  Square,
-  X,
-  XCircle,
+    ArrowRightLeft,
+    BookOpen,
+    Check,
+    Edit,
+    Eye,
+    Handshake,
+    MinusCircle,
+    MoreHorizontal,
+    Plus,
+    PlusCircle,
+    Search,
+    Square,
+    X,
+    XCircle,
 } from 'lucide-react';
 import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useBotSpecificDeals } from '../../../../hooks/useBotSpecificDeals';
 /* import { useComboBots } from '../../../../hooks/useComboBots'; */
 import {
-  /* useComboDeals, */ type ComboDeal,
+/* useComboDeals, */ type ComboDeal,
 } from '../../../../hooks/useComboDeals';
 /* import { useHedgeDeals } from '../../../../hooks/useHedgeDeals'; */
 import {
-  AdjustFundsDialog,
-  CloseOptionsDialog,
-  type AdjustFundsDialogMode,
+    AdjustFundsDialog,
+    CloseOptionsDialog,
+    type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
 import { formatNumber } from '@/utils/numberFormatter';
 import { logger } from '../../../../lib/loggerInstance';
 import { toast } from '../../../../lib/toast';
 import { useTradeJournalStore } from '../../../../stores/tradeJournalStore';
 import {
-  BotTypesEnum,
-  CloseDCATypeEnum,
-  DCADealStatusEnum,
-  type AddFundsSettings,
-  type DCABot,
-  type DCADeals,
+    BotTypesEnum,
+    CloseDCATypeEnum,
+    DCADealStatusEnum,
+    type AddFundsSettings,
+    type DCABot,
+    type DCADeals,
 } from '../../../../types';
 import { TradeCard } from '../../../trades/TradeCard';
 /* import { TradeDetailDrawer } from '../../../trades/TradeDetailDrawer'; */
+import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
 import { useMergeSmartOrders } from '@/features/bots/widgets/BotForm/hooks/useMergeSmartOrders';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import {
-  useAdjustFunds,
-  useDealActions,
-  useMoveDealToTerminal,
+    useAdjustFunds,
+    useDealActions,
+    useMoveDealToTerminal,
 } from '@/hooks/useDealActions';
 import { useOpenDeal } from '@/hooks/useOpenDeal';
 import { useUserFees } from '@/hooks/useUserFeesService';
 import {
-  calculatePnlPercentageNullable,
-  isMetricUnavailable,
-  toSortableMetricValue,
+    calculatePnlPercentageNullable,
+    isMetricUnavailable,
+    toSortableMetricValue,
 } from '@/lib/utils/tradingMetrics';
 import { useAuthStore } from '@/stores/authStore';
 import type { ViewOrder } from '@/types/bots';
 import { transformDealToTrade, type TransformedTrade } from '@/types/dcaDeal';
-import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
 import { Button } from '../../../ui/button';
 import {
-  ProfitAndPerc,
-  ProfitLossPercChip,
-  StatusChip,
-  StrategyChip,
+    ProfitAndPerc,
+    ProfitLossPercChip,
+    StatusChip,
+    StrategyChip,
 } from '../../../ui/chip';
 import { ConfirmationDialog } from '../../../ui/confirmation-dialog';
 import { DataTable, type BulkAction } from '../../../ui/data-table/data-table';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
 } from '../../../ui/dialog';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '../../../ui/dropdown-menu';
 import { DualArcProgressGauge } from '../../../ui/DualArcProgressGauge';
 import { Input } from '../../../ui/input';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from '../../../ui/select';
+import { Skeleton } from '../../../ui/skeleton';
 import CoinPair from '../../../widgets/shared/CoinPair';
 import { DealOrdersDialog } from '../../../widgets/shared/DealOrdersDialog';
 interface TradeCardWrapperProps {
@@ -511,7 +512,7 @@ const DealActionsMenu: React.FC<{
               disabled={!canMoveToTerminal}
             >
               <ArrowRightLeft className="w-4 h-4 mr-2" />
-              Move to Terminal (beta)
+              Move to Terminal
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onClick={() => setCancelDialogOpen(true)}>
@@ -975,6 +976,13 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     fees: memoizedAllFees,
     lastUpdated: Date.now(),
   }));
+
+  // Live prices feed the unrealized/net P&L computation in
+  // transformDealToTrade. Until they arrive that transform falls back to a
+  // stale/zero value, so gate the price-dependent cells on a skeleton — in
+  // lockstep with the exact prices the transform reads (legacy parity with
+  // main-dash's per-row `loadedPrices`).
+  const pricesLoading = stableDependencies.prices.length === 0;
 
   const tokens = useAuthStore((state) => state.tokens);
 
@@ -2038,6 +2046,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           );
         },
         enableSorting: true,
+        enableColumnFilter: true,
+        meta: { filterType: 'number' },
         sortingFn: 'basic',
       },
       {
@@ -2456,6 +2466,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (!trade.active) {
           return <span className="text-muted-foreground">-</span>;
         }
+        if (pricesLoading) {
+          return <Skeleton className="h-4 w-16" />;
+        }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
@@ -2498,6 +2511,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         // Closed/canceled deals have no unrealized P&L (legacy parity).
         if (!trade.active) {
           return <span className="text-muted-foreground">-</span>;
+        }
+        if (pricesLoading) {
+          return <Skeleton className="h-4 w-12" />;
         }
         const unrealizedPnl = trade.unrealizedProfit;
         if (isMetricUnavailable(unrealizedPnl)) {
@@ -2582,6 +2598,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Net P&L',
       cell: ({ row }) => {
         const trade = row.original;
+        if (trade.active && pricesLoading) {
+          return <Skeleton className="h-4 w-16" />;
+        }
         const unrealizedPnl = trade.unrealizedProfit || 0;
         const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
         const netPnl = unrealizedPnl + realizedPnl;
@@ -2616,6 +2635,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       header: 'Net P&L, %',
       cell: ({ row }) => {
         const trade = row.original;
+        if (trade.active && pricesLoading) {
+          return <Skeleton className="h-4 w-12" />;
+        }
         const unrealizedPnl = trade.unrealizedProfit || 0;
         const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
         const netPnl = unrealizedPnl + realizedPnl;
@@ -2662,6 +2684,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     return filteredColumns;
   }, [
     privacyMode,
+    pricesLoading,
     handleOpenOrdersDialog,
     handleRowClick,
     completedOrders,

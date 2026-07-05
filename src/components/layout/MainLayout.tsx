@@ -1,6 +1,6 @@
 import { TabParamsCleaner } from '@/components/ui/tabs';
 import logger from '@/lib/loggerInstance';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Slot } from '@/lib/extensions';
 import { useSyncInitializer } from '@/lib/sync';
@@ -30,6 +30,7 @@ import Navbar from './Navbar';
 import NavigationSidebar from './NavigationSidebar';
 import { NavigationSidebarV2 } from './NavigationSidebarV2';
 import NavigationWidgetsInitializer from './NavigationWidgetsInitializer';
+import QuantRulesBanner from './QuantRulesBanner';
 import SharedPageLayout from './SharedPageLayout';
 import Socket from './Socket';
 
@@ -237,6 +238,12 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
       {/* Cloud-only pending-account-delete banner. Sh renders nothing. */}
       <Slot name="layout.pendingDeleteBanner" />
 
+      {/* Shared (cloud + self-hosted) Binance Quantitative Rules (-4400)
+          cooldown banner. Rendered directly (not via a cloud-only slot)
+          because the feature ships to both editions; renders nothing when
+          there are no active cooldowns. */}
+      <QuantRulesBanner />
+
       {/* Cloud-only detached Max chat panel (floating panel + bottom
           sheet + onboarding walkthrough overlay). Sh renders nothing.
           Mounted here so the floating panel sits above the page
@@ -258,7 +265,7 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
           ref={scrollContainerRef}
           className="flex-1 overflow-y-auto flex flex-col"
           data-main-content
-          style={{ scrollBehavior: 'smooth' }}
+          style={{ scrollBehavior: 'smooth', scrollbarGutter: 'stable' }}
         >
           <div
             className={
@@ -285,6 +292,11 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
                 navigateBack={navigationBack || false}
               />
             </div>
+
+            {/* Cloud-only scheduled-maintenance warning, inside the content
+                column so it inherits the panel gutter + spacing. Sh renders
+                nothing (a self-hosted operator maintains their own box). */}
+            <Slot name="layout.maintenanceBanner" />
 
             {/* Page content with mobile bottom navigation padding and standardized spacing */}
             <main
@@ -360,9 +372,9 @@ const DemoModePill: React.FC = () => {
   const { isDemoMode } = usePaperContext();
   const navigate = useNavigate();
 
-  const handleExit = () => {
+  const handleExit = useCallback(() => {
     navigate('/add-exchange', { replace: true });
-  };
+  }, [navigate]);
 
   return (
     <PromptPill

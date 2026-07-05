@@ -5,6 +5,407 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.28.0] - 2026-07-04
+
+### Added
+
+- Pair picker: "Canonical only" toggle (on by default) with a risk tooltip. Hides permissionless listings (Hyperliquid HIP-1 spot tokens that can impersonate real tickers or carry liquidity/rug risk) while keeping HL-native and Unit-bridged assets; toggle off to show and trade them. Only appears when the list contains non-canonical pairs, and never blocks selection. Applies to every pair-picking surface (DCA, Grid, Combo, Terminal).
+
+## [2.27.2] - 2026-07-04
+
+### Fixed
+
+- Portfolio balances: price balance tokens whose exchange-normalized ticker differs from the snapshot asset name (e.g. Hyperliquid Unit aliases `UBTC`→`BTC`, `USDT0`→`USDT`). These previously rendered at `$0.00` in the enhanced balances table because the price map was keyed only by snapshot names; balance tokens are now also priced from the screener. USDC was unaffected (same name everywhere).
+
+## [2.27.1] - 2026-07-04
+
+### Fixed
+
+- OKX Europe pair scoping: add the `source` field to the `useTradingPairs` `TradingPair` type so the bot-form pair filter type-checks under the production build (`tsc -b`); 2.27.0 built only under the looser dev typecheck.
+
+## [2.27.0] - 2026-07-04
+
+### Added
+
+- OKX Europe support: adding an OKX account with the **my.okx.com** origin now shows a notice that EU accounts trade a restricted product set (USDC/EUR spot; USDT unavailable), and the bot-form pair selector scopes to that account's real universe — EU accounts see only their USDC/EUR pairs, other OKX accounts keep the global list.
+
+## [2.26.4] - 2026-07-03
+
+### Fixed
+
+- Deal chart: the trade overlay now dedupes markers to one per price level per bar and merges any that would overlap on screen at the current zoom, so high-frequency (tight-grid) deals stay responsive without dropping any traded level. Builds on the visible-range filtering from 2.26.3.
+- Reduced needless re-renders of the demo-mode prompt pill on every live update.
+
+## [2.26.3] - 2026-07-03
+
+### Fixed
+
+- Deal chart: the trade overlay now draws only the transactions in the visible time range and re-filters as you pan/zoom, instead of drawing every trade at once. High-frequency deals with thousands of trades previously froze the chart and made panning progressively unresponsive; plotting is now bounded and scales with the visible window rather than the deal size.
+
+## [2.26.2] - 2026-07-03
+
+### Changed
+
+- Bot actions menu: the Archive action is now disabled for running bots (open/range/monitoring/error) with a "Stop the bot first" tooltip, matching the backend rule that only stopped bots can be archived. Prevents the misleading "archived successfully" that used to hide a running bot locally until the next full reload. Applies to all bot types (DCA/Grid/Combo/Hedge Combo/Hedge DCA).
+
+## [2.26.1] - 2026-07-02
+
+### Fixed
+
+- `getMaintenanceWarning` now requests `duration` so the maintenance message's `%duration%` placeholder resolves (requires the matching `main-app` schema field).
+
+## [2.26.0] - 2026-07-02
+
+### Added
+
+- New `layout.maintenanceBanner` extension slot in `MainLayout` for a cloud-only scheduled-maintenance warning banner. Self-hosted builds render nothing.
+
+### Fixed
+
+- `getMaintenanceWarning` query requested a non-existent `textf` field; corrected to `text` so the maintenance message resolves.
+
+## [2.25.8] - 2026-07-02
+
+### Fixed
+
+- Bot drawer performance tab: the equity, realized-profit and buy-and-hold series no longer animate on mount, matching every other chart in the app. This closes a class of crashes ("Something went wrong" / Maximum update depth exceeded) where a chart unmounting mid-animation would trip an internal render loop.
+- All remaining charts now disable enter animation consistently, and a lint rule enforces that every new chart series makes this choice explicitly, so the crash class can't come back through a missed chart.
+
+## [2.25.7] - 2026-07-02
+
+### Changed
+
+- Crash reports (the automatic error reporter behind the "Something went wrong" screen) now carry the deployed bundle hash, build mode, React error digest, and a short trail of the last route changes, clicks, resizes and live-update events leading up to a crash, so hard-to-reproduce production crashes can be pinpointed without asking the user to reproduce them. No payload or text content is captured.
+- Added an internal render-loop tripwire on the responsive button toolbar: if a component starts re-rendering pathologically fast (the pattern behind "Maximum update depth exceeded"), it reports which props were changing before the page crashes, instead of after. Can be disabled with `localStorage['gainium:tripwire']='off'`.
+
+## [2.25.6] - 2026-07-02
+
+### Changed
+
+- Leverage control (trading terminal and DCA/grid bot forms): redesigned into a single full-width row — the amount input, slider and current value sit together, with one compact row of quick-select presets below — instead of a cramped two-column layout. The slider track is now visible on filled surfaces, the preset buttons were trimmed to the common values (capped at the exchange max), and the bot-form container now uses a filled background to match the terminal.
+
+## [2.25.5] - 2026-07-02
+
+### Fixed
+
+- Coin icons: map Binance's precious-metal commodity tickers (`XAU`/`XAG`/`XPT`/`XPD`) and Brent (`BZ`) onto the shipped metal/oil glyphs instead of the generic commodity badge, so stock/commodity perps show a proper icon.
+
+## [2.25.4] - 2026-07-02
+
+### Fixed
+
+- Stopping a **grid bot** now asks how to handle the orders/position before stopping — cancel all orders, cancel and close the position by LIMIT or MARKET, or cancel except partially filled — matching the legacy dashboard. Previously grid bots stopped silently and left positions/orders open on the exchange. Applies to the bot list, the bot card, the details drawer, and bulk stop.
+
+## [2.25.3] - 2026-07-02
+
+### Fixed
+
+- Grid **Start/Update bot** confirmation dialog: free balances and required amounts are now grouped into per-asset cards with aligned label/value rows, so "what you have" vs "what's needed" reads clearly instead of stacked prose.
+- Self-hosted **Admin** page no longer shifts horizontally when switching between tabs — the main content scroll area now reserves a stable scrollbar gutter, so tall tabs (Services, Updates) and short tabs (Diagnostics, Exchanges) stay aligned.
+- Opening or refreshing a **paper bot's** detail/edit page (grid, combo, DCA) no longer flips it to Live and shows "Unknown exchange" when your account default is Live — the page now stays in the bot's own paper/live mode.
+- Opening a bot that doesn't exist in your paper **or** live account now shows a clear "Bot not found" message with a way back to the list, instead of a broken form with "Unknown exchange".
+
+## [2.25.2] - 2026-07-02
+
+### Fixed
+
+- Starting, stopping, restarting, or deleting a bot no longer spins indefinitely when the bot worker is down, restarting, or backed up: the command now times out after 60s with a clear error toast and the button resets, instead of leaving the bot in limbo behind an endless spinner.
+
+## [2.25.0] - 2026-07-02
+
+### Added
+
+- Admin → Diagnostics now shows the **price feed connectors** and their role, and warns when no connector is producing the ticker feed that paper/live order-filling needs — with a callout for ticker-only exchanges (e.g. Coinbase). Makes "enabled but no ticks" self-explanatory. Requires admin-sh ≥ 1.3.0; degrades cleanly on older backends.
+
+## [2.24.0] - 2026-07-02
+
+### Added
+
+- Global warning banner when Binance temporarily restricts a futures account or symbol to reduce-only (Quantitative Rules cooldown): shows the affected account, restricted symbols with level and expiry, that new orders are delayed (not lost) and resume automatically, and that closing positions still works. Dismissable per cooldown window; only shown when a Binance account is connected.
+
+## [2.23.0] - 2026-07-02
+
+### Changed
+
+- Admin → Updates: upgrading **admin-sh** now shows its real outcome. Because the admin service restarts itself, the page waits for it to come back and then confirms the new version instead of reporting "success" immediately. If the self-upgrade can't complete (e.g. `COMPOSE_DIR_HOST_PATH` not set), it now shows a clear error with a copy-paste manual command (`docker compose pull admin-sh && docker compose up -d --force-recreate admin-sh`). "Upgrade all" also upgrades admin-sh last so it can't cut off the other upgrades. Requires admin-sh ≥ 1.2.0.
+
+## [2.22.3] - 2026-07-01
+
+### Fixed
+
+- Dashboard Overview: **normal deal count** and **unrealized P&L** (uPnL) no longer double-count. Grid bots have no DCA-style deals, but the widgets were still requesting DCA deal stats for the grid bot type — which the backend answers with the *DCA* dataset — and summing it on top of the real DCA numbers. Grid is now excluded from the deal-status/uPnL aggregation (matching the legacy dashboard), so the "normal", "in profit", and uPnL figures are correct again.
+
+## [2.22.2] - 2026-07-01
+
+### Fixed
+
+- Asset-class picker: pairs now use their **own per-exchange** class, so a base that is a stock on one venue but crypto on another (e.g. `CAT`, `AAPL` on Hyperliquid) no longer shows under **Stocks** on the wrong exchange.
+
+### Added
+
+- Multi-asset icons for commodities (Au/Ag/Pt/Pd/Cu/Al, oil, gas, corn) and indices (S&P/N225/K200/…); forex reuses the fiat badges. Hyperliquid HIP-3 `dex:` prefixes are stripped for logo/badge lookup, and crypto-native metals (PAXG/XAUT) fall back to their coin logo. Non-crypto class icons are now shipped in `core` (self-hosted) as well as cloud.
+
+## [2.22.1] - 2026-07-01
+
+### Changed
+
+- Quick mode (DCA, Combo, Grid) now shows the **Bot Name** field and auto-fills a meaningful default of `{pair} {strategy or bot type} {date}` (e.g. `BTCUSDT Mid-term 2026-07-01`) instead of the bare `New Bot`. Multi-pair DCA bots use a `{pair} +{n} …` prefix (e.g. `BTCUSDT +4 Mid-term 2026-07-01`). The name stays editable and is left untouched once you type your own.
+
+## [2.22.0] - 2026-07-01
+
+### Added
+
+- Admin → **Diagnostics** tab (self-hosted): a live health snapshot showing per-exchange market-data feed liveness, Redis reachability, and service up/health state. Flags enabled exchanges that are receiving no live price data — the usual reason simulated or live orders silently stop filling.
+
+## [2.21.4] - 2026-06-30
+
+### Fixed
+
+- Tokenized-stock pairs now show their real company logo (instead of a first-letter tile) on the bot cards, bot list rows and bot detail header — DCA, Grid and Hedge. The read-only views now resolve each pair's asset class + exchange from the loaded trading pairs, matching the bot edit page and pickers.
+
+## [2.21.3] - 2026-06-30
+
+### Added
+
+- DCA & Combo Quick Setup show the minimum investment needed to run ("Min to run"), and the investment slider now floors at that minimum so it can't select a sub-minimum amount.
+- Grid Quick Setup shows the minimum budget to run and floors the investment slider at it.
+
+### Fixed
+
+- Grid Manual mode restores the "Min budget is …" hint under the Investment field (ported from the legacy dashboard's budget-range calculation).
+
+## [2.21.2] - 2026-06-30
+
+### Fixed
+
+- Tokenized-stock pairs now show their real company logo in the read-only (locked) Trading Pairs view on the bot edit page — DCA, Combo and Grid — instead of a generic letter tile. Previously the logo only appeared after clicking Edit; the locked view now resolves each pair's asset class + exchange the same way the edit picker does.
+
+## [2.21.1] - 2026-06-30
+
+### Fixed
+- Tokenized-stock icons now show the real company logo for Bitget reality (`RAAPL`), Bybit-spot and Kraken xStock (`AAPLX`) pairs — including their paper twins — instead of a generic letter tile. `CoinIcon` venue-gates the ticker normalization and the pair's exchange is threaded through the pair pickers (`CoinPair`, `CoinSelect`, `ListModal`, `PairSelector`); clean tickers like `NFLX` are unaffected.
+
+## [2.21.0] - 2026-06-30
+
+### Added
+
+- Asset-class filter in the coin/pair pickers (terminal + bot form): browse by Crypto / Stocks / Metals / Commodities (etc.) across exchanges. Only classes actually present render as chips; the market-data sort (crypto-only) hides for non-crypto classes.
+- Multi-asset icons: stock/ETF logos load from our backend's self-hosted cache; crypto unchanged (CoinGecko). `CoinIcon`/`CoinPair` resolve icons by asset class, so stocks no longer show false-positive crypto icons.
+
+## [2.20.0] - 2026-06-30
+
+### Added
+
+- Backtest history: a "Save Permanently" checkbox on every bot type's backtest table (DCA, Combo, Grid, and Hedge — both new and edit pages) lets you mark a backtest so it is not auto-deleted by the cleanup job. Previously this column was a read-only yes/no indicator. Toggling it updates immediately without reloading the table.
+
+## [2.19.2] - 2026-06-30
+
+### Added
+
+- Bot create/edit and the bot details drawer: click a trading pair to load it on the chart. On the bot form (new, edit, and the quick/manual sidebar) clicking a selected pair chip switches the chart to that pair; in the bot details drawer clicking a pair in the Basic section (including the "+N more" list) does the same.
+
+## [2.19.1] - 2026-06-30
+
+### Fixed
+
+- Trades page: fixed a crash ("unexpected error") that made the page fail to load whenever you had open trades and the table layout was selected. The trades table now renders correctly in both table and card views.
+- Editing an exchange account: the Update button no longer silently fails to save, the exchange and passphrase fields now populate correctly when opening an existing account (including Bitget), and leaving the API secret or passphrase blank keeps the stored credentials instead of wiping them.
+
+## [2.19.0] - 2026-06-29
+
+### Added
+
+- Move a terminal deal back into a bot. Open terminal deals now have a "Move to Bot" action (in the trades card menu and the terminal Open Orders table) that adopts the position into an existing DCA bot you choose. Only compatible bots are offered — same exchange, account, direction (long/short), and trading pair — and the now-empty terminal entry is removed afterward. The position is adopted bare and then follows the target bot's take-profit, stop-loss and safety-order settings.
+
+## [2.18.12] - 2026-06-29
+
+### Fixed
+
+- Trading terminal "Import" deal type: the Purchased Price field no longer rejects an entry price above (long) or below (short) the current price. An import declares an already-held position at its historical entry, which can legitimately sit on either side of the current market price. Previously the limit-order direction rule wrongly blocked the price, leaving the deal to import at the wrong (current) price or fall through to a real buy order.
+- Trading terminal: placing an order or importing a deal now runs a client-side balance check before submitting (legacy parity). When the account can't fund the order the submit is blocked with "Not enough assets to place order", instead of returning a premature success and then failing asynchronously in the engine ("Not enough balance to start new deal"). Imports of an existing futures position are exempt — they adopt the held position and require no free margin.
+
+## [2.18.11] - 2026-06-29
+
+### Fixed
+
+- Take profit is no longer capped across all bot types (DCA, grid, combo, and hedge variants). High-leverage users can now set an arbitrarily large take profit target (e.g. 5000% on 100x), matching the legacy dashboard. The slider still tops out at 250% for practical use, but the typed value and stored target are uncapped. Previously combo/hedge TP capped at 250% and DCA TP at 100%.
+- DCA multi-target take profit: the individual price-distance targets are no longer wrongly forced to sum to ≤100%. Each target is an independent price level (position allocation across targets still sums to 100% as before).
+- Combo TP slider drag no longer silently clamps to 50%.
+
+## [2.18.10] - 2026-06-29
+
+### Fixed
+
+- Profit dashboard widget no longer crashes the whole dashboard when the profit data contains a daily row with an unparseable date. Such rows are now skipped instead of throwing "Invalid time value".
+
+## [2.18.9] - 2026-06-28
+
+### Fixed
+
+- Hedge bot Deals tab now refreshes immediately after merging deals. The merge action didn't invalidate the hedge deals query, so the drawer kept showing the stale pre-merge list (old child deals, no merged deal) until a manual page refresh.
+
+## [2.18.8] - 2026-06-28
+
+### Fixed
+
+- Hedge combo/DCA bot details drawer: short-leg deals now show their orders. The drawer only fetched orders for the primary (long) leg, so a short-side deal's order timeline rendered empty ("No orders found") even though the orders existed on the exchange. It now fetches and merges both legs' orders, filtered per deal.
+
+### Changed
+
+- Deal details Orders section: now defaults to a sortable, paginated **table** view (with search and CSV/JSON export) and splits orders into **Pending** and **Completed** tabs. The previous card layout is preserved and available via the Table/Cards toggle.
+
+## [2.18.7] - 2026-06-27
+
+### Fixed
+
+- Hedge bot details drawer: the read-only Settings → Hedge tab now shows the hedge-level Take Profit / Stop Loss from the bot's shared settings instead of always reading "Off". Previously it read these off a leg (which never carries them), so a configured hedge take-profit displayed as "Off" even though editing the bot showed the correct value.
+
+## [2.18.6] - 2026-06-26
+
+### Changed
+
+- Hedge DCA and Combo bot tables: dropped an unused `unPnlMap` dependency from the column-definition memo so the table structure isn't rebuilt on every price tick. No visible change (the unrealized values are already baked into each row).
+
+## [2.18.5] - 2026-06-26
+
+### Changed
+
+- Trading terminal: a futures account can now be selected for a **Simple** order instead of being disabled. Because a Simple order is a one-off market order with no position tracking, picking a futures account now shows a warning that it opens an unmanaged position (no automatic take-profit, stop-loss, or DCA) and to use Smart if you want Gainium to manage it.
+
+### Fixed
+
+- Hyperliquid spot BTC balances now show up in the trading terminal and bot creators. The BTC spot market trades as the `BTC-USDC` pair but Hyperliquid holds the position as `UBTC` (Unit BTC), so the per-asset balance never matched the pair and the terminal showed `0` available to sell — users couldn't sell their spot BTC. Wallet symbols are now canonicalized (`UBTC`/`SBTC` → `BTC`, `SUSD`/`SUSDT` → `USD`/`USDT`) when reconciling balances against the selected pair.
+
+## [2.18.4] - 2026-06-26
+
+### Fixed
+
+- Hedge bots no longer show `$0.00` unrealized P&L and an empty deals drawer for some bots when an account has more than 500 open hedge deals. The hedge deal fetch stopped at the backend's 500-row page limit, so bots whose deals fell outside the most-recent 500 were dropped from the unrealized calculation (cards, list table, drawer) and the drawer's deals tab. It now pages through the full deal set.
+
+## [2.18.3] - 2026-06-25
+
+### Fixed
+
+- Values derived from live market prices (Unrealized P&L, Net P&L, Current Value, and the sidebar uPnL/Total PnL totals) now show a loading skeleton while prices are still being fetched, instead of briefly displaying a misleading `0`. Applies to the deals and open-orders tables, the bot performance drawer, the DCA/Combo/Grid bot list tables, and the trading-bot sidebar panels.
+
+## [2.18.2] - 2026-06-25
+
+### Fixed
+
+- DCA, Combo and Hedge bots can again set max open deals up to 200. The save-time field mapper was silently capping the value at 50 (rejecting anything higher with "Max open deals must be between 1 and 50"), even though the form validation and the previous dashboard both allowed up to 200. The mapper now matches at 200.
+
+## [2.18.1] - 2026-06-25
+
+### Fixed
+
+- Kraken backtests work again on both spot and futures. Bot backtests (and the curated-preset return estimates) on Kraken pairs were silently returning no candle data and 0 deals because the candle request used the concatenated pair form (`BTCUSDT`) that Kraken's market-data API rejects. Candle requests now use Kraken's dashed native pair (`BTC-USDT` for spot, `BTC-USD` for USDⓈ-M futures), matching the existing KuCoin-spot handling.
+
+## [2.18.0] - 2026-06-25
+
+### Added
+
+- Hedge bot details: a unified view that shows **both legs together** instead of a Long/Short switcher. The Overview has a combined stats block plus each leg; Deals lists both legs' deals in one table; Events is one merged feed; the chart is a single panel. Settings keeps a Hedge / Long / Short switch (Hedge shows the shared take-profit / stop-loss).
+
+### Fixed
+
+- Hedge bot combined and per-leg **Unrealized PnL / current value** no longer read $0.00 for bots on exchanges absent from the price feed (e.g. Kraken futures): the values are now taken from the server-computed deal data. Capital "cost" on each leg is likewise sourced from the deals so it no longer flickers.
+- Clicking a deal in a hedge bot's Deals tab now opens it **in place** within the same drawer, matching the other bot types, instead of stacking a second drawer on top.
+- Grid bots Quick form: the Investment now defaults to a sensible non-zero amount (sized so each grid level clears the exchange minimum, capped at your available balance) instead of 0, which previously tripped a per-level-minimum error on launch.
+
+## [2.17.2] - 2026-06-25
+
+### Fixed
+
+- Hedge bots Quick form: Investment is now the **total** funds the leg deploys across the base order and every safety order, distributed using the same math as the standalone Quick bot — instead of being set as each individual order size (which over-committed by the order count). Editing the total redistributes it, and risk-profile presets keep the total constant while re-spreading it over the new orders ladder.
+
+## [2.17.1] - 2026-06-25
+
+### Fixed
+
+- Hedge bots Quick form: a short leg on a USDⓈ-M futures account now shows its Investment in the settlement asset (e.g. USDT) instead of the base coin; the coin icon and unit label always match. COIN-M still shows the base coin, spot shorts the base asset.
+- Hedge bots Quick form: the Investment slider now scales to the leg's actual available balance on its exchange, instead of a fixed 0–100 range. Both legs resolve their own balance even when they sit on different exchanges.
+
+## [2.17.0] - 2026-06-25
+
+### Added
+
+- Paper `SPOT & Futures` accounts can now be funded independently per market: the Add Exchange form shows a separate asset + amount for each account it will create (SPOT / USDⓈ-M / COIN-M), with the COIN-M account coin-margined (BTC/ETH). Sent via the new `addExchange` `topUps` field.
+
+### Changed
+
+- Add Exchange paper dropdown de-duplicated: each exchange now lists one clear entry per market (SPOT / SPOT & Futures / Futures) instead of a redundant bare umbrella alongside an explicit variant. Hyperliquid's spot entry is labeled "SPOT"; Paper Bitget gains SPOT and SPOT & Futures entries.
+- Paper top-up asset lists corrected per exchange from real tradeable-pair coverage (e.g. Kraken defaults to USD, not USDT; dropped delisted BUSD/TUSD/GUSD/PAX/DAI; Coinbase offers USD).
+- A `SPOT & Futures` selection now shows the funding field and defaults the account name to the exchange brand (e.g. "Paper Kraken"), so created accounts read "Paper Kraken (Spot)" instead of "Paper Kraken SPOT & Futures (Spot)".
+
+### Fixed
+
+- "My Accounts" now refreshes immediately after adding a `SPOT & Futures` account (every created sub-account is added to the list, not just the first).
+
+## [2.16.1] - 2026-06-25
+
+### Fixed
+
+- Hedge bots Quick form: creating a bot no longer fails with "Cannot read properties of undefined" — each leg's pair metadata is now preserved when the create payload is built.
+- Hedge bots Quick form: Investment is set per leg in the correct asset — the long leg in quote (e.g. USDT) and the short leg in base (e.g. BTC) — instead of one shared number that landed as the wrong asset on the short leg. Each leg's slider is capped at that leg's available balance.
+- Order-size coin icon could briefly show the wrong coin (e.g. a USDT logo labelled BTC) when the unit changed; the icon now always matches its label.
+
+### Changed
+
+- Order-size fields across all bot types now show the unit symbol (e.g. "USDT", "BTC") next to the coin icon.
+
+## [2.16.0] - 2026-06-25
+
+### Added
+
+- Hedge DCA bots page: a "Deals" tab (next to "Bots") lists every open or closed deal across your hedge bots' legs, matching the Deals view already on the regular bots page.
+
+### Fixed
+
+- "Capital Deployed" now reflects the capital actually committed to open positions (the live cost shown in each bot's "Cost" column) instead of the larger reserved-budget figure, so the stat reconciles with the table. Applies to the DCA, Combo, Hedge DCA, and Hedge Combo bot lists and the combined Trading overview.
+
+## [2.15.1] - 2026-06-23
+
+### Fixed
+
+- Hedge combo bot deals: unrealized profit no longer shows a wildly inflated figure for COIN-M (inverse) legs. The deal table now applies the combo profit formula to hedge-combo legs and converts via the quote asset, matching the value the backend reports.
+- COIN-M unrealized profit on the dashboard treemap, bot cards, and DCA deal lists no longer shows an inflated figure — the shared calculation now converts via the quote asset for COIN-M positions too.
+
+## [2.15.0] - 2026-06-23
+
+### Added
+
+- Sidebar edit mode: reorder navigation items by dragging, move them between sections, create and rename your own sections, and add custom links into any section. A "Reset to default" control restores the shipped layout. Open it from the pencil button in the sidebar header.
+
+## [2.14.1] - 2026-06-23
+
+### Fixed
+
+- Bot events panel: events now show clean, consistent labels derived from the event type rather than guessed from message text. Settings changes are no longer mislabelled "Bot Status", buy/sell direction is only shown when the backend actually reports it, and raw internal names (e.g. "Buy dialog") render as readable titles.
+
+## [2.14.0] - 2026-06-22
+
+### Added
+
+- Funding rate
+
+## [2.13.0] - 2026-06-22
+
+### Added
+
+- Bot Webhooks section now has Incoming/Outgoing tabs. Outgoing webhooks (notify an external URL on bot start/stop and deal open/close) save to the bot immediately on add, edit, or delete and persist across reloads.
+
+### Fixed
+
+- Outgoing webhooks were previously held in local state only — never saved, did not mark the bot as modified, and were lost on reload. They now load from and persist to the backend.
+- Usage column on the Trading Bots and Combo Bots tables now sorts and filters by the numeric usage percentage instead of the underlying object, so number filters and ordering work.
+- Usage column in the bot drawer's deals table can now be filtered numerically.
+
+## [2.12.4] - 2026-06-22
+
+### Fixed
+
+- Cloning a Combo or Grid bot now opens a pre-filled, unsaved create form where the exchange (and other settings) can still be changed — matching the legacy UI. Previously the clone landed on the saved bot's edit page, where the exchange was locked.
+
 ## [2.12.3] - 2026-06-18
 
 ### Fixed

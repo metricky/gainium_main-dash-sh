@@ -15,7 +15,7 @@ import { NameInput } from '@/features/bots/shared/components/NameInput';
 import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
 import { BotTypesEnum, type ExchangeInUser } from '@/types';
 import type { BotFormData, BotFormErrors } from '@/types/bots/form';
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import ExchangeSelector from '../components/exchangeSelector';
 import { useBasicSettingsTab } from '../hooks/useBasicSettingsTab';
 
@@ -51,6 +51,8 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
   const {
     pairError,
     exchangeProvider,
+    livePairsIndex,
+    normalizedExchangeProvider,
     multiToggleState,
     multiToggleMessage,
     pairLockState,
@@ -80,8 +82,28 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
 
   useDcaTradingContext(formData);
 
+  const { alerts, setActiveChartPair } = useBotFormState();
+
+  // Clicking a pair chip (in create or locked edit mode) switches the
+  // form chart to that pair. The chart effect keys off `formData.pair`,
+  // so map the clicked symbol back to its matching `formData.pair`
+  // element (normalizing away separators/case) and fall back to the
+  // normalized symbol when there's no exact member.
+  const handleChartPairSelect = useCallback(
+    (rawPair: string) => {
+      const normalized = rawPair.replace(/[\s\-/]/g, '').toUpperCase();
+      if (!normalized) {
+        return;
+      }
+      const match = pairs.find(
+        (item) => item.replace(/[\s\-/]/g, '').toUpperCase() === normalized
+      );
+      setActiveChartPair(match ?? normalized);
+    },
+    [pairs, setActiveChartPair]
+  );
+
   const useMulti = useBotFormSelector('useMulti');
-  const { alerts } = useBotFormState();
   const missingPairsMessage =
     formattedMissingPairs && formattedMissingPairs.length > 0
       ? `Some saved pairs are no longer available on ${missingPairsExchangeLabel}: ${formattedMissingPairs.join(', ')}`
@@ -191,21 +213,37 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                         : pairs.slice(0, PAIRS_PREVIEW_LIMIT)
                       ).map((pair, index) => {
                         const [baseAsset, quoteAsset] = splitPair(pair);
+                        // Resolve the pair's asset class + venue so tokenized
+                        // stocks render their real logo (not a letter tile) in
+                        // this read-only view. Same lookup the edit picker uses.
+                        const tp =
+                          livePairsIndex.byExchange[
+                            normalizedExchangeProvider ?? ''
+                          ]?.[`${baseAsset}${quoteAsset}`.toUpperCase()] ??
+                          livePairsIndex.aggregated[
+                            `${baseAsset}${quoteAsset}`.toUpperCase()
+                          ];
                         return (
-                          <div
+                          <button
+                            type="button"
                             key={`${pair}-${index}`}
-                            className="flex min-w-0 items-center gap-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm"
+                            onClick={() => handleChartPairSelect(pair)}
+                            title={`Show ${baseAsset}/${quoteAsset} on chart`}
+                            aria-label={`Show ${baseAsset}/${quoteAsset} on chart`}
+                            className="flex min-w-0 cursor-pointer items-center gap-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted/50"
                           >
                             <CoinPair
                               baseAsset={baseAsset}
                               quoteAsset={quoteAsset}
+                              assetClass={tp?.assetCategory}
+                              exchange={tp?.exchange}
                               iconSize="sm"
                               showText={false}
                             />
                             <span className="truncate">
                               {baseAsset}/{quoteAsset}
                             </span>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>
@@ -247,6 +285,7 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                     : {})}
                   shouldShowAddButton={!isComboBot}
                   showAllOption={false}
+                  onPairClick={handleChartPairSelect}
                 />
                 {useMulti && (
                   <div className="space-y-1">

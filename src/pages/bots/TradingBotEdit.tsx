@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import BotNotFoundNotice from '@/components/bots/BotNotFoundNotice';
 import {
   BotPanelInsights,
   BotPanelLayout,
@@ -33,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
+import { BacktestPermanentCheckbox } from '@/components/widgets/bots/backtest';
 import {
   BacktestResultsFullModal,
 } from '@/components/widgets/bots/backtest/redesign';
@@ -43,6 +45,7 @@ import {
   TradingTerminalUtilsProvider,
   useTradingTerminalUtils,
 } from '@/context/TradingTerminalUtilsContext';
+import { useBotModeGuard } from '@/hooks/bots/base/useBotModeGuard';
 import { useBotPageLoading } from '@/hooks/bots/base/useBotPageLoading';
 import { useBotPageRedirect } from '@/hooks/bots/base/useBotPageRedirect';
 import {
@@ -123,6 +126,13 @@ const TradingBotEditWidget = () => {
 
   const hasBotId = Boolean(id);
   const safeBotId = id ?? '';
+
+  // Keep this bot's real paper/live mode authoritative over the global
+  // toggle so a refresh doesn't flip it (and surface a clear error when the
+  // bot exists in neither mode instead of "Unknown exchange"). Thread 4872.
+  const modeGuard = useBotModeGuard(safeBotId, BotTypesEnum.dca, {
+    enabled: hasBotId,
+  });
 
   useEffect(() => {
     return () => {
@@ -411,9 +421,11 @@ const TradingBotEditWidget = () => {
         accessorKey: 'savePermanent',
         header: 'Save Permanently',
         cell: ({ row }) => (
-          <div className="text-sm">
-            {row.original.savePermanent ? 'yes' : 'no'}
-          </div>
+          <BacktestPermanentCheckbox
+            id={row.original._id ?? ''}
+            type={BotTypesEnum.dca}
+            checked={!!row.original.savePermanent}
+          />
         ),
       },
       {
@@ -1089,6 +1101,8 @@ const TradingBotEditWidget = () => {
             No bot ID provided.
           </div>
         </div>
+      ) : modeGuard.notFound ? (
+        <BotNotFoundNotice backTo="/bot" backLabel="bots" botId={safeBotId} />
       ) : (
         <div className="flex flex-col gap-md">
           {isLoading ? (

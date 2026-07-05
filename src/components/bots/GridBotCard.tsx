@@ -1,6 +1,12 @@
 import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
-import { BotTypesEnum, type BotSettings } from '@/types';
+import {
+  BotTypesEnum,
+  CloseGRIDTypeEnum,
+  PositionSide,
+  type BotSettings,
+} from '@/types';
+import { isFuturesExchange } from '@/utils/exchangeUtils';
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { GridBot } from '@/types/gridBot';
 import { buildBotEditRoute } from '@/utils/bots/navigation';
@@ -38,6 +44,7 @@ import {
 } from '../ui/dropdown-menu';
 import CoinPair from '../widgets/shared/CoinPair';
 import ExchangeIcon from '../widgets/shared/ExchangeIcon';
+import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
 
 interface GridBotCardProps {
   item: DrawerBot;
@@ -52,6 +59,7 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
   isSelected = false,
 }) => {
   const navigate = useNavigate();
+  const resolvePairAsset = useResolvePairAsset();
 
   // Modal state
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -135,7 +143,10 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
     setStatusModalOpen(true);
   };
 
-  const handleConfirmStatusChange = () => {
+  const handleConfirmStatusChange = (
+    closeType?: string,
+    cancelPartiallyFilled?: boolean
+  ) => {
     const isActive = bot.isActive;
     const newStatus = isActive ? 'closed' : 'open'; // Use 'paused' for grid bots
 
@@ -143,6 +154,8 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
       {
         id: bot.id,
         status: newStatus,
+        closeGridType: closeType as CloseGRIDTypeEnum | undefined,
+        cancelPartiallyFilled,
       },
       {
         onSuccess: () => {
@@ -172,6 +185,8 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
   };
 
   const { baseAsset, quoteAsset } = extractPairAssets(bot.pair);
+  // Resolve asset class + venue so tokenized-stock pairs show their real logo.
+  const stockMeta = resolvePairAsset(bot.exchange, baseAsset, quoteAsset);
 
   return (
     <Card
@@ -285,6 +300,8 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
               baseAsset={baseAsset}
               quoteAsset={quoteAsset}
               pair={bot.pair}
+              assetClass={stockMeta.assetClass}
+              exchange={stockMeta.exchange}
             />
           </div>
           <div className="flex items-center gap-1">
@@ -419,6 +436,10 @@ export const GridBotCard: React.FC<GridBotCardProps> = ({
         currentStatus={bot.status}
         targetStatus={bot.isActive ? 'closed' : 'open'}
         hasActiveDeals={false} // Grid bots don't have deals in the same way
+        botType={BotTypesEnum.grid}
+        gridFutures={isFuturesExchange(bot.exchange)}
+        gridHasOpenPosition={((bot as GridBot).position?.price ?? 0) !== 0}
+        gridIsShort={(bot as GridBot).position?.side === PositionSide.SHORT}
         isLoading={statusToggleMutation.isPending}
       />
 

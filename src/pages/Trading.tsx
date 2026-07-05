@@ -22,7 +22,8 @@ import BotListStatsBoxes from '../components/ui/BotListStatsBoxes';
 import {
   combineBotListStats,
   computeBotListStats,
-  sumQuoteValues,
+  usageCurrentUsd,
+  usageMaxUsd,
   type BotForStats,
 } from '../hooks/useBotListStats';
 // No longer required; trades tab removed switch from UI
@@ -126,6 +127,13 @@ interface TradeItem {
         totalUsd: number;
         pureBase: number;
         pureQuote: number;
+      }
+    | undefined;
+  funding?:
+    | {
+        total: number;
+        totalUsd: number;
+        lastTime?: number;
       }
     | undefined;
   unrealizedProfit?: number | undefined;
@@ -1122,6 +1130,7 @@ const Trading: React.FC = () => {
         pureBase: 0,
         pureQuote: 0,
       },
+      funding: trade.funding,
       unrealizedProfit: trade.unrealizedProfit || 0,
       avgPrice: trade.avgPrice || 0,
       levels: trade.levels,
@@ -1213,8 +1222,8 @@ const Trading: React.FC = () => {
         status: b.status,
         totalProfitUsd: b.profit?.totalUsd || 0,
         todayProfitUsd: b.profitToday?.totalTodayUsd || 0,
-        usedQuote: sumQuoteValues(b.assets?.used?.quote),
-        requiredQuote: sumQuoteValues(b.assets?.required?.quote),
+        usedQuote: usageCurrentUsd(b.usage),
+        requiredQuote: usageMaxUsd(b.usage),
         activeDeals: b.dealsInBot?.active || 0,
       }))
     );
@@ -1223,8 +1232,8 @@ const Trading: React.FC = () => {
         status: b.status,
         totalProfitUsd: b.profit?.totalUsd || 0,
         todayProfitUsd: b.profitToday?.totalTodayUsd || 0,
-        usedQuote: sumQuoteValues(b.assets?.used?.quote),
-        requiredQuote: sumQuoteValues(b.assets?.required?.quote),
+        usedQuote: usageCurrentUsd(b.usage),
+        requiredQuote: usageMaxUsd(b.usage),
         activeDeals: b.dealsInBot?.active || 0,
       }))
     );
@@ -1233,6 +1242,8 @@ const Trading: React.FC = () => {
         status: b.status,
         totalProfitUsd: b.profit?.totalUsd || 0,
         todayProfitUsd: b.profitToday?.totalTodayUsd || 0,
+        // Grid's `assets.used.quote` already reflects live used capital
+        // (no separate `usage` block like DCA/Combo), so it stays the basis.
         usedQuote: b.assets?.used?.quote || 0,
         requiredQuote: b.assets?.required?.quote || 0,
         // Grid bots have no `dealsInBot`; aggregated subtitle uses the
@@ -2028,6 +2039,9 @@ const Trading: React.FC = () => {
                     }),
                   },
                   ...(originalTrade.profit && { profit: originalTrade.profit }),
+                  ...(originalTrade.funding && {
+                    funding: originalTrade.funding,
+                  }),
                   ...(!['closed', 'cancelled', 'canceled'].includes(
                     String(originalTrade.status || '').toLowerCase()
                   ) &&

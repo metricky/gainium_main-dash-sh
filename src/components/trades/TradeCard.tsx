@@ -1,72 +1,73 @@
 /* eslint-disable spacing/no-hardcoded-font-size */
 import {
-  AdjustFundsDialog,
-  CloseOptionsDialog,
-  type AdjustFundsDialogMode,
+    AdjustFundsDialog,
+    CloseOptionsDialog,
+    type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
 import { useChartColors } from '@/hooks/useChartColors';
 import { useDealActions, useMoveDealToTerminal } from '@/hooks/useDealActions';
 import { useDealOrders } from '@/hooks/useDealOrders';
 import { useDealPriceHistory } from '@/hooks/useDealPriceHistory';
-import { deriveTradeLevels } from '@/utils/trades/deriveTradeLevels';
 import logger from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { cn, formatTradingPair } from '@/lib/utils';
 import { useTradeJournalStore } from '@/stores/tradeJournalStore';
 import {
-  BotTypesEnum,
-  CloseDCATypeEnum,
-  DCADealStatusEnum,
-  type AddFundsSettings,
+    BotTypesEnum,
+    CloseDCATypeEnum,
+    DCADealStatusEnum,
+    type AddFundsSettings,
 } from '@/types';
 import type { ViewOrder } from '@/types/bots';
 import type { TransformedTrade } from '@/types/dcaDeal';
 import { buildBotViewRoute } from '@/utils/bots/navigation';
 import { formatNumber } from '@/utils/numberFormatter';
 import { extractPairAssets } from '@/utils/pairs';
+import { deriveTradeLevels } from '@/utils/trades/deriveTradeLevels';
 import {
-  ArrowRightLeft,
-  BookOpen,
-  Edit,
-  ExternalLink,
-  Eye,
-  MinusCircle,
-  MoreVertical,
-  PlusCircle,
-  X,
-  XCircle,
+    ArrowRightLeft,
+    BookOpen,
+    Edit,
+    ExternalLink,
+    Eye,
+    MinusCircle,
+    MoreVertical,
+    PlusCircle,
+    X,
+    XCircle,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Area,
-  ComposedChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
+    Area,
+    ComposedChart,
+    Line,
+    ReferenceLine,
+    ResponsiveContainer,
+    Tooltip,
+    XAxis,
+    YAxis,
 } from 'recharts';
 import getLatestPrices from '../../helper/price';
 import { ConfirmationDialog } from '../ui';
-import { Tooltip as HelpTooltip } from '../ui/tooltip';
+import { MoveDealToBotDialog } from '@/components/deals/MoveDealToBotDialog';
 import { DualArcProgressGauge } from '../ui/DualArcProgressGauge';
 import { Button } from '../ui/button';
 import { Card, CardContent } from '../ui/card';
 import {
-  BotTypeChip,
-  ExchangeChip,
-  ProfitAndPerc,
-  StatusChip,
-  StrategyChip,
-  TimeChip,
+    BotTypeChip,
+    ExchangeChip,
+    ProfitAndPerc,
+    StatusChip,
+    StrategyChip,
+    TimeChip,
 } from '../ui/chip';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
+import { Tooltip as HelpTooltip } from '../ui/tooltip';
 import CoinPair from '../widgets/shared/CoinPair';
 import { TradeDetailDrawer } from './TradeDetailDrawer';
 
@@ -275,6 +276,7 @@ const EnhancedCard = React.memo(
     const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
     const [closeDialogOpen, setCloseDialogOpen] = useState(false);
     const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+    const [moveToBotDialogOpen, setMoveToBotDialogOpen] = useState(false);
     const handleAddFunds = () => {
       setAdjustFundsDialog('add');
     };
@@ -532,6 +534,9 @@ const EnhancedCard = React.memo(
         // TP exists only once a position is open (a buy has filled).
         const tp =
           tpPct !== null && qty > 0 ? (cost / qty) * scale * (1 + tpPct) : null;
+        // One marker per candle per side (i.e. per level-per-bar already, since a
+        // candle carries a single price): drawing every candle's fill is the
+        // accurate representation and never drops a bar.
         return {
           ...p,
           tp,
@@ -693,6 +698,16 @@ const EnhancedCard = React.memo(
         String(trade.status || '').toLowerCase() === DCADealStatusEnum.open,
       [canShowMoveToTerminal, trade.status]
     );
+    // The inverse of "Move to Terminal": only terminal deals can be moved back
+    // into a bot, and only while open (a closed deal has no position to adopt).
+    const canShowMoveToBot = useMemo(
+      () =>
+        trade.type === 'Terminal' &&
+        typeof trade.botId === 'string' &&
+        trade.botId.length > 0 &&
+        String(trade.status || '').toLowerCase() === DCADealStatusEnum.open,
+      [trade.botId, trade.type, trade.status]
+    );
     const handleCancelConfirm = () => {
       if (!trade.botId) {
         logger.error(`${LOG_PREFIX}: Cannot cancel deal - missing botId`, {
@@ -844,6 +859,22 @@ const EnhancedCard = React.memo(
           cancelText="Cancel"
           onConfirm={handleMoveToTerminalConfirm}
         />
+        <MoveDealToBotDialog
+          open={moveToBotDialogOpen}
+          onOpenChange={setMoveToBotDialogOpen}
+          deal={
+            canShowMoveToBot && trade.botId
+              ? {
+                  dealId: trade.id,
+                  sourceBotId: trade.botId,
+                  symbol: symbolString,
+                  exchange: trade.exchange,
+                  exchangeUUID: trade.exchangeUUID,
+                  strategy: trade.strategy,
+                }
+              : null
+          }
+        />
         <CardContent className="p-md relative" style={{ isolation: 'isolate' }}>
           {/* Floating actions — hover-reveal on desktop, always visible on
               mobile (matches BotCard / WidgetWrapper pattern) */}
@@ -912,7 +943,13 @@ const EnhancedCard = React.memo(
                     disabled={!canMoveToTerminal}
                   >
                     <ArrowRightLeft className="w-4 h-4 mr-2" />
-                    Move to Terminal (beta)
+                    Move to Terminal
+                  </DropdownMenuItem>
+                )}
+                {canShowMoveToBot && (
+                  <DropdownMenuItem onClick={() => setMoveToBotDialogOpen(true)}>
+                    <ArrowRightLeft className="w-4 h-4 mr-2" />
+                    Move to Bot
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem onClick={() => setCancelDialogOpen(true)}>
@@ -1419,6 +1456,13 @@ const SimpleCard = React.memo(
           : `${formatNumber(trade.unrealizedProfit || 0, true)} ${symbolAssets.quoteAsset}`,
       [privacyMode, trade.unrealizedProfit, symbolAssets.quoteAsset]
     );
+    const fundingDisplay = useMemo(
+      () =>
+        privacyMode
+          ? '***'
+          : `${formatNumber(trade.funding?.totalUsd || 0, true)} ${symbolAssets.quoteAsset}`,
+      [privacyMode, trade.funding, symbolAssets.quoteAsset]
+    );
     return (
       <>
         {/* Header Section */}
@@ -1513,6 +1557,25 @@ const SimpleCard = React.memo(
                   }`}
                 >
                   {unrealizedProfitDisplay}
+                </div>
+              </div>
+            )}
+            {/* Funding Fees Box (only when funding has accrued) */}
+            {!!trade.funding?.totalUsd && (
+              <div
+                className={`p-1 rounded-md border text-center ${
+                  trade.funding.totalUsd < 0
+                    ? 'bg-loss/10 border-loss/20'
+                    : 'bg-profit/10 border-profit/20'
+                }`}
+              >
+                <div className="text-xs text-muted-foreground">Funding</div>
+                <div
+                  className={`text-sm font-semibold ${
+                    trade.funding.totalUsd < 0 ? 'text-loss' : 'text-profit'
+                  }`}
+                >
+                  {fundingDisplay}
                 </div>
               </div>
             )}

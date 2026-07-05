@@ -4,16 +4,16 @@
 // Not used in the bot drawer (see DrawerDealsTable for drawer deals UI).
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
 import {
-  AdjustFundsDialog,
-  CloseOptionsDialog,
-  type AdjustFundsDialogMode,
+    AdjustFundsDialog,
+    CloseOptionsDialog,
+    type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
 import { useMergeSmartOrders } from '@/features/bots/widgets/BotForm/hooks/useMergeSmartOrders';
 import getLatestPrices from '@/helper/price';
 import {
-  useAdjustFunds,
-  useDealActions,
-  useMoveDealToTerminal,
+    useAdjustFunds,
+    useDealActions,
+    useMoveDealToTerminal,
 } from '@/hooks/useDealActions';
 import { fetchDealOrders } from '@/hooks/useDealOrders';
 import { useSetDealNote } from '@/hooks/useSetDealNote';
@@ -27,25 +27,25 @@ import { useDcaDeals } from '@/hooks/useDcaDeals';
 import { toast } from '@/lib/toast';
 import { formatTradingPair } from '@/lib/utils';
 import {
-  calculateDealCost,
-  calculateDealSize,
-  calculateDealValue,
-  calculatePnlPercentage,
-  calculatePnlPercentageNullable,
-  isLongStrategy,
-  isMetricUnavailable,
-  toSortableMetricValue,
+    calculateDealCost,
+    calculateDealSize,
+    calculateDealValue,
+    calculatePnlPercentage,
+    calculatePnlPercentageNullable,
+    isLongStrategy,
+    isMetricUnavailable,
+    toSortableMetricValue,
 } from '@/lib/utils/tradingMetrics';
 import { useTableCustomState } from '@/stores/tablePreferencesStore';
 import { useTradeJournalStore } from '@/stores/tradeJournalStore';
 import {
-  BotTypesEnum,
-  CloseDCATypeEnum,
-  DCADealStatusEnum,
-  type AddFundsSettings,
-  type DCADeals,
-  type GetLatestPricesResult,
-  type Prices,
+    BotTypesEnum,
+    CloseDCATypeEnum,
+    DCADealStatusEnum,
+    type AddFundsSettings,
+    type DCADeals,
+    type GetLatestPricesResult,
+    type Prices,
 } from '@/types';
 import type { TransformedTrade } from '@/types/dcaDeal';
 import { buildBotViewRoute } from '@/utils/bots/navigation';
@@ -54,26 +54,24 @@ import { extractPairAssets } from '@/utils/pairs';
 import { calculateExecutionsSummary } from '@/utils/tradeJournalMetrics';
 import { type ColumnDef } from '@tanstack/react-table';
 import {
-  ArrowRightLeft,
-  BookOpen,
-  Copy,
-  Edit,
-  ExternalLink,
-  MinusCircle,
-  MoreHorizontal,
-  PlusCircle,
-  Receipt,
-  X,
-  XCircle,
+    ArrowRightLeft,
+    BookOpen,
+    Copy,
+    Edit,
+    ExternalLink,
+    MinusCircle,
+    MoreHorizontal,
+    PlusCircle,
+    Receipt,
+    X,
+    XCircle,
 } from 'lucide-react';
-import EmptyState from '../../ui/empty-state';
-import { Skeleton } from '../../ui/skeleton';
 import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveUpdate } from '../../../contexts/LiveUpdateContext';
@@ -82,29 +80,32 @@ import logger from '../../../lib/loggerInstance';
 import { TradeCard } from '../../trades/TradeCard';
 import { Button } from '../../ui/button';
 import {
-  BotTypeChip,
-  ExchangeChip,
-  ProfitAndPerc,
-  ProfitLossPercChip,
-  StatusChip,
-  StrategyChip,
+    BotTypeChip,
+    ExchangeChip,
+    ProfitAndPerc,
+    ProfitLossPercChip,
+    StatusChip,
+    StrategyChip,
 } from '../../ui/chip';
 import { ConfirmationDialog } from '../../ui/confirmation-dialog';
+import { MoveDealToBotDialog } from '@/components/deals/MoveDealToBotDialog';
 import { DataTable, type BulkAction } from '../../ui/data-table/data-table';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { DualArcProgressGauge } from '../../ui/DualArcProgressGauge';
+import EmptyState from '../../ui/empty-state';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from '../../ui/select';
+import { Skeleton } from '../../ui/skeleton';
 import CoinPair from './CoinPair';
 import { DealOrdersDialog } from './DealOrdersDialog';
 
@@ -230,6 +231,11 @@ export interface OpenTrade {
     totalUsd: number;
     pureBase: number;
     pureQuote: number;
+  };
+  funding?: {
+    total: number;
+    totalUsd: number;
+    lastTime?: number;
   };
   unrealizedProfit?: number;
   avgPrice?: number;
@@ -376,6 +382,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [moveToBotDialogOpen, setMoveToBotDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
   const moveDealToTerminalMutation = useMoveDealToTerminal();
@@ -387,6 +394,13 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
 
   const canMoveToTerminal =
     canShowMoveToTerminal &&
+    String(trade.status || '').toLowerCase() === DCADealStatusEnum.open;
+
+  // Inverse of "Move to Terminal": only open terminal deals can go back to a bot.
+  const canShowMoveToBot =
+    trade.type === 'Terminal' &&
+    typeof trade.botId === 'string' &&
+    trade.botId.length > 0 &&
     String(trade.status || '').toLowerCase() === DCADealStatusEnum.open;
 
   const handleAddToJournal = async () => {
@@ -678,7 +692,13 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
               disabled={!canMoveToTerminal}
             >
               <ArrowRightLeft className="w-4 h-4 mr-2" />
-              Move to Terminal (beta)
+              Move to Terminal
+            </DropdownMenuItem>
+          )}
+          {canShowMoveToBot && (
+            <DropdownMenuItem onClick={() => setMoveToBotDialogOpen(true)}>
+              <ArrowRightLeft className="w-4 h-4 mr-2" />
+              Move to Bot
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onClick={handleCancelClick}>
@@ -719,6 +739,22 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
           confirmText="Confirm"
           cancelText="Cancel"
           onConfirm={handleMoveToTerminalConfirm}
+        />
+        <MoveDealToBotDialog
+          open={moveToBotDialogOpen}
+          onOpenChange={setMoveToBotDialogOpen}
+          deal={
+            canShowMoveToBot && trade.botId
+              ? {
+                  dealId: trade.id,
+                  sourceBotId: trade.botId,
+                  symbol: trade.symbol,
+                  exchange: trade.exchange,
+                  exchangeUUID: trade.exchangeUUID,
+                  strategy: trade.strategy,
+                }
+              : null
+          }
         />
         {/* <ConfirmationDialog
         open={closeDialogOpen}
@@ -785,6 +821,20 @@ export interface OpenTradesWidgetProps {
   rawDeals?: DCADeals[];
 }
 
+// Stable module-level defaults. Using inline `= []` / `= {}` defaults in the
+// destructure (or inline object props below) mints a NEW reference every render,
+// which churns the `columns` memo / DataTable table-preference state every render
+// and can drive a "Maximum update depth exceeded" remount loop (React #185).
+const EMPTY_STRING_LIST: string[] = [];
+const TRADES_DEFAULT_COLUMN_VISIBILITY = {
+  unrealizedProfitPercentage: false,
+  realizedProfitPercentage: false,
+  netPnl: false,
+  netPnlPercentage: false,
+  gridProfitPercentage: false,
+};
+const TRADES_DEFAULT_PINNED_COLUMNS = { left: [], right: ['actions'] };
+
 const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   widgetId = 'open-trades',
   data: _data,
@@ -792,9 +842,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   showClosedTrades: _showClosedTrades = false,
   enableStatusToggle: _enableStatusToggle = false,
   defaultStatusFilter,
-  filteredExchanges = [],
-  filteredBotTypes = [],
-  filteredStrategies = [],
+  filteredExchanges = EMPTY_STRING_LIST,
+  filteredBotTypes = EMPTY_STRING_LIST,
+  filteredStrategies = EMPTY_STRING_LIST,
   emptyMessage = 'No trades found',
   emptyContent,
   enableCardView = true,
@@ -948,6 +998,12 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     },
     [latestPrices]
   );
+
+  // Unrealized/net P&L are computed from the live-prices feed. Until it
+  // arrives the values fall back to a stale/zero number, so gate the
+  // price-dependent cells on a skeleton (legacy parity with main-dash's
+  // per-row `loadedPrices`).
+  const pricesLoading = latestPrices.length === 0;
 
   // Helper function to determine gauge color based on percentage
   const getGaugeColor = useCallback(
@@ -1799,9 +1855,15 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         canMoveToTerminal: canMoveTradeToTerminal,
         getSymbol: (trade) => trade.symbol,
       }),
+    // Depend on the stable `mutateAsync` method, not the react-query mutation
+    // result object — react-query returns a NEW result object every render, so
+    // listing the whole object here recreated `defaultBulkActions` (and thus the
+    // DataTable `bulkActions`/selection column) on every render, remounting the
+    // header checkbox in a loop → "Maximum update depth exceeded" (React #185).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       addToJournalBulk,
-      mergeSmartOrdersMutation,
+      mergeSmartOrdersMutation.mutateAsync,
       canMoveTradeToTerminal,
       handleEdit,
       allKnownDeals,
@@ -1833,7 +1895,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         }
       );
     },
-    [setDealNoteMutation]
+    // Stable `mutate` ref, not the whole react-query mutation object (new every
+    // render) — keeps this callback (and the memoized `columns` that depends on
+    // it) stable so DataTable cells don't remount every render (React #185).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [setDealNoteMutation.mutate]
   );
 
   const handleAdjustFundsConfirm = useCallback(
@@ -1853,7 +1919,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         mode,
       });
     },
-    [adjustFundsMutation]
+    // Stable `mutate` ref, not the whole react-query mutation object (new every
+    // render) — see handleSaveNote/defaultBulkActions above (React #185).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [adjustFundsMutation.mutate]
   );
   handleAdjustFundsConfirmRef.current = handleAdjustFundsConfirm;
   // Define table columns
@@ -2112,6 +2181,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           if (!row.original.active) {
             return <span className="text-muted-foreground">-</span>;
           }
+          if (pricesLoading) {
+            return <Skeleton className="h-4 w-16" />;
+          }
           const unrealizedProfit = row.original.unrealizedProfit;
           if (isMetricUnavailable(unrealizedProfit)) {
             return (
@@ -2152,6 +2224,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           // Closed/canceled deals have no unrealized P&L (legacy parity).
           if (!row.original.active) {
             return <span className="text-muted-foreground">-</span>;
+          }
+          if (pricesLoading) {
+            return <Skeleton className="h-4 w-12" />;
           }
           const unrealizedProfit = row.original.unrealizedProfit;
           if (isMetricUnavailable(unrealizedProfit)) {
@@ -2202,6 +2277,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           </span>
         ),
         cell: ({ row }) => {
+          if (row.original.active && pricesLoading) {
+            return <Skeleton className="h-4 w-16" />;
+          }
           const unrealizedProfit = Number(row.original.unrealizedProfit || 0);
           const realizedProfit = Number(row.original.profit?.totalUsd || 0);
           const netPnl = unrealizedProfit + realizedProfit;
@@ -2230,6 +2308,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         meta: { filterType: 'number' },
         enableHiding: true,
         cell: ({ row }) => {
+          if (row.original.active && pricesLoading) {
+            return <Skeleton className="h-4 w-12" />;
+          }
           const unrealizedProfit = Number(row.original.unrealizedProfit || 0);
           const realizedProfit = Number(row.original.profit?.totalUsd || 0);
           const netPnl = unrealizedProfit + realizedProfit;
@@ -2798,6 +2879,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   }, [
     getGaugeColor,
     privacyMode,
+    pricesLoading,
     hideBotName,
     getBotTypeForChip,
     setSelectedDeal,
@@ -3139,13 +3221,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         enableColumnFilters={true}
         enableSorting={true}
         enableColumnVisibility={true}
-        defaultColumnVisibility={{
-          unrealizedProfitPercentage: false,
-          realizedProfitPercentage: false,
-          netPnl: false,
-          netPnlPercentage: false,
-          gridProfitPercentage: false,
-        }}
+        defaultColumnVisibility={TRADES_DEFAULT_COLUMN_VISIBILITY}
         enableCardView={enableCardView}
         emptyMessage={emptyMessage}
         emptyContent={
@@ -3171,7 +3247,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         cardViewGap={16}
         getRowId={(row) => row.id}
         bulkActions={effectiveBulkActions}
-        defaultPinnedColumns={{ left: [], right: ['actions'] }}
+        defaultPinnedColumns={TRADES_DEFAULT_PINNED_COLUMNS}
         enableQuickFilterBar={true}
         quickFilterBarStorageKey={`${widgetId}-trades-filters`}
       />

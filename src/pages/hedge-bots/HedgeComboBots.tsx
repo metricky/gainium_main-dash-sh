@@ -5,13 +5,16 @@
  * is which store/hook backs the data and which edit-route the rows /
  * cards navigate to. Routes: `/hedge/combo`.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Boxes, Plus } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
 
-import { BotDetailsDrawer } from '@/components/bots/BotDetailsDrawer';
+import {
+  BotDetailsDrawer,
+  type HedgeDrawerContext,
+} from '@/components/bots/BotDetailsDrawer';
 import { HedgeBotCard } from '@/components/bots/HedgeBotCard';
 import { PremiumUpgrade } from '@/components/license/PremiumUpgrade';
 import MainLayout from '@/components/layout/MainLayout';
@@ -27,19 +30,17 @@ import { DataTable } from '@/components/ui/data-table/data-table';
 import EmptyState from '@/components/ui/empty-state';
 import { HedgeBotActionsCell } from './HedgeBotActionsCell';
 import { MotionButton } from '@/components/ui/MotionWrapper';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Widget from '@/components/ui/widget';
 import BotListStatsBoxes from '@/components/ui/BotListStatsBoxes';
-import {
-  computeBotListStats,
-  sumQuoteValues,
-  type BotForStats,
-} from '@/hooks/useBotListStats';
+import { computeBotListStats, type BotForStats } from '@/hooks/useBotListStats';
 import { useUIStore } from '@/stores/uiStore';
 import { useHedgeComboBots } from '@/hooks/useHedgeComboBots';
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import { getLocalPrices } from '@/helper/price';
 import { useHedgeUnPnlMap } from '@/utils/bots/hedge/useHedgeUnPnlMap';
+import { computeHedgeUnPnl } from '@/utils/bots/hedge/computeHedgeUnPnl';
+import { useHedgeLegUnrealized } from '@/hooks/useHedgeLegUnrealized';
+import type { DrawerBot } from '@/types/bots/drawer';
 import {
   BotTypesEnum,
   StrategyEnum,
@@ -144,13 +145,20 @@ const HedgeComboBots = () => {
   const { bots, isLoading } = useHedgeComboBots();
   const privacyMode = useUIStore((s) => s.privacyMode);
 
+  const unPnlMap = useHedgeUnPnlMap(bots, true);
+
   /** Unified KPI stats. Same pattern as HedgeDcaBots: hedge wrapper has
-   * no aggregated `profit/assets/dealsInBot`, so we walk the legs. */
+   * no aggregated `profit/dealsInBot`, so we walk the legs. Capital
+   * deployed / required come from the same `unPnlMap` the table's "Cost" /
+   * "Max cost" columns read (`currentValue` / `maxValue`) rather than the
+   * reserved `assets.used.quote`, so the stat reconciles with the table —
+   * see HedgeDcaBots for the full rationale. */
   const botListStats = useMemo(
     () =>
       computeBotListStats(
         bots.map<BotForStats>((bot) => {
           const legs = bot.bots ?? [];
+          const u = unPnlMap.get(bot._id);
           return {
             status: bot.status,
             totalProfitUsd: legs.reduce(
@@ -161,14 +169,8 @@ const HedgeComboBots = () => {
               (sum, leg) => sum + (leg.profitToday?.totalTodayUsd || 0),
               0
             ),
-            usedQuote: legs.reduce(
-              (sum, leg) => sum + sumQuoteValues(leg.assets?.used?.quote),
-              0
-            ),
-            requiredQuote: legs.reduce(
-              (sum, leg) => sum + sumQuoteValues(leg.assets?.required?.quote),
-              0
-            ),
+            usedQuote: u?.currentValue ?? 0,
+            requiredQuote: u?.maxValue ?? 0,
             activeDeals: legs.reduce(
               (sum, leg) => sum + (leg.dealsInBot?.active || 0),
               0
@@ -176,11 +178,14 @@ const HedgeComboBots = () => {
           };
         })
       ),
-    [bots]
+    [bots, unPnlMap]
   );
-  const unPnlMap = useHedgeUnPnlMap(bots, true);
   const { data: exchangesData } = useExchangesFromContext();
   const exchanges = exchangesData?.data?.exchanges;
+
+  // Server-accurate per-leg unrealized (see HedgeDcaBots / useHedgeLegUnrealized
+  // — the client price calc reads 0 for price-feed-less exchanges).
+  const legUnrealized = useHedgeLegUnrealized(true);
 
   const enrichedBots = useMemo<EnrichedHedgeBot[]>(
     () =>
@@ -190,10 +195,23 @@ const HedgeComboBots = () => {
           (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
           0
         );
+        const longLeg = (bot.bots ?? []).find(
+          (l) => l.settings?.strategy === StrategyEnum.long
+        );
+        const shortLeg = (bot.bots ?? []).find(
+          (l) => l.settings?.strategy === StrategyEnum.short
+        );
+        const longUn = longLeg ? (legUnrealized.get(longLeg._id) ?? 0) : 0;
+        const shortUn = shortLeg ? (legUnrealized.get(shortLeg._id) ?? 0) : 0;
+        const combinedUn = longUn + shortUn;
+        const longCost = u?.legCost?.long ?? 0;
+        const shortCost = u?.legCost?.short ?? 0;
+        const currentCost = u?.currentValue ?? 0;
         return {
           ...bot,
-          __unPnl: u?.unPnl,
-          __unPnlPerc: u?.unPnlPerc,
+          __unPnl: combinedUn,
+          __unPnlPerc:
+            currentCost > 0 ? (combinedUn / currentCost) * 100 : 0,
           __totalProfitUsd: totalProfitUsd,
           __currentCost: u?.currentValue,
           __maxCost: u?.maxValue,
@@ -203,11 +221,14 @@ const HedgeComboBots = () => {
           ...(u?.legUsage ? { __legUsage: u.legUsage } : {}),
           ...(u?.legCost ? { __legCost: u.legCost } : {}),
           ...(u?.legMaxCost ? { __legMaxCost: u.legMaxCost } : {}),
-          ...(u?.legUnPnl ? { __legUnPnl: u.legUnPnl } : {}),
-          ...(u?.legUnPnlPerc ? { __legUnPnlPerc: u.legUnPnlPerc } : {}),
+          __legUnPnl: { long: longUn, short: shortUn },
+          __legUnPnlPerc: {
+            long: longCost > 0 ? (longUn / longCost) * 100 : 0,
+            short: shortCost > 0 ? (shortUn / shortCost) * 100 : 0,
+          },
         };
       }),
-    [bots, unPnlMap]
+    [bots, unPnlMap, legUnrealized]
   );
 
   const currentUser = useAuthStore((s) => s.user);
@@ -227,47 +248,52 @@ const HedgeComboBots = () => {
     return null;
   }, [bots, selectedBotId, shareId, sharedBotResult.bot]);
 
-  const [drawerLeg, setDrawerLeg] = useState<'long' | 'short'>('long');
-  useEffect(() => {
-    setDrawerLeg('long');
-  }, [selectedBotId]);
-
-  // Active leg in the drawer drives which leg's transformed bot we show.
-  const drawerBot = useMemo(() => {
-    if (!selectedHedgeBot) return null;
-    const targetStrategy =
-      drawerLeg === 'long' ? StrategyEnum.long : StrategyEnum.short;
-    const leg = selectedHedgeBot.bots?.find(
-      (b) => b.settings?.strategy === targetStrategy
-    );
-    if (!leg) return null;
-    try {
-      return transformDcaBotToBot(
-        leg as ComboBot,
-        [],
-        getLocalPrices(),
-        true,
-        exchanges
+  // Both legs transformed (combo formula) for the combined drawer view.
+  const { longBot, shortBot } = useMemo(() => {
+    const build = (strategy: StrategyEnum): DrawerBot | null => {
+      const leg = selectedHedgeBot?.bots?.find(
+        (b) => b.settings?.strategy === strategy
       );
-    } catch {
-      return null;
-    }
-  }, [selectedHedgeBot, exchanges, drawerLeg]);
+      if (!leg) return null;
+      try {
+        return transformDcaBotToBot(
+          leg as ComboBot,
+          [],
+          getLocalPrices(),
+          true,
+          exchanges
+        );
+      } catch {
+        return null;
+      }
+    };
+    return {
+      longBot: build(StrategyEnum.long),
+      shortBot: build(StrategyEnum.short),
+    };
+  }, [selectedHedgeBot, exchanges]);
 
-  const legSwitcher = useMemo(
-    () => (
-      <Tabs
-        value={drawerLeg}
-        onValueChange={(v) => setDrawerLeg(v as 'long' | 'short')}
-      >
-        <TabsList>
-          <TabsTrigger value="long">Long leg</TabsTrigger>
-          <TabsTrigger value="short">Short leg</TabsTrigger>
-        </TabsList>
-      </Tabs>
-    ),
-    [drawerLeg]
-  );
+  const drawerPrimaryBot = longBot ?? shortBot;
+
+  const hedgeDrawerContext = useMemo<HedgeDrawerContext | null>(() => {
+    if (!selectedHedgeBot || !drawerPrimaryBot) return null;
+    const unPnl =
+      unPnlMap.get(selectedHedgeBot._id) ??
+      computeHedgeUnPnl(selectedHedgeBot, getLocalPrices(), [], true, exchanges);
+    const totalProfitUsd = (selectedHedgeBot.bots ?? []).reduce(
+      (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
+      0
+    );
+    return {
+      longBot,
+      shortBot,
+      unPnl,
+      totalProfitUsd,
+      isCombo: true,
+      wrapperId: selectedHedgeBot._id,
+      sharedSettings: selectedHedgeBot.sharedSettings,
+    };
+  }, [selectedHedgeBot, drawerPrimaryBot, longBot, shortBot, unPnlMap, exchanges]);
 
   const handleSelectBot = useCallback(
     (botId: string) => navigate(`/hedge/combo/view/${botId}`),
@@ -430,18 +456,17 @@ const HedgeComboBots = () => {
       {
         id: 'unPnl',
         header: 'Unrealized PnL',
-        accessorFn: (row) => unPnlMap.get(row._id)?.unPnl ?? 0,
-        cell: ({ row }) => {
-          const u = unPnlMap.get(row.original._id);
-          return (
-            <ProfitAndPerc
-              value={u?.unPnl ?? 0}
-              percentage={u?.unPnlPerc ?? 0}
-              privacyMode={false}
-              size="sm"
-            />
-          );
-        },
+        // Deal-derived unrealized enriched onto the row (client value reads 0
+        // for price-feed-less exchanges).
+        accessorFn: (row) => row.__unPnl ?? 0,
+        cell: ({ row }) => (
+          <ProfitAndPerc
+            value={row.original.__unPnl ?? 0}
+            percentage={row.original.__unPnlPerc ?? 0}
+            privacyMode={false}
+            size="sm"
+          />
+        ),
         meta: { filterType: 'number' as const },
       },
       {
@@ -502,7 +527,10 @@ const HedgeComboBots = () => {
         ),
       },
     ],
-    [unPnlMap]
+    // Column defs read each row's already-enriched bot, not unPnlMap directly
+    // (the unrealized values are baked into `enrichedBots`), so the table
+    // structure has no reactive deps.
+    []
   );
 
   if (!isPremium) {
@@ -523,12 +551,12 @@ const HedgeComboBots = () => {
       (selectedHedgeBot as unknown as { userId?: string })?.userId;
     return (
       <MainLayout pageTitle="Shared hedge bot" activePage="/hedge/combo">
-        {drawerBot && selectedHedgeBot ? (
+        {drawerPrimaryBot && selectedHedgeBot && hedgeDrawerContext ? (
           <BotDetailsDrawer
             type={BotTypesEnum.hedgeCombo}
-            bot={drawerBot}
+            bot={drawerPrimaryBot}
             parentBotId={selectedHedgeBot._id}
-            legSwitcher={legSwitcher}
+            hedge={hedgeDrawerContext}
             open
             privacyMode={false}
             onClose={handleCloseDrawer}
@@ -655,7 +683,7 @@ const HedgeComboBots = () => {
             </Widget>
           </motion.div>
 
-          {drawerBot && selectedHedgeBot && (() => {
+          {drawerPrimaryBot && selectedHedgeBot && hedgeDrawerContext && (() => {
             const sharedOwnerId =
               (selectedHedgeBot as unknown as { userId?: string })?.userId;
             const viewOnly =
@@ -664,9 +692,9 @@ const HedgeComboBots = () => {
             return (
               <BotDetailsDrawer
                 type={BotTypesEnum.hedgeCombo}
-                bot={drawerBot}
+                bot={drawerPrimaryBot}
                 parentBotId={selectedHedgeBot._id}
-                legSwitcher={legSwitcher}
+                hedge={hedgeDrawerContext}
                 open
                 privacyMode={false}
                 onClose={handleCloseDrawer}

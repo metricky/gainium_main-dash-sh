@@ -25,7 +25,6 @@ import {
 import { useBasicSettingsTab } from '@/features/bots/bot-types/dca/form/hooks/useBasicSettingsTab';
 import { useStrategySettingsTab } from '@/features/bots/bot-types/dca/form/hooks/useStrategySettignsTab';
 import TerminalAmountTotalFields from './TerminalAmountTotalFields';
-import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import { formatBalance } from '@/utils/numberFormatter';
 import { useDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
 import {
@@ -62,6 +61,10 @@ const LimitPriceInput: React.FC<{
   baseAssetSymbol?: string;
   quoteAssetSymbol?: string;
   label?: string;
+  // Import declares an already-held position at its historical entry price,
+  // which can sit on either side of the current price — so the limit-order
+  // direction rule must not apply (legacy parity: no such check for imports).
+  isImport?: boolean;
 }> = ({
   baseOrderPrice,
   latestPrice,
@@ -71,6 +74,7 @@ const LimitPriceInput: React.FC<{
   baseAssetSymbol,
   quoteAssetSymbol,
   label,
+  isImport,
 }) => {
   const { activePickerField, setActivePickerField, setCoordinates } =
     useTradingTerminalUtils();
@@ -109,6 +113,12 @@ const LimitPriceInput: React.FC<{
         return null; // Can't validate without current price
       }
 
+      // Import = historical entry price, not a pending limit entry order.
+      // The buy-below / sell-above rule doesn't apply.
+      if (isImport) {
+        return null;
+      }
+
       const isLong = strategy === StrategyEnum.long;
       if (isLong && limitPriceValue > latestPrice) {
         return `For long positions, limit price must be at or below current price ($${latestPrice.toFixed(2)})`;
@@ -119,7 +129,7 @@ const LimitPriceInput: React.FC<{
 
       return null;
     },
-    [strategy, latestPrice]
+    [strategy, latestPrice, isImport]
   );
 
   // Handle chart picker coordinates
@@ -411,17 +421,33 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
           1024: 3,
         }}
       >
-        <ExchangeSelector
-          isExchangeLocked={false}
-          currentExchange={currentExchange}
-          formData={formData}
-          updateFormData={updateFormData}
-          exchangesLoading={exchangesLoading}
-          exchangesData={exchangesData}
-          tooltip="Select the exchange account to use for this bot"
-          mode={'create'}
-          disableFutures={isSimple}
-        />
+        <div className="space-y-xs">
+          <ExchangeSelector
+            isExchangeLocked={false}
+            currentExchange={currentExchange}
+            formData={formData}
+            updateFormData={updateFormData}
+            exchangesLoading={exchangesLoading}
+            exchangesData={exchangesData}
+            tooltip="Select the exchange account to use for this bot"
+            mode={'create'}
+          />
+          {/* Simple is a one-off market order with no position tracking, so on
+              a futures account it opens an UNMANAGED position. We let the user
+              do it (some want a quick manual entry) but warn first, rather than
+              disabling the futures option outright as the terminal used to. */}
+          {isSimple && futures && (
+            <div className="rounded-md border border-warning/40 bg-warning/10 p-sm text-xs text-warning">
+              A Simple order places a one-off market order and doesn&apos;t open
+              a tracked position. On a futures account this opens an{' '}
+              <span className="font-medium">unmanaged position</span> with no
+              automatic take-profit, stop-loss, or DCA — you&apos;ll need to
+              monitor and close it yourself. Use{' '}
+              <span className="font-medium">Smart</span> if you want Gainium to
+              track and manage the position.
+            </div>
+          )}
+        </div>
         <SettingsRow
           name="Trading Pairs"
           tooltip="Configure the trading pairs used by this bot"
@@ -570,26 +596,16 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
                     <InfoIcon />
                   </Tooltip>
                 </div>
-                <div className="grid gap-sm sm:grid-cols-[minmax(0,180px)_1fr] sm:items-center">
-                  <NumberInput
-                    value={leverageInputValue}
-                    onChange={handleLeverageInputChange}
-                    onBlur={handleLeverageInputBlur}
-                    min={1}
-                    max={maxLeverage}
-                    step={1}
-                    endAdornment={unitAdornment('×')}
-                    aria-label="Leverage"
-                    disabled={leverageControlsDisabled}
-                  />
-                  <LeverageSlider
-                    value={normalizedLeverage}
-                    onChange={handleLeverageChange}
-                    min={1}
-                    max={maxLeverage}
-                    disabled={leverageControlsDisabled}
-                  />
-                </div>
+                <LeverageSlider
+                  value={normalizedLeverage}
+                  onChange={handleLeverageChange}
+                  inputValue={leverageInputValue}
+                  onInputChange={handleLeverageInputChange}
+                  onInputBlur={handleLeverageInputBlur}
+                  min={1}
+                  max={maxLeverage}
+                  disabled={leverageControlsDisabled}
+                />
                 <p className="text-xs text-muted-foreground">
                   Max available leverage: {maxLeverage}×
                 </p>
@@ -705,6 +721,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
               baseAssetSymbol={displayBaseAsset}
               quoteAssetSymbol={displayQuoteAsset}
               label={importPriceLabel}
+              isImport
             />
           </SettingsRow>
         ) : (

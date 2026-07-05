@@ -10,7 +10,7 @@ import {
   type DCABot,
   type ExchangeInUser,
 } from '@/types';
-import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
+import { comboDealToOpenTrade } from '@/lib/utils/comboDealToOpenTrade';
 import {
   areAllBotsDeletable,
   filterDeletableBots,
@@ -53,6 +53,7 @@ import {
   type BotTypeId,
 } from '../components/bots/BotActionsMenuItems';
 import { BotCard } from '../components/bots/BotCard';
+import { Skeleton } from '@/components/ui/skeleton';
 import { BotDetailsDrawer } from '../components/bots/BotDetailsDrawer';
 import MainLayout from '../components/layout/MainLayout';
 import WidgetContainer from '../components/layout/WidgetContainer';
@@ -96,6 +97,7 @@ import {
   useBotRestart,
   useBotStatusToggle,
 } from '../hooks/useBotMutations';
+import { useBotModeGuard } from '../hooks/bots/base/useBotModeGuard';
 import { useCacheKey } from '../hooks/useCacheKey';
 import { useCacheStatus } from '../hooks/useCacheStatus';
 import {
@@ -301,6 +303,7 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
         description="Are you sure you want to delete this bot? This action cannot be undone."
         itemType="bot"
         itemName={bot.name}
+        requireConfirmation={false}
       />
 
       <BotStatusConfirmationModal
@@ -351,6 +354,13 @@ const ComboBots: React.FC = () => {
   const params = useParams<{ id?: string }>();
   const selectedBot = params.id ?? null;
   const privacyMode = useUIStore((state) => state.privacyMode);
+
+  // When opening a specific bot via /combo/view/:id, keep the bot's real
+  // paper/live mode authoritative over the global toggle so a refresh doesn't
+  // flip the drawer to the wrong mode (and the bot vanishes). Thread 4872.
+  useBotModeGuard(selectedBot ?? undefined, BotTypesEnum.combo, {
+    enabled: !!selectedBot,
+  });
 
   // Check if in demo mode (read-only)
   const readOnly = isReadOnly();
@@ -1215,6 +1225,9 @@ const ComboBots: React.FC = () => {
         },
         aggregationFn: 'sum',
         cell: ({ row }) => {
+          if (row.original.isActive && row.original.loadedPrices === false) {
+            return <Skeleton className="h-4 w-16" />;
+          }
           const value = row.original.unPnl ?? 0;
           const percentage = row.original.unPnlPerc ?? 0;
           return (
@@ -1296,6 +1309,9 @@ const ComboBots: React.FC = () => {
           return totalProfit + unrealized;
         },
         cell: ({ row }) => {
+          if (row.original.isActive && row.original.loadedPrices === false) {
+            return <Skeleton className="h-4 w-16" />;
+          }
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
@@ -1339,6 +1355,9 @@ const ComboBots: React.FC = () => {
           return cost > 0 ? (netPnl / cost) * 100 : 0;
         },
         cell: ({ row }) => {
+          if (row.original.isActive && row.original.loadedPrices === false) {
+            return <Skeleton className="h-4 w-12" />;
+          }
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
@@ -1437,6 +1456,9 @@ const ComboBots: React.FC = () => {
       },
       {
         accessorKey: 'usage',
+        // Sort/filter on the numeric `usageTotal` percentage, not the nested
+        // `usage` object that `accessorKey: 'usage'` would otherwise resolve to.
+        accessorFn: (row) => row.usageTotal || 0,
         header: 'USAGE',
         meta: { filterType: 'number' },
         cell: ({ row }) => {
@@ -1644,142 +1666,13 @@ const ComboBots: React.FC = () => {
   });
 
   // Transform Combo deals to OpenTrade[] for the OpenOrdersWidget
-  const comboDealsAsOpenTrades = useMemo(() => {
-    if (!comboDealsForTab || comboDealsForTab.length === 0) return [];
-
-    return comboDealsForTab.map((deal) => {
-      const symbol = deal.symbol?.symbol || 'Unknown';
-      const baseSymbol = symbol.replace(deal.symbol?.quoteAsset || '', '');
-      const quoteSymbol = deal.symbol?.quoteAsset || 'USD';
-      const pair = `${baseSymbol}/${quoteSymbol}`;
-      const cost = deal.usage?.current?.quote || 0;
-      const createdTime = deal.createTime
-        ? new Date(deal.createTime)
-        : new Date();
-      const workingMs = Date.now() - createdTime.getTime();
-      const workingDays = Math.floor(workingMs / (1000 * 60 * 60 * 24));
-      const workingHours = Math.floor(
-        (workingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
-      );
-      const workingTime =
-        workingDays > 0
-          ? `${workingDays}D ${workingHours}H`
-          : `${workingHours}H`;
-
-      const hookUnrealized = (deal as { unrealizedUsd?: number }).unrealizedUsd;
-      const unrealizedProfit =
-        typeof hookUnrealized === 'number'
-          ? hookUnrealized
-          : (deal.stats?.unrealizedProfit ?? 0);
-
-      return {
-        baseAsset: deal.symbol?.baseAsset || '',
-        quoteAsset: quoteSymbol,
-        active: ['open', 'start', 'error'].includes(
-          String(deal.status).toLowerCase()
-        ),
-        id: deal._id || deal.botId,
-        type: 'Combo' as const,
-        symbol,
-        strategy: deal.strategy || 'COMBO',
-        status: deal.status || 'Unknown',
-        exchange: deal.exchange || 'Unknown',
-        exchangeUUID: deal.exchangeUUID,
-        botId: deal.botId,
-        // Fall back to the loaded bot's name when the deal record itself
-        // doesn't carry one (some closed combo deals come back without
-        // botName populated), so the column doesn't render a bare "—".
-        botName:
-          deal.botName || botDataMap.get(deal.botId)?.name || undefined,
-        currentBalance: {
-          base: deal.currentBalances?.base || 0,
-          quote: deal.currentBalances?.quote || 0,
-        },
-        usage: {
-          current: {
-            base: deal.usage?.current?.base || 0,
-            quote: deal.usage?.current?.quote || 0,
-          },
-          currentUsd: deal.usage?.currentUsd || deal.usage?.current?.quote || 0,
-          max: deal.usage?.max
-            ? {
-                base: deal.usage.max.base || 0,
-                quote: deal.usage.max.quote || 0,
-              }
-            : undefined,
-          maxUsd: deal.usage?.maxUsd || deal.usage?.max?.quote || 0,
-        },
-        profit: {
-          total: deal.profit?.total || 0,
-          totalUsd: deal.profit?.totalUsd || 0,
-          pureBase: deal.profit?.pureBase || 0,
-          pureQuote: deal.profit?.pureQuote || 0,
-        },
-        unrealizedProfit,
-        avgPrice: deal.avgPrice || 0,
-        levels: deal.levels || { complete: 0, all: 0 },
-        created: +createdTime,
-        notes: deal.note || '',
-        pair,
-        dealType: deal.settings?.futures ? 'FUTURES' : 'SPOT',
-        side: (deal.strategy === 'SHORT' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
-        orders: deal.levels?.complete || 0,
-        entryPrice: deal.initialPrice || deal.avgPrice || 0,
-        initialPrice: deal.initialPrice,
-        pnl: deal.profit?.totalUsd || 0,
-        cost,
-        value: cost + (deal.profit?.totalUsd || 0),
-        size: deal.currentBalances?.base || 0,
-        usagePercentage: deal.usage?.max?.quote
-          ? (deal.usage.current.quote / deal.usage.max.quote) * 100
-          : 0,
-        createdTime,
-        workingTime,
-        drawdown: deal.stats?.drawdownPercent
-          ? deal.stats.drawdownPercent * 100
-          : 0,
-        runUp: deal.stats?.runUpPercent ? deal.stats.runUpPercent * 100 : 0,
-        timeInLoss:
-          deal.stats?.timeInLoss && deal.stats?.trackTime
-            ? `${((deal.stats.timeInLoss / deal.stats.trackTime) * 100).toFixed(1)}%`
-            : '-',
-        timeInProfit:
-          deal.stats?.timeInProfit && deal.stats?.trackTime
-            ? `${((deal.stats.timeInProfit / deal.stats.trackTime) * 100).toFixed(1)}%`
-            : '-',
-        outerGaugePercent:
-          deal.levels?.all > 0
-            ? (deal.levels.complete / deal.levels.all) * 100
-            : 0,
-        takeProfitConfig: deal.settings
-          ? tpSLConfig(deal.settings, 'tp', true)
-          : '-',
-        stopLossConfig: deal.settings
-          ? tpSLConfig(deal.settings, 'sl', true)
-          : '-',
-        initialBalances: deal.initialBalances,
-        currentBalances: deal.currentBalances,
-        closeTrigger: deal.closeTrigger,
-        closePrice: deal.lastPrice,
-        gridProfit: deal.profit?.gridProfit,
-        gridProfitUsd: deal.profit?.gridProfitUsd,
-        transactionsBuy: deal.transactions?.buy ?? 0,
-        transactionsSell: deal.transactions?.sell ?? 0,
-        transactionsTotal:
-          (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
-        updateTime: deal.updateTime
-          ? new Date(deal.updateTime).toLocaleString()
-          : undefined,
-        // ISO string so the Close Time column can re-parse it
-        // unambiguously. A locale string (e.g. "10.6.2026") gets misparsed
-        // by new Date() and swaps day/month in the rendered cell.
-        closeTime: deal.closeTime
-          ? new Date(deal.closeTime).toISOString()
-          : undefined,
-        trailingMode: deal.trailingMode,
-      };
-    });
-  }, [comboDealsForTab, botDataMap]);
+  const comboDealsAsOpenTrades = useMemo(
+    () =>
+      comboDealsForTab.map((deal) =>
+        comboDealToOpenTrade(deal, (id) => botDataMap.get(id)?.name)
+      ),
+    [comboDealsForTab, botDataMap]
+  );
 
   // Only show the loading skeleton when we don't have any cached data yet
   if ((botsLoading || statsLoading) && comboBots.length === 0) {

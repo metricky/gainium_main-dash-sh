@@ -221,7 +221,8 @@ export const otherQueries = {
                             data {
                               scheduledDate
                               title
-                              textf
+                              text
+                              duration
                             }
                         }
                   }`;
@@ -558,7 +559,10 @@ export const otherQueries = {
                             minAmount
                         }
                         priceAssetPrecision
-                        crossAvailable`
+                        crossAvailable
+                        assetCategory
+                        isCanonical
+                        source`
                         }
                     }
                 }

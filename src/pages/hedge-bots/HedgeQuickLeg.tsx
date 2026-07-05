@@ -9,8 +9,12 @@
  * preset apply. The leg's current formData is published up to the
  * hedge layout via the provided `formDataRef`.
  */
-import { useEffect, type MutableRefObject, type ReactNode } from 'react';
+import { useEffect, useMemo, type MutableRefObject, type ReactNode } from 'react';
 
+import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
+import CoinIcon from '@/components/widgets/shared/CoinIcon';
+import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import {
   BotFormProvider,
   useBotFormSelector,
@@ -32,7 +36,17 @@ import {
   BotFormQueryProvider,
   useBotFormQuery,
 } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
-import { BotTypesEnum, StrategyEnum } from '@/types';
+import { computeStepDecimals } from '@/features/bots/shared/utils/order-guard';
+import {
+  computeInvestmentFromDca,
+  distributeInvestmentToDca,
+} from '@/features/bots/widgets/BotForm/components/quickSetupPresets';
+import {
+  resolveBaseOrderContext,
+  useDcaTradingContext,
+} from '@/hooks/bots/dca/useDcaTradingContext';
+import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
+import { BotTypesEnum, OrderSizeTypeEnum, StrategyEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 
 const LegPublisher: React.FC<{
@@ -204,6 +218,159 @@ export const HedgeFooterShell: React.FC<{
         </BotFormQueryProvider>
       </BotFormProvider>
     </BotFormRegistryContext.Provider>
+  );
+};
+
+/**
+ * Per-leg Investment control for the Quick view. Mounts inside a leg's
+ * BotFormProvider so it can read that leg's pair/balance and write its
+ * order size directly into the leg's formData.
+ *
+ * A long leg buys base with quote, so its investment is a QUOTE amount
+ * (e.g. USDT); a short leg sells base, so its investment is a BASE amount
+ * (e.g. BTC). We pin the leg's `orderSizeType` to match and cap the slider
+ * at the leg's available balance in that unit — so one shared number can't
+ * land as "89 BTC" on a wallet that only holds USDT.
+ */
+export const HedgeQuickInvestment: React.FC = () => {
+  const { formData, updateFormData } = useBotFormState();
+  const strategy = useBotFormSelector('strategy');
+  const futures = useBotFormSelector('futures');
+  const coinm = useBotFormSelector('coinm');
+
+  // Match resolveBaseOrderContext's denomination rules so the icon, unit
+  // label, stored orderSizeType, and balance check all agree:
+  //  - COIN-M futures settle in base (e.g. BTC)
+  //  - USDⓈ-M futures settle in quote (e.g. USDT) regardless of direction
+  //  - spot: a long buys with quote, a short sells base
+  const unit = coinm
+    ? OrderSizeTypeEnum.base
+    : futures
+      ? OrderSizeTypeEnum.quote
+      : strategy === StrategyEnum.short
+        ? OrderSizeTypeEnum.base
+        : OrderSizeTypeEnum.quote;
+
+  // Keep the leg denominated in its natural side even if the user never
+  // touches the field (so the saved bot + balance check use the right wallet).
+  useEffect(() => {
+    if (formData.dca.orderSizeType !== unit) {
+      updateFormData('orderSizeType' as Fields, unit);
+    }
+  }, [formData.dca.orderSizeType, unit, updateFormData]);
+
+  const tradingContext = useDcaTradingContext(formData);
+  const { availableBalance, currencyLabel } = useMemo(() => {
+    const params: Parameters<typeof resolveBaseOrderContext>[0] = {
+      currencyReference: unit,
+      strategy,
+      aggregatedBalances: tradingContext.aggregatedBalances,
+      futures: Boolean(futures),
+      coinm: Boolean(coinm),
+    };
+    if (tradingContext.baseAsset) params.baseAsset = tradingContext.baseAsset;
+    if (tradingContext.quoteAsset) params.quoteAsset = tradingContext.quoteAsset;
+    if (typeof tradingContext.latestPrice === 'number') {
+      params.latestPrice = tradingContext.latestPrice;
+    }
+    return resolveBaseOrderContext(params);
+  }, [
+    unit,
+    strategy,
+    futures,
+    coinm,
+    tradingContext.aggregatedBalances,
+    tradingContext.baseAsset,
+    tradingContext.quoteAsset,
+    tradingContext.latestPrice,
+  ]);
+
+  // Same coin icon the base-order-size field shows, following the leg's unit.
+  const coinIconSymbol = resolveOrderSizeIconSymbol(
+    unit,
+    tradingContext.baseAsset,
+    tradingContext.quoteAsset
+  );
+
+  // Investment is the TOTAL funds the leg deploys across the base order + all
+  // safety orders (base + Σ orderSize·volumeScale^i) — NOT a single order
+  // size. Reuse the same total/distribute math the standalone Quick form and
+  // its presets use so the figure reconciles. Typing a total redistributes it
+  // back into baseOrderSize/orderSize for the current orders ladder.
+  const firstPair = Array.isArray(formData.pair)
+    ? formData.pair[0]
+    : formData.pair;
+  const precision = useMemo(() => {
+    if (unit !== OrderSizeTypeEnum.base) return 2;
+    const info = firstPair ? formData.pairPrecisionMap?.[firstPair] : undefined;
+    const baseDec = computeStepDecimals(info?.baseStep);
+    return Math.min(8, Math.max(2, baseDec ?? 6));
+  }, [unit, firstPair, formData.pairPrecisionMap]);
+
+  const investment = computeInvestmentFromDca(formData.dca);
+
+  const setInvestment = (raw: number) => {
+    const safe = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+    const factor = Math.pow(10, precision);
+    const rounded = Math.round(safe * factor) / factor;
+    const { baseOrderSize, orderSize } = distributeInvestmentToDca(
+      rounded,
+      formData.dca,
+      precision
+    );
+    updateFormData('baseOrderSize' as Fields, baseOrderSize);
+    updateFormData('orderSize' as Fields, orderSize);
+  };
+
+  // Cap the slider at the leg's available balance when we know it; before a
+  // pair (and therefore balance) resolves, fall back to a usable range.
+  const sliderMax =
+    availableBalance > 0 ? availableBalance : Math.max(100, investment);
+
+  return (
+    <SettingsRow
+      name="Investment"
+      tooltip={`Total funds this leg deploys across all orders, in ${currencyLabel}.`}
+      navId={`hedge-investment-${strategy}`}
+    >
+      <div className="space-y-xs">
+        <Input
+          type="number"
+          inputMode="decimal"
+          min={0}
+          step={Math.pow(10, -precision)}
+          value={investment}
+          onChange={(e) => setInvestment(Number(e.target.value))}
+          placeholder="0.00"
+          className="pl-[4.5rem]"
+          startAdornment={
+            <span className="flex items-center gap-1.5">
+              <CoinIcon symbol={coinIconSymbol} size="w-6 h-6" />
+              <span className="text-xs font-semibold text-muted-foreground">
+                {currencyLabel}
+              </span>
+            </span>
+          }
+        />
+        <Slider
+          value={Math.min(Math.max(0, investment), sliderMax)}
+          min={0}
+          max={sliderMax}
+          step={sliderMax > 0 ? sliderMax / 100 : 1}
+          onChange={(v) => setInvestment(v)}
+          aria-label="Investment amount"
+        />
+        {availableBalance > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Available:{' '}
+            {availableBalance.toLocaleString(undefined, {
+              maximumFractionDigits: 8,
+            })}{' '}
+            {currencyLabel}
+          </p>
+        )}
+      </div>
+    </SettingsRow>
   );
 };
 

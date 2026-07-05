@@ -117,6 +117,88 @@ export interface AdminExchangesResponse {
   enabled: string[] | null;
 }
 
+/** Per-result marker returned by POST /api/upgrade for the admin-sh row.
+ *  admin-sh recreates itself asynchronously (its process dies mid-swap),
+ *  so the POST can only say "pending" — the caller polls self-status. */
+export interface AdminSelfUpgradePending {
+  pending: true;
+  targetTag: string;
+  statusUrl: string;
+  manualFallback: string;
+}
+
+export interface AdminUpgradeResult {
+  service: string;
+  oldId: string;
+  newId: string;
+  selfUpgrade?: AdminSelfUpgradePending;
+}
+
+/** Reconciled outcome from GET /api/upgrade/self-status. */
+export interface AdminSelfUpgradeStatus {
+  state: 'idle' | 'in_progress' | 'success' | 'failed';
+  targetTag: string | null;
+  fromTag: string | null;
+  currentTag: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  exitCode: number | null;
+  error: string | null;
+  manualFallback: string;
+}
+
+export interface AdminServiceHealth {
+  service: string;
+  state: string;
+  status: string;
+  health: 'healthy' | 'unhealthy' | 'starting' | null;
+  imageTag: string | null;
+  up: boolean;
+}
+
+export interface AdminExchangeFeed {
+  exchange: string;
+  enabled: boolean;
+  tradeMsgs: number;
+  candleMsgs: number;
+  lastSymbol: string | null;
+  /** true if any trade/candle arrived during the probe window */
+  live: boolean;
+}
+
+export interface AdminFeedProbe {
+  windowMs: number;
+  perExchange: AdminExchangeFeed[];
+  /** enabled exchanges that produced zero traffic — the actionable list */
+  stalled: string[];
+  liveCount: number;
+}
+
+export interface AdminFeedConnector {
+  service: string;
+  running: boolean;
+  /** raw PRICEROLE (candle | all | ticker | unset) */
+  role: string;
+  /** produces the `trade@` ticker feed that paper/live fills consume */
+  producesTicker: boolean;
+  /** produces the `*Candle` streams (charts / indicators) */
+  producesCandle: boolean;
+  exchanges: string[];
+}
+
+export interface AdminDiagnostics {
+  ts: number;
+  services: AdminServiceHealth[];
+  redis: { ok: boolean; latencyMs?: number; error?: string };
+  feeds: AdminFeedProbe;
+  // Present on admin-sh >= 1.3.0; optional so older backends degrade cleanly.
+  feedConnectors?: AdminFeedConnector[];
+  /** any running connector produces the ticker feed (paper/live fills need it) */
+  tickerRoleRunning?: boolean;
+  /** exchanges with no candle producer — need a ticker/all-role connector */
+  tickerOnlyExchanges?: string[];
+}
+
 // ---------------------------------------------------------------------
 // Endpoint helpers — one per route. Keeping them at module scope makes
 // it easy to grep usages + share with react-query hook factories.
@@ -169,12 +251,19 @@ export const adminApi = {
       body: JSON.stringify({ enabled }),
     }),
 
+  getDiagnostics: (windowMs?: number) =>
+    request<AdminDiagnostics>(
+      `/api/diagnostics${windowMs ? `?window=${windowMs}` : ''}`
+    ),
+
   listUpdates: () => request<AdminUpdate[]>('/api/updates'),
   upgrade: (service: string, tag: string) =>
-    request<{
-      results: { service: string; oldId: string; newId: string }[];
-    }>('/api/upgrade', {
+    request<{ results: AdminUpgradeResult[] }>('/api/upgrade', {
       method: 'POST',
       body: JSON.stringify({ service, tag }),
     }),
+  // Real outcome of the last admin-sh self-upgrade. Polled after an
+  // admin-sh upgrade because the POST returns before the recreate lands.
+  getSelfUpgradeStatus: () =>
+    request<AdminSelfUpgradeStatus>('/api/upgrade/self-status'),
 };
