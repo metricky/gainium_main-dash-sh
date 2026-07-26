@@ -21,7 +21,7 @@ type ExampleOrdersListener = (
   avgPrices: AvgPrice[]
 ) => void;
 
-class ExampleOrdersStore {
+export class ExampleOrdersStore {
   private context: ExampleOrdersStoreContext = defaultContext;
   private orders: DCAGrid[] = [];
   private transactions: TransactionChart[] = [];
@@ -130,4 +130,35 @@ class ExampleOrdersStore {
   }
 }
 
-export const exampleOrdersStore = new ExampleOrdersStore();
+/**
+ * Factory for an isolated example-orders store. Regular bots use the shared
+ * module singleton below; hedge legs (which co-mount two forms under one
+ * workbench) each create their own instance via BotFormProvider so their
+ * order-estimation pipelines don't clobber each other. See
+ * ExampleOrdersStoreContext.
+ */
+export function createExampleOrdersStore(): ExampleOrdersStore {
+  return new ExampleOrdersStore();
+}
+
+/**
+ * A read-only "merged" store for the hedge chart. Its orders are pushed in
+ * from BOTH leg stores via `setOrders()` (so the chart draws long + short
+ * orders together, like legacy `chartView === 'both'`). It must NEVER
+ * recompute from its own context — BotChart still calls `setContext()` on the
+ * active store for the drag handler / latest price, which would otherwise
+ * clobber the merged set with an empty recompute. Overriding `updateOrders`
+ * to a no-op keeps the merged orders authoritative.
+ */
+class MergedExampleOrdersStore extends ExampleOrdersStore {
+  override async updateOrders(): Promise<void> {
+    /* no-op: merged orders come from setOrders(), never from context */
+  }
+}
+
+export function createMergedExampleOrdersStore(): ExampleOrdersStore {
+  return new MergedExampleOrdersStore();
+}
+
+/** Default shared instance — the historical module global. */
+export const exampleOrdersStore = createExampleOrdersStore();

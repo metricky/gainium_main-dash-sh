@@ -2,7 +2,7 @@
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
 import type { ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
-import { Activity, ExternalLink, Loader2, Pause, Play } from 'lucide-react';
+import { Activity, ExternalLink, Loader2, Play, Square } from 'lucide-react';
 import EmptyState from '../components/ui/empty-state';
 import React, {
   useCallback,
@@ -1084,6 +1084,8 @@ const Trading: React.FC = () => {
       initialBalances: trade.initialBalance,
       futures: trade.futures,
       coinm: trade.coinm,
+      leverage: trade.settings?.leverage,
+      marginType: trade.settings?.marginType,
     };
 
     const cost = calculateDealCost(metricsInput);
@@ -1595,6 +1597,10 @@ const Trading: React.FC = () => {
   );
 
   const statusToggleMutation = useBotStatusToggle(BotTypesEnum.dca);
+  // react-query's `mutate` is a stable reference across renders; the mutation
+  // object itself is not. Bind the stable fn so downstream memos can depend on
+  // it without rebuilding every render.
+  const toggleBotStatus = statusToggleMutation.mutate;
   // placeholder: useDealActions not required for now; kept for future trade bulk actions
   const readOnly = isReadOnly();
 
@@ -1818,7 +1824,7 @@ const Trading: React.FC = () => {
             return;
           }
           stopped.forEach((b) =>
-            statusToggleMutation.mutate({ id: b.id, status: 'open' })
+            toggleBotStatus({ id: b.id, status: 'open' })
           );
           toast.success(`Starting ${stopped.length} bot(s)`);
         },
@@ -1826,7 +1832,7 @@ const Trading: React.FC = () => {
       {
         id: 'stop',
         label: 'Stop',
-        icon: Pause,
+        icon: Square,
         destructive: true,
         disabled: readOnly,
         onAction: (selected) => {
@@ -1836,13 +1842,18 @@ const Trading: React.FC = () => {
             return;
           }
           active.forEach((b) =>
-            statusToggleMutation.mutate({ id: b.id, status: 'closed' })
+            toggleBotStatus({ id: b.id, status: 'closed' })
           );
           toast.success(`Stopping ${active.length} bot(s)`);
         },
       },
     ],
-    [readOnly, statusToggleMutation]
+    // Depend on the stable `mutate` fn, NOT the whole mutation object —
+    // react-query returns a fresh mutation object every render, which made
+    // this memo (and therefore the data-table toolbar's button array) rebuild
+    // on every parent re-render, re-rendering ResponsiveButtonRow ~26x/s under
+    // live bot-stats churn (RenderLoopTripwire on /trading).
+    [readOnly, toggleBotStatus]
   );
 
   if (hasError) {

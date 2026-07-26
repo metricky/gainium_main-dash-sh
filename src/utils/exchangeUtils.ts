@@ -26,6 +26,10 @@ const FUTURES_ENUM_SET = new Set<ExchangeEnum>([
   ExchangeEnum.bitgetCoinm,
   ExchangeEnum.paperBitgetUsdm,
   ExchangeEnum.paperBitgetCoinm,
+  ExchangeEnum.krakenUsdm,
+  ExchangeEnum.paperKrakenUsdm,
+  ExchangeEnum.krakenCoinm,
+  ExchangeEnum.paperKrakenCoinm,
 ]);
 
 const COINM_ENUM_SET = new Set<ExchangeEnum>([
@@ -39,6 +43,8 @@ const COINM_ENUM_SET = new Set<ExchangeEnum>([
   ExchangeEnum.paperOkxInverse,
   ExchangeEnum.kucoinInverse,
   ExchangeEnum.paperKucoinInverse,
+  ExchangeEnum.krakenCoinm,
+  ExchangeEnum.paperKrakenCoinm,
 ]);
 
 const normalizeExchangeId = (
@@ -77,6 +83,34 @@ export const isCoinmExchange = (
   const normalized = normalizeExchangeId(exchange);
   if (!normalized) return false;
   return normalized.includes('coinm') || normalized.includes('inverse');
+};
+
+// The generic bot-form seed pair is `BTCUSDT` (SHARED_FORM_DEFAULTS), which is
+// invalid on exchanges that don't quote BTC in USDT. On such an exchange a
+// freshly-opened form would ask the chart for an unsupported pair — e.g.
+// `toExchangeCandleSymbol` turns `BTCUSDT` into `BTC-USDT` on Kraken futures,
+// which the candle API rejects (`NOTOK`) — leaving the chart blank until the
+// aggregate `getAllPairs` query lands and the pair auto-corrects. That window
+// can be long (or never close) when the pairs fetch is slow. Return an
+// exchange-appropriate BTC default so the chart never starts on an invalid
+// pair; the reactive pair-metadata correction still refines it once the real
+// pair list loads, so an imperfect guess is at worst prior behavior.
+//   • Kraken futures (usdm/linear) is USD-margined → `BTCUSD`
+//   • Hyperliquid (spot + linear) quotes in USDC   → `BTCUSDC`
+//   • Everyone else keeps the USDT default (Binance/Bybit/OKX-linear/…).
+export const getDefaultSeedPair = (
+  exchange?: ExchangeEnum | string | null
+): string => {
+  const normalized = normalizeExchangeId(exchange);
+  if (!normalized) return 'BTCUSDT';
+  if (normalized.includes('hyperliquid')) return 'BTCUSDC';
+  if (
+    normalized.includes('kraken') &&
+    (normalized.includes('usdm') || normalized.includes('linear'))
+  ) {
+    return 'BTCUSD';
+  }
+  return 'BTCUSDT';
 };
 
 // Hyperliquid spot bridges a few assets under synthetic / Unit symbols that
@@ -133,6 +167,24 @@ const DASHED_CANDLE_SYMBOL_ENUM_SET = new Set<ExchangeEnum>([
   ExchangeEnum.paperKrakenSpot,
   ExchangeEnum.paperKrakenAll,
   ExchangeEnum.paperKrakenUsdm,
+  // OKX (spot + linear/inverse perps) and Coinbase also identify pairs with a
+  // dash ("BTC-USDT", "BTC-USD") — the candle API rejects the concatenated
+  // "BTCUSDT" form ("Instrument ID ... doesn't exist" / "ProductID is
+  // invalid"). Their absence here left the chart blank whenever a flow passed
+  // the concatenated pair (e.g. Hedge Combo create). Paper variants included
+  // for the same un-stripped-exchange reason as above.
+  ExchangeEnum.okx,
+  ExchangeEnum.okxLinear,
+  ExchangeEnum.okxInverse,
+  ExchangeEnum.okxSpot,
+  ExchangeEnum.okxAll,
+  ExchangeEnum.paperOkx,
+  ExchangeEnum.paperOkxLinear,
+  ExchangeEnum.paperOkxInverse,
+  ExchangeEnum.paperOkxSpot,
+  ExchangeEnum.paperOkxAll,
+  ExchangeEnum.coinbase,
+  ExchangeEnum.paperCoinbase,
 ]);
 
 /**

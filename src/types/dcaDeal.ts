@@ -7,6 +7,10 @@ import {
 } from '@/lib/utils/tradingMetrics';
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
 import {
+  computeCompoundBreakdown,
+  type CompoundBreakdownEntry,
+} from '@/lib/utils/compoundBreakdown';
+import {
   BotTypesEnum,
   ComboTpBase,
   DCADealStatusEnum,
@@ -30,6 +34,8 @@ export type TransformedTrade = {
   active: boolean;
   id: string;
   type: 'DCA' | 'Combo' | 'Hedge DCA' | 'Hedge Combo' | 'Grid' | 'Terminal';
+  /** True for terminal deals — they have no bot page, so bot links are hidden */
+  terminal?: boolean;
   symbol:
     | string
     | {
@@ -90,6 +96,9 @@ export type TransformedTrade = {
     complete: number;
     all: number;
   };
+  /** Risk-based DCA deal (`settings.useRiskReward`) — DCA levels are managed
+   * by the risk engine, so manual "Change DCA levels" is disabled for these. */
+  riskBased?: boolean | undefined;
   created?: number | undefined;
   // Enhanced properties for advanced cards
   initialPrice?: number | undefined;
@@ -140,6 +149,7 @@ export type TransformedTrade = {
   closeTime?: string;
   trailingMode?: string;
   exitPrice?: number;
+  compoundBreakdown?: CompoundBreakdownEntry[] | undefined;
 };
 
 export const transformDealToTrade = (
@@ -174,6 +184,11 @@ export const transformDealToTrade = (
     `${deal.settings.coinm}` !== 'null'
       ? deal.settings.coinm
       : isCoinmExchange(deal.exchange ?? ExchangeEnum.binance);
+  // Leverage/marginType drive the notional-vs-cost split for futures deals;
+  // getLeverage() falls back to 1x (collapsing Notional onto Cost) unless both
+  // are supplied. Applies to every futures bot type (DCA, Combo, Hedge Combo).
+  const leverage = deal.settings.leverage;
+  const marginType = deal.settings.marginType;
   // Usage is tracked on the quote side for LONG spot / USD-M futures and on the
   // BASE side for SHORT spot / COIN-M futures. Reading only the quote side made
   // short combos (and coin-m deals) report 0% usage.
@@ -303,8 +318,14 @@ export const transformDealToTrade = (
         : undefined;
     const feeAmount = fee !== undefined ? (usage ?? 0) * fee * 2 : undefined;
 
+    // A breakeven deal has an unrealized P&L of exactly 0 (e.g. right after
+    // entry, or while the market is closed and the live price is frozen at the
+    // avg entry price — common for Kraken tokenized "xStocks"). The old
+    // `unrealizedPnL &&` truthy-check treated that legitimate 0 as "no value"
+    // and returned undefined, which the table renders as "Price unavailable".
+    // Guard on `!== undefined` so a real 0 survives.
     unrealizedPnL =
-      unrealizedPnL && feeAmount !== undefined
+      unrealizedPnL !== undefined && feeAmount !== undefined
         ? unrealizedPnL - feeAmount
         : undefined;
     if (
@@ -373,6 +394,7 @@ export const transformDealToTrade = (
     id: deal._id,
     active: isActiveDeal,
     type: dealType,
+    terminal: dealType === 'Terminal',
     symbol: deal.symbol,
     strategy: deal.strategy || '',
     status: String(deal.status),
@@ -408,6 +430,7 @@ export const transformDealToTrade = (
     ...(deal.funding && { funding: deal.funding }),
     avgPrice: deal.avgPrice || 0,
     levels,
+    riskBased: deal.settings?.useRiskReward,
     created: createTime,
     initialPrice: deal.initialPrice || 0,
     entryPrice: deal.initialPrice || deal.avgPrice || 0,
@@ -427,6 +450,8 @@ export const transformDealToTrade = (
       },
       futures,
       coinm,
+      leverage,
+      marginType,
     }),
     value: calculateDealValue({
       strategy: deal.strategy,
@@ -440,6 +465,8 @@ export const transformDealToTrade = (
       },
       futures,
       coinm,
+      leverage,
+      marginType,
     }),
     size: calculateDealSize({
       strategy: deal.strategy,
@@ -455,6 +482,8 @@ export const transformDealToTrade = (
       initialBalances: deal.initialBalances,
       futures,
       coinm,
+      leverage,
+      marginType,
     }),
     usagePercentage,
     outerGaugePercent: usagePercentage,
@@ -500,5 +529,8 @@ export const transformDealToTrade = (
       ? tpSLConfig((deal as DCADeals).settings, 'sl', combo)
       : '-',
     exitPrice: deal.lastPrice,
+    // Per-order auto-compounding breakdown, surfaced in the deal detail
+    // drawer. Undefined when the bot isn't compounding.
+    compoundBreakdown: computeCompoundBreakdown(deal.sizes),
   };
 };

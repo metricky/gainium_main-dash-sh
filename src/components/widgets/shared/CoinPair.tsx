@@ -1,5 +1,6 @@
 import { extractPairAssets } from '@/utils/pairs';
 import { type AssetClass } from '@/hooks/useTradingPairs';
+import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
 import React, {
   useCallback,
   useEffect,
@@ -43,6 +44,13 @@ export interface CoinPairProps {
   textVariant?: 'symbol' | 'name' | 'both';
   layout?: 'horizontal' | 'vertical' | 'stacked';
   reverseOrder?: boolean;
+  /**
+   * Human-readable name of the BASE asset (e.g. "Apple Inc.", "Bitcoin"),
+   * resolved backend-side (see `useResolvePairAsset`). When set, it's surfaced
+   * as a hover tooltip on the pair so read-only surfaces (bot/deal cards) can
+   * reveal the full name without changing the compact ticker layout. Optional.
+   */
+  baseName?: string;
 }
 
 // Known dash characters (ASCII hyphen and common Unicode dashes/minus)
@@ -69,6 +77,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
   layout = 'stacked',
   reverseOrder = false,
   onPairClick,
+  baseName,
 }) => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -141,6 +150,33 @@ const CoinPair: React.FC<CoinPairProps> = ({
   }, [multiMode, getBaseAssetsFromSymbols, base]);
 
   const quoteSymbol = quoteAsset || 'USDT';
+
+  // Resolve the base asset's class / venue / name from the globally-loaded
+  // trading pairs, so EVERY call site renders the correct stock/etf logo (and
+  // name) without each one having to pass assetClass/exchange itself — that
+  // opt-in requirement is exactly why the sidebar/tables kept missing icons.
+  // Explicit props always win (backward-compatible); we only resolve what the
+  // caller omitted.
+  const resolvePairAsset = useResolvePairAsset();
+  const resolveMeta = useCallback(
+    (
+      b: string,
+      q?: string
+    ): { assetClass?: AssetClass; exchange?: string; displayName?: string } => {
+      if (assetClass) return { assetClass, exchange, displayName: baseName };
+      const m = resolvePairAsset(exchange, b, q);
+      return {
+        assetClass: m.assetClass,
+        exchange: m.exchange ?? exchange,
+        displayName: baseName ?? m.displayName,
+      };
+    },
+    [assetClass, exchange, baseName, resolvePairAsset]
+  );
+  const singleMeta = useMemo(
+    () => resolveMeta(base, quote || undefined),
+    [resolveMeta, base, quote]
+  );
 
   // Icon size configurations - base is bigger and to the left, quote behind
   const iconSizes = {
@@ -275,8 +311,8 @@ const CoinPair: React.FC<CoinPairProps> = ({
           <CoinIcon
             symbol={base}
             size={sizes.base}
-            assetClass={assetClass}
-            exchange={exchange}
+            assetClass={singleMeta.assetClass}
+            exchange={singleMeta.exchange}
           />
           {quote && <CoinIcon symbol={quote} size={sizes.quote} />}
           {showText && (
@@ -291,14 +327,17 @@ const CoinPair: React.FC<CoinPairProps> = ({
     if (layout === 'stacked') {
       // Stacked layout: icons overlapped on top, text below, in a chip-like container
       return (
-        <div className="flex flex-col items-center gap-1 px-1 py-1 bg-background rounded-md border border-border/30">
+        <div
+          className="flex flex-col items-center gap-1 px-1 py-1 bg-background rounded-md border border-border/30"
+          title={singleMeta.displayName || undefined}
+        >
           <div className="relative flex items-center">
             <CoinIcon
               symbol={base}
               size={sizes.base}
               isQuote={false}
-              assetClass={assetClass}
-              exchange={exchange}
+              assetClass={singleMeta.assetClass}
+              exchange={singleMeta.exchange}
             />
             {quote && (
               <div className={sizes.overlap}>
@@ -317,9 +356,18 @@ const CoinPair: React.FC<CoinPairProps> = ({
 
     // Horizontal layout (default) - base to the left, quote behind/right
     return (
-      <div className="flex items-center gap-1 px-1 py-1 bg-background rounded-md border border-border/30">
+      <div
+        className="flex items-center gap-1 px-1 py-1 bg-background rounded-md border border-border/30"
+        title={singleMeta.displayName || undefined}
+      >
         <div className="relative flex items-center">
-          <CoinIcon symbol={base} size={sizes.base} isQuote={false} />
+          <CoinIcon
+            symbol={base}
+            size={sizes.base}
+            isQuote={false}
+            assetClass={singleMeta.assetClass}
+            exchange={singleMeta.exchange}
+          />
           {quote && (
             <div className={sizes.overlap}>
               <CoinIcon symbol={quote} size={sizes.quote} isQuote={true} />
@@ -333,7 +381,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
         )}
       </div>
     );
-  }, [layout, base, quote, sizes, showText, assetClass, exchange]);
+  }, [layout, base, quote, sizes, showText, singleMeta]);
 
   // Render icons for multi mode - now renders full pairs (BASE/QUOTE) individually
   const renderIconsMulti = () => {
@@ -350,6 +398,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
 
           const pairSymbol = symbols[idx];
           const interactive = Boolean(onPairClick && pairSymbol);
+          const meta = resolveMeta(b);
           return (
             <div
               key={`${b}-${idx}`}
@@ -373,7 +422,8 @@ const CoinPair: React.FC<CoinPairProps> = ({
                       }
                     },
                   }
-                : {})}
+                : // Non-interactive rows surface the base-asset name on hover.
+                  { title: meta.displayName || undefined })}
             >
               {/* Base icon with quote overlapped */}
               <div className="relative flex items-center">
@@ -381,8 +431,8 @@ const CoinPair: React.FC<CoinPairProps> = ({
                   symbol={b}
                   size={sizes.base}
                   isQuote={false}
-                  assetClass={assetClass}
-                  exchange={exchange}
+                  assetClass={meta.assetClass}
+                  exchange={meta.exchange}
                 />
                 {/* Quote icon overlapped */}
                 <div className={sizes.overlap}>
@@ -432,6 +482,7 @@ const CoinPair: React.FC<CoinPairProps> = ({
                   {remainingBases.map((base, idx) => {
                     const pairSymbol = symbols[effectiveMaxDisplay + idx];
                     const interactive = Boolean(onPairClick && pairSymbol);
+                    const meta = resolveMeta(base);
                     return (
                       <div
                         key={`${base}-${idx}`}
@@ -465,8 +516,8 @@ const CoinPair: React.FC<CoinPairProps> = ({
                             symbol={base}
                             size="sm"
                             isQuote={false}
-                            assetClass={assetClass}
-                            exchange={exchange}
+                            assetClass={meta.assetClass}
+                            exchange={meta.exchange}
                           />
                           <div className="-ml-2">
                             <CoinIcon

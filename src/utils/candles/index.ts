@@ -24,6 +24,9 @@ type GetCandlesInput = {
   index?: number | undefined;
   total?: number | undefined;
   handleErrorByCandles?: ((msg: string) => void) | undefined;
+  // Aborted when the user switches exchange/pair while a slow load is still
+  // in flight, so we stop paginating and cancel the pending fetch.
+  signal?: AbortSignal | undefined;
 };
 
 class Candles {
@@ -201,6 +204,7 @@ class Candles {
     index,
     total,
     handleErrorByCandles,
+    signal,
   }: GetCandlesInput): Promise<Bar[]> {
     try {
       const local = await this.getLocal(symbol, interval);
@@ -319,6 +323,9 @@ class Candles {
       // would be noise. Errors are logged at the caller.
 
       for (const int of missed) {
+        if (this._stop || signal?.aborted) {
+          return [];
+        }
         const result = await this.getCandlesFromExchange({
           symbol,
           period: {
@@ -332,6 +339,7 @@ class Candles {
           index,
           total,
           handleErrorByCandles,
+          ...(signal ? { signal } : {}),
         });
         for (const d of result) {
           if (!requiredIndex.has(d.time)) {
@@ -340,10 +348,85 @@ class Candles {
             requiredIndex.add(d.time);
           }
         }
-        if (this._stop) {
+        if (this._stop || signal?.aborted) {
           return [];
         }
       }
+
+      // Refill interior gaps left by partial, end-anchored responses.
+      // Some exchange candle endpoints — notably Bybit — return only the
+      // TAIL of a requested window when the server-side cache for that range
+      // is cold: the head of each window is silently dropped. The forward
+      // pagination above advances past those dropped heads without
+      // re-requesting them, so a single pass can leave large interior gaps
+      // (observed: ~25% coverage on a cold Bybit fine-timeframe range vs 100%
+      // on Binance). That systematically starves consumers needing a full
+      // series — most visibly backtests, where a sparsely-covered Bybit run
+      // diverges wildly from a fully-covered Binance run for the identical
+      // strategy (community #4919, "Backtests results are wrong"). Detect the
+      // residual interior gaps and refill them with bounded retries; each pass
+      // targets smaller ranges the endpoint honors from the start and warms
+      // the server cache. When the series is already contiguous (the healthy
+      // path — Binance, or a warm cache) findGaps returns nothing and this
+      // loop makes no requests, so it is a no-op there.
+      const findGaps = (bars: Bar[]): { from: number; to: number }[] => {
+        const sorted = bars
+          .filter((b) => b.time >= from && b.time <= to)
+          .sort((a, b) => a.time - b.time);
+        const gaps: { from: number; to: number }[] = [];
+        for (let g = 1; g < sorted.length; g++) {
+          if (sorted[g].time - sorted[g - 1].time > step) {
+            gaps.push({ from: sorted[g - 1].time, to: sorted[g].time });
+          }
+        }
+        return gaps;
+      };
+      const MAX_REFILL_PASSES = 8;
+      for (let pass = 0; pass < MAX_REFILL_PASSES; pass++) {
+        if (this._stop || signal?.aborted) {
+          break;
+        }
+        const gaps = findGaps(required);
+        if (!gaps.length) {
+          break;
+        }
+        const beforeCount = required.length;
+        for (const g of gaps) {
+          if (this._stop || signal?.aborted) {
+            break;
+          }
+          const refill = await this.getCandlesFromExchange({
+            symbol,
+            period: {
+              from: g.from,
+              to: g.to,
+              countBack: Infinity,
+              firstDataRequest: false,
+            },
+            interval,
+            updateProgress,
+            index,
+            total,
+            handleErrorByCandles,
+            ...(signal ? { signal } : {}),
+          });
+          for (const d of refill) {
+            if (!requiredIndex.has(d.time)) {
+              required.push(d);
+              toSave.push(d);
+              requiredIndex.add(d.time);
+            }
+          }
+        }
+        // No new bars closed any gap → the remaining gaps are genuinely
+        // absent upstream (pre-listing, exchange downtime). Stop instead of
+        // spinning; this guarantees termination even when a gap can't be
+        // filled.
+        if (required.length <= beforeCount) {
+          break;
+        }
+      }
+
       const candles = [...toSave, ...local.bars].sort(
         (a, b) => a.time - b.time
       );
@@ -398,6 +481,7 @@ class Candles {
     index,
     total,
     handleErrorByCandles,
+    signal,
   }: Omit<GetCandlesInput, 'baseAsset' | 'quoteAsset'>): Promise<Bar[]> {
     try {
       const requestStep =
@@ -444,6 +528,10 @@ class Candles {
         if (this._stop) {
           return [];
         }
+        // Selection changed mid-load — stop and hand back what we have.
+        if (signal?.aborted) {
+          return data;
+        }
 
         actualIterations++;
         if (actualIterations > maxIterations) {
@@ -482,6 +570,7 @@ class Candles {
             type: interval, // Use raw interval value (e.g., '1h') instead of display string (e.g., '1 hour')
             exchange: this.exchangeName,
             limit: requestStep,
+            ...(signal ? { signal } : {}),
           });
 
           // Convert CandleResponse[] to Bar[]

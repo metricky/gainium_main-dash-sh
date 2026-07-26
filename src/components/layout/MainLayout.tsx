@@ -10,7 +10,6 @@ import { useShareContext } from '../../hooks/useShareContext';
 import { useApplyVisualSettings } from '../../hooks/useVisualSettings';
 import { useChatStore } from '../../stores/chatStore';
 import { useDashboardStore } from '../../stores/dashboardStore';
-import { useNotificationsStore } from '../../stores/notificationsStore';
 import { useUIStore } from '../../stores/uiStore';
 import {
   getCategoryFromPath,
@@ -30,7 +29,6 @@ import Navbar from './Navbar';
 import NavigationSidebar from './NavigationSidebar';
 import { NavigationSidebarV2 } from './NavigationSidebarV2';
 import NavigationWidgetsInitializer from './NavigationWidgetsInitializer';
-import QuantRulesBanner from './QuantRulesBanner';
 import SharedPageLayout from './SharedPageLayout';
 import Socket from './Socket';
 
@@ -83,14 +81,21 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
   // Stores kept to ensure side-effects wiring remains available via events
   const toggleChat = useChatStore((s) => s.toggleChat);
   const isChatOpen = useChatStore((s) => s.open);
-  useNotificationsStore();
   const location = useLocation();
 
   // Initialize cloud sync (no-op in sh; cloud registers a PouchDB poller).
   useSyncInitializer();
 
-  // User sessions tracking
-  const { startPageVisit, endPageVisit } = useUserSessionsStore();
+  // User sessions tracking. Select the two actions individually rather than
+  // destructuring the whole store — a bare `useUserSessionsStore()` subscribes
+  // MainLayout (which wraps the entire app chrome) to EVERY write to this store
+  // from anywhere (cacheBotMetadata, visits growth, start/endPageVisit itself),
+  // re-rendering the whole tree and, under a redirect/unmount timing race, able
+  // to retrigger the page-visit effect below into a re-entry storm (React #185).
+  // The action refs are stable (fixed by the store creator closure), so this is
+  // a pure best-practice narrowing with zero behavior change to what/when fires.
+  const startPageVisit = useUserSessionsStore((s) => s.startPageVisit);
+  const endPageVisit = useUserSessionsStore((s) => s.endPageVisit);
   const tradingMode = useUIStore((s) => s.tradingMode);
 
   // Track page visits
@@ -237,12 +242,6 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
 
       {/* Cloud-only pending-account-delete banner. Sh renders nothing. */}
       <Slot name="layout.pendingDeleteBanner" />
-
-      {/* Shared (cloud + self-hosted) Binance Quantitative Rules (-4400)
-          cooldown banner. Rendered directly (not via a cloud-only slot)
-          because the feature ships to both editions; renders nothing when
-          there are no active cooldowns. */}
-      <QuantRulesBanner />
 
       {/* Cloud-only detached Max chat panel (floating panel + bottom
           sheet + onboarding walkthrough overlay). Sh renders nothing.

@@ -12,7 +12,8 @@ import {
 
 import type { CoinFilterPairMetadata } from '@/components/widgets/shared/CoinSelect';
 import {
-  useBotFormState,
+  useBotFormActions,
+  useBotFormTopLevelSelector,
   type BotFormMode,
 } from '@/contexts/bots/form/BotFormProvider';
 import {
@@ -25,7 +26,11 @@ import type { Asset, CoinListItem, ExchangeInUser } from '@/types';
 import { OKXSource } from '@/types/exchange.types';
 
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
-import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
+import {
+  getDefaultSeedPair,
+  isCoinmExchange,
+  isFuturesExchange,
+} from '@/utils/exchangeUtils';
 
 export interface BotFormQueryProviderProps {
   mode: BotFormMode;
@@ -48,7 +53,7 @@ export const BotFormQueryContext = createContext<
 
 /**
  * Pick a sensible default pair from the exchange's pair metadata. The
- * canonical key returned matches what `formData.pair` expects (the
+ * canonical key returned matches what `formPair` expects (the
  * `byPair` map key — base+quote concatenated, e.g. `BTCUSDT`).
  *
  * Preference order: BTC/USDT > BTC/USDC > any BTC pair > ETH/USDT >
@@ -98,18 +103,25 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
   });
 
   const { exchanges } = queryResult; // Added to inspect exchanges if needed
-  const { formData, updateFormData } = useBotFormState();
+  // Narrow reads: this provider only needs the top-level pair/exchange fields.
+  // The old broad `useBotFormState()` re-rendered the provider (and rebuilt its
+  // context value) on EVERY keystroke, which re-rendered every section that
+  // consumes `useBotFormQuery`. These selectors bail unless the field changes.
+  const formExchangeUUID = useBotFormTopLevelSelector('exchangeUUID');
+  const formPair = useBotFormTopLevelSelector('pair');
+  const formPairMetadata = useBotFormTopLevelSelector('pairMetadata');
+  const { updateFormData } = useBotFormActions();
 
   const currentExchange = useMemo(() => {
-    if (!formData.exchangeUUID || exchanges.length === 0) {
+    if (!formExchangeUUID || exchanges.length === 0) {
       logger.error(
         '[BotFormQueryProvider] No exchangeUUID in formData or exchanges list is empty — returning null for currentExchange',
-        { exchangeUUID: formData.exchangeUUID, exchanges }
+        { exchangeUUID: formExchangeUUID, exchanges }
       );
       return null;
     }
-    return exchanges.find((ex) => ex.uuid === formData.exchangeUUID) || null;
-  }, [formData.exchangeUUID, exchanges]);
+    return exchanges.find((ex) => ex.uuid === formExchangeUUID) || null;
+  }, [formExchangeUUID, exchanges]);
 
   const { pairsByExchange } = useTradingPairsFromContext();
 
@@ -172,6 +184,9 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
           name: `${base}/${quote}`,
           baseAsset: base,
           quoteAsset: quote,
+          // Human-readable base-asset name for display alongside the ticker
+          // (falls back to the ticker in the UI when unresolved).
+          baseDisplayName: pair.baseAsset?.displayName,
           // Carry the venue so CoinIcon can normalize tokenized-stock tickers
           // (the base is upper-cased here, so the lower-case wrapper hint is
           // gone — exchange is the only signal left to strip RAAPL/AAPLX).
@@ -218,19 +233,56 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
     const metadataPayload = pairMetadata.byPair;
     // Don't clobber an already-populated pairMetadata with an empty
     // payload while the exchange / pairs queries are still loading on
-    // remount. If we do, the leg's `formData.pair` survives but the
+    // remount. If we do, the leg's `formPair` survives but the
     // BotForm `setContext({ symbol })` lookup misses (pairMetadata is
     // briefly empty), and the example-orders chart preview appears blank
     // until the queries return. Only write when we either have data, or
-    // the existing metadata is also empty (initial mount path).
+    // on the initial mount path (see the null check below).
     const incomingHasEntries = Object.keys(metadataPayload).length > 0;
-    const existingHasEntries =
-      Object.keys(formData.pairMetadata ?? {}).length > 0;
-    if (incomingHasEntries || !existingHasEntries) {
+    // Only seed on the initial mount path (`formPairMetadata` never written,
+    // i.e. still null/undefined). Using `!existingHasEntries` here instead
+    // meant an already-written *empty* `{}` also passed the guard, so for a
+    // bot with a missing/invalid exchange — where the payload stays empty —
+    // this effect rewrote a fresh empty object every render, re-triggering
+    // itself via the `formPairMetadata` dependency into a React #185 loop
+    // (grid/edit crash). Comparing against null distinguishes "never written"
+    // from "written but empty" and closes the loop.
+    if (incomingHasEntries || formPairMetadata == null) {
       updateFormData('pairMetadata', metadataPayload);
     }
     setShouldCheckPairs(true);
-  }, [pairMetadata, updateFormData, formData.pairMetadata]);
+  }, [pairMetadata, updateFormData, formPairMetadata]);
+
+  // Before the aggregate pairs list loads, seed an exchange-appropriate default
+  // pair so the chart never starts on the generic `BTCUSDT` when that pair is
+  // invalid for the current exchange (e.g. Kraken futures → BTC/USD only). This
+  // closes the blank-chart window that opens when `getAllPairs` is slow: the
+  // filter/correction below can't run while `pairMetadata.byPair` is empty, so
+  // without this the form would ask the chart for `BTC-USDT` on Kraken (which
+  // the candle API rejects) until the query lands. Only touches an untouched
+  // generic default in create mode; the correction below still refines it once
+  // the real pair list arrives.
+  const seededProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    const provider = currentExchange?.provider;
+    if (!provider || mode !== 'create') return;
+    // Once the real pair list is available the correction below is authoritative.
+    if (Object.keys(pairMetadata.byPair).length > 0) return;
+    const currentPairs = [formPair].flat().filter(Boolean);
+    // Never override a real selection — only the untouched generic seed.
+    if (currentPairs.length !== 1 || currentPairs[0] !== 'BTCUSDT') return;
+    const seed = getDefaultSeedPair(provider);
+    if (seed === 'BTCUSDT') return;
+    if (seededProviderRef.current === provider) return;
+    seededProviderRef.current = provider;
+    updateFormData('pair', [seed]);
+  }, [
+    currentExchange?.provider,
+    mode,
+    pairMetadata.byPair,
+    formPair,
+    updateFormData,
+  ]);
 
   useEffect(() => {
     if (shouldCheckPairs && Object.keys(pairMetadata.byPair).length > 0) {
@@ -238,7 +290,7 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
         ...Object.keys(pairMetadata.byPair),
         ...Object.values(pairMetadata.byPair).map((p) => p.pair),
       ]);
-      const currentPairs = [formData.pair].flat().filter(Boolean);
+      const currentPairs = [formPair].flat().filter(Boolean);
       const filteredPairs = currentPairs.filter((p) => validPairKeys.has(p));
 
       // When filtering empties the list, pick a sensible default so the
@@ -259,7 +311,7 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
       // Only write when the result actually differs from current. Without
       // this guard the write produces a NEW array reference even when
       // the contents are identical, which retriggers every effect that
-      // depends on `formData.pair` — and, for pairs whose canonical key
+      // depends on `formPair` — and, for pairs whose canonical key
       // doesn't appear in `validPairKeys` (e.g. HIP-3 selection symbols
       // like `FLX:GOLD-USDH` while byPair is keyed by `FLX:GOLDUSDH`),
       // we'd be re-emitting an already-empty filter on every render.
@@ -271,31 +323,39 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
       }
       setShouldCheckPairs(false);
     }
-  }, [shouldCheckPairs, formData.pair, pairMetadata, updateFormData]);
+  }, [shouldCheckPairs, formPair, pairMetadata, updateFormData]);
 
-  const futuresSetRef = useRef<boolean | null>(null);
-  const coinmSetRef = useRef<boolean | null>(null);
+  // Sync the market-type flags (`futures`/`coinm`) and the profit-currency
+  // default off the selected exchange. Derive all three together, once per
+  // provider change, and write them unconditionally — mirroring how legacy
+  // main-dash seeds a fresh bot (`futures: isFutures`, `coinm: isCoinm`,
+  // `profitCurrency: isCoinm ? 'base' : 'quote'`).
+  //
+  // Only run in create mode. In edit mode the exchange is locked
+  // (`isExchangeLocked = !!id`) and the saved bot already carries the right
+  // `futures`/`coinm`/`profitCurrency`, so re-deriving here would clobber the
+  // user's persisted profitCurrency on load. Cloning routes through the create
+  // page (`?load=`) with the exchange editable, so `create` still re-derives
+  // when the user switches exchange there — matching legacy's change handler.
+  //
+  // The previous per-flag `useRef` guards were buggy: the coin-m branch fired
+  // on the first run for non-coin-m exchanges (`null !== false`) and its
+  // `profitCurrency = 'base'` clobbered the `'quote'` the futures branch set,
+  // and `exchangeProviderRef` was never assigned so the outer guard never
+  // tracked the provider (leaving `futures` stale after a reset).
   const exchangeProviderRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (
-      currentExchange?.provider &&
-      exchangeProviderRef.current !== currentExchange?.provider
-    ) {
-      const futures = isFuturesExchange(currentExchange.provider);
-      const coinm = isCoinmExchange(currentExchange.provider);
-      if (futuresSetRef.current !== futures) {
-        futuresSetRef.current = futures;
-        updateFormData('futures', futures);
-        updateFormData('profitCurrency', 'quote');
-      }
-      if (coinmSetRef.current !== coinm) {
-        coinmSetRef.current = coinm;
-        updateFormData('coinm', coinm);
-        updateFormData('profitCurrency', 'base');
-      }
-    }
-  }, [currentExchange?.provider, updateFormData]);
+    const provider = currentExchange?.provider;
+    if (!provider || mode !== 'create') return;
+    if (exchangeProviderRef.current === provider) return;
+    exchangeProviderRef.current = provider;
+    const futures = isFuturesExchange(provider);
+    const coinm = isCoinmExchange(provider);
+    updateFormData('futures', futures);
+    updateFormData('coinm', coinm);
+    updateFormData('profitCurrency', coinm ? 'base' : 'quote');
+  }, [currentExchange?.provider, mode, updateFormData]);
 
   const contextValue = useMemo<BotFormQueryContextValue>(
     () => ({
@@ -329,8 +389,8 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
         ? currentExchange?.uuid.trim()
         : '';
     const pair =
-      Array.isArray(formData.pair) && formData.pair.length > 0
-        ? formData.pair[0]
+      Array.isArray(formPair) && formPair.length > 0
+        ? formPair[0]
         : '';
     // Normalize the pair to match pairMetadata keys (e.g., "BTC-USDT" -> "BTCUSDT")
     const normalizedPair = pair.replace(/-/g, '').toUpperCase();
@@ -367,7 +427,7 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
       }
     });
   }, [
-    formData.pair,
+    formPair,
     pairMetadata,
     currentExchange?.uuid,
     currentExchange?.provider,

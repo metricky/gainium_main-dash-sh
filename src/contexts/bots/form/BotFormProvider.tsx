@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable react-refresh/only-export-components */
 import {
   createContext,
@@ -12,14 +11,34 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useStore } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
+
+import {
+  botFormAlertsEqual,
+  botFormErrorsEqual,
+  createBotFormStore,
+  EMPTY_BOT_FORM_STORE,
+  mergeBotFormAlerts,
+  type BotFormStore,
+  type BotFormStoreState,
+} from '@/contexts/bots/form/botFormStore';
 
 import type { PrecisionGuard } from '@/features/bots/shared/utils/order-guard';
 import { useBotFormRegistryContext } from '@/features/bots/widgets/BotForm/context';
 import { type TradingPair } from '@/hooks/useTradingPairs';
-import { GraphQLClient, GraphQlQuery } from '@/lib/api';
+import { GraphQLClient, GraphQlQuery, DEFAULT_READ_TIMEOUT_MS } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
-import { indicatorStore } from '@/stores/indicatorStore';
+import {
+  createIndicatorStore,
+  indicatorStore as sharedIndicatorStore,
+} from '@/stores/indicatorStore';
+import {
+  ExampleOrdersStoreContext,
+  IndicatorStoreContext,
+} from '@/contexts/bots/form/formStoreContexts';
 import { useUIStore } from '@/stores/uiStore';
 import {
   BotStartTypeEnum,
@@ -41,7 +60,10 @@ import type {
   BotFormErrors,
   PairPrecisionInfo,
 } from '@/types/bots/form';
-import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import {
+  createExampleOrdersStore,
+  exampleOrdersStore as sharedExampleOrdersStore,
+} from '@/utils/bots/dca/example-orders';
 import {
   handleSettingsUpdate,
   type HandleSettingsUpdateResult,
@@ -159,9 +181,54 @@ export interface BotFormStateContextValue {
   isNestedLeg: boolean;
 }
 
-const BotFormStateContext = createContext<BotFormStateContextValue | undefined>(
-  undefined
-);
+/**
+ * What the React context actually carries: the STABLE zustand store reference,
+ * the stable callbacks, and the rarely-changing flags. The four hot fields
+ * (`formData`, `errors`, `alerts`, `isDirty`) are NOT here — they live in the
+ * store and are stitched back into the public `BotFormStateContextValue` shape
+ * by the consumer hooks (`useBotFormState` / `useOptionalBotFormState`). This
+ * value is referentially stable across keystrokes, which is the whole point of
+ * the refactor.
+ */
+interface BotFormInternalContextValue {
+  store: BotFormStore;
+  mode: BotFormMode;
+  activeTab: BotFormTabId;
+  setActiveTab: Dispatch<SetStateAction<BotFormTabId>>;
+  isLoading: boolean;
+  setIsLoading: Dispatch<SetStateAction<boolean>>;
+  setErrors: Dispatch<SetStateAction<BotFormErrors>>;
+  setAlerts: Dispatch<SetStateAction<BotFormAlerts>>;
+  setIsDirty: Dispatch<SetStateAction<boolean>>;
+  setFormData: Dispatch<SetStateAction<BotFormData>>;
+  updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
+  lockedFields: Set<Fields>;
+  isFieldLocked: (field: Fields) => boolean;
+  isEditLocked: boolean;
+  isReadOnly: boolean;
+  enableEditing: () => void;
+  disableEditing: () => void;
+  toggleEditing: () => void;
+  features: BotFormFeatureFlags;
+  botVars: BotVars | null;
+  setBotVars: Dispatch<SetStateAction<BotVars | null>>;
+  resetFormData: () => void;
+  registerComponentError: (
+    field: string,
+    alert: import('@/types/bots/form').BotFormAlert | null
+  ) => void;
+  quickSetupMode: 'quick' | 'manual';
+  setQuickSetupMode: Dispatch<SetStateAction<'quick' | 'manual'>>;
+  selectedPreset: string | null;
+  setSelectedPreset: Dispatch<SetStateAction<string | null>>;
+  activeChartPair: string | null;
+  setActiveChartPair: Dispatch<SetStateAction<string | null>>;
+  isNestedLeg: boolean;
+}
+
+const BotFormStateContext = createContext<
+  BotFormInternalContextValue | undefined
+>(undefined);
 
 interface BotFormProviderProps {
   mode: BotFormMode;
@@ -177,6 +244,15 @@ interface BotFormProviderProps {
    * default to Manual.
    */
   isNestedLeg?: boolean;
+  /**
+   * When true, this provider creates its OWN instances of the example-orders
+   * and indicator side-effect stores and supplies them to descendants via
+   * context, instead of sharing the module singletons. Set for hedge legs so
+   * two co-mounted leg forms don't clobber each other's order-estimation /
+   * indicator pipelines. Regular bots (one form) leave this off and keep the
+   * shared globals — byte-identical to the historical behaviour.
+   */
+  isolateStores?: boolean;
 }
 
 const createDefaultFormState = (
@@ -238,8 +314,25 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     botType,
     terminal,
     isNestedLeg,
+    isolateStores,
   } = props;
   const { botExperience } = useBotFormRegistryContext();
+
+  // Instance-scoped side-effect stores. Hedge legs isolate so co-mounted leg
+  // forms don't fight over the shared globals; everyone else keeps the module
+  // singletons (identical to legacy behaviour). Instances are stable for the
+  // life of the provider, so descendants reading them via
+  // ExampleOrdersStoreContext / IndicatorStoreContext stay bound to the same
+  // store this provider writes to.
+  const exampleOrdersStore = useMemo(
+    () =>
+      isolateStores ? createExampleOrdersStore() : sharedExampleOrdersStore,
+    [isolateStores]
+  );
+  const indicatorStore = useMemo(
+    () => (isolateStores ? createIndicatorStore() : sharedIndicatorStore),
+    [isolateStores]
+  );
 
   const [activeTab, setActiveTab] = useState<BotFormTabId>(
     defaultTab ?? 'basic'
@@ -251,34 +344,116 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   }, [defaultTab]);
 
   const [isLoading, setIsLoading] = useState<boolean>(mode === 'edit');
-  const [errors, setErrors] = useState<BotFormErrors>({});
-  const [alerts, setAlerts] = useState<
-    import('@/types/bots/form').BotFormAlerts
-  >({});
-  const [componentErrors, setComponentErrors] = useState<
-    import('@/types/bots/form').BotFormAlerts
-  >({});
-  const [isDirty, setIsDirty] = useState<boolean>(false);
-  const [formData, _setFormData] = useState<BotFormData>(() =>
-    defaultStateFn(props)
-  );
+  // Per-keystroke-HOT state (formData / errors / alerts / componentErrors /
+  // isDirty) lives in a zustand vanilla store created ONCE per provider. A
+  // field edit writes the store instead of React state, so the provider does
+  // not re-render and the context value keeps a stable identity. Consumers
+  // subscribe to just the slice they read via `useStore(store, selector)`.
+  const storeRef = useRef<BotFormStore | null>(null);
+  if (storeRef.current === null) {
+    storeRef.current = createBotFormStore(defaultStateFn(props));
+  }
+  const store = storeRef.current;
+
+  // Debounce bookkeeping for the store-subscription side effects (defined at
+  // component scope so the public `setErrors`/`setAlerts` write path can cancel
+  // a still-pending validation pass — see the cancel calls in those callbacks
+  // and the maxWait-aware schedulers in the subscription effect below).
+  //  - *TimerRef: the trailing setTimeout handle.
+  //  - *PendingSinceRef: timestamp of the first write in the current burst,
+  //    used to enforce a maxWait so a sustained write stream (e.g. holding a
+  //    number stepper) can't starve the trailing edge forever.
+  const exampleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const examplePendingSinceRef = useRef<number | null>(null);
+  const validationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const validationPendingSinceRef = useRef<number | null>(null);
+
+  // Cancel any pending debounced validation pass. Used by the external
+  // `setErrors`/`setAlerts` write path (e.g. handleSave writes authoritative
+  // save-time errors right after a keystroke; the keystroke's still-pending
+  // debounced validation must NOT fire ~120ms later and clobber them). The
+  // internal validation path writes via `store.setState` directly, so it does
+  // NOT route through here and never cancels itself.
+  const cancelPendingValidation = useCallback(() => {
+    if (validationTimerRef.current) {
+      clearTimeout(validationTimerRef.current);
+      validationTimerRef.current = null;
+    }
+    validationPendingSinceRef.current = null;
+  }, []);
+
   const setFormData = useCallback(
     (value: React.SetStateAction<BotFormData>) => {
-      _setFormData((prev) => {
-        const nextValue = typeof value === 'function' ? value(prev) : value;
+      store.setState((prev) => {
+        const nextValue =
+          typeof value === 'function'
+            ? (value as (p: BotFormData) => BotFormData)(prev.formData)
+            : value;
         if (nextValue.dca.indicators) {
           indicatorStore.setIndicators(nextValue.dca.indicators);
         }
-        return nextValue;
+        return { formData: nextValue };
       });
     },
-    []
+    [store, indicatorStore]
+  );
+  const setErrors = useCallback<Dispatch<SetStateAction<BotFormErrors>>>(
+    (value) => {
+      // External write path: kill any in-flight debounced validation so it
+      // can't overwrite these errors ~120ms later (STALE-TIMER CLOBBER).
+      cancelPendingValidation();
+      store.setState((prev) => ({
+        errors:
+          typeof value === 'function'
+            ? (value as (p: BotFormErrors) => BotFormErrors)(prev.errors)
+            : value,
+      }));
+    },
+    [store, cancelPendingValidation]
+  );
+  const setAlerts = useCallback<Dispatch<SetStateAction<BotFormAlerts>>>(
+    (value) => {
+      // External write path: kill any in-flight debounced validation so it
+      // can't overwrite these alerts ~120ms later (STALE-TIMER CLOBBER).
+      cancelPendingValidation();
+      store.setState((prev) => ({
+        alerts:
+          typeof value === 'function'
+            ? (value as (p: BotFormAlerts) => BotFormAlerts)(prev.alerts)
+            : value,
+      }));
+    },
+    [store, cancelPendingValidation]
+  );
+  const setIsDirty = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (value) => {
+      store.setState((prev) => ({
+        isDirty:
+          typeof value === 'function'
+            ? (value as (p: boolean) => boolean)(prev.isDirty)
+            : value,
+      }));
+    },
+    [store]
   );
   const resetFormData = useCallback(() => {
     setFormData(defaultStateFn(props, true));
   }, [props, setFormData]);
   const [botVars, setBotVars] = useState<BotVars | null>(null);
-  const [isEditLocked, setIsEditLocked] = useState<boolean>(mode === 'edit');
+  // The bot edit page opens directly in an editable state — reaching
+  // `/x/edit/:id` (from the sidebar, a bot card, the drawer's Edit action,
+  // etc.) always expresses intent to edit. The read-only surface is the
+  // drawer (`/x/view/:id`); the footer's EDIT/CANCEL toggle still locks the
+  // form on demand. Certain fields stay immutable on existing bots via their
+  // own per-field locks, independent of this overall edit lock.
+  const [isEditLocked, setIsEditLocked] = useState<boolean>(false);
+  // A create page opened via `?load=<id>` is a CLONE: the form is seeded from
+  // an existing bot's settings. Those must be shown/edited as-is, so a clone
+  // opens in Manual — Quick mode would apply a risk-profile preset on top and
+  // clobber the cloned strategy. `?load=` is the universal clone signal across
+  // every bot type's new page.
+  const [searchParams] = useSearchParams();
+  const isCloneSeed = Boolean(searchParams.get('load'));
   const [quickSetupMode, setQuickSetupMode] = useState<'quick' | 'manual'>(
     // Hedge legs mount BotFormWidget with `isNestedLeg` — they're not
     // standalone DCA bots, so they shouldn't get the Quick/Manual mode
@@ -294,7 +469,8 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         botType === BotTypesEnum.combo ||
         botType === BotTypesEnum.grid) &&
       !terminal &&
-      !isNestedLeg
+      !isNestedLeg &&
+      !isCloneSeed
       ? 'quick'
       : 'manual'
   );
@@ -302,14 +478,15 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   const [activeChartPair, setActiveChartPair] = useState<string | null>(null);
 
   useEffect(() => {
-    setIsEditLocked(mode === 'edit');
+    // Keep in sync with the initial state above: edit mode opens unlocked.
+    setIsEditLocked(false);
   }, [mode]);
 
   const enableEditing = useCallback(() => setIsEditLocked(false), []);
   const disableEditing = useCallback(() => setIsEditLocked(true), []);
   const toggleEditing = useCallback(() => {
     setIsEditLocked((prev) => !prev);
-    if (formData.originalBot) {
+    if (store.getState().formData.originalBot) {
       setFormData((prev) => {
         const b = prev.originalBot;
         if (b?.type === BotTypesEnum.dca) {
@@ -322,7 +499,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         return { ...prev };
       });
     }
-  }, [formData.originalBot, setFormData]);
+  }, [store, setFormData]);
 
   const isReadOnly = useMemo(
     () =>
@@ -331,6 +508,19 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   );
 
   const isComboBot = useMemo(() => botType === BotTypesEnum.combo, [botType]);
+
+  // Subscribe ONLY to the risk-reward toggles that drive field locks. They
+  // flip on discrete control changes (never on a numeric keystroke), so the
+  // provider re-renders for them — but not for the hot typing path.
+  const rrLocks = useStore(
+    store,
+    useShallow((s: BotFormStoreState) => ({
+      dcaUseRiskReward: s.formData.dca.useRiskReward,
+      dcaRiskUseTpRatio: s.formData.dca.riskUseTpRatio,
+      comboUseRiskReward: s.formData.combo.useRiskReward,
+      comboRiskUseTpRatio: s.formData.combo.riskUseTpRatio,
+    }))
+  );
 
   const lockedFields = useMemo(() => {
     const fields = new Set<Fields>();
@@ -342,13 +532,11 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       }
     }
 
-    if (
-      isComboBot ? formData.combo.useRiskReward : formData.dca.useRiskReward
-    ) {
+    if (isComboBot ? rrLocks.comboUseRiskReward : rrLocks.dcaUseRiskReward) {
       fields.add('useSl');
       fields.add('useDca');
       if (
-        isComboBot ? formData.combo.riskUseTpRatio : formData.dca.riskUseTpRatio
+        isComboBot ? rrLocks.comboRiskUseTpRatio : rrLocks.dcaRiskUseTpRatio
       ) {
         fields.add('useTp');
       }
@@ -358,10 +546,10 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   }, [
     mode,
     botType,
-    formData.dca.useRiskReward,
-    formData.dca.riskUseTpRatio,
-    formData.combo.useRiskReward,
-    formData.combo.riskUseTpRatio,
+    rrLocks.dcaUseRiskReward,
+    rrLocks.dcaRiskUseTpRatio,
+    rrLocks.comboUseRiskReward,
+    rrLocks.comboRiskUseTpRatio,
     isComboBot,
   ]);
 
@@ -396,148 +584,12 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     inflight: false,
   });
 
-  const scaleAr = useMemo(
-    () =>
-      (formData.dca.dcaCondition === DCAConditionEnum.percentage ||
-        !formData.dca.dcaCondition) &&
-      [ScaleDcaTypeEnum.adr, ScaleDcaTypeEnum.atr].includes(
-        formData.dca.scaleDcaType ?? ScaleDcaTypeEnum.percentage
-      ) &&
-      formData.dca.useDca,
-    [formData.dca.dcaCondition, formData.dca.scaleDcaType, formData.dca.useDca]
-  );
-
-  const tpAr = useMemo(
-    () =>
-      formData.dca.dealCloseCondition === CloseConditionEnum.dynamicAr &&
-      formData.dca.useTp,
-    [formData.dca.useTp, formData.dca.dealCloseCondition]
-  );
-
-  const slAr = useMemo(
-    () =>
-      formData.dca.dealCloseConditionSL === CloseConditionEnum.dynamicAr &&
-      formData.dca.useSl,
-    [formData.dca.useSl, formData.dca.dealCloseConditionSL]
-  );
-
-  const indicatorGroupsToUse = useMemo(
-    () =>
-      (
-        (isComboBot
-          ? formData.combo.indicatorGroups
-          : formData.dca.indicatorGroups) ?? []
-      )
-        .filter((ig) => {
-          const indicators = (
-            (isComboBot
-              ? formData.combo.indicators
-              : formData.dca.indicators) ?? []
-          ).filter((i) => i.groupId === ig.id);
-          return indicators.length > 0;
-        })
-        .map((ig) => ig.id),
-    [
-      formData.dca.indicatorGroups,
-      formData.dca.indicators,
-      isComboBot,
-      formData.combo.indicatorGroups,
-      formData.combo.indicators,
-    ]
-  );
-
-  const useCloseIndicators = useMemo(
-    () =>
-      (formData.dca.dealCloseCondition === CloseConditionEnum.techInd &&
-        (!formData.dca.useRiskReward ||
-          (formData.dca.useRiskReward && !formData.dca.riskUseTpRatio))) ||
-      (formData.dca.dealCloseConditionSL === CloseConditionEnum.techInd &&
-        !formData.dca.useRiskReward) ||
-      tpAr ||
-      slAr,
-    [
-      formData.dca.dealCloseCondition,
-      formData.dca.dealCloseConditionSL,
-      formData.dca.useRiskReward,
-      formData.dca.riskUseTpRatio,
-      tpAr,
-      slAr,
-    ]
-  );
-
-  const useStartDealIndicators = useMemo(
-    () =>
-      (isComboBot
-        ? formData.combo.startCondition
-        : formData.dca.startCondition) === StartConditionEnum.ti,
-    [formData.dca.startCondition, isComboBot, formData.combo.startCondition]
-  );
-
-  const useStartDCAIndicators = useMemo(
-    () =>
-      (formData.dca.dcaCondition === DCAConditionEnum.indicators &&
-        formData.dca.useDca) ||
-      scaleAr,
-    [formData.dca.dcaCondition, formData.dca.useDca, scaleAr]
-  );
-
-  const useStartBotIndicators = useMemo(
-    () =>
-      formData.dca.botActualStart === BotStartTypeEnum.indicators &&
-      formData.dca.useBotController,
-    [formData.dca.botActualStart, formData.dca.useBotController]
-  );
-
-  const useStopBotIndicators = useMemo(
-    () =>
-      (isComboBot ? formData.combo.botStart : formData.dca.botStart) ===
-        BotStartTypeEnum.indicators &&
-      (isComboBot
-        ? formData.combo.useBotController
-        : formData.dca.useBotController),
-    [
-      formData.dca.botStart,
-      formData.dca.useBotController,
-      isComboBot,
-      formData.combo.botStart,
-      formData.combo.useBotController,
-    ]
-  );
-
-  const useRiskRewardIndicators = useMemo(
-    () => formData.dca.useRiskReward,
-    [formData.dca.useRiskReward]
-  );
-
-  useEffect(() => {
-    indicatorStore.setChartIndicatorsContext({
-      scaleAr,
-      tpAr,
-      slAr,
-      strategy: isComboBot ? formData.combo.strategy : formData.dca.strategy,
-      indicatorGroupsToUse,
-      useCloseIndicators,
-      useStartDealIndicators,
-      useStartDCAIndicators,
-      useStopBotIndicators,
-      useStartBotIndicators,
-      useRiskRewardIndicators,
-    });
-  }, [
-    scaleAr,
-    tpAr,
-    slAr,
-    formData.dca.strategy,
-    indicatorGroupsToUse,
-    useCloseIndicators,
-    useStartDealIndicators,
-    useStartDCAIndicators,
-    useStopBotIndicators,
-    useStartBotIndicators,
-    useRiskRewardIndicators,
-    isComboBot,
-    formData.combo.strategy,
-  ]);
+  // The indicator-chart-context derivations (scaleAr/tpAr/slAr/…) and the
+  // effect that pushed them into `indicatorStore` used to live here as
+  // formData-dependent memos + a React effect. They now run inside the
+  // store-subscription effect below (`pushIndicatorContext`), driven off
+  // `store.getState()` so a keystroke never re-renders the provider to feed
+  // the chart.
   const isDealEdit = useMemo(
     () => mode === 'deal-edit' || mode === 'deal-mass-edit',
     [mode]
@@ -553,12 +605,17 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   useEffect(() => {
     if (isSkipExampleOrders) return;
     exampleOrdersStore.setContext({ botType });
-  }, [botType, isSkipExampleOrders]);
+  }, [botType, isSkipExampleOrders, exampleOrdersStore]);
 
-  useEffect(() => {
+  // Example-orders settings feed. Was a formData-dependent React effect;
+  // now a stable callback invoked (debounced) from the store subscription
+  // below. The giant settings object is unchanged — a local `formData` alias
+  // over `store.getState()` keeps every field reference identical.
+  const pushExampleOrderSettings = useCallback(() => {
     if (isSkipExampleOrders) {
       return;
     }
+    const formData = store.getState().formData;
     exampleOrdersStore.setContext({
       settings: {
         indicators: isComboBot
@@ -714,146 +771,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         feeOrder: formData.grid.feeOrder,
       },
     });
-  }, [
-    formData.dca.indicators,
-    formData.dca.dcaCustom,
-    formData.dca.multiTp,
-    formData.dca.multiSl,
-    formData.dca.baseOrderSize,
-    formData.dca.orderSize,
-    formData.dca.tpPerc,
-    formData.dca.slPerc,
-    formData.dca.step,
-    formData.dca.stepScale,
-    formData.dca.minimumDeviation,
-    formData.dca.volumeScale,
-    formData.dca.activeOrdersCount,
-    formData.dca.useTp,
-    formData.dca.dealCloseCondition,
-    formData.dca.useSl,
-    formData.dca.dealCloseConditionSL,
-    formData.dca.orderSizeType,
-    formData.dca.coinm,
-    formData.dca.useDca,
-    formData.dca.dcaCondition,
-    formData.dca.scaleDcaType,
-    formData.dca.dcaVolumeBaseOn,
-    formData.dca.dcaVolumeRequiredChange,
-    formData.dca.dcaVolumeMaxValue,
-    formData.dca.ordersCount,
-    formData.dca.futures,
-    formData.dca.strategy,
-    formData.dca.useMultiTp,
-    formData.dca.profitCurrency,
-    formData.dca.trailingTp,
-    formData.dca.fixedTpPrice,
-    formData.dca.fixedSlPrice,
-    formData.dca.useFixedTPPrices,
-    formData.dca.useFixedSLPrices,
-    formData.dca.marginType,
-    formData.dca.leverage,
-    formData.dca.terminalDealType,
-    formData.dca.useSmartOrders,
-    formData.dca.dcaVolumeRequiredChangeRef,
-    formData.dca.moveSL,
-    formData.dca.baseSlOn,
-    formData.dca.trailingSl,
-    formData.dca.useMultiSl,
-    botType,
-    isComboBot,
-    formData.combo.indicators,
-    formData.combo.dcaCustom,
-    formData.combo.multiTp,
-    formData.combo.multiSl,
-    formData.combo.baseOrderSize,
-    formData.combo.orderSize,
-    formData.combo.tpPerc,
-    formData.combo.slPerc,
-    formData.combo.step,
-    formData.combo.stepScale,
-    formData.combo.minimumDeviation,
-    formData.combo.volumeScale,
-    formData.combo.activeOrdersCount,
-    formData.combo.useTp,
-    formData.combo.dealCloseCondition,
-    formData.combo.useSl,
-    formData.combo.dealCloseConditionSL,
-    formData.combo.orderSizeType,
-    formData.combo.coinm,
-    formData.combo.useDca,
-    formData.combo.dcaCondition,
-    formData.combo.scaleDcaType,
-    formData.combo.dcaVolumeBaseOn,
-    formData.combo.dcaVolumeRequiredChange,
-    formData.combo.dcaVolumeMaxValue,
-    formData.combo.ordersCount,
-    formData.combo.futures,
-    formData.combo.strategy,
-    formData.combo.useMultiTp,
-    formData.combo.profitCurrency,
-    formData.combo.trailingTp,
-    formData.combo.fixedTpPrice,
-    formData.combo.fixedSlPrice,
-    formData.combo.useFixedTPPrices,
-    formData.combo.useFixedSLPrices,
-    formData.combo.marginType,
-    formData.combo.leverage,
-    formData.combo.terminalDealType,
-    formData.combo.useSmartOrders,
-    formData.combo.dcaVolumeRequiredChangeRef,
-    formData.combo.moveSL,
-    formData.combo.baseSlOn,
-    formData.combo.trailingSl,
-    formData.combo.useMultiSl,
-    formData.combo.baseStep,
-    formData.combo.comboUseSmartGrids,
-    formData.combo.comboSmartGridsCount,
-    formData.combo.comboActiveMinigrids,
-    formData.combo.useActiveMinigrids,
-    formData.combo.feeOrder,
-    formData.combo.gridLevel,
-    formData.combo.baseGridLevels,
-    formData.combo.baseOrderPrice,
-    formData.combo.startOrderType,
-    formData.combo.useLimitPrice,
-    formData.dca.baseStep,
-    formData.dca.comboUseSmartGrids,
-    formData.dca.comboSmartGridsCount,
-    formData.dca.comboActiveMinigrids,
-    formData.dca.useActiveMinigrids,
-    formData.dca.feeOrder,
-    formData.dca.baseOrderPrice,
-    formData.dca.startOrderType,
-    formData.dca.useLimitPrice,
-    formData.dca.gridLevel,
-    formData.dca.baseGridLevels,
-    formData.grid.topPrice,
-    formData.grid.lowPrice,
-    formData.grid.budget,
-    formData.grid.levels,
-    formData.grid.useStartPrice,
-    formData.grid.updatedBudget,
-    formData.grid.sellDisplacement,
-    formData.grid.gridType,
-    formData.grid.futures,
-    formData.grid.profitCurrency,
-    formData.grid.orderFixedIn,
-    formData.grid.coinm,
-    formData.grid.futuresStrategy,
-    formData.grid.ordersInAdvance,
-    formData.grid.useOrderInAdvance,
-    formData.grid.feeOrder,
-    isSkipExampleOrders,
-  ]);
-
-  useEffect(() => {
-    if (isSkipExampleOrders) {
-      return;
-    }
-    exampleOrdersStore.setContext({
-      errors,
-    });
-  }, [errors, isSkipExampleOrders]);
+  }, [store, exampleOrdersStore, isComboBot, isSkipExampleOrders]);
 
   useEffect(() => {
     if (isSkipExampleOrders) {
@@ -862,16 +780,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     exampleOrdersStore.setContext({
       botVars,
     });
-  }, [botVars, isSkipExampleOrders]);
-
-  useEffect(() => {
-    if (isSkipExampleOrders) {
-      return;
-    }
-    exampleOrdersStore.setContext({
-      userFee: formData.userFee?.makerCommission,
-    });
-  }, [isSkipExampleOrders, formData.userFee?.makerCommission]);
+  }, [botVars, isSkipExampleOrders, exampleOrdersStore]);
 
   const updateFormData = useCallback(
     (field: Fields, value: BotFormUpdateValue) => {
@@ -944,18 +853,24 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
         setIsDirty(true);
       }
 
-      setErrors((prevErrors) => {
-        if (!(field in prevErrors)) {
-          return prevErrors;
-        }
-
-        const { [field]: _removed, ...rest } = prevErrors;
-        return rest;
-      });
+      // NOTE: no synchronous per-field error prune here. Deleting errors[field]
+      // on edit while re-validation is debounced (~120ms) opened a window where
+      // the form looked error-free (BotFormFooter gates submit on
+      // Object.keys(errors).length) even though it wasn't. The debounced
+      // wholesale validation now owns the errors object end-to-end: a stale
+      // error lingering ≤120ms longer is harmless; a false "no errors" window
+      // is not.
     },
-    [botType, setFormData]
+    [botType, setFormData, setIsDirty, exampleOrdersStore]
   );
-  useEffect(() => {
+
+  // Hot validation. Was a formData-dependent React effect that unconditionally
+  // called setAlerts each keystroke; now a stable callback driven (debounced)
+  // from the store subscription, writing alerts/errors back to the store only
+  // when they actually change. The validation body is unchanged — a local
+  // `formData` alias over `store.getState()` keeps every reference identical.
+  const runValidation = useCallback(() => {
+    const formData = store.getState().formData;
     let newErrors: BotFormErrors = {};
     let newAlerts: BotFormAlerts = {};
     if (formData.type === BotTypesEnum.grid) {
@@ -1226,204 +1141,236 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       newAlerts = _newAlerts ?? {};
     }
 
-    // Apply alerts produced by hot validation
-    setAlerts(newAlerts);
+    // Write alerts/errors back to the store, but ONLY when they actually
+    // changed. This replaces both the old unconditional setAlerts and the
+    // JSON.stringify errors guard, and keeps the store subscription from
+    // looping (a no-op validation makes no write, so it fires no callback).
+    const current = store.getState();
+    // Cheap structural compares instead of 4× JSON.stringify per pass: errors
+    // by key-count + per-key string equality, alerts by the same
+    // variant/message/navId fingerprint scheme mergeBotFormAlerts uses.
+    const alertsChanged = !botFormAlertsEqual(current.alerts, newAlerts);
+    const errorsChanged = !botFormErrorsEqual(current.errors, newErrors);
+    if (alertsChanged || errorsChanged) {
+      store.setState({
+        ...(alertsChanged ? { alerts: newAlerts } : {}),
+        ...(errorsChanged ? { errors: newErrors } : {}),
+      });
+    }
+  }, [store, mode, isComboBot]);
 
-    setErrors((prev) => {
-      if (JSON.stringify(prev) === JSON.stringify(newErrors)) {
-        return prev;
+  // Recompute the chart-indicator context off the store and push it into
+  // indicatorStore only when it changes. Replaces the old cluster of formData
+  // memos + the effect that fed indicatorStore.setChartIndicatorsContext.
+  // Signature of the last context actually pushed to indicatorStore, and the
+  // (dca, combo) input references it was derived from. Both are reset to null at
+  // the top of the subscription mount effect so a store recreation (isolateStores
+  // flip → fresh indicatorStore) always re-seeds instead of short-circuiting on
+  // a stale signature. See the effect below.
+  const lastIndicatorSigRef = useRef<string | null>(null);
+  const indicatorInputsRef = useRef<{
+    dca: BotFormData['dca'];
+    combo: BotFormData['combo'];
+  } | null>(null);
+  const pushIndicatorContext = useCallback(() => {
+    const formData = store.getState().formData;
+    const dca = formData.dca;
+    const combo = formData.combo;
+    // Early-bail before building the derived context. The output is a pure
+    // function of (dca, combo, isComboBot); isComboBot is stable for the
+    // provider's life. So if both slice references are unchanged, nothing this
+    // reads changed — return immediately. This makes the hottest path (a
+    // top-level keystroke like the bot name, which never re-clones dca/combo)
+    // do near-zero work instead of rebuilding the nested filter + JSON sig.
+    const prevInputs = indicatorInputsRef.current;
+    if (prevInputs && prevInputs.dca === dca && prevInputs.combo === combo) {
+      return;
+    }
+    indicatorInputsRef.current = { dca, combo };
+    const scaleAr =
+      (dca.dcaCondition === DCAConditionEnum.percentage || !dca.dcaCondition) &&
+      [ScaleDcaTypeEnum.adr, ScaleDcaTypeEnum.atr].includes(
+        dca.scaleDcaType ?? ScaleDcaTypeEnum.percentage
+      ) &&
+      dca.useDca;
+    const tpAr =
+      dca.dealCloseCondition === CloseConditionEnum.dynamicAr && dca.useTp;
+    const slAr =
+      dca.dealCloseConditionSL === CloseConditionEnum.dynamicAr && dca.useSl;
+    const indicatorGroupsToUse = (
+      (isComboBot ? combo.indicatorGroups : dca.indicatorGroups) ?? []
+    )
+      .filter((ig) => {
+        const indicators = (
+          (isComboBot ? combo.indicators : dca.indicators) ?? []
+        ).filter((i) => i.groupId === ig.id);
+        return indicators.length > 0;
+      })
+      .map((ig) => ig.id);
+    const useCloseIndicators =
+      (dca.dealCloseCondition === CloseConditionEnum.techInd &&
+        (!dca.useRiskReward ||
+          (dca.useRiskReward && !dca.riskUseTpRatio))) ||
+      (dca.dealCloseConditionSL === CloseConditionEnum.techInd &&
+        !dca.useRiskReward) ||
+      tpAr ||
+      slAr;
+    const useStartDealIndicators =
+      (isComboBot ? combo.startCondition : dca.startCondition) ===
+      StartConditionEnum.ti;
+    const useStartDCAIndicators =
+      (dca.dcaCondition === DCAConditionEnum.indicators && dca.useDca) ||
+      scaleAr;
+    const useStartBotIndicators =
+      dca.botActualStart === BotStartTypeEnum.indicators && dca.useBotController;
+    const useStopBotIndicators =
+      (isComboBot ? combo.botStart : dca.botStart) ===
+        BotStartTypeEnum.indicators &&
+      (isComboBot ? combo.useBotController : dca.useBotController);
+    const useRiskRewardIndicators = dca.useRiskReward;
+    const strategy = isComboBot ? combo.strategy : dca.strategy;
+
+    const nextContext = {
+      scaleAr,
+      tpAr,
+      slAr,
+      strategy,
+      indicatorGroupsToUse,
+      useCloseIndicators,
+      useStartDealIndicators,
+      useStartDCAIndicators,
+      useStopBotIndicators,
+      useStartBotIndicators,
+      useRiskRewardIndicators,
+    };
+    const sig = JSON.stringify(nextContext);
+    if (sig !== lastIndicatorSigRef.current) {
+      lastIndicatorSigRef.current = sig;
+      indicatorStore.setChartIndicatorsContext(nextContext);
+    }
+  }, [store, indicatorStore, isComboBot]);
+
+  // Single mount-time subscription that drives every formData-derived side
+  // effect OUTSIDE React render, so a keystroke never re-renders the provider.
+  //  - indicator chart context: recomputed immediately (guarded, idempotent).
+  //  - example-orders settings feed: trailing 200ms debounce, maxWait 300ms.
+  //  - hot validation: trailing 120ms debounce, maxWait 250ms; writes
+  //    alerts/errors back to the store with an equality guard.
+  //  - errors / userFee → example-orders: pushed when those slices change.
+  // The maxWait ceiling stops a sustained write stream (holding a number
+  // stepper writes faster than the trailing delay) from starving the trailing
+  // edge for the whole hold. The timer/pendingSince refs live at component
+  // scope (declared near the store) so the external setErrors/setAlerts path
+  // can cancel a pending validation pass.
+  useEffect(() => {
+    // Fresh subscription: reset the indicator-context guards so a store
+    // recreation (isolateStores flip → new indicatorStore) always re-seeds
+    // rather than short-circuiting on a signature / input tuple left over from
+    // the previous store instance.
+    lastIndicatorSigRef.current = null;
+    indicatorInputsRef.current = null;
+
+    let prevFormData = store.getState().formData;
+    let prevErrors = store.getState().errors;
+    let prevUserFeeMaker = store.getState().formData.userFee?.makerCommission;
+
+    const scheduleExample = () => {
+      const now = Date.now();
+      if (examplePendingSinceRef.current === null) {
+        examplePendingSinceRef.current = now;
       }
+      if (exampleTimerRef.current) {
+        clearTimeout(exampleTimerRef.current);
+      }
+      // trailing 200ms, but never wait longer than 300ms since the burst began.
+      const remainingMax = 300 - (now - examplePendingSinceRef.current);
+      const delay = Math.max(0, Math.min(200, remainingMax));
+      exampleTimerRef.current = setTimeout(() => {
+        exampleTimerRef.current = null;
+        examplePendingSinceRef.current = null;
+        pushExampleOrderSettings();
+      }, delay);
+    };
+    const scheduleValidation = () => {
+      const now = Date.now();
+      if (validationPendingSinceRef.current === null) {
+        validationPendingSinceRef.current = now;
+      }
+      if (validationTimerRef.current) {
+        clearTimeout(validationTimerRef.current);
+      }
+      // trailing 120ms, but never wait longer than 250ms since the burst began.
+      const remainingMax = 250 - (now - validationPendingSinceRef.current);
+      const delay = Math.max(0, Math.min(120, remainingMax));
+      validationTimerRef.current = setTimeout(() => {
+        validationTimerRef.current = null;
+        validationPendingSinceRef.current = null;
+        runValidation();
+      }, delay);
+    };
 
-      return newErrors;
-    });
+    const onChange = () => {
+      const state = store.getState();
+      if (state.formData !== prevFormData) {
+        prevFormData = state.formData;
+        // Chart indicator context — immediate (matches the old effect timing).
+        pushIndicatorContext();
+        // userFee → example-orders — immediate on change.
+        const maker = state.formData.userFee?.makerCommission;
+        if (maker !== prevUserFeeMaker) {
+          prevUserFeeMaker = maker;
+          if (!isSkipExampleOrders) {
+            exampleOrdersStore.setContext({ userFee: maker });
+          }
+        }
+        // Example-orders settings — debounced.
+        if (!isSkipExampleOrders) {
+          scheduleExample();
+        }
+        // Validation — debounced.
+        scheduleValidation();
+      }
+      if (state.errors !== prevErrors) {
+        prevErrors = state.errors;
+        if (!isSkipExampleOrders) {
+          exampleOrdersStore.setContext({ errors: state.errors });
+        }
+      }
+    };
+
+    const unsubscribe = store.subscribe(onChange);
+
+    // Seed on mount, mirroring the effects that fired on first render.
+    pushIndicatorContext();
+    if (!isSkipExampleOrders) {
+      pushExampleOrderSettings();
+      exampleOrdersStore.setContext({ errors: store.getState().errors });
+      exampleOrdersStore.setContext({
+        userFee: store.getState().formData.userFee?.makerCommission,
+      });
+    }
+    runValidation();
+
+    return () => {
+      if (exampleTimerRef.current) {
+        clearTimeout(exampleTimerRef.current);
+        exampleTimerRef.current = null;
+      }
+      examplePendingSinceRef.current = null;
+      if (validationTimerRef.current) {
+        clearTimeout(validationTimerRef.current);
+        validationTimerRef.current = null;
+      }
+      validationPendingSinceRef.current = null;
+      unsubscribe();
+    };
   }, [
-    formData.type,
-    formData.dca.baseOrderSize,
-    formData.dca.orderSize,
-    formData.dca.tpPerc,
-    formData.dca.slPerc,
-    formData.dca.step,
-    formData.dca.volumeScale,
-    formData.dca.stepScale,
-    formData.dca.minOpenDeal,
-    formData.dca.maxOpenDeal,
-    formData.dca.riskMinPositionSize,
-    formData.dca.riskMaxPositionSize,
-    formData.dca.riskMinSl,
-    formData.dca.riskSlType,
-    formData.dca.riskSlAmountValue,
-    formData.dca.riskMaxSl,
-    formData.dca.riskTpRatio,
-    formData.dca.orderSizeType,
-    formData.dca.baseOrderPrice,
-    formData.dca.startOrderType,
-    formData.dca.cooldownAfterDealStart,
-    formData.dca.cooldownAfterDealStartInterval,
-    formData.dca.cooldownAfterDealStop,
-    formData.dca.cooldownAfterDealStopInterval,
-    formData.dca.useRiskReward,
-    formData.dca.riskUseTpRatio,
-    formData.dca.maxNumberOfOpenDeals,
-    formData.dca.maxDealsPerPair,
-    formData.dcaOrderGuard,
-    formData.dca.useTp,
-    formData.dca.useMaxDealsPerHigherTimeframe,
-    formData.dca.maxDealsPerHigherTimeframe,
-    formData.dca.useSl,
-    formData.dca.startCondition,
-    formData.dca.hodlDay,
-    formData.dca.hodlNextBuy,
-    formData.dca.activeOrdersCount,
-    formData.dca.useSmartOrders,
-    formData.dca.useDca,
-    formData.dca.useDynamicPriceFilter,
-    formData.dca.dynamicPriceFilterDirection,
-    formData.dca.dynamicPriceFilterOverValue,
-    formData.dca.dynamicPriceFilterUnderValue,
-    formData.dca.futures,
-    formData.dca.marginType,
-    formData.dca.terminalDealType,
-    formData.dca.dcaCondition,
-    formData.dca.ordersCount,
-    formData.dca.useMulti,
-    formData.dca.dcaCustom,
-    formData.dca.dcaVolumeBaseOn,
-    formData.dca.indicators,
-    formData.dca.botStart,
-    formData.dca.useBotController,
-    formData.dca.botActualStart,
-    formData.dca.dealCloseCondition,
-    formData.dca.dealCloseConditionSL,
-    formData.dca.type,
-    formData.dca.trailingTp,
-    formData.dca.trailingTpPerc,
-    formData.dca.useMinTP,
-    formData.dca.minTp,
-    formData.dca.useCloseAfterX,
-    formData.dca.closeAfterX,
-    formData.dca.useCloseAfterXloss,
-    formData.dca.closeAfterXloss,
-    formData.dca.useCloseAfterXwin,
-    formData.dca.closeAfterXwin,
-    formData.dca.useCloseAfterXprofit,
-    formData.dca.closeAfterXprofitValue,
-    formData.dca.stopBotPriceValue,
-    formData.dca.startBotPriceValue,
-    formData.dca.useCloseAfterXopen,
-    formData.dca.closeAfterXopen,
-    formData.dca.volumeTop,
-    formData.dca.volumeValue,
-    formData.dca.useVolumeFilter,
-    formData.dca.relativeVolumeTop,
-    formData.dca.useRelativeVolumeFilter,
-    formData.dca.relativeVolumeValue,
-    formData.dca.leverage,
-    formData.userFee,
-    formData.pair,
-    isComboBot,
-    formData.combo.baseOrderSize,
-    formData.combo.orderSize,
-    formData.combo.tpPerc,
-    formData.combo.slPerc,
-    formData.combo.step,
-    formData.combo.volumeScale,
-    formData.combo.stepScale,
-    formData.combo.minOpenDeal,
-    formData.combo.maxOpenDeal,
-    formData.combo.riskMinPositionSize,
-    formData.combo.riskMaxPositionSize,
-    formData.combo.riskMinSl,
-    formData.combo.riskSlType,
-    formData.combo.riskSlAmountValue,
-    formData.combo.riskMaxSl,
-    formData.combo.riskTpRatio,
-    formData.combo.orderSizeType,
-    formData.combo.baseOrderPrice,
-    formData.combo.startOrderType,
-    formData.combo.cooldownAfterDealStart,
-    formData.combo.cooldownAfterDealStartInterval,
-    formData.combo.cooldownAfterDealStop,
-    formData.combo.cooldownAfterDealStopInterval,
-    formData.combo.useRiskReward,
-    formData.combo.riskUseTpRatio,
-    formData.combo.maxNumberOfOpenDeals,
-    formData.combo.maxDealsPerPair,
-    formData.combo.useTp,
-    formData.combo.useMaxDealsPerHigherTimeframe,
-    formData.combo.maxDealsPerHigherTimeframe,
-    formData.combo.useSl,
-    formData.combo.startCondition,
-    formData.combo.hodlDay,
-    formData.combo.hodlNextBuy,
-    formData.combo.activeOrdersCount,
-    formData.combo.useSmartOrders,
-    formData.combo.useDca,
-    formData.combo.useDynamicPriceFilter,
-    formData.combo.dynamicPriceFilterDirection,
-    formData.combo.dynamicPriceFilterOverValue,
-    formData.combo.dynamicPriceFilterUnderValue,
-    formData.combo.futures,
-    formData.combo.marginType,
-    formData.combo.terminalDealType,
-    formData.combo.dcaCondition,
-    formData.combo.ordersCount,
-    formData.combo.useMulti,
-    formData.combo.dcaCustom,
-    formData.combo.dcaVolumeBaseOn,
-    formData.combo.indicators,
-    formData.combo.botStart,
-    formData.combo.useBotController,
-    formData.combo.botActualStart,
-    formData.combo.dealCloseCondition,
-    formData.combo.dealCloseConditionSL,
-    formData.combo.type,
-    formData.combo.trailingTp,
-    formData.combo.trailingTpPerc,
-    formData.combo.useMinTP,
-    formData.combo.minTp,
-    formData.combo.useCloseAfterX,
-    formData.combo.closeAfterX,
-    formData.combo.useCloseAfterXloss,
-    formData.combo.closeAfterXloss,
-    formData.combo.useCloseAfterXwin,
-    formData.combo.closeAfterXwin,
-    formData.combo.useCloseAfterXprofit,
-    formData.combo.closeAfterXprofitValue,
-    formData.combo.stopBotPriceValue,
-    formData.combo.startBotPriceValue,
-    formData.combo.useCloseAfterXopen,
-    formData.combo.closeAfterXopen,
-    formData.combo.volumeTop,
-    formData.combo.volumeValue,
-    formData.combo.useVolumeFilter,
-    formData.combo.relativeVolumeTop,
-    formData.combo.useRelativeVolumeFilter,
-    formData.combo.relativeVolumeValue,
-    formData.combo.leverage,
-    formData.dca.useLimitPrice,
-    formData.combo.useLimitPrice,
-    formData.name,
-    formData.exchangeUUID,
-    formData.grid.budget,
-    formData.grid.topPrice,
-    formData.grid.lowPrice,
-    formData.grid.levels,
-    formData.grid.tpSl,
-    formData.grid.tpSlCondition,
-    formData.grid.tpPerc,
-    formData.grid.tpTopPrice,
-    formData.grid.sl,
-    formData.grid.slCondition,
-    formData.grid.slLowPrice,
-    formData.grid.slPerc,
-    formData.grid.useStartPrice,
-    formData.grid.startPrice,
-    formData.grid.useOrderInAdvance,
-    formData.grid.ordersInAdvance,
-    formData.grid.futures,
-    formData.grid.leverage,
-    formData.grid.marginType,
-    mode,
+    store,
+    exampleOrdersStore,
+    isSkipExampleOrders,
+    pushIndicatorContext,
+    pushExampleOrderSettings,
+    runValidation,
   ]);
 
   useEffect(() => {
@@ -1471,7 +1418,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
             reason?: string | null;
             data?: { indicators?: IndicatorEnum[] | null } | null;
           };
-        }>(query);
+        }>(query, undefined, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
 
         favoriteIndicatorsRequestState.current.inflight = false;
         favoriteIndicatorsRequestState.current.lastToken = accessToken;
@@ -1578,78 +1525,49 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     };
   }, [botExperience.featureFlags, botExperience.metadata]);
 
-  // Component error registration
+  // Component error registration. componentErrors lives in the store (it feeds
+  // the merged-alerts pipeline computed by the consumer hooks). Registration is
+  // rare (a component mounting/unmounting an error), never per keystroke.
   const registerComponentError = useCallback(
     (field: string, alert: import('@/types/bots/form').BotFormAlert | null) => {
-      setComponentErrors((prev) => {
+      store.setState((prevState) => {
+        const prev = prevState.componentErrors;
         if (!alert) {
-          // Remove error
           const next = { ...prev } as Record<
             string,
             (typeof prev)[keyof typeof prev]
           >;
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
           delete next[field];
-          return next as typeof prev;
+          return { componentErrors: next as typeof prev };
         }
-
-        // Add/update error
         return {
-          ...prev,
-          [field]: [alert],
-        } as typeof prev;
+          componentErrors: {
+            ...prev,
+            [field]: [alert],
+          } as typeof prev,
+        };
       });
     },
-    []
+    [store]
   );
 
-  // Merge validation alerts with component errors
-  const mergedAlerts = useMemo(() => {
-    const result: import('@/types/bots/form').BotFormAlerts = {};
-
-    // Add validation alerts
-    for (const [key, value] of Object.entries(alerts)) {
-      (result as any)[key] = value;
-    }
-
-    // Add component errors - merge with existing alerts if present
-    for (const [key, value] of Object.entries(componentErrors)) {
-      const existing = (result as any)[key] as typeof value | undefined;
-      if (existing && Array.isArray(existing)) {
-        // Merge arrays, avoiding duplicates by message + variant + navId
-        const merged = [...existing, ...(value ?? [])];
-        const deduped: typeof merged = [];
-        const seen = new Set<string>();
-        for (const alert of merged) {
-          const fingerprint = `${alert?.variant ?? ''}::${alert?.message ?? ''}::${alert?.navId ?? ''}`;
-          if (!seen.has(fingerprint)) {
-            seen.add(fingerprint);
-            deduped.push(alert);
-          }
-        }
-        (result as any)[key] = deduped;
-      } else {
-        (result as any)[key] = value;
-      }
-    }
-
-    return result;
-  }, [alerts, componentErrors]);
-
-  const value = useMemo<BotFormStateContextValue>(
+  // The context carries only the STABLE store reference + stable callbacks +
+  // rarely-changing flags. The four hot fields (formData/errors/alerts/isDirty)
+  // are NOT here — consumers read them from the store. As a result this value's
+  // identity does not change on a keystroke, so nothing subscribed to it (via
+  // useBotFormSelector's context read) re-renders while typing.
+  const value = useMemo<BotFormInternalContextValue>(
     () => ({
+      store,
       mode,
       activeTab,
       setActiveTab,
       isLoading,
       setIsLoading,
-      errors,
       setErrors,
-      alerts: mergedAlerts,
       setAlerts,
-      isDirty,
       setIsDirty,
-      formData,
       setFormData,
       updateFormData,
       lockedFields,
@@ -1673,13 +1591,15 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       isNestedLeg: !!isNestedLeg,
     }),
     [
+      store,
       mode,
       activeTab,
+      setActiveTab,
       isLoading,
-      errors,
-      mergedAlerts,
-      isDirty,
-      formData,
+      setIsLoading,
+      setErrors,
+      setAlerts,
+      setIsDirty,
       lockedFields,
       isFieldLocked,
       isEditLocked,
@@ -1690,35 +1610,102 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       features,
       updateFormData,
       botVars,
+      setBotVars,
       setFormData,
       resetFormData,
       registerComponentError,
       quickSetupMode,
+      setQuickSetupMode,
       selectedPreset,
+      setSelectedPreset,
       activeChartPair,
+      setActiveChartPair,
       isNestedLeg,
     ]
   );
 
   return (
-    <BotFormStateContext.Provider value={value}>
-      {children}
-    </BotFormStateContext.Provider>
+    <ExampleOrdersStoreContext.Provider value={exampleOrdersStore}>
+      <IndicatorStoreContext.Provider value={indicatorStore}>
+        <BotFormStateContext.Provider value={value}>
+          {children}
+        </BotFormStateContext.Provider>
+      </IndicatorStoreContext.Provider>
+    </ExampleOrdersStoreContext.Provider>
   );
 };
 
+/**
+ * Stitch the stable internal context (store ref + callbacks + rare flags) back
+ * together with the hot store state into the PUBLIC `BotFormStateContextValue`
+ * shape. Subscribes to the WHOLE store, so consumers of `useBotFormState` /
+ * `useOptionalBotFormState` re-render on any hot change — identical broad
+ * re-render behavior to the pre-refactor context. (Narrow subscriptions are
+ * `useBotFormSelector`'s job.)
+ */
+const useMergedBotFormState = (
+  context: BotFormInternalContextValue | undefined
+): BotFormStateContextValue | undefined => {
+  // Always subscribe to a store (fallback keeps hook order stable when the
+  // hook is used outside a provider via useOptionalBotFormState).
+  const store = context?.store ?? EMPTY_BOT_FORM_STORE;
+  const state = useStore(store);
+
+  // Merge in its OWN memo keyed on just [alerts, componentErrors] — both are
+  // reference-stable across formData-only writes (a keystroke never touches
+  // them), so the merged alerts keep their identity while typing instead of
+  // being rebuilt every keystroke (as they were when this was folded into a
+  // memo keyed on the whole store snapshot).
+  const mergedAlerts = useMemo(
+    () => mergeBotFormAlerts(state.alerts, state.componentErrors),
+    [state.alerts, state.componentErrors]
+  );
+
+  return useMemo(() => {
+    if (!context) {
+      return undefined;
+    }
+    const { store: _store, ...rest } = context;
+    return {
+      ...rest,
+      formData: state.formData,
+      errors: state.errors,
+      alerts: mergedAlerts,
+      isDirty: state.isDirty,
+    };
+  }, [context, state.formData, state.errors, mergedAlerts, state.isDirty]);
+};
+
+/**
+ * TRANSITIONAL BROAD subscription. Returns the full legacy
+ * `BotFormStateContextValue` and re-renders the caller on EVERY hot store write
+ * (every keystroke), because it subscribes to the whole store via `useStore`.
+ * It exists to keep pre-refactor consumers working unchanged. New code that
+ * reads one field should use `useBotFormSelector` (narrow, per-slice
+ * subscription) instead of this.
+ */
 export const useBotFormState = (): BotFormStateContextValue => {
   const context = useContext(BotFormStateContext);
+  const merged = useMergedBotFormState(context);
 
-  if (!context) {
+  if (!merged) {
     throw new Error('useBotFormState must be used within a BotFormProvider');
   }
 
-  return context;
+  return merged;
 };
 
-export const useOptionalBotFormState = () => {
-  return useContext(BotFormStateContext);
+/**
+ * TRANSITIONAL BROAD subscription — the provider-optional variant of
+ * `useBotFormState` (returns `undefined` outside a `BotFormProvider`). Same
+ * caveat: it re-renders on every hot store write. Prefer `useBotFormSelector`
+ * for new code that only needs a single field.
+ */
+export const useOptionalBotFormState = ():
+  | BotFormStateContextValue
+  | undefined => {
+  const context = useContext(BotFormStateContext);
+  return useMergedBotFormState(context);
 };
 
 export const useBotFormFeatures = (): BotFormFeatureFlags => {
@@ -1750,8 +1737,22 @@ export const useBotFormEditing = () => {
 };
 
 /**
- * Hook to select a specific property from the current bot type's settings.
- * Only re-renders when the selected property changes, not on unrelated formData updates.
+ * Select a single property from the current bot type's settings. Backed by
+ * `useStore(store, selector)`, so a consumer re-renders ONLY when the selected
+ * slice changes (Object.is) — NOT on unrelated field edits. For unchanged
+ * fields the store preserves the reference (dca/combo/grid are spread-cloned
+ * per edit but their untouched leaf values keep identity), so Object.is is the
+ * correct, stable equality here.
+ *
+ * Public signature and semantics are unchanged from the previous context-based
+ * implementation.
+ *
+ * The `defaultValue` is PINNED on first use (a `useRef` captures the first value
+ * passed) and reused on every subsequent render where the selected field is
+ * undefined. Callers routinely pass a fresh literal each render (e.g.
+ * `useBotFormSelector('indicators', [])`); returning that fresh literal would
+ * hand consumers a new reference on every render and defeat memoization. Pinning
+ * restores the stable-reference semantics the old `useMemo`-cached default had.
  *
  * @example
  * const futures = useBotFormSelector('futures');
@@ -1773,32 +1774,225 @@ export const useBotFormSelector = <
   key: K,
   defaultValue?: V
 ): V => {
-  const { formData } = useBotFormState();
+  const context = useContext(BotFormStateContext);
+  // Keep hook order stable even outside a provider; throw AFTER the hook call.
+  const store = context?.store ?? EMPTY_BOT_FORM_STORE;
 
-  return useMemo(() => {
+  // Pin the default to its first-seen value so an undefined field always yields
+  // a reference-stable fallback, regardless of the caller passing a fresh
+  // literal each render.
+  const pinnedDefaultRef = useRef<V | undefined>(undefined);
+  const pinnedDefaultSetRef = useRef(false);
+  if (!pinnedDefaultSetRef.current) {
+    pinnedDefaultSetRef.current = true;
+    pinnedDefaultRef.current = defaultValue;
+  }
+
+  const selected = useStore(store, (s): V => {
+    const fallback = pinnedDefaultRef.current;
+    const formData = s.formData;
     switch (formData.type) {
       case BotTypesEnum.dca:
         return (formData.dca[key as keyof BotFormData['dca']] ??
-          defaultValue) as any;
+          fallback) as V;
       case BotTypesEnum.combo:
         return (formData.combo[key as keyof BotFormData['combo']] ??
-          defaultValue) as any;
+          fallback) as V;
       case BotTypesEnum.grid:
         return (formData.grid[key as keyof BotFormData['grid']] ??
-          defaultValue) as any;
+          fallback) as V;
       default:
         return (formData.dca[key as keyof BotFormData['dca']] ??
-          defaultValue) as any;
+          fallback) as V;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    formData.type,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    formData.dca[key as keyof BotFormData['dca']],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    formData.combo[key as keyof BotFormData['combo']],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    formData.grid[key as keyof BotFormData['grid']],
-    key,
-  ]);
+  });
+
+  if (!context) {
+    throw new Error('useBotFormState must be used within a BotFormProvider');
+  }
+
+  return selected;
+};
+
+/**
+ * Stable dispatch/action callbacks + rarely-changing flags from the bot form
+ * context, read WITHOUT subscribing to the hot store. A component that only
+ * DISPATCHES (updateFormData/setFormData/setBotVars/registerComponentError/…)
+ * should read from here instead of `useBotFormState()` so it does NOT re-render
+ * on every keystroke — the context identity is stable across keystrokes, so a
+ * consumer re-renders only on a rare context change (tab switch, botVars edit),
+ * never per keystroke. Every returned callback is itself referentially stable.
+ */
+export const useBotFormActions = () => {
+  const context = useContext(BotFormStateContext);
+  if (!context) {
+    throw new Error('useBotFormActions must be used within a BotFormProvider');
+  }
+  const {
+    updateFormData,
+    setFormData,
+    setBotVars,
+    setErrors,
+    setAlerts,
+    setIsDirty,
+    setIsLoading,
+    setActiveTab,
+    registerComponentError,
+    resetFormData,
+    enableEditing,
+    disableEditing,
+    toggleEditing,
+    isFieldLocked,
+    setQuickSetupMode,
+    setSelectedPreset,
+    setActiveChartPair,
+  } = context;
+  // Memoize on the (stable) callbacks so the returned object keeps identity even
+  // across the rare context changes that don't touch a callback (e.g. botVars).
+  return useMemo(
+    () => ({
+      updateFormData,
+      setFormData,
+      setBotVars,
+      setErrors,
+      setAlerts,
+      setIsDirty,
+      setIsLoading,
+      setActiveTab,
+      registerComponentError,
+      resetFormData,
+      enableEditing,
+      disableEditing,
+      toggleEditing,
+      isFieldLocked,
+      setQuickSetupMode,
+      setSelectedPreset,
+      setActiveChartPair,
+    }),
+    [
+      updateFormData,
+      setFormData,
+      setBotVars,
+      setErrors,
+      setAlerts,
+      setIsDirty,
+      setIsLoading,
+      setActiveTab,
+      registerComponentError,
+      resetFormData,
+      enableEditing,
+      disableEditing,
+      toggleEditing,
+      isFieldLocked,
+      setQuickSetupMode,
+      setSelectedPreset,
+      setActiveChartPair,
+    ]
+  );
+};
+
+/**
+ * Read the bot form `mode` without subscribing to the hot store. `mode` is a
+ * provider prop and never changes for a given form, so this is maximally cheap.
+ */
+export const useBotFormMode = (): BotFormMode => {
+  const context = useContext(BotFormStateContext);
+  if (!context) {
+    throw new Error('useBotFormMode must be used within a BotFormProvider');
+  }
+  return context.mode;
+};
+
+/**
+ * Read whether this provider is one leg of a hedge bot, without subscribing to
+ * the hot store. `isNestedLeg` is a provider prop and never changes for a given
+ * form.
+ */
+export const useBotFormIsNestedLeg = (): boolean => {
+  const context = useContext(BotFormStateContext);
+  if (!context) {
+    throw new Error(
+      'useBotFormIsNestedLeg must be used within a BotFormProvider'
+    );
+  }
+  return context.isNestedLeg;
+};
+
+/**
+ * Read `botVars` (global-variable bindings) without subscribing to the hot
+ * store. `botVars` is ordinary React state on the provider that changes only on
+ * an explicit variable edit, never on a keystroke.
+ */
+export const useBotFormBotVars = (): BotVars | null => {
+  const context = useContext(BotFormStateContext);
+  if (!context) {
+    throw new Error('useBotFormBotVars must be used within a BotFormProvider');
+  }
+  return context.botVars;
+};
+
+/**
+ * Narrow subscription to the form `errors` object. `errors` is rewritten only
+ * by the DEBOUNCED validation pass (~120ms), not by the synchronous keystroke,
+ * so subscribing here does NOT re-render the consumer on each keystroke — unlike
+ * the broad `useBotFormState()`. Prefer this in sections that render error
+ * state but otherwise read fields via `useBotFormSelector`.
+ */
+export const useBotFormErrors = (): BotFormErrors => {
+  const context = useContext(BotFormStateContext);
+  const store = context?.store ?? EMPTY_BOT_FORM_STORE;
+  const errors = useStore(store, (s) => s.errors);
+  if (!context) {
+    throw new Error('useBotFormErrors must be used within a BotFormProvider');
+  }
+  return errors;
+};
+
+/**
+ * Narrow subscription to the MERGED form alerts (hot-validation `alerts` +
+ * imperatively-registered `componentErrors`). Both slices change only on the
+ * debounced validation pass / a component (un)mounting an error — never on the
+ * synchronous keystroke — so this does NOT re-render the consumer per keystroke
+ * (unlike the broad `useBotFormState()`). Merged identity is kept stable across
+ * keystrokes via its own memo.
+ */
+export const useBotFormAlerts = (): BotFormAlerts => {
+  const context = useContext(BotFormStateContext);
+  const store = context?.store ?? EMPTY_BOT_FORM_STORE;
+  const alerts = useStore(store, (s) => s.alerts);
+  const componentErrors = useStore(store, (s) => s.componentErrors);
+  const merged = useMemo(
+    () => mergeBotFormAlerts(alerts, componentErrors),
+    [alerts, componentErrors]
+  );
+  if (!context) {
+    throw new Error('useBotFormAlerts must be used within a BotFormProvider');
+  }
+  return merged;
+};
+
+/**
+ * Narrow read of a TOP-LEVEL bot-form field — the ones stored on `formData`
+ * directly (`pair`, `pairMetadata`, `exchangeUUID`, `userFee`, `terminal`,
+ * `name`, `favoriteIndicators`, …) rather than inside the dca/combo/grid
+ * settings sub-object. `useBotFormSelector` reaches ONLY the nested settings;
+ * this is its top-level sibling. Subscribes to just that one field so the
+ * consumer re-renders only when it changes (Object.is) — top-level fields are
+ * stable across a numeric keystroke into a settings field.
+ */
+export const useBotFormTopLevelSelector = <
+  K extends keyof BotFormData,
+  V = BotFormData[K],
+>(
+  key: K
+): V => {
+  const context = useContext(BotFormStateContext);
+  const store = context?.store ?? EMPTY_BOT_FORM_STORE;
+  const selected = useStore(store, (s): V => s.formData[key] as unknown as V);
+  if (!context) {
+    throw new Error(
+      'useBotFormTopLevelSelector must be used within a BotFormProvider'
+    );
+  }
+  return selected;
 };

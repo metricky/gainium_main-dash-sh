@@ -7,10 +7,10 @@ import {
   Edit,
   ExternalLink,
   MoreHorizontal,
-  Pause,
   Play,
   Plus,
   RefreshCw,
+  Square,
   Star,
   Trash2,
 } from 'lucide-react';
@@ -76,10 +76,7 @@ import {
   filterRestartableBots,
   filterStartableBots,
   filterStoppableBots,
-  getActionPastTense,
-  getTargetStatus,
   isBotActive,
-  isBotDeletable,
 } from '@/utils/botStatusUtils';
 import {
   Tabs,
@@ -94,7 +91,6 @@ import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import {
   BotStatusConfirmationModal,
   DeleteConfirmationModal,
-  SuccessFeedbackModal,
 } from '../components/modals';
 import {
   ExchangeChip,
@@ -108,11 +104,12 @@ import CoinPair from '../components/widgets/shared/CoinPair';
 import StaleIndicator from '../components/widgets/shared/StaleIndicator';
 import {
   useBotArchive,
-  useBotClone,
   useBotDelete,
   useBotRestart,
   useBotStatusToggle,
 } from '../hooks/useBotMutations';
+import { useBotActions } from '../hooks/useBotActions';
+import { BotActionsModals } from '../components/bots/BotActionsModals';
 import { useBotModeGuard } from '../hooks/bots/base/useBotModeGuard';
 import { useCacheKey } from '../hooks/useCacheKey';
 import { useCacheStatus } from '../hooks/useCacheStatus';
@@ -122,7 +119,9 @@ import { useTradingBotStore } from '../stores/botWidgetsStoreFactory';
 import { useBotStatsStore } from '../stores/live/botStatsStore';
 import { transformDcaBotToBot } from '../types/dcaBot';
 import { useShareContext } from '../hooks/useShareContext';
-import { useSharedBot } from '../hooks/useSharedBot';
+import { useDrawerBot } from '../hooks/useDrawerBot';
+import { useStableBotTransforms } from '../hooks/useStableBotTransforms';
+import type { CalculatedBotStats } from '../services/metrics/BotMetricsCalculator';
 
 // Bot table actions component for mobile accessibility
 interface BotTableActionsProps {
@@ -185,154 +184,47 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
   bot,
   originalBotData,
 }) => {
-  const navigate = useNavigate(); // Modal state
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [successModalOpen, setSuccessModalOpen] = useState(false);
-  const [statusModalOpen, setStatusModalOpen] = useState(false);
-  const [successData, setSuccessData] = useState<{
-    type: 'clone' | 'delete';
-    newItemId?: string;
-  } | null>(null);
+  const navigate = useNavigate();
 
-  // Bot mutations
-  const statusToggleMutation = useBotStatusToggle(BotTypesEnum.dca);
-  const restartMutation = useBotRestart();
-  const cloneMutation = useBotClone();
-  const deleteMutation = useBotDelete();
-  const archiveMutation = useBotArchive();
-
-  // Real bot actions
-  const handleEdit = useCallback(() => {
-    navigate(`/bot/edit/${bot.id}`);
-  }, [bot.id, navigate]);
-
-  const handleClone = useCallback(() => {
-    navigate(`/bot/new?load=${bot.id}`);
-  }, [bot.id, navigate]);
-
-  const handleStatusToggle = useCallback(() => {
-    setStatusModalOpen(true);
-  }, []);
-
-  const handleConfirmStatusChange = useCallback(
-    (closeType?: string) => {
-      const isActive = isBotActive(bot.status);
-      const newStatus = getTargetStatus(bot.status);
-
-      statusToggleMutation.mutate(
-        {
-          id: bot.id,
-          status: newStatus,
-          closeType: closeType as CloseDCATypeEnum | undefined,
-        },
-        {
-          onSuccess: () => {
-            setStatusModalOpen(false);
-            toast.success(`Bot ${getActionPastTense(bot.status)} successfully`);
-          },
-          onError: (error) => {
-            console.error('Failed to change bot status:', error);
-            toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
-          },
-        }
-      );
-    },
-    [bot.id, bot.status, statusToggleMutation]
-  );
-
-  const handleDelete = useCallback(() => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-    setDeleteModalOpen(true);
-  }, [bot.status]);
-
-  const handleRestart = useCallback(() => {
-    restartMutation.mutate(
-      {
-        id: bot.id,
-        type: BotTypesEnum.dca,
-      },
-      {
-        onSuccess: () => {
-          toast.success('Bot restarted successfully');
-        },
-        onError: () => {
-          toast.error('Failed to restart bot');
-        },
+  // Shared bot-action orchestration (clone opens the pre-filled create page;
+  // status/delete via the confirmation modals rendered by <BotActionsModals>).
+  // "Duplicate to live/paper" stays a per-row override since it stages a fresh
+  // create form from this row's data.
+  const botActions = useBotActions({
+    botId: bot.id,
+    botType: BotTypesEnum.dca,
+    botName: bot.name,
+    status: bot.status,
+    activeDeals: originalBotData?.dealsInBot?.active || 0,
+    totalValue: originalBotData?.usage?.current?.quote || 0,
+    currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
+    lastActivity: originalBotData?.created || 'Unknown',
+    botData: originalBotData ?? bot,
+    onCopyToLive: () => {
+      const base = originalBotData
+        ? {
+            name: `${originalBotData.settings?.name || bot.name} (Live)`,
+            type: bot.type,
+            exchange: originalBotData.exchange,
+            symbol: originalBotData.symbol?.[0]?.value?.symbol ?? bot.symbol,
+            settings: originalBotData.settings,
+          }
+        : {
+            name: `${bot.name} (Live)`,
+            type: bot.type,
+            exchange: bot.exchange,
+            symbol: bot.symbol,
+            settings: undefined,
+          };
+      try {
+        sessionStorage.setItem('botConfig', JSON.stringify(base));
+        navigate('/bot/new');
+      } catch (err) {
+        console.error('Failed to stage config for live trading:', err);
+        toast.error('Failed to stage configuration');
       }
-    );
-  }, [bot.id, restartMutation]);
-
-  const handleConfirmDelete = useCallback(async () => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-
-    try {
-      await deleteMutation.mutateAsync({ id: bot.id, type: BotTypesEnum.dca });
-      setSuccessData({ type: 'delete' });
-      setSuccessModalOpen(true);
-    } catch (error) {
-      console.error('Failed to delete bot:', error);
-    }
-  }, [bot.id, bot.status, deleteMutation]);
-
-  const handleArchive = useCallback(() => {
-    const isArchived = bot.status.toLowerCase() === 'archived';
-    archiveMutation.mutate({
-      id: bot.id,
-      archive: !isArchived,
-      type: BotTypesEnum.dca,
-    });
-  }, [archiveMutation, bot.id, bot.status]);
-
-  const handleViewClosedTrades = useCallback(() => {
-    navigate(`/trades?botId=${bot.id}`);
-  }, [bot.id, navigate]);
-
-  const handleShareConfig = useCallback(async () => {
-    try {
-      const source =
-        originalBotData ?? (bot as unknown as Record<string, unknown>);
-      await navigator.clipboard.writeText(JSON.stringify(source, null, 2));
-      toast.success('Configuration copied to clipboard');
-    } catch (err) {
-      console.error('Failed to copy configuration:', err);
-      toast.error('Failed to copy configuration');
-    }
-  }, [bot, originalBotData]);
-
-  const handleCopyToLive = useCallback(() => {
-    const base = originalBotData
-      ? {
-          name: `${originalBotData.settings?.name || bot.name} (Live)`,
-          type: bot.type,
-          exchange: originalBotData.exchange,
-          symbol: originalBotData.symbol?.[0]?.value?.symbol ?? bot.symbol,
-          settings: originalBotData.settings,
-        }
-      : {
-          name: `${bot.name} (Live)`,
-          type: bot.type,
-          exchange: bot.exchange,
-          symbol: bot.symbol,
-          settings: undefined,
-        };
-    try {
-      sessionStorage.setItem('botConfig', JSON.stringify(base));
-      navigate('/bot/new');
-    } catch (err) {
-      console.error('Failed to stage config for live trading:', err);
-      toast.error('Failed to stage configuration');
-    }
-  }, [bot, navigate, originalBotData]);
+    },
+  });
 
   const botActionsMenuItems = useMemo(
     () => ({
@@ -340,56 +232,9 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
       name: bot.name,
       type: bot.type as BotTypeId,
       status: bot.status as BotStatusType,
+      coldArchived: bot.coldArchived,
     }),
-    [bot.id, bot.name, bot.type, bot.status]
-  );
-
-  const botActionsPending = useMemo(
-    () => ({
-      statusToggle: statusToggleMutation.isPending,
-      restart: restartMutation.isPending,
-      clone: cloneMutation.isPending,
-      delete: deleteMutation.isPending,
-      archive: archiveMutation.isPending,
-    }),
-    [
-      statusToggleMutation.isPending,
-      restartMutation.isPending,
-      cloneMutation.isPending,
-      deleteMutation.isPending,
-      archiveMutation.isPending,
-    ]
-  );
-
-  const hasActiveDeals = useMemo(
-    () => (originalBotData?.dealsInBot?.active || 0) > 0,
-    [originalBotData?.dealsInBot?.active]
-  );
-
-  const deleteAdditionalInfo = useMemo(
-    () => ({
-      activeDeals: originalBotData?.dealsInBot?.active || 0,
-      totalValue: originalBotData?.usage?.current?.quote || 0,
-      currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
-      lastActivity: originalBotData?.created || 'Unknown',
-    }),
-    [
-      originalBotData?.dealsInBot?.active,
-      originalBotData?.usage,
-      originalBotData?.symbol,
-      originalBotData?.created,
-    ]
-  );
-
-  const successDetails = useMemo(
-    () =>
-      successData?.type === 'clone'
-        ? {
-            originalName: bot.name,
-            newName: `${bot.name} (Clone)`,
-          }
-        : undefined,
-    [bot.name, successData?.type]
+    [bot.id, bot.name, bot.type, bot.status, bot.coldArchived]
   );
 
   const handleMenuTriggerClick = useCallback(
@@ -398,8 +243,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     },
     []
   );
-
-  const targetStatus = useMemo(() => getTargetStatus(bot.status), [bot.status]);
 
   return (
     <>
@@ -418,53 +261,12 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
           align="end"
           className="w-56 z-50"
           bot={botActionsMenuItems}
-          pending={botActionsPending}
-          onToggleStatus={handleStatusToggle}
-          onRestart={handleRestart}
-          onEdit={handleEdit}
-          onClone={handleClone}
-          onViewClosedTrades={handleViewClosedTrades}
-          onShareConfig={handleShareConfig}
-          onCopyToLive={handleCopyToLive}
-          onArchive={handleArchive}
-          onDelete={handleDelete}
+          {...botActions.menuProps}
         />
       </DropdownMenu>
 
-      {/* Modals */}
-      <BotStatusConfirmationModal
-        open={statusModalOpen}
-        onOpenChange={setStatusModalOpen}
-        onConfirm={handleConfirmStatusChange}
-        botName={bot.name}
-        currentStatus={bot.status}
-        targetStatus={targetStatus}
-        hasActiveDeals={hasActiveDeals}
-        isLoading={statusToggleMutation.isPending}
-      />
-
-      <DeleteConfirmationModal
-        open={deleteModalOpen}
-        onOpenChange={setDeleteModalOpen}
-        onConfirm={handleConfirmDelete}
-        title="Delete Bot"
-        description="Are you sure you want to delete this bot? This action cannot be undone."
-        itemName={bot.name}
-        itemType="bot"
-        additionalInfo={deleteAdditionalInfo}
-        isLoading={deleteMutation.isPending}
-        requireConfirmation={false}
-      />
-
-      <SuccessFeedbackModal
-        open={successModalOpen}
-        onOpenChange={setSuccessModalOpen}
-        type={successData?.type || 'clone'}
-        itemName={bot.name}
-        itemType="bot"
-        newItemId={successData?.newItemId || undefined}
-        details={successDetails}
-      />
+      {/* Shared status / delete / success modals, driven by useBotActions. */}
+      <BotActionsModals {...botActions.modalProps} />
     </>
   );
 };
@@ -682,16 +484,10 @@ const TradingBots: React.FC = () => {
   // via its share id. When `shareId` is set, the list query is bypassed
   // and the drawer is hydrated from the single shared bot record.
   const { shareId } = useShareContext();
-  const sharedBotResult = useSharedBot({
-    botId: selectedBot ?? '',
-    type: BotTypesEnum.dca,
-    shareId,
-  });
 
   // Bot mutations
   const statusToggleMutation = useBotStatusToggle(BotTypesEnum.dca);
   const restartMutation = useBotRestart();
-  const cloneMutation = useBotClone();
   const deleteMutation = useBotDelete();
   const archiveMutation = useBotArchive();
 
@@ -982,18 +778,8 @@ const TradingBots: React.FC = () => {
   // Skip this entirely in share mode — the visitor's bot list is empty
   // by design (see useDcaBots gating), and we'd otherwise kick a
   // share-link visitor off the URL they were sent.
-  useEffect(() => {
-    if (shareId) return;
-    if (selectedBot && dcaBots.length > 0) {
-      const exists = dcaBots.some((bot) => bot._id === selectedBot);
-      if (!exists) {
-        logger.warn(
-          `[TradingBots] Bot ${selectedBot} not found, navigating back`
-        );
-        navigate('/bot', { replace: true });
-      }
-    }
-  }, [shareId, selectedBot, dcaBots, navigate]);
+  // Redirect only when the bot is genuinely not found (drawerBot.notFound below
+  // accounts for the by-id fallback). See the effect after `drawerBot`.
 
   // Register cache status so stale indicator can show and revalidate as needed
   const dcaCacheKey = useCacheKey('dcaBotList', { input: { all: true } });
@@ -1191,20 +977,24 @@ const TradingBots: React.FC = () => {
     stableDependencies.fees,
     stableDependencies.exchanges,
   ]);
-  const transformedBots = useMemo(() => {
-    const transformed = dcaBots.map((dcaBot: DCABot) => {
+  // Transform each bot with a per-bot memo: a bot keeps its previous output
+  // object when its raw record, its own live-stats slice, and the shared deps
+  // are all referentially unchanged. A live-stats tick bumps the whole
+  // `liveBotStats` object reference, but only the ticking bot's slice actually
+  // changes — so only that bot's card gets a fresh `item` and re-renders,
+  // instead of the entire grid. See useStableBotTransforms.
+  const transformBot = useCallback(
+    (dcaBot: DCABot, slice: CalculatedBotStats | undefined) => {
       try {
         // Use stable references to prevent constant recalculations
-        const result = transformDcaBotToBot(
+        return transformDcaBotToBot(
           dcaBot,
           stableDependencies.fees,
           stableDependencies.prices,
           false,
           stableDependencies.exchanges,
-          liveBotStats[dcaBot._id]
+          slice
         );
-
-        return result;
       } catch (error) {
         logger.error('[TradingBots] Error transforming bot:', {
           botId: dcaBot._id,
@@ -1212,17 +1002,27 @@ const TradingBots: React.FC = () => {
         });
         throw error;
       }
-    });
+    },
+    [stableDependencies]
+  );
 
-    // Sort bots by creation date (newest first) by default
-    const sortedBots = transformed.sort((a, b) => {
+  const stableTransformedBots = useStableBotTransforms(
+    dcaBots,
+    (dcaBot) => dcaBot._id,
+    (id) => liveBotStats[id],
+    stableDependencies,
+    transformBot
+  );
+
+  const transformedBots = useMemo(() => {
+    // Sort bots by creation date (newest first) by default. Copy first so the
+    // per-bot cache's element references stay intact for the card memos.
+    return [...stableTransformedBots].sort((a, b) => {
       const aCreated = a.createdAt ?? new Date(a.created || 0).getTime();
       const bCreated = b.createdAt ?? new Date(b.created || 0).getTime();
       return bCreated - aCreated;
     });
-
-    return sortedBots;
-  }, [dcaBots, stableDependencies, liveBotStats]);
+  }, [stableTransformedBots]);
 
   // Create a lookup map for original bot data to avoid repeated finds
   const botDataMap = useMemo(() => {
@@ -1897,29 +1697,27 @@ const TradingBots: React.FC = () => {
     ]
   );
 
-  const selectedBotData = useMemo(() => {
-    const fromList = transformedBots.find((bot) => bot.id === selectedBot);
-    if (fromList) return fromList;
-    // Share-link path: synthesize a drawer bot from the single bot fetch.
-    if (shareId && sharedBotResult.bot && selectedBot) {
-      try {
-        return transformDcaBotToBot(
-          sharedBotResult.bot as DCABot,
-          [], // no fees needed for read-only render
-          [], // no prices — value will be filled in by widget hooks later
-          false,
-          [],
-          undefined
-        );
-      } catch (e) {
-        logger.warn('[TradingBots] failed to transform shared bot', {
-          error: e,
-        });
-        return undefined;
-      }
+  // Shared drawer-bot resolution: list lookup + by-id fallback (archived/share
+  // bots) + sticky-through-refetch, all in one place for every bot page.
+  const drawerBot = useDrawerBot({
+    selectedBotId: selectedBot,
+    listBots: transformedBots,
+    type: BotTypesEnum.dca,
+    shareId,
+    listLoading: botsLoading,
+    transformRaw: (raw) =>
+      transformDcaBotToBot(raw as DCABot, [], [], false, [], undefined),
+  });
+  const selectedBotData = drawerBot.bot;
+
+  // Redirect to the list only when the bot is genuinely not found (already
+  // accounts for the by-id fallback + share mode).
+  useEffect(() => {
+    if (!shareId && drawerBot.notFound) {
+      logger.warn(`[TradingBots] Bot ${selectedBot} not found, navigating back`);
+      navigate('/bot', { replace: true });
     }
-    return undefined;
-  }, [selectedBot, transformedBots, shareId, sharedBotResult.bot]);
+  }, [shareId, drawerBot.notFound, selectedBot, navigate]);
 
   // viewOnly mirrors main-dash useDCAPage.ts:1031 — true for any share-
   // link visitor, true for a logged-in user looking at someone else's
@@ -1927,26 +1725,10 @@ const TradingBots: React.FC = () => {
   const viewOnly = useMemo(() => {
     if (shareId) return true;
     if (!selectedBotData || !currentUser) return false;
-    const ownerId = (sharedBotResult.bot as { userId?: string } | null)?.userId;
+    const ownerId = (drawerBot.rawBot as { userId?: string } | null)?.userId;
     if (!ownerId) return false;
     return ownerId !== currentUser.id;
-  }, [shareId, selectedBotData, currentUser, sharedBotResult.bot]);
-  const onClone = useCallback(
-    (botId: string) => {
-      if (!selectedBotData) {
-        return;
-      }
-      const originalBot = dcaBots.find((b) => b._id === botId);
-      cloneMutation.mutate({
-        id: botId,
-        name: `${selectedBotData.name} (Clone)`,
-        botData: originalBot,
-        type: BotTypesEnum.dca,
-      });
-    },
-    [selectedBotData, dcaBots, cloneMutation]
-  );
-
+  }, [shareId, selectedBotData, currentUser, drawerBot.rawBot]);
   const onToggleStatus = useCallback(
     (botId: string, status: BotStatus) => {
       const bot = dcaBots.find((b) => b._id === botId);
@@ -2095,7 +1877,7 @@ const TradingBots: React.FC = () => {
       {
         id: 'stop',
         label: 'Stop',
-        icon: Pause,
+        icon: Square,
         onAction: handleBulkStop,
         shouldShow: shouldShowStop,
       },
@@ -2292,7 +2074,7 @@ const TradingBots: React.FC = () => {
             onClose={() => navigate('/bot')}
             viewOnly={true}
             ownerUserId={
-              (sharedBotResult.bot as { userId?: string } | null)?.userId
+              (drawerBot.rawBot as { userId?: string } | null)?.userId
             }
             fullWidth={true}
           >
@@ -2300,7 +2082,7 @@ const TradingBots: React.FC = () => {
           </BotDetailsDrawer>
         ) : (
           <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
-            {sharedBotResult.isLoading
+            {drawerBot.isLoading
               ? 'Loading shared bot…'
               : 'Shared bot is not available.'}
           </div>
@@ -2431,25 +2213,6 @@ const TradingBots: React.FC = () => {
                       {...TRADING_BOTS_TABLE_MOTION}
                     >
                       <TradingBotsCardContext.Provider value={cardContextValue}>
-                        {dcaBots.length === 0 ? (
-                          <div className="h-full w-full flex items-center justify-center">
-                            <EmptyState
-                              size="page"
-                              icon={<Bot className="w-6 h-6" />}
-                              title="No DCA bots yet"
-                              description="DCA bots dollar-cost-average into a position and take profit at your defined targets. Create one to start trading."
-                              action={
-                                readOnly
-                                  ? undefined
-                                  : {
-                                      label: 'Create DCA bot',
-                                      onClick: handleCreateBot,
-                                      icon: <Plus className="w-5 h-5" />,
-                                    }
-                              }
-                            />
-                          </div>
-                        ) : (
                         <DataTable
                           tableId="trading-bots"
                           columns={columns}
@@ -2473,7 +2236,44 @@ const TradingBots: React.FC = () => {
                             TRADING_BOTS_CARD_VIEW_BREAKPOINTS
                           }
                           cardViewGap={16}
-                          emptyMessage="No trading bots found"
+                          emptyContent={
+                            <EmptyState
+                              size="page"
+                              icon={<Bot className="w-6 h-6" />}
+                              title={
+                                showArchived
+                                  ? 'No archived DCA bots'
+                                  : 'No DCA bots yet'
+                              }
+                              description={
+                                showArchived
+                                  ? 'Bots you archive move here. Un-archive one to bring it back to your active list.'
+                                  : 'DCA bots dollar-cost-average into a position and take profit at your defined targets. Create one to start trading.'
+                              }
+                              action={
+                                showArchived
+                                  ? {
+                                      label: 'Back to active bots',
+                                      onClick: toggleArchived,
+                                    }
+                                  : readOnly
+                                    ? undefined
+                                    : {
+                                        label: 'Create DCA bot',
+                                        onClick: handleCreateBot,
+                                        icon: <Plus className="w-5 h-5" />,
+                                      }
+                              }
+                              secondaryAction={
+                                showArchived
+                                  ? undefined
+                                  : {
+                                      label: 'View archived bots',
+                                      onClick: toggleArchived,
+                                    }
+                              }
+                            />
+                          }
                           className="h-full min-h-[400px]"
                           onViewModeChange={setCurrentViewMode}
                           enableQuickFilterBar={true}
@@ -2492,7 +2292,6 @@ const TradingBots: React.FC = () => {
                           }
                           // New button moved to widget header - remove DataTable overflow entry
                         />
-                        )}
 
                         {/* Bulk delete modal */}
                         <DeleteConfirmationModal
@@ -2551,12 +2350,11 @@ const TradingBots: React.FC = () => {
               bot={selectedBotData}
               open={true}
               privacyMode={privacyMode}
-              onClone={onClone}
               onToggleStatus={onToggleStatus}
               onClose={onCloseBot}
               viewOnly={viewOnly}
               ownerUserId={
-                (sharedBotResult.bot as { userId?: string } | null)?.userId
+                (drawerBot.rawBot as { userId?: string } | null)?.userId
               }
             >
               {/* Empty trigger - drawer is controlled by URL parameters */}

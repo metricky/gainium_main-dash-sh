@@ -16,7 +16,11 @@ import type { AggregatedBalanceSnapshot } from '@/utils/bots/dca/base-order-cont
 export { resolveBaseOrderContext } from '@/utils/bots/dca/base-order-context';
 export type { AggregatedBalanceSnapshot } from '@/utils/bots/dca/base-order-context';
 
-import { useBotFormSelector, type BotFormMode } from '@/features/bots';
+import {
+  useBotFormSelector,
+  useBotFormTopLevelSelector,
+  type BotFormMode,
+} from '@/features/bots';
 import { findUSDRate } from '@/lib/utils/unrealizedPnL';
 import {
   MAX_DCA_ORDERS,
@@ -31,7 +35,7 @@ import {
   type Prices,
 } from '@/types';
 import { normalizePairKey } from '@/utils/bots/dca/basic-settings';
-import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
 import { normalizeBalanceAsset } from '@/utils/exchangeUtils';
 
 interface BalanceSnapshot {
@@ -248,6 +252,9 @@ export const useDcaTradingContext = (
   formData: BotFormData,
   options?: UseDcaTradingContextOptions
 ): DcaTradingContext => {
+  // Shared global for regular bots; the leg's isolated instance under an
+  // isolateStores BotFormProvider (hedge leg).
+  const exampleOrdersStore = useExampleOrdersStore();
   const balances = useBalanceStore((state) => state.balances);
   const botSettings = options?.bot?.settings;
   const selectedPairs = React.useMemo(() => {
@@ -382,7 +389,7 @@ export const useDcaTradingContext = (
         locked: `${data.locked}`,
       })),
     });
-  }, [balanceMap, isSkipExampleOrders]);
+  }, [balanceMap, isSkipExampleOrders, exampleOrdersStore]);
 
   const aggregatedBalances = React.useMemo(() => {
     const baseSymbols = new Set<string>();
@@ -501,14 +508,14 @@ export const useDcaTradingContext = (
       return;
     }
     exampleOrdersStore.setContext({ inputLatestPrice: latestPrice });
-  }, [latestPrice, isSkipExampleOrders]);
+  }, [latestPrice, isSkipExampleOrders, exampleOrdersStore]);
 
   useEffect(() => {
     if (isSkipExampleOrders) {
       return;
     }
     exampleOrdersStore.setContext({ usdPrice: usdPrice });
-  }, [usdPrice, isSkipExampleOrders]);
+  }, [usdPrice, isSkipExampleOrders, exampleOrdersStore]);
 
   const startOrderType = useBotFormSelector('startOrderType');
   const futuresFlag = useBotFormSelector('futures');
@@ -593,53 +600,140 @@ export const useDcaTradingContext = (
     return marketPrice;
   }, [shouldUseLimitPrice, primaryLimitPrice, marketPrice]);
 
-  const context: DcaTradingContext = {
+  // Memoize the assembled context so it only changes reference when one of its
+  // constituent (already-memoized) fields actually changes. Returning a fresh
+  // object literal every render made every consumer's downstream memos rebuild
+  // on each live-price tick — e.g. the bot form footer's button-config array,
+  // which re-rendered the memoised ResponsiveButtonRow ~26x/s (RenderLoopTripwire
+  // on /bot/new, /combo/new, /grid/edit, …).
+  const context = useMemo<DcaTradingContext>(() => {
+    const ctx: DcaTradingContext = {
+      selectedPairs,
+      aggregatedBalances,
+      ranges,
+      shouldUseLimitPrice,
+    };
+
+    if (activePair) {
+      ctx.activePair = activePair;
+    }
+    if (baseAsset) {
+      ctx.baseAsset = baseAsset;
+    }
+    if (quoteAsset) {
+      ctx.quoteAsset = quoteAsset;
+    }
+
+    // latestPrice is the effective reference price used across the form
+    if (typeof referencePrice === 'number') {
+      ctx.latestPrice = referencePrice;
+    }
+
+    // Expose raw market price separately for components that need it
+    if (typeof marketPrice === 'number') {
+      ctx.marketPrice = marketPrice;
+    }
+
+    if (typeof primaryLimitPrice === 'number') {
+      ctx.limitPrice = primaryLimitPrice;
+    }
+    if (typeof secondaryLimitPrice === 'number') {
+      ctx.fallbackLimitPrice = secondaryLimitPrice;
+    }
+
+    if (typeof usdPrice === 'number') {
+      ctx.usdPrice = usdPrice;
+    }
+    if (typeof activePair?.quoteAsset?.minAmount === 'number') {
+      ctx.quoteMinAmount = activePair.quoteAsset.minAmount;
+    }
+    if (typeof activePair?.baseAsset?.minAmount === 'number') {
+      ctx.baseMinAmount = activePair.baseAsset.minAmount;
+    }
+    if (activePair?.exchange) {
+      ctx.provider = activePair.exchange;
+    }
+    ctx.fee = fee;
+
+    return ctx;
+  }, [
     selectedPairs,
     aggregatedBalances,
     ranges,
     shouldUseLimitPrice,
-  };
-
-  if (activePair) {
-    context.activePair = activePair;
-  }
-  if (baseAsset) {
-    context.baseAsset = baseAsset;
-  }
-  if (quoteAsset) {
-    context.quoteAsset = quoteAsset;
-  }
-
-  // latestPrice is the effective reference price used across the form
-  if (typeof referencePrice === 'number') {
-    context.latestPrice = referencePrice;
-  }
-
-  // Expose raw market price separately for components that need it
-  if (typeof marketPrice === 'number') {
-    context.marketPrice = marketPrice;
-  }
-
-  if (typeof primaryLimitPrice === 'number') {
-    context.limitPrice = primaryLimitPrice;
-  }
-  if (typeof secondaryLimitPrice === 'number') {
-    context.fallbackLimitPrice = secondaryLimitPrice;
-  }
-
-  if (typeof usdPrice === 'number') {
-    context.usdPrice = usdPrice;
-  }
-  if (typeof activePair?.quoteAsset?.minAmount === 'number') {
-    context.quoteMinAmount = activePair.quoteAsset.minAmount;
-  }
-  if (typeof activePair?.baseAsset?.minAmount === 'number') {
-    context.baseMinAmount = activePair.baseAsset.minAmount;
-  }
-  if (activePair?.exchange) {
-    context.provider = activePair.exchange;
-  }
-  context.fee = fee;
+    activePair,
+    baseAsset,
+    quoteAsset,
+    referencePrice,
+    marketPrice,
+    primaryLimitPrice,
+    secondaryLimitPrice,
+    usdPrice,
+    fee,
+  ]);
 
   return context;
+};
+
+/**
+ * Store-reading variant of `useDcaTradingContext` for bot-form sections. Reads
+ * exactly the fields the context (and `resolveDcaRanges`) consume from the
+ * surrounding `BotFormProvider` via narrow selectors, instead of taking the
+ * whole `formData` as a prop. This lets a section drop its `formData` prop (and
+ * the per-keystroke re-render that came with it) while keeping identical output:
+ * none of these fields change on a numeric keystroke into an unrelated field, so
+ * the derived context stays referentially stable. The nested settings slice is
+ * placed under both `dca` and `combo` because `useBotFormSelector` already
+ * returns the active bot type's value and `resolveDcaRanges` reads whichever the
+ * type selects.
+ */
+export const useBotFormDcaTradingContext = (
+  options?: UseDcaTradingContextOptions
+): DcaTradingContext => {
+  const type = useBotFormTopLevelSelector('type');
+  const pair = useBotFormTopLevelSelector('pair');
+  const pairMetadata = useBotFormTopLevelSelector('pairMetadata');
+  const exchangeUUID = useBotFormTopLevelSelector('exchangeUUID');
+  const userFee = useBotFormTopLevelSelector('userFee');
+  const useMulti = useBotFormSelector('useMulti');
+  const useSmartOrders = useBotFormSelector('useSmartOrders');
+  const maxDealsPerPair = useBotFormSelector('maxDealsPerPair');
+  const maxNumberOfOpenDeals = useBotFormSelector('maxNumberOfOpenDeals');
+  const dcaCondition = useBotFormSelector('dcaCondition');
+  const dcaCustom = useBotFormSelector('dcaCustom');
+  const ordersCount = useBotFormSelector('ordersCount');
+  const rangeSettings = React.useMemo(
+    () => ({
+      useMulti,
+      useSmartOrders,
+      maxDealsPerPair,
+      maxNumberOfOpenDeals,
+      dcaCondition,
+      dcaCustom,
+      ordersCount,
+    }),
+    [
+      useMulti,
+      useSmartOrders,
+      maxDealsPerPair,
+      maxNumberOfOpenDeals,
+      dcaCondition,
+      dcaCustom,
+      ordersCount,
+    ]
+  );
+  const formData = React.useMemo(
+    () =>
+      ({
+        type,
+        pair,
+        pairMetadata,
+        exchangeUUID,
+        userFee,
+        dca: rangeSettings,
+        combo: rangeSettings,
+      }) as unknown as BotFormData,
+    [type, pair, pairMetadata, exchangeUUID, userFee, rangeSettings]
+  );
+  return useDcaTradingContext(formData, options);
 };

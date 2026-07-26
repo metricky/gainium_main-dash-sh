@@ -14,7 +14,9 @@ import {
     MoreHorizontal,
     Plus,
     PlusCircle,
+    RotateCcw,
     Search,
+    SlidersHorizontal,
     Square,
     X,
     XCircle,
@@ -35,6 +37,7 @@ import {
 /* import { useHedgeDeals } from '../../../../hooks/useHedgeDeals'; */
 import {
     AdjustFundsDialog,
+    ChangeDcaLevelsDialog,
     CloseOptionsDialog,
     type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
@@ -58,7 +61,9 @@ import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import {
     useAdjustFunds,
     useDealActions,
+    useEditDeal,
     useMoveDealToTerminal,
+    useRestoreDeal,
 } from '@/hooks/useDealActions';
 import { useOpenDeal } from '@/hooks/useOpenDeal';
 import { useUserFees } from '@/hooks/useUserFeesService';
@@ -105,6 +110,7 @@ import {
 import { Skeleton } from '../../../ui/skeleton';
 import CoinPair from '../../../widgets/shared/CoinPair';
 import { DealOrdersDialog } from '../../../widgets/shared/DealOrdersDialog';
+import { DealsLoadingIndicator } from './DealsLoadingIndicator';
 interface TradeCardWrapperProps {
   item: TransformedTrade;
   index: number;
@@ -228,6 +234,8 @@ const DealActionsMenu: React.FC<{
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
+  const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
 
@@ -436,20 +444,24 @@ const DealActionsMenu: React.FC<{
     [trade.symbol]
   );
 
+  // Move to Terminal is available to DCA and Combo bot deals (parity with
+  // legacy main-dash, which passes `combo: true` for combo deals).
   const canShowMoveToTerminal = useMemo(
     () =>
-      botType === BotTypesEnum.dca &&
-      trade.type === 'DCA' &&
+      (trade.type === 'DCA' || trade.type === 'Combo') &&
       typeof trade.botId === 'string' &&
       trade.botId.length > 0,
-    [botType, trade.botId, trade.type]
+    [trade.botId, trade.type]
+  );
+
+  const isDealOpen = useMemo(
+    () => String(trade.status || '').toLowerCase() === DCADealStatusEnum.open,
+    [trade.status]
   );
 
   const canMoveToTerminal = useMemo(
-    () =>
-      canShowMoveToTerminal &&
-      String(trade.status || '').toLowerCase() === DCADealStatusEnum.open,
-    [canShowMoveToTerminal, trade.status]
+    () => canShowMoveToTerminal && isDealOpen,
+    [canShowMoveToTerminal, isDealOpen]
   );
 
   const handleMoveToTerminalConfirm = useCallback(async () => {
@@ -459,6 +471,90 @@ const DealActionsMenu: React.FC<{
       setMoveDialogOpen(false);
     }
   }, [handleMoveToTerminal, trade]);
+
+  // Restore — only for canceled DCA and Terminal deals (no other bot types,
+  // no other statuses). Re-adopts the deal's position as a bare active
+  // terminal deal (no DCA, TP or SL).
+  const restoreDealMutation = useRestoreDeal();
+  const canShowRestore = useMemo(
+    () =>
+      (trade.type === 'DCA' || trade.type === 'Terminal') &&
+      typeof trade.botId === 'string' &&
+      trade.botId.length > 0 &&
+      ['canceled', 'cancelled'].includes(
+        String(trade.status || '').toLowerCase()
+      ),
+    [trade.botId, trade.type, trade.status]
+  );
+  const handleRestoreConfirm = useCallback(async () => {
+    if (!trade.botId) {
+      toast.error('Cannot restore deal - missing bot ID');
+      return;
+    }
+    try {
+      const response = await restoreDealMutation.mutateAsync({
+        dealId: trade.id,
+        botId: trade.botId,
+      });
+      toast.success(
+        typeof response.data === 'string'
+          ? response.data
+          : 'Deal restored successfully'
+      );
+    } catch (error) {
+      logger.error('[DrawerDealsTable] Failed to restore deal', {
+        error,
+        dealId: trade.id,
+        botId: trade.botId,
+      });
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to restore deal'
+      );
+    } finally {
+      setRestoreDialogOpen(false);
+    }
+  }, [restoreDealMutation, trade.botId, trade.id]);
+
+  // Change DCA levels — DCA and Combo bot deals only (not grid), disabled for
+  // risk-based deals whose levels are managed by the risk engine.
+  const canShowChangeDca = trade.type === 'DCA' || trade.type === 'Combo';
+  const canChangeDca = canShowChangeDca && isDealOpen && !trade.riskBased;
+  const changeDcaCurrentLevel = (trade.levels?.complete || 1) - 1;
+  const changeDcaMaxLevel = (trade.levels?.all || 1) - 1;
+  const changeDcaBotType =
+    trade.type === 'Combo' ? BotTypesEnum.combo : BotTypesEnum.dca;
+
+  const editDealMutation = useEditDeal({
+    onSuccess: () => {
+      toast.success('DCA levels updated');
+      setChangeDcaDialogOpen(false);
+    },
+    onError: (e) => {
+      toast.error(
+        e instanceof Error ? e.message : 'Failed to change DCA levels'
+      );
+    },
+  });
+
+  const handleChangeDcaConfirm = useCallback(
+    (newMax: number) => {
+      if (!trade.botId) {
+        toast.error('Cannot change DCA levels - missing bot ID');
+        return;
+      }
+      editDealMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        type: changeDcaBotType,
+        terminal: false,
+        settings:
+          newMax === 0
+            ? { useDca: false }
+            : { useDca: true, ordersCount: `${newMax}` },
+      });
+    },
+    [editDealMutation, trade.botId, trade.id, changeDcaBotType]
+  );
 
   return (
     <>
@@ -492,20 +588,35 @@ const DealActionsMenu: React.FC<{
           </DropdownMenuItem>
           {botType !== BotTypesEnum.combo && (
             <>
-              <DropdownMenuItem onClick={handleAddFunds}>
+              <DropdownMenuItem
+                onClick={handleAddFunds}
+                disabled={!isDealOpen}
+              >
                 <PlusCircle className="w-4 h-4 mr-2" />
                 Add Funds
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleReduceFunds}>
+              <DropdownMenuItem
+                onClick={handleReduceFunds}
+                disabled={!isDealOpen}
+              >
                 <MinusCircle className="w-4 h-4 mr-2" />
                 Reduce Funds
               </DropdownMenuItem>
             </>
           )}
-          <DropdownMenuItem onClick={handleEdit}>
+          <DropdownMenuItem onClick={handleEdit} disabled={!isDealOpen}>
             <Edit className="w-4 h-4 mr-2" />
             Edit
           </DropdownMenuItem>
+          {canShowChangeDca && (
+            <DropdownMenuItem
+              onClick={() => setChangeDcaDialogOpen(true)}
+              disabled={!canChangeDca}
+            >
+              <SlidersHorizontal className="w-4 h-4 mr-2" />
+              Change DCA levels
+            </DropdownMenuItem>
+          )}
           {canShowMoveToTerminal && (
             <DropdownMenuItem
               onClick={() => setMoveDialogOpen(true)}
@@ -515,13 +626,23 @@ const DealActionsMenu: React.FC<{
               Move to Terminal
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={() => setCancelDialogOpen(true)}>
+          {canShowRestore && (
+            <DropdownMenuItem onClick={() => setRestoreDialogOpen(true)}>
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Restore
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
+            onClick={() => setCancelDialogOpen(true)}
+            disabled={!isDealOpen}
+          >
             <X className="w-4 h-4 mr-2" />
             Cancel
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => setCloseDialogOpen(true)}
             className="text-destructive"
+            disabled={!isDealOpen}
           >
             <XCircle className="w-4 h-4 mr-2" />
             Close
@@ -537,6 +658,15 @@ const DealActionsMenu: React.FC<{
         cancelText="Keep Deal"
         variant="destructive"
         onConfirm={handleCancelConfirm}
+      />
+      <ConfirmationDialog
+        open={restoreDialogOpen}
+        onOpenChange={setRestoreDialogOpen}
+        title="Restore deal"
+        description={`Restore the deal for ${symbolString}? It will be added back as an active deal that holds the current position, with no DCA, take profit or stop loss.`}
+        confirmText="Restore"
+        cancelText="Cancel"
+        onConfirm={handleRestoreConfirm}
       />
       <CloseOptionsDialog
         open={closeDialogOpen}
@@ -554,6 +684,14 @@ const DealActionsMenu: React.FC<{
         confirmText="Confirm"
         cancelText="Cancel"
         onConfirm={handleMoveToTerminalConfirm}
+      />
+      <ChangeDcaLevelsDialog
+        open={changeDcaDialogOpen}
+        onOpenChange={setChangeDcaDialogOpen}
+        currentLevel={changeDcaCurrentLevel}
+        maxLevel={changeDcaMaxLevel}
+        onConfirm={handleChangeDcaConfirm}
+        isProcessing={editDealMutation.isPending}
       />
     </>
   );
@@ -812,8 +950,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   const {
     deals: deals,
     isLoading: dealsLoading,
+    isFetching: dealsFetching,
     isError: dealsError,
     data: _dealsData,
+    total: dealsServerTotal,
+    fetchAllDeals,
   } = useBotSpecificDeals(useDealsInput);
 
   // Handler for confirming deal opening with selected pair (defined after activeDealsData)
@@ -988,23 +1129,54 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
   const { fetchMultipleFees } = useUserFees();
 
+  // Fees must be fetched for EVERY symbol shown in this table, not just the
+  // bot's configured settings.pair. A pair can be removed from settings (or
+  // auto-dropped by the engine) while a deal on it stays open; those deal
+  // symbols still need a fee, otherwise transformDealToTrade forces unrealized
+  // P&L to undefined and the row renders "Price unavailable" even though the
+  // price is present. Mirror the union-of-deal-symbols pattern the Overview /
+  // positions view uses (useDcaDeals). Encoded as a stable string key so the
+  // fetch effect only re-runs when the actual target set changes.
+  const feeTargetsKey = useMemo(() => {
+    const targets = new Set<string>();
+    const botExchange = bot?.exchangeUUID;
+    if (botExchange && bot?.settings?.pair) {
+      for (const symbol of [bot.settings.pair].flat()) {
+        if (symbol) targets.add(`${botExchange} ${symbol}`);
+      }
+    }
+    for (const deal of botDeals) {
+      const dealExchange =
+        (deal as DCADeals | ComboDeal).exchangeUUID || botExchange;
+      const dealSymbol = deal.symbol?.symbol;
+      if (dealExchange && dealSymbol) {
+        targets.add(`${dealExchange} ${dealSymbol}`);
+      }
+    }
+    return Array.from(targets).sort().join('\n');
+  }, [bot?.exchangeUUID, bot?.settings?.pair, botDeals]);
+
   useEffect(() => {
-    if (!bot?.settings.pair) {
+    if (!feeTargetsKey) {
       return;
+    }
+
+    // Rebuild the exchange -> symbols map from the stable key.
+    const exchangeSymbolMap = new Map<string, Set<string>>();
+    for (const entry of feeTargetsKey.split('\n')) {
+      const sep = entry.indexOf(' ');
+      if (sep < 0) continue;
+      const exchange = entry.slice(0, sep);
+      const symbol = entry.slice(sep + 1);
+      if (!exchangeSymbolMap.has(exchange)) {
+        exchangeSymbolMap.set(exchange, new Set());
+      }
+      exchangeSymbolMap.get(exchange)?.add(symbol);
     }
 
     // Use the service to fetch fees with automatic caching
     fetchMultipleFees({
-      exchangeSymbolMap: [bot.settings.pair].flat().reduce(
-        (acc, symbol) => {
-          if (!acc.has(bot.exchangeUUID)) {
-            acc.set(bot.exchangeUUID, new Set());
-          }
-          acc.get(bot.exchangeUUID)?.add(symbol);
-          return acc;
-        },
-        new Map() as Map<string, Set<string>>
-      ),
+      exchangeSymbolMap,
       options: {
         debug: import.meta.env.DEV,
       },
@@ -1024,12 +1196,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           }))
         );
       });
-  }, [
-    bot?.settings.pair,
-    bot?.exchangeUUID,
-    tokens?.accessToken,
-    fetchMultipleFees,
-  ]);
+  }, [feeTargetsKey, tokens?.accessToken, fetchMultipleFees]);
   const lastPriceUpdateRef = useRef(0);
   const PRICE_UPDATE_THROTTLE_MS = 10000; // Increased to 10 seconds for better stability
 
@@ -1173,6 +1340,59 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     transformDealToTradeWrapper,
     comboClosedStatuses,
     comboActiveStatuses,
+  ]);
+
+  // Server-complete export: fetch EVERY page of the current tab's deals.
+  // The table's own data is capped by useBotSpecificDeals' display
+  // auto-loader (maxPages), so exporting the loaded rows silently truncates
+  // large bots (forum: beta thread post #129 — 9 of 311 exported). Status
+  // filter + sort mirror the activeDealsRaw / closedDeals memos above.
+  const getExportData = useCallback(async (): Promise<
+    TransformedTrade[] | null
+  > => {
+    try {
+      toast.info('Preparing export — fetching all deals…');
+      const raw = await fetchAllDeals();
+      const wanted = raw.filter((deal: DCADeals | ComboDeal) => {
+        const status = String(deal.status).toLowerCase();
+        if (selectedTab === 'active') {
+          return isComboLike
+            ? comboActiveStatuses.has(status)
+            : status === DCADealStatusEnum.open ||
+                status === DCADealStatusEnum.start ||
+                status === DCADealStatusEnum.error;
+        }
+        const dcaClosed =
+          status === DCADealStatusEnum.closed ||
+          status === DCADealStatusEnum.canceled;
+        return isComboLike
+          ? comboClosedStatuses.has(status) || !comboActiveStatuses.has(status)
+          : dcaClosed;
+      });
+      const getCreateTime = (d: DCADeals | ComboDeal): number =>
+        typeof (d as ComboDeal).createTime === 'string'
+          ? new Date((d as ComboDeal).createTime).getTime()
+          : (d as unknown as { createTime: number }).createTime;
+      wanted.sort((a, b) => getCreateTime(b) - getCreateTime(a));
+      return wanted.map(transformDealToTradeWrapper);
+    } catch (error) {
+      logger.error(`${LOG_PREFIX}: Failed to fetch all deals for export`, {
+        botId,
+        error,
+      });
+      toast.error(
+        'Could not fetch all deals — the export will only include the loaded ones'
+      );
+      return null; // DataTable falls back to the loaded rows
+    }
+  }, [
+    fetchAllDeals,
+    selectedTab,
+    isComboLike,
+    comboActiveStatuses,
+    comboClosedStatuses,
+    transformDealToTradeWrapper,
+    botId,
   ]);
 
   useEffect(() => {
@@ -1345,23 +1565,19 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     TransformedTrade[]
   >([]);
 
-  const canMoveTradeToTerminal = useCallback(
-    (trade: TransformedTrade) => {
-      return (
-        bot?.type === BotTypesEnum.dca &&
-        trade.type === 'DCA' &&
-        typeof trade.botId === 'string' &&
-        trade.botId.length > 0 &&
-        String(trade.status || '').toLowerCase() === DCADealStatusEnum.open
-      );
-    },
-    [bot?.type]
-  );
+  const canMoveTradeToTerminal = useCallback((trade: TransformedTrade) => {
+    return (
+      (trade.type === 'DCA' || trade.type === 'Combo') &&
+      typeof trade.botId === 'string' &&
+      trade.botId.length > 0 &&
+      String(trade.status || '').toLowerCase() === DCADealStatusEnum.open
+    );
+  }, []);
 
   const handleMoveToTerminal = useCallback(
     async (trade: TransformedTrade) => {
       if (!canMoveTradeToTerminal(trade) || !trade.botId) {
-        toast.error('Only open DCA bot deals can be moved to terminal');
+        toast.error('Only open DCA or Combo bot deals can be moved to terminal');
         return;
       }
 
@@ -1369,7 +1585,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         const response = await moveDealToTerminalMutation.mutateAsync({
           dealId: trade.id,
           botId: trade.botId,
-          combo: false,
+          combo: trade.type === 'Combo',
         });
 
         toast.success(
@@ -1394,7 +1610,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
     if (movableDeals.length === 0) {
       setMoveBulkDialogOpen([]);
-      toast.info('Only open DCA bot deals can be moved to terminal');
+      toast.info('Only open DCA or Combo bot deals can be moved to terminal');
       return;
     }
 
@@ -1406,7 +1622,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         await moveDealToTerminalMutation.mutateAsync({
           dealId: deal.id,
           botId: deal.botId as string,
-          combo: false,
+          combo: deal.type === 'Combo',
         });
         successCount += 1;
       } catch (error) {
@@ -2837,18 +3053,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     () => (showTable ? 'cards' : 'table'),
     [showTable]
   );
-  // Loading state
-  if (isLoading) {
-    return (
-      <div className="w-full h-full flex items-center justify-center">
-        <div className="text-center text-muted-foreground py-8">
-          Loading deals...
-        </div>
-      </div>
-    );
-  }
-
-  // Error state
+  // Error state — checked before loading so a failed fetch shows the error
+  // rather than an indefinite spinner.
   if (isError) {
     return (
       <div className="w-full h-full flex items-center justify-center">
@@ -2860,6 +3066,15 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         </div>
       </div>
     );
+  }
+
+  // Loading state. Show the spinner on the initial load AND whenever a fetch is
+  // still in flight for the current tab that has no rows yet — otherwise a bot
+  // whose deals are still streaming in (e.g. multi-page auto-load) briefly
+  // renders the empty "No deals" state instead of a loading indicator. Applies
+  // to both the Open and Closed tabs, all bot types.
+  if (isLoading || (dealsFetching && dealsData.length === 0)) {
+    return <DealsLoadingIndicator />;
   }
 
   return (
@@ -2888,6 +3103,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
             getRowId={getRowId}
             firstToolbarActions={firstToolbarAction}
             firstToolbarActionsCompact={firstToolbarActionCompact}
+            getExportData={getExportData}
+            serverTotalRows={dealsServerTotal}
+            exportFilename={`${selectedTab === 'active' ? 'open' : 'closed'}-deals`}
           />
         ) : (
           <div className="flex flex-col">

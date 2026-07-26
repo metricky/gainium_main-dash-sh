@@ -15,8 +15,11 @@ export function useWidgetSettings<T = Record<string, unknown>>(
   widgetId: string,
   storeKey?: string
 ) {
-  const { setWidgetSetting, getWidgetSetting, resetWidgetSettings } =
-    useWidgetSettingsStore();
+  const setWidgetSetting = useWidgetSettingsStore((s) => s.setWidgetSetting);
+  const getWidgetSetting = useWidgetSettingsStore((s) => s.getWidgetSetting);
+  const resetWidgetSettings = useWidgetSettingsStore(
+    (s) => s.resetWidgetSettings
+  );
 
   // Create the namespaced widget ID if storeKey is provided
   const namespacedWidgetId = useMemo(() => {
@@ -83,18 +86,47 @@ export function useWidgetSettings<T = Record<string, unknown>>(
   /**
    * Create a stateful setting that automatically persists changes
    * Returns [value, setValue] similar to useState
+   *
+   * `setValue` is memoized (per `key`) so it stays referentially stable
+   * across renders — passing it to memoized children no longer forces a
+   * re-render every time the consumer re-renders. `setSetting` is already
+   * stable, so the setter only changes when `key` changes.
+   *
+   * Defined as a nested custom hook: every consumer calls it
+   * unconditionally at the top level, so the internal `useCallback`
+   * registers a consistent hook slot each render (rules-of-hooks safe).
    */
-  const usePersistedState = useCallback(
-    <K extends keyof T>(
-      key: K,
-      defaultValue: T[K]
-    ): [T[K], (value: T[K]) => void] => {
-      const value = getSetting(key, defaultValue);
-      const setValue = (newValue: T[K]) => setSetting(key, newValue);
-      return [value, setValue];
-    },
-    [getSetting, setSetting]
-  );
+  function usePersistedState<K extends keyof T>(
+    key: K,
+    defaultValue: T[K]
+  ): [T[K], (value: T[K]) => void] {
+    // Subscribe to THIS setting's stored value so the owning widget
+    // re-renders the moment its own setting changes. Reading through the
+    // non-reactive `getSetting` getter (as this hook did after v2.32.17
+    // switched the store access to method selectors) severed that link:
+    // clicking a timeframe chip wrote the store but re-rendered nothing —
+    // the React.memo'd widget only repainted seconds later when an
+    // unrelated tick (socket update, minute clock) happened to flush a
+    // render, which users saw as the chip/chart freezing. The selector
+    // returns only the raw stored value (`undefined` when unset — a stable
+    // primitive), so inline array/object `defaultValue` args can't churn
+    // the subscription.
+    const stored = useWidgetSettingsStore(
+      (s) => s.settings[namespacedWidgetId]?.[key as string]
+    );
+    const value = (stored ?? defaultValue) as T[K];
+    const setValue = useCallback(
+      (newValue: T[K]) => setSetting(key, newValue),
+      // `setSetting` is itself a useCallback keyed on `namespacedWidgetId`, so
+      // it is NOT stable — it changes when the widgetId/storeKey props change.
+      // It must be a dep, otherwise `setValue` would keep writing to the old
+      // namespace after a prop change. (eslint's analyzer treats the enclosing
+      // hook's scope as non-reactive for this nested hook — it is reactive.)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [key, setSetting]
+    );
+    return [value, setValue];
+  }
 
   return {
     getSetting,
@@ -174,3 +206,4 @@ export interface BotStatsWidgetSettings {
 // const { usePersistedState } = useWidgetSettings<TableWidgetSettings>(widgetId);
 // const [sortBy, setSortBy] = usePersistedState('sortBy', 'name');
 // const [sortOrder, setSortOrder] = usePersistedState('sortOrder', 'asc');
+

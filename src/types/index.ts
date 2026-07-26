@@ -1332,6 +1332,11 @@ export interface MainBot<T = BaseSettings> {
   userId: string;
   status: BotStatus;
   statusReason?: string;
+  /** Cold-store flag: true once the bot's history moved to ClickHouse (design
+   *  phase 3). Informational only — archiving is reversible (un-archive
+   *  rehydrates). Only fetched when the cold-store UX is live (see
+   *  COLD_ARCHIVED_SELECTION in the bot fragments). */
+  coldArchived?: boolean;
   showErrorWarning?: 'error' | 'warning' | 'none';
   exchange: ExchangeEnum;
   exchangeUUID: string;
@@ -4946,6 +4951,10 @@ export interface CoinListItem {
   color: string;
   baseAsset?: string;
   quoteAsset?: string;
+  // Human-readable name of the BASE asset (e.g. "Apple Inc.", "Bitcoin"),
+  // resolved backend-side. Optional: absent until resolved; the UI falls back
+  // to the ticker (`baseAsset`). Shown alongside the ticker in the pair picker.
+  baseDisplayName?: string;
   subtitle?: string;
   isHelper?: boolean;
   // The base pair's exchange (ExchangeEnum value). Forwarded to CoinIcon so it

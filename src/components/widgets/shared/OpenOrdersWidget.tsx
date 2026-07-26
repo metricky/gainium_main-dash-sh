@@ -5,6 +5,7 @@
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
 import {
     AdjustFundsDialog,
+    ChangeDcaLevelsDialog,
     CloseOptionsDialog,
     type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
@@ -13,11 +14,17 @@ import getLatestPrices from '@/helper/price';
 import {
     useAdjustFunds,
     useDealActions,
+    useEditDeal,
     useMoveDealToTerminal,
+    useRestoreDeal,
 } from '@/hooks/useDealActions';
 import { fetchDealOrders } from '@/hooks/useDealOrders';
 import { useSetDealNote } from '@/hooks/useSetDealNote';
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
+import {
+  computeCompoundBreakdown,
+  type CompoundBreakdownEntry,
+} from '@/lib/utils/compoundBreakdown';
 /* import { useGraphQL } from '@/hooks/useGraphQL';
 import { GraphQlQuery } from '@/lib/api'; */
 import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
@@ -63,6 +70,8 @@ import {
     MoreHorizontal,
     PlusCircle,
     Receipt,
+    RotateCcw,
+    SlidersHorizontal,
     X,
     XCircle,
 } from 'lucide-react';
@@ -74,7 +83,7 @@ import React, {
     useState,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useLiveUpdate } from '../../../contexts/LiveUpdateContext';
+import { useOrderStore } from '@/stores/live';
 import { useChartColors } from '../../../hooks/useChartColors';
 import logger from '../../../lib/loggerInstance';
 import { TradeCard } from '../../trades/TradeCard';
@@ -201,6 +210,8 @@ export interface OpenTrade {
   dealId?: string;
   active: boolean;
   type: 'DCA' | 'Combo' | 'Hedge DCA' | 'Hedge Combo' | 'Grid' | 'Terminal';
+  /** True for terminal deals — they have no bot page, so bot links are hidden */
+  terminal?: boolean;
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
@@ -243,6 +254,9 @@ export interface OpenTrade {
     complete: number;
     all: number;
   };
+  /** Risk-based DCA deal (`settings.useRiskReward`) — disables manual
+   * "Change DCA levels". */
+  riskBased?: boolean;
   created?: number;
   notes: string;
   pair: string;
@@ -293,6 +307,7 @@ export interface OpenTrade {
   updateTime?: string;
   closeTime?: string;
   trailingMode?: string;
+  compoundBreakdown?: CompoundBreakdownEntry[];
 }
 
 // Trade actions component
@@ -383,18 +398,65 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [moveToBotDialogOpen, setMoveToBotDialogOpen] = useState(false);
+  const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
   const moveDealToTerminalMutation = useMoveDealToTerminal();
+  const restoreDealMutation = useRestoreDeal();
 
+  // Move to Terminal is available to DCA, Combo and Grid bot deals (parity
+  // with legacy main-dash; only combo deals pass `combo: true`).
   const canShowMoveToTerminal =
-    trade.type === 'DCA' &&
+    (trade.type === 'DCA' ||
+      trade.type === 'Combo' ||
+      trade.type === 'Grid') &&
     typeof trade.botId === 'string' &&
     trade.botId.length > 0;
 
-  const canMoveToTerminal =
-    canShowMoveToTerminal &&
+  const isDealOpen =
     String(trade.status || '').toLowerCase() === DCADealStatusEnum.open;
+
+  const canMoveToTerminal = canShowMoveToTerminal && isDealOpen;
+
+  // Change DCA levels — DCA and Combo bot deals only (not grid), disabled for
+  // risk-based deals whose levels are managed by the risk engine.
+  const canShowChangeDca = trade.type === 'DCA' || trade.type === 'Combo';
+  const canChangeDca = canShowChangeDca && isDealOpen && !trade.riskBased;
+  const changeDcaCurrentLevel = (trade.levels?.complete || 1) - 1;
+  const changeDcaMaxLevel = (trade.levels?.all || 1) - 1;
+  const changeDcaBotType =
+    trade.type === 'Combo' ? BotTypesEnum.combo : BotTypesEnum.dca;
+  const editDealMutation = useEditDeal({
+    onSuccess: () => {
+      toast.success('DCA levels updated');
+      setChangeDcaDialogOpen(false);
+    },
+    onError: (e) => {
+      toast.error(
+        e instanceof Error ? e.message : 'Failed to change DCA levels'
+      );
+    },
+  });
+  const handleChangeDcaConfirm = useCallback(
+    (newMax: number) => {
+      if (!trade.botId) {
+        toast.error('Cannot change DCA levels - missing bot ID');
+        return;
+      }
+      editDealMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        type: changeDcaBotType,
+        terminal: false,
+        settings:
+          newMax === 0
+            ? { useDca: false }
+            : { useDca: true, ordersCount: `${newMax}` },
+      });
+    },
+    [editDealMutation, trade.botId, trade.id, changeDcaBotType]
+  );
 
   // Inverse of "Move to Terminal": only open terminal deals can go back to a bot.
   const canShowMoveToBot =
@@ -599,7 +661,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
 
   const handleMoveToTerminalConfirm = useCallback(async () => {
     if (!canShowMoveToTerminal || !trade.botId) {
-      toast.error('Only DCA bot deals can be moved to terminal');
+      toast.error('Only DCA, Combo or Grid bot deals can be moved to terminal');
       return;
     }
 
@@ -607,7 +669,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
       const response = await moveDealToTerminalMutation.mutateAsync({
         dealId: trade.id,
         botId: trade.botId,
-        combo: false,
+        combo: trade.type === 'Combo',
       });
 
       toast.success(
@@ -630,7 +692,45 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
     moveDealToTerminalMutation,
     trade.botId,
     trade.id,
+    trade.type,
   ]);
+
+  // Restore — only for canceled DCA and Terminal deals (no other bot types,
+  // no other statuses). Re-adopts the deal's position as a bare active
+  // terminal deal (no DCA, TP or SL).
+  const canShowRestore =
+    (trade.type === 'DCA' || trade.type === 'Terminal') &&
+    typeof trade.botId === 'string' &&
+    trade.botId.length > 0 &&
+    isCanceledDealStatus(trade.status);
+  const handleRestoreConfirm = useCallback(async () => {
+    if (!trade.botId) {
+      toast.error('Cannot restore deal - missing bot ID');
+      return;
+    }
+    try {
+      const response = await restoreDealMutation.mutateAsync({
+        dealId: trade.id,
+        botId: trade.botId,
+      });
+      toast.success(
+        typeof response.data === 'string'
+          ? response.data
+          : 'Deal restored successfully'
+      );
+    } catch (error) {
+      logger.error(`${LOG_PREFIX}: Failed to restore deal`, {
+        error,
+        dealId: trade.id,
+        botId: trade.botId,
+      });
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to restore deal'
+      );
+    } finally {
+      setRestoreDialogOpen(false);
+    }
+  }, [restoreDealMutation, trade.botId, trade.id]);
 
   const handleAdjustFundsConfirm = useCallback(
     (settings: AddFundsSettings) => {
@@ -674,18 +774,27 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
             <BookOpen className="w-4 h-4 mr-2" />
             Add to Journal
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleAddFunds}>
+          <DropdownMenuItem onClick={handleAddFunds} disabled={!isDealOpen}>
             <PlusCircle className="w-4 h-4 mr-2" />
             Add Funds
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleReduceFunds}>
+          <DropdownMenuItem onClick={handleReduceFunds} disabled={!isDealOpen}>
             <MinusCircle className="w-4 h-4 mr-2" />
             Reduce Funds
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleEdit}>
+          <DropdownMenuItem onClick={handleEdit} disabled={!isDealOpen}>
             <Edit className="w-4 h-4 mr-2" />
             Edit
           </DropdownMenuItem>
+          {canShowChangeDca && (
+            <DropdownMenuItem
+              onClick={() => setChangeDcaDialogOpen(true)}
+              disabled={!canChangeDca}
+            >
+              <SlidersHorizontal className="w-4 h-4 mr-2" />
+              Change DCA levels
+            </DropdownMenuItem>
+          )}
           {canShowMoveToTerminal && (
             <DropdownMenuItem
               onClick={() => setMoveDialogOpen(true)}
@@ -701,13 +810,20 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
               Move to Bot
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={handleCancelClick}>
+          {canShowRestore && (
+            <DropdownMenuItem onClick={() => setRestoreDialogOpen(true)}>
+              <RotateCcw className="w-4 h-4 mr-2" />
+              Restore
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem onClick={handleCancelClick} disabled={!isDealOpen}>
             <X className="w-4 h-4 mr-2" />
             Cancel
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={handleCloseClick}
             className="text-destructive"
+            disabled={!isDealOpen}
           >
             <XCircle className="w-4 h-4 mr-2" />
             Close
@@ -722,6 +838,15 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
           cancelText="Keep Trade"
           variant="destructive"
           onConfirm={handleCancelConfirm}
+        />
+        <ConfirmationDialog
+          open={restoreDialogOpen}
+          onOpenChange={setRestoreDialogOpen}
+          title="Restore deal"
+          description={`Restore the deal for ${trade.symbol}? It will be added back as an active deal that holds the current position, with no DCA, take profit or stop loss.`}
+          confirmText="Restore"
+          cancelText="Cancel"
+          onConfirm={handleRestoreConfirm}
         />
         <CloseOptionsDialog
           open={closeDialogOpen}
@@ -739,6 +864,14 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
           confirmText="Confirm"
           cancelText="Cancel"
           onConfirm={handleMoveToTerminalConfirm}
+        />
+        <ChangeDcaLevelsDialog
+          open={changeDcaDialogOpen}
+          onOpenChange={setChangeDcaDialogOpen}
+          currentLevel={changeDcaCurrentLevel}
+          maxLevel={changeDcaMaxLevel}
+          onConfirm={handleChangeDcaConfirm}
+          isProcessing={editDealMutation.isPending}
         />
         <MoveDealToBotDialog
           open={moveToBotDialogOpen}
@@ -819,6 +952,17 @@ export interface OpenTradesWidgetProps {
    *  fallback just because the widget's internal `useDcaDeals({terminal:true})`
    *  doesn't contain those deals. */
   rawDeals?: DCADeals[];
+  /** When the widget is driven by external `data.trades` (e.g. the hedge bot
+   *  drawer feeding combined-leg deals), the internal GraphQL loading flag is
+   *  bypassed and `isLoading` would be permanently false — so a parent that
+   *  fetches those trades itself must pass its own loading state here to get
+   *  the skeleton while the fetch is in flight. Ignored unless external
+   *  `data.trades` is supplied. */
+  externalLoading?: boolean;
+  /** Optional node rendered in place of the default skeleton while loading.
+   *  The bot drawer passes the shared `DealsLoadingIndicator` so hedge bots
+   *  show the same "Loading deals…" treatment as the single-bot deals table. */
+  loadingIndicator?: React.ReactNode;
 }
 
 // Stable module-level defaults. Using inline `= []` / `= {}` defaults in the
@@ -855,6 +999,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   onStatusFilterChange,
   bulkActions,
   rawDeals,
+  externalLoading,
+  loadingIndicator,
 }) => {
   const navigate = useNavigate();
   const colors = useChartColors();
@@ -920,13 +1066,25 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     exchange: string;
   } | null>(null);
 
-  // Get live order data from the live update context
-  const { orderSelectors } = useLiveUpdate();
+  // Subscribe to the raw orders slice so socket-driven order writes re-render
+  // this widget. The memoized LiveUpdateContext no longer re-renders on store
+  // writes, so a render-time getAllOrders() getter would stay frozen. Selecting
+  // `orders` (whose identity changes only on order writes, not on loading/error
+  // writes) and deriving via the store's getAllOrders keeps liveOrdersData
+  // referentially stable across unrelated renders.
+  const ordersState = useOrderStore((s) => s.orders);
+  const getAllOrders = useOrderStore((s) => s.getAllOrders);
   // Memoize liveOrders so that transformDCADealToOpenTrade (which lists liveOrders
   // as a dependency) is not recreated on every render. Without this, any parent
   // re-render (e.g. from latestPrices updates) would cascade through baseTrades →
   // trades → DataTable → all cards re-render unnecessarily.
-  const liveOrdersData = orderSelectors.getAllOrders();
+  const liveOrdersData = useMemo(
+    () => getAllOrders(),
+    // `ordersState` is the reactive trigger: getAllOrders() reads the store
+    // imperatively, so the memo must recompute when the orders slice changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ordersState, getAllOrders]
+  );
   const liveOrders = useMemo(
     () =>
       Object.values(liveOrdersData)
@@ -1099,6 +1257,17 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         return;
       }
 
+      // Terminal deals stay in the terminal — never send the user to a bot
+      // page for them (the route would resolve to a broken DCA view).
+      if (
+        trade.terminal ||
+        mapOpenTradeTypeToBotType(trade.type, botTypeOverride) ===
+          BotTypesEnum.terminal
+      ) {
+        toast.error('Terminal deals have no bot page');
+        return;
+      }
+
       const botTypeForRoute = mapOpenTradeTypeToBotType(
         trade.type,
         botTypeOverride
@@ -1150,7 +1319,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     error: graphqlError,
   } = useGraphQL<GetDCADealsData>(graphQueryKey, graphQuery); */
 
-  const isLoading = useExternalData ? false : graphqlLoading;
+  // In external-data mode the internal GraphQL fetch is bypassed, so honor the
+  // parent's own loading flag (e.g. hedge drawer's paginated hedge-deal fetch)
+  // — otherwise the widget would show its empty state while deals are still
+  // streaming in.
+  const isLoading = useExternalData ? (externalLoading ?? false) : graphqlLoading;
   const error = useExternalData ? null : graphqlError;
 
   // Log GraphQL errors for debugging
@@ -1275,6 +1448,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         initialBalances: deal.initialBalances,
         futures: isFutures,
         coinm: isCoinm,
+        leverage: deal.settings?.leverage,
+        marginType: deal.settings?.marginType,
       };
 
       const cost = calculateDealCost(metricsInput);
@@ -1354,6 +1529,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         id: deal._id,
         botId: deal.botId, // Add explicit botId
         type: botTypeOverride || getBotType(deal.strategy),
+        // This transform only runs on the widget's internal fetch, which is
+        // always `terminal: true` — so every deal here is a terminal deal.
+        terminal: true,
         symbol,
         strategy: deal.strategy,
         status: deal.status,
@@ -1379,6 +1557,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         unrealizedProfit: unrealizedPnl,
         avgPrice: executionSummary?.averageEntryPrice ?? entryPrice,
         levels: deal.levels,
+        riskBased: deal.settings?.useRiskReward,
         created: +createdTime,
         notes: deal.note || '',
         pair,
@@ -1435,6 +1614,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           ? new Date(deal.closeTime).toISOString()
           : undefined,
         trailingMode: deal.trailingMode,
+        compoundBreakdown: computeCompoundBreakdown(deal.sizes),
       };
     },
     [botTypeOverride, getMarketPrice, liveOrders]
@@ -1662,7 +1842,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
 
   const canMoveTradeToTerminal = useCallback((trade: OpenTrade): boolean => {
     return (
-      trade.type === 'DCA' &&
+      (trade.type === 'DCA' ||
+        trade.type === 'Combo' ||
+        trade.type === 'Grid') &&
       typeof trade.botId === 'string' &&
       trade.botId.length > 0 &&
       String(trade.status || '').toLowerCase() === DCADealStatusEnum.open
@@ -2023,7 +2205,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
               >
                 {botName}
               </div>
-              {botId && (
+              {/* Terminal deals stay in the terminal — no bot page to open */}
+              {botId && !row.original.terminal && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -2964,6 +3147,12 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const closeDealMutation = useDealActions();
 
   if (isLoading) {
+    // A parent (e.g. the bot drawer) can supply a shared indicator so every
+    // bot type's deals loading looks identical; otherwise fall back to the
+    // skeleton used on the Trading page / terminal.
+    if (loadingIndicator) {
+      return <>{loadingIndicator}</>;
+    }
     return (
       <div className="flex flex-col gap-sm p-md" aria-busy="true">
         <div className="flex items-center justify-between">
@@ -3101,7 +3290,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
 
     if (movableTrades.length === 0) {
       setMoveBulkDialogOpen([]);
-      toast.info('Only open DCA bot deals can be moved to terminal');
+      toast.info('Only open DCA, Combo or Grid bot deals can be moved to terminal');
       return;
     }
 
@@ -3113,7 +3302,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         await moveDealToTerminalMutation.mutateAsync({
           dealId: trade.id,
           botId: trade.botId as string,
-          combo: false,
+          combo: trade.type === 'Combo',
         });
         successCount += 1;
       } catch (error) {

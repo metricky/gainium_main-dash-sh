@@ -12,7 +12,7 @@
  */
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Bot, Plus } from 'lucide-react';
+import { Archive, Bot, Plus } from 'lucide-react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
 
@@ -32,8 +32,10 @@ import {
   StatusChip,
 } from '@/components/ui/chip';
 import { DataTable } from '@/components/ui/data-table/data-table';
+import { DualArcProgressGauge } from '@/components/ui/DualArcProgressGauge';
 import EmptyState from '@/components/ui/empty-state';
 import { HedgeBotActionsCell } from './HedgeBotActionsCell';
+import { Button } from '@/components/ui/button';
 import { MotionButton } from '@/components/ui/MotionWrapper';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Widget from '@/components/ui/widget';
@@ -59,8 +61,10 @@ import {
 } from '@/types';
 import { transformDcaBotToBot } from '@/types/dcaBot';
 import { useShareContext } from '@/hooks/useShareContext';
-import { useSharedBot } from '@/hooks/useSharedBot';
+import { useDrawerBot } from '@/hooks/useDrawerBot';
+import { useBotModeGuard } from '@/hooks/bots/base/useBotModeGuard';
 import { useAuthStore } from '@/stores/authStore';
+import { useIsReadOnly } from '@/lib/demoMode';
 
 const HEDGE_BOTS_WIDGET_MOTION = {
   initial: { opacity: 0, y: 20 },
@@ -126,11 +130,17 @@ const HedgeDcaBotCardWrapper = ({
 }: {
   item: EnrichedHedgeBot;
   index: number;
-}) => (
+}) => {
+  // Subscribe to privacyMode directly rather than closing over the page's
+  // value — the wrapper's module-level identity stays stable (so cards don't
+  // remount on price ticks) while still reacting when privacy is toggled.
+  const privacyMode = useUIStore((s) => s.privacyMode);
+  return (
   <HedgeBotCard
     item={item}
     index={index}
     botType={BotTypesEnum.hedgeDca}
+    privacyMode={privacyMode}
     unPnl={item.__unPnl}
     unPnlPerc={item.__unPnlPerc}
     totalProfitUsd={item.__totalProfitUsd}
@@ -145,7 +155,8 @@ const HedgeDcaBotCardWrapper = ({
     {...(item.__legUnPnl ? { legUnPnl: item.__legUnPnl } : {})}
     {...(item.__legUnPnlPerc ? { legUnPnlPerc: item.__legUnPnlPerc } : {})}
   />
-);
+  );
+};
 
 const HedgeDcaBots = () => {
   // Hedge bots are a premium-only feature.
@@ -158,9 +169,32 @@ const HedgeDcaBots = () => {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
   const selectedBotId = params.id ?? null;
-  const { bots, isLoading } = useHedgeDcaBots();
+
+  // When opening a specific hedge bot via /hedge/bot/view/:id, keep the bot's
+  // real paper/live mode authoritative over the global toggle so a refresh
+  // doesn't flip to the wrong mode and make the bot vanish (community thread
+  // 4893, the hedge instance of 4872).
+  useBotModeGuard(selectedBotId ?? undefined, BotTypesEnum.hedgeDca, {
+    enabled: !!selectedBotId,
+  });
+
+  // Archived view: the "Show Archived" toggle swaps the list query between the
+  // active statuses (default) and `['archive']`. The archived query is isolated
+  // from the shared Zustand store inside useHedgeDcaBots (isArchivedQuery), so
+  // an active refetch can't flip this background list back to active bots.
+  const [showArchived, setShowArchived] = useState(false);
+  const hedgeBotsFilter = useMemo(
+    () => ({ status: showArchived ? (['archive'] as const) : [] }),
+    [showArchived]
+  );
+  const { bots, isLoading } = useHedgeDcaBots(
+    hedgeBotsFilter as Parameters<typeof useHedgeDcaBots>[0]
+  );
   const unPnlMap = useHedgeUnPnlMap(bots, false);
   const privacyMode = useUIStore((s) => s.privacyMode);
+  // Demo/read-only sessions can't create bots — gate the "New" button the
+  // same way the regular bot lists do.
+  const readOnly = useIsReadOnly();
 
   /** Unified KPI stats for the bot-list header. Sums per-leg fields up to
    * the hedge wrapper because the backend leaves `profit/dealsInBot`
@@ -260,21 +294,20 @@ const HedgeDcaBots = () => {
 
   const currentUser = useAuthStore((s) => s.user);
   const { shareId } = useShareContext();
-  const sharedBotResult = useSharedBot({
-    botId: selectedBotId ?? '',
+
+  // Shared drawer-bot resolution: list lookup + by-id fallback (archived/share
+  // bots) + sticky-through-refetch. Resolves the raw hedge wrapper; the drawer
+  // context (legs/longBot/shortBot) is derived from it below.
+  const drawerBot = useDrawerBot({
+    selectedBotId,
+    listBots: bots,
     type: BotTypesEnum.hedgeDca,
     shareId,
+    listLoading: isLoading,
+    getId: (b) => b._id,
+    transformRaw: (raw) => raw as unknown as (typeof bots)[number],
   });
-
-  const selectedHedgeBot = useMemo(() => {
-    const fromList = bots.find((b) => b._id === selectedBotId) ?? null;
-    if (fromList) return fromList;
-    if (shareId && sharedBotResult.bot) {
-      // The hedge query returns the wrapper shape; cast through unknown.
-      return sharedBotResult.bot as unknown as (typeof bots)[number];
-    }
-    return null;
-  }, [bots, selectedBotId, shareId, sharedBotResult.bot]);
+  const selectedHedgeBot = drawerBot.bot ?? null;
 
   // Both legs transformed via the same formula the trading-bots page uses.
   // The drawer renders them together (combined view, no leg switcher).
@@ -499,7 +532,15 @@ const HedgeDcaBots = () => {
             ${(getValue() as number).toFixed(2)}
           </span>
         ),
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span className="text-sm font-bold">${value.toFixed(2)}</span>
+        ),
       },
       {
         id: 'maxCost',
@@ -510,7 +551,50 @@ const HedgeDcaBots = () => {
             ${(getValue() as number).toFixed(2)}
           </span>
         ),
+        meta: {
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span className="text-sm font-bold text-muted-foreground">
+            ${value.toFixed(2)}
+          </span>
+        ),
+      },
+      {
+        id: 'usage',
+        header: 'USAGE',
+        // Combined bot usage = filled value / max value, matching the v1
+        // hedge table (currentValue / maxValue * 100). Rendered as the same
+        // gauge the DCA/Combo list columns use for parity across bot types.
+        accessorFn: (row) => {
+          const current = row.__currentCost ?? 0;
+          const max = row.__maxCost ?? 0;
+          return max > 0 ? (current / max) * 100 : 0;
+        },
         meta: { filterType: 'number' as const },
+        cell: ({ row }) => {
+          const current = row.original.__currentCost ?? 0;
+          const max = row.original.__maxCost ?? 0;
+          const usage = max > 0 ? (current / max) * 100 : 0;
+          return (
+            <div className="flex items-center justify-center">
+              <DualArcProgressGauge
+                size={40}
+                outerPercentage={usage}
+                innerPercentage={0}
+                outerProgressColor="#10b981"
+                showInnerGauge={false}
+                displayMode="outer"
+                centerText={`${usage.toFixed(0)}%`}
+                label=""
+                animate={false}
+              />
+            </div>
+          );
+        },
       },
       {
         id: 'profitTotalUsd',
@@ -520,12 +604,30 @@ const HedgeDcaBots = () => {
           <ProfitAndPerc
             value={getValue() as number}
             percentage={0}
-            privacyMode={false}
+            privacyMode={privacyMode}
             hidePercentage
             size="sm"
           />
         ),
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span
+            className={
+              privacyMode
+                ? 'text-sm text-muted-foreground font-bold'
+                : value >= 0
+                  ? 'text-sm text-success font-bold'
+                  : 'text-sm text-destructive font-bold'
+            }
+          >
+            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+          </span>
+        ),
       },
       {
         id: 'unPnl',
@@ -537,11 +639,29 @@ const HedgeDcaBots = () => {
           <ProfitAndPerc
             value={row.original.__unPnl ?? 0}
             percentage={row.original.__unPnlPerc ?? 0}
-            privacyMode={false}
+            privacyMode={privacyMode}
             size="sm"
           />
         ),
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span
+            className={
+              privacyMode
+                ? 'text-sm text-muted-foreground font-bold'
+                : value >= 0
+                  ? 'text-sm text-success font-bold'
+                  : 'text-sm text-destructive font-bold'
+            }
+          >
+            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+          </span>
+        ),
       },
       {
         id: 'avgDaily',
@@ -551,11 +671,31 @@ const HedgeDcaBots = () => {
           <ProfitAndPerc
             value={row.original.__avgDaily ?? 0}
             percentage={row.original.__avgDailyPerc ?? 0}
-            privacyMode={false}
+            privacyMode={privacyMode}
             size="sm"
           />
         ),
-        meta: { filterType: 'number' as const },
+        // Summing per-bot daily averages is meaningless; default to the
+        // average across bots (min/max also available in the dropdown).
+        meta: {
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'average',
+        },
+        aggregationFn: 'mean',
+        footerValue: (value: number) => (
+          <span
+            className={
+              privacyMode
+                ? 'text-sm text-muted-foreground font-bold'
+                : value >= 0
+                  ? 'text-sm text-success font-bold'
+                  : 'text-sm text-destructive font-bold'
+            }
+          >
+            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+          </span>
+        ),
       },
       {
         id: 'annualized',
@@ -602,9 +742,9 @@ const HedgeDcaBots = () => {
       },
     ],
     // Column defs read each row's already-enriched bot, not unPnlMap directly
-    // (the unrealized values are baked into `enrichedBots`), so the table
-    // structure has no reactive deps.
-    []
+    // (the unrealized values are baked into `enrichedBots`). The only reactive
+    // dep is privacyMode, which the profit/PnL cells honor by masking values.
+    [privacyMode]
   );
 
   if (!isPremium) {
@@ -632,7 +772,7 @@ const HedgeDcaBots = () => {
             parentBotId={selectedHedgeBot._id}
             hedge={hedgeDrawerContext}
             open
-            privacyMode={false}
+            privacyMode={privacyMode}
             onClose={handleCloseDrawer}
             viewOnly
             ownerUserId={sharedOwnerId}
@@ -642,7 +782,7 @@ const HedgeDcaBots = () => {
           </BotDetailsDrawer>
         ) : (
           <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
-            {sharedBotResult.isLoading
+            {drawerBot.isLoading
               ? 'Loading shared bot…'
               : 'Shared bot is not available.'}
           </div>
@@ -682,13 +822,22 @@ const HedgeDcaBots = () => {
                         <TabsTrigger value="bots">Bots</TabsTrigger>
                         <TabsTrigger value="deals">Deals</TabsTrigger>
                       </TabsList>
-                      <MotionButton
-                        variant="default"
-                        onClick={() => navigate('/hedge/bot/new')}
-                      >
-                        <Plus className="mr-xs h-4 w-4" />
-                        New
-                      </MotionButton>
+                      {readOnly ? (
+                        <span title="Creating bots is not available in demo mode">
+                          <MotionButton variant="default" disabled={true}>
+                            <Plus className="mr-xs h-4 w-4" />
+                            New
+                          </MotionButton>
+                        </span>
+                      ) : (
+                        <MotionButton
+                          variant="default"
+                          onClick={() => navigate('/hedge/bot/new')}
+                        >
+                          <Plus className="mr-xs h-4 w-4" />
+                          New
+                        </MotionButton>
+                      )}
                     </div>
                   </div>
                   <div className="w-full sm:hidden mt-2">
@@ -715,13 +864,22 @@ const HedgeDcaBots = () => {
                         <TabsTrigger value="bots">Bots</TabsTrigger>
                         <TabsTrigger value="deals">Deals</TabsTrigger>
                       </TabsList>
-                      <MotionButton
-                        variant="default"
-                        onClick={() => navigate('/hedge/bot/new')}
-                      >
-                        <Plus className="mr-xs h-4 w-4" />
-                        New
-                      </MotionButton>
+                      {readOnly ? (
+                        <span title="Creating bots is not available in demo mode">
+                          <MotionButton variant="default" disabled={true}>
+                            <Plus className="mr-xs h-4 w-4" />
+                            New
+                          </MotionButton>
+                        </span>
+                      ) : (
+                        <MotionButton
+                          variant="default"
+                          onClick={() => navigate('/hedge/bot/new')}
+                        >
+                          <Plus className="mr-xs h-4 w-4" />
+                          New
+                        </MotionButton>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -734,21 +892,6 @@ const HedgeDcaBots = () => {
                   className="flex-1 min-h-[400px] overflow-hidden"
                   {...HEDGE_BOTS_TABLE_MOTION}
                 >
-                  {!isLoading && bots.length === 0 ? (
-                    <div className="h-full w-full flex items-center justify-center">
-                      <EmptyState
-                        size="page"
-                        icon={<Bot className="w-6 h-6" />}
-                        title="No hedge DCA bots yet"
-                        description="Hedge DCA bots pair a long and short DCA position to profit from volatility while staying market-neutral. Create one to get started."
-                        action={{
-                          label: 'Create hedge DCA bot',
-                          onClick: () => navigate('/hedge/bot/new'),
-                          icon: <Plus className="w-5 h-5" />,
-                        }}
-                      />
-                    </div>
-                  ) : (
                     <DataTable
                       tableId="hedge-dca-bots"
                       columns={columns}
@@ -766,14 +909,95 @@ const HedgeDcaBots = () => {
                       showPagination
                       defaultPinnedColumns={{ left: [], right: ['actions'] }}
                       className="h-full min-h-[400px]"
+                      customToolbarActions={
+                        <Button
+                          variant={showArchived ? 'default' : 'ghost'}
+                          size="sm"
+                          onClick={() => setShowArchived((prev) => !prev)}
+                          className="h-9 gap-2 px-3"
+                          title={
+                            showArchived
+                              ? 'Show Active Bots'
+                              : 'Show Archived Bots'
+                          }
+                        >
+                          <Archive className="h-4 w-4" />
+                          <span>Archived</span>
+                        </Button>
+                      }
+                      customToolbarActionsCompact={
+                        <Button
+                          variant={showArchived ? 'default' : 'ghost'}
+                          size="icon"
+                          onClick={() => setShowArchived((prev) => !prev)}
+                          className="h-9 w-9"
+                          title={
+                            showArchived
+                              ? 'Show Active Bots'
+                              : 'Show Archived Bots'
+                          }
+                          aria-label={
+                            showArchived
+                              ? 'Show active bots'
+                              : 'Show archived bots'
+                          }
+                        >
+                          <Archive className="h-4 w-4" />
+                        </Button>
+                      }
                       emptyMessage={
                         isLoading
                           ? 'Loading hedge bots…'
                           : 'No hedge DCA bots match your filters.'
                       }
+                      emptyContent={
+                        isLoading ? undefined : (
+                          <EmptyState
+                            size="page"
+                            icon={
+                              showArchived ? (
+                                <Archive className="w-6 h-6" />
+                              ) : (
+                                <Bot className="w-6 h-6" />
+                              )
+                            }
+                            title={
+                              showArchived
+                                ? 'No archived hedge DCA bots'
+                                : 'No hedge DCA bots yet'
+                            }
+                            description={
+                              showArchived
+                                ? 'Bots you archive move here. Un-archive one to bring it back to your active list.'
+                                : 'Hedge DCA bots pair a long and short DCA position to profit from volatility while staying market-neutral. Create one to get started.'
+                            }
+                            action={
+                              showArchived
+                                ? {
+                                    label: 'Back to active bots',
+                                    onClick: () =>
+                                      setShowArchived((prev) => !prev),
+                                  }
+                                : {
+                                    label: 'Create hedge DCA bot',
+                                    onClick: () => navigate('/hedge/bot/new'),
+                                    icon: <Plus className="w-5 h-5" />,
+                                  }
+                            }
+                            secondaryAction={
+                              showArchived
+                                ? undefined
+                                : {
+                                    label: 'View archived bots',
+                                    onClick: () =>
+                                      setShowArchived((prev) => !prev),
+                                  }
+                            }
+                          />
+                        )
+                      }
                       onRowClick={(row) => handleSelectBot(row._id)}
                     />
-                  )}
                 </motion.div>
                 </TabsContent>
 
@@ -808,7 +1032,7 @@ const HedgeDcaBots = () => {
                 parentBotId={selectedHedgeBot._id}
                 hedge={hedgeDrawerContext}
                 open
-                privacyMode={false}
+                privacyMode={privacyMode}
                 onClose={handleCloseDrawer}
                 viewOnly={viewOnly}
                 ownerUserId={sharedOwnerId}

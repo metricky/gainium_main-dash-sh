@@ -18,7 +18,10 @@ import {
 } from '@/stores/live';
 import { useHedgeDcaBotsStore } from '@/stores/live/hedgeDcaBotsStore';
 import { useHedgeComboBotsStore } from '@/stores/live/hedgeComboBotsStore';
-import { recordBotTombstone } from '@/stores/live/staleWriteGuard';
+import {
+  recordBotTombstone,
+  clearBotTombstone,
+} from '@/stores/live/staleWriteGuard';
 import {
   removeBotFromListCaches,
   patchBotInListCaches,
@@ -269,26 +272,47 @@ export function useBotStatusToggle(type: BotTypesEnum) {
       const targetStatus = status === 'open' ? 'open' : 'closed';
       let previousStatus: string | undefined;
 
+      // Optimistically flip the badge in whichever live store holds this bot
+      // type. Hedge wrappers live in their own stores, so a hedge toggle gets
+      // the same instant feedback as DCA/combo/grid — this is what lets hedge
+      // surfaces share this hook instead of re-implementing changeStatus
+      // inline. (Kept as explicit per-store branches because each store's
+      // `updateBot` is typed to its own bot shape.)
+      const nextStatus = targetStatus as BotStatus;
       if (type === BotTypesEnum.dca) {
         const store = useDcaBotsStore.getState();
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
-          store.updateBot({ ...bot, status: targetStatus as BotStatus });
+          store.updateBot({ ...bot, status: nextStatus });
         }
       } else if (type === BotTypesEnum.combo) {
         const store = useComboBotsStore.getState();
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
-          store.updateBot({ ...bot, status: targetStatus as BotStatus });
+          store.updateBot({ ...bot, status: nextStatus });
+        }
+      } else if (type === BotTypesEnum.hedgeDca) {
+        const store = useHedgeDcaBotsStore.getState();
+        const bot = store.bots[id];
+        if (bot) {
+          previousStatus = bot.status;
+          store.updateBot({ ...bot, status: nextStatus });
+        }
+      } else if (type === BotTypesEnum.hedgeCombo) {
+        const store = useHedgeComboBotsStore.getState();
+        const bot = store.bots[id];
+        if (bot) {
+          previousStatus = bot.status;
+          store.updateBot({ ...bot, status: nextStatus });
         }
       } else {
         const store = useGridBotsStore.getState();
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
-          store.updateBot({ ...bot, status: targetStatus as BotStatus });
+          store.updateBot({ ...bot, status: nextStatus });
         }
       }
 
@@ -315,6 +339,14 @@ export function useBotStatusToggle(type: BotTypesEnum) {
           if (bot) store.updateBot({ ...bot, status: rollbackStatus });
         } else if (type === BotTypesEnum.combo) {
           const store = useComboBotsStore.getState();
+          const bot = store.bots[id];
+          if (bot) store.updateBot({ ...bot, status: rollbackStatus });
+        } else if (type === BotTypesEnum.hedgeDca) {
+          const store = useHedgeDcaBotsStore.getState();
+          const bot = store.bots[id];
+          if (bot) store.updateBot({ ...bot, status: rollbackStatus });
+        } else if (type === BotTypesEnum.hedgeCombo) {
+          const store = useHedgeComboBotsStore.getState();
           const bot = store.bots[id];
           if (bot) store.updateBot({ ...bot, status: rollbackStatus });
         } else {
@@ -407,37 +439,29 @@ export function useBotRestart() {
   });
 }
 
+export interface ResetShowErrorParams {
+  data: { id: string; type: BotTypesEnum }[];
+}
+
 /**
- * Hedge parent Start/Stop via cascading leg toggles
- * Falls back to toggling child legs (DCA or Combo) when no parent-level API exists.
+ * Hook for clearing a bot's runtime error/warning flag (`showErrorWarning`).
+ *
+ * The backend sets `showErrorWarning` to 'error' | 'warning' on a bot document
+ * when the running bot logs error/warning-level events (order failures,
+ * exchange errors). The dashboard surfaces that flag as a dismissible alert;
+ * dismissing it calls this mutation to clear the flag server-side so it does
+ * not reappear on the next fetch. Hedge bots pass both legs in `data`.
  */
-export interface HedgeStatusUpdateLeg {
-  id: string;
-  type: 'dca' | 'combo';
-  strategy?: 'LONG' | 'Short' | string;
-}
-
-export interface HedgeStatusUpdateParams {
-  parentId: string;
-  hedgeType: 'hedgeDca' | 'hedgeCombo';
-  targetStatus: 'active' | 'stopped';
-  legs: HedgeStatusUpdateLeg[];
-  closeType?: 'leave' | 'cancel' | 'closeByMarket' | 'closeByLimit';
-}
-
-export function useHedgeStatusToggle() {
+export function useResetShowError() {
   const { tokens } = useAuthStore();
   const isLiveTrading = useUIStore((s) => s.isLiveTrading);
 
   return useMutation({
-    mutationFn: async ({
-      targetStatus,
-      legs,
-      closeType,
-    }: HedgeStatusUpdateParams) => {
+    mutationFn: async ({ data }: ResetShowErrorParams) => {
       if (!tokens?.accessToken) {
         throw new Error('Authentication required');
       }
+      if (!data.length) return null;
 
       const endpoint =
         import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
@@ -448,61 +472,30 @@ export function useHedgeStatusToggle() {
         paperContext
       );
 
-      const mutation = `mutation changeStatus($input: changeStatusInput!) {
-        changeStatus(input: $input) {
-          status
-          reason
-          data { _id status }
-        }
-      }`;
+      const { query, variables } = GraphQlQuery.resetShowError({ data });
+      const result = await client.request<{
+        resetShowError: { status: string; reason?: string };
+      }>(query, variables);
 
-      const mapToBackendStatus = (frontendStatus: 'active' | 'stopped') =>
-        frontendStatus === 'active' ? 'open' : 'closed';
-
-      const backendStatus = mapToBackendStatus(targetStatus);
-      const resolvedCloseType =
-        targetStatus === 'active' ? undefined : (closeType ?? 'leave');
-
-      // Execution order: start => arbitrary; stop => short first if known
-      const legsOrdered = [...legs].sort((a, b) => {
-        const aS = String(a.strategy || '').toLowerCase();
-        const bS = String(b.strategy || '').toLowerCase();
-        // Put SHORT first when stopping, otherwise keep order
-        if (backendStatus === 'closed') {
-          if (aS === 'short' && bS !== 'short') return -1;
-          if (aS !== 'short' && bS === 'short') return 1;
-        }
-        return 0;
-      });
-
-      for (const leg of legsOrdered) {
-        const variables = {
-          input: {
-            id: `${leg.id}`,
-            status: backendStatus,
-            ...(resolvedCloseType ? { closeType: resolvedCloseType } : {}),
-            type: leg.type,
-          },
-        };
-
-        const result = await client.request<{
-          changeStatus: ReturnResult<{ _id: string; status: string }>;
-        }>(mutation, variables);
-
-        if (result.changeStatus.status !== 'OK') {
-          throw new Error(
-            result.changeStatus.reason || 'Failed to change leg status'
-          );
-        }
+      if (result.resetShowError.status !== 'OK') {
+        throw new Error(
+          result.resetShowError.reason || 'Failed to clear bot error flag'
+        );
       }
-
-      return true;
+      return result.resetShowError;
     },
-    onSuccess: () => {
-      // No need to invalidate - WebSocket provides live updates
-      logger.debug(
-        '[BotMutations] Hedge status update successful - WebSocket will update stores'
-      );
+    onSuccess: (_result, { data }) => {
+      // Clear the flag in the persisted list caches so the alert doesn't flash
+      // back on the next mount, then refetch to confirm with the backend.
+      for (const { id, type } of data) {
+        const keys = botListKeysFor(type);
+        patchBotInListCaches(id, { showErrorWarning: 'none' }, keys);
+        invalidateListCaches(keys);
+      }
+    },
+    onError: (err: Error) => {
+      logger.error('[BotMutations] resetShowError failed:', err);
+      toast.error(`Failed to clear bot errors: ${err.message}`);
     },
   });
 }
@@ -1282,6 +1275,10 @@ export function useBotArchive() {
         removeBotFromListCaches(id, botListKeysFor(type));
         invalidateListCaches(botListKeysFor(type));
       } else {
+        // Un-archive: the bot legitimately returns to the lists. Drop the
+        // archive-time tombstone so the refetched list isn't filtered to hide
+        // it (the timestamp auto-clear can miss on equal/unparseable `updated`).
+        clearBotTombstone(id);
         invalidateListCaches(botListKeysFor(type));
       }
 

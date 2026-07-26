@@ -1,6 +1,5 @@
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
-import { DatePicker } from '@/components/ui/date-picker';
 import {
   Dialog,
   DialogBody,
@@ -47,6 +46,28 @@ export type BacktestConfig = {
   periodId?: string;
   saveNew?: boolean;
   newName?: string;
+};
+
+const formatLocalDate = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+// Custom periods carry a time-of-day (parity with the legacy dashboard's
+// date+time picker), stored as a `YYYY-MM-DDTHH:mm` datetime-local string.
+const formatLocalDateTime = (d: Date) => {
+  if (isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${formatLocalDate(d)}T${hh}:${min}`;
+};
+const parseLocalDateTime = (s: string) => {
+  if (!s) return new Date('');
+  const [datePart, timePart = '00:00'] = s.split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  const [hh, min] = timePart.split(':').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, hh || 0, min || 0);
 };
 
 export const BacktestSettingsDialog: React.FC<{
@@ -124,12 +145,23 @@ export const BacktestSettingsDialog: React.FC<{
   // Period store
   const {
     periods,
+    loading: periodsLoading,
+    loadPeriods,
     addPeriod,
     updatePeriod,
     deletePeriod,
     lastSelectedPeriodId,
     setLastSelectedPeriodId,
   } = useBacktestPeriodStore();
+
+  // Saved periods live on the user's account. Fetch them the first time the
+  // dialog is opened rather than on mount — this component is mounted with
+  // every bot form, open or not.
+  useEffect(() => {
+    if (open) {
+      void loadPeriods();
+    }
+  }, [open, loadPeriods]);
 
   // Period manager state
   const [showPeriodManager, setShowPeriodManager] = useState(false);
@@ -139,26 +171,14 @@ export const BacktestSettingsDialog: React.FC<{
   const [editFrom, setEditFrom] = useState<number>(0);
   const [editTo, setEditTo] = useState<number>(0);
 
-  const formatLocalDate = (d: Date) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-  const parseLocalDate = (s: string) => {
-    if (!s) return new Date('');
-    const [y, m, d] = s.split('-').map(Number);
-    return new Date(y, (m || 1) - 1, d || 1);
-  };
-
   // Load last selected period on mount
   useEffect(() => {
     if (lastSelectedPeriodId && !initialData?.periodId) {
       const period = periods.find((p) => p.uuid === lastSelectedPeriodId);
       if (period) {
         setPeriodId(lastSelectedPeriodId);
-        setStartDate(formatLocalDate(new Date(period.from)));
-        setEndDate(formatLocalDate(new Date(period.to)));
+        setStartDate(formatLocalDateTime(new Date(period.from)));
+        setEndDate(formatLocalDateTime(new Date(period.to)));
       }
     }
   }, [lastSelectedPeriodId, periods, initialData?.periodId]);
@@ -268,6 +288,13 @@ export const BacktestSettingsDialog: React.FC<{
   }, [periodId, periods]);
 
   const handlePeriodChange = (newPeriodId: string) => {
+    // Sentinel option: open the saved-periods manager without changing
+    // the current selection.
+    if (newPeriodId === '__manage__') {
+      setShowPeriodManager(true);
+      return;
+    }
+
     setPeriodId(newPeriodId);
     setLastSelectedPeriodId(newPeriodId);
 
@@ -276,8 +303,8 @@ export const BacktestSettingsDialog: React.FC<{
     } else if (newPeriodId !== 'auto') {
       const period = periods.find((p) => p.uuid === newPeriodId);
       if (period) {
-        setStartDate(formatLocalDate(new Date(period.from)));
-        setEndDate(formatLocalDate(new Date(period.to)));
+        setStartDate(formatLocalDateTime(new Date(period.from)));
+        setEndDate(formatLocalDateTime(new Date(period.to)));
       }
     }
   };
@@ -289,7 +316,7 @@ export const BacktestSettingsDialog: React.FC<{
     setEditTo(period.to);
   };
 
-  const handleUpdatePeriod = () => {
+  const handleUpdatePeriod = async () => {
     if (!editingPeriod) return;
     if (!editName.trim()) {
       toast.error('Please enter a period name');
@@ -300,18 +327,30 @@ export const BacktestSettingsDialog: React.FC<{
       return;
     }
 
-    updatePeriod(editingPeriod.uuid, {
-      name: editName,
-      from: editFrom,
-      to: editTo,
-    });
+    try {
+      await updatePeriod(editingPeriod.uuid, {
+        name: editName,
+        from: editFrom,
+        to: editTo,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Failed to update period: ${message}`);
+      return;
+    }
     setEditingPeriod(null);
     toast.success(`Period "${editName}" updated`);
   };
 
-  const handleDeletePeriod = () => {
+  const handleDeletePeriod = async () => {
     if (!deletingPeriod) return;
-    deletePeriod(deletingPeriod.uuid);
+    try {
+      await deletePeriod(deletingPeriod.uuid);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Failed to delete period: ${message}`);
+      return;
+    }
     if (periodId === deletingPeriod.uuid) {
       setPeriodId('auto');
       setLastSelectedPeriodId('auto');
@@ -325,17 +364,33 @@ export const BacktestSettingsDialog: React.FC<{
     setRunning(true);
     try {
       // logger.info('[backtester] Run initiated', { mode, timeframe, startDate, endDate, slippagePercent, userFee })
-      // If saving new period, save it first
+      // If saving new period, save it first.
+      //
+      // `resolvedPeriodId` (not the `periodId` state) is what gets handed to
+      // `onRun`: `setPeriodId` won't have applied by the time we call it, so
+      // reading the state here would send 'custom' and the caller would drop
+      // the period name — the run that creates a period would be the one run
+      // that shows up unnamed in the results list. Legacy does the same thing
+      // with its local `up` variable.
+      let resolvedPeriodId = periodId;
       if (saveNew && periodId === 'custom' && newName.trim()) {
-        const [sy, sm, sd] = (startDate || '').split('-').map(Number);
-        const [ey, em, ed] = (endDate || '').split('-').map(Number);
-        const from = new Date(sy, (sm || 1) - 1, sd || 1).getTime();
-        const to = new Date(ey, (em || 1) - 1, ed || 1).getTime();
-        const newPeriod = addPeriod({ name: newName, from, to });
-        setPeriodId(newPeriod.uuid);
-        setLastSelectedPeriodId(newPeriod.uuid);
-        setSaveNew(false);
-        setNewName('');
+        const from = parseLocalDateTime(startDate).getTime();
+        const to = parseLocalDateTime(endDate).getTime();
+        try {
+          const newPeriod = await addPeriod({ name: newName, from, to });
+          if (newPeriod) {
+            resolvedPeriodId = newPeriod.uuid;
+            setPeriodId(newPeriod.uuid);
+            setLastSelectedPeriodId(newPeriod.uuid);
+            setSaveNew(false);
+            setNewName('');
+          }
+        } catch (err) {
+          // Saving the period is a side quest — surface it, but still run the
+          // backtest the user actually asked for.
+          const message = err instanceof Error ? err.message : String(err);
+          toast.error(`Failed to save period: ${message}`);
+        }
       }
 
       await onRun({
@@ -347,7 +402,7 @@ export const BacktestSettingsDialog: React.FC<{
         userFee,
         RFR,
         MAR,
-        periodId,
+        periodId: resolvedPeriodId,
         saveNew,
         newName,
       });
@@ -386,7 +441,7 @@ export const BacktestSettingsDialog: React.FC<{
             </p>
             {periods.length === 0 ? (
               <p className="text-xs text-muted-foreground text-center py-4">
-                No saved periods yet
+                {periodsLoading ? 'Loading saved periods…' : 'No saved periods yet'}
               </p>
             ) : (
               <table className="w-full text-xs">
@@ -458,25 +513,23 @@ export const BacktestSettingsDialog: React.FC<{
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs">Start date</Label>
+                <Label className="text-xs">Start date &amp; time</Label>
                 <input
-                  type="date"
-                  value={formatLocalDate(new Date(editFrom))}
+                  type="datetime-local"
+                  value={formatLocalDateTime(new Date(editFrom))}
                   onChange={(e) => {
-                    const [y, m, d] = e.target.value.split('-').map(Number);
-                    setEditFrom(new Date(y, m - 1, d).getTime());
+                    setEditFrom(parseLocalDateTime(e.target.value).getTime());
                   }}
                   className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs">End date</Label>
+                <Label className="text-xs">End date &amp; time</Label>
                 <input
-                  type="date"
-                  value={formatLocalDate(new Date(editTo))}
+                  type="datetime-local"
+                  value={formatLocalDateTime(new Date(editTo))}
                   onChange={(e) => {
-                    const [y, m, d] = e.target.value.split('-').map(Number);
-                    setEditTo(new Date(y, m - 1, d).getTime());
+                    setEditTo(parseLocalDateTime(e.target.value).getTime());
                   }}
                   className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
@@ -650,6 +703,11 @@ export const BacktestSettingsDialog: React.FC<{
                           </SelectItem>
                         ))}
                         <SelectItem value="custom">Custom</SelectItem>
+                        {periods.length > 0 && (
+                          <SelectItem value="__manage__">
+                            Manage periods…
+                          </SelectItem>
+                        )}
                       </SelectContent>
                     </Select>
                   </div>
@@ -658,9 +716,9 @@ export const BacktestSettingsDialog: React.FC<{
 
               {selectedPeriod && (
                 <div className="text-xs text-muted-foreground bg-muted/30 p-xs rounded">
-                  From {new Date(selectedPeriod.from).toLocaleDateString()}{' '}
-                  12:00 AM to {new Date(selectedPeriod.to).toLocaleDateString()}{' '}
-                  11:59 PM ({periodDays} {periodDays === 1 ? 'day' : 'days'})
+                  From {new Date(selectedPeriod.from).toLocaleString()} to{' '}
+                  {new Date(selectedPeriod.to).toLocaleString()} ({periodDays}{' '}
+                  {periodDays === 1 ? 'day' : 'days'})
                 </div>
               )}
 
@@ -691,24 +749,33 @@ export const BacktestSettingsDialog: React.FC<{
                   <h3 className="font-semibold text-sm">Custom Period</h3>
 
                   <div className="grid grid-cols-2 gap-sm">
-                    <DatePicker
-                      title="Start date"
-                      value={startDate ? parseLocalDate(startDate) : undefined}
-                      onChange={(date) => setStartDate(formatLocalDate(date))}
-                      disableFuture
-                    />
+                    <div className="space-y-1">
+                      <Label className="text-xs">Start date &amp; time</Label>
+                      <input
+                        type="datetime-local"
+                        value={startDate}
+                        max={formatLocalDateTime(new Date())}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </div>
 
-                    <DatePicker
-                      title="End date"
-                      value={endDate ? parseLocalDate(endDate) : undefined}
-                      onChange={(date) => setEndDate(formatLocalDate(date))}
-                      disableFuture
-                    />
+                    <div className="space-y-1">
+                      <Label className="text-xs">End date &amp; time</Label>
+                      <input
+                        type="datetime-local"
+                        value={endDate}
+                        max={formatLocalDateTime(new Date())}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                    </div>
                   </div>
 
                   {startDate &&
                     endDate &&
-                    parseLocalDate(startDate) > parseLocalDate(endDate) && (
+                    parseLocalDateTime(startDate) >
+                      parseLocalDateTime(endDate) && (
                       <p className="text-xs text-destructive">
                         Start date must be before end date
                       </p>
@@ -799,7 +866,8 @@ export const BacktestSettingsDialog: React.FC<{
                     running ||
                     (startDate !== '' &&
                       endDate !== '' &&
-                      parseLocalDate(startDate) > parseLocalDate(endDate))
+                      parseLocalDateTime(startDate) >
+                        parseLocalDateTime(endDate))
                   }
                 >
                   {running ? 'Running...' : 'START TEST'}

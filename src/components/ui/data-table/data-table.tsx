@@ -18,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { rankItem } from '@tanstack/match-sorter-utils';
 import {
+  createTable,
   flexRender,
   getCoreRowModel,
   getExpandedRowModel,
@@ -71,8 +72,8 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import exportToCsv from 'tanstack-table-export-to-csv';
 import { DataTableFooter } from './data-table-footer';
+import { downloadCsv } from './exportCsv';
 import { ColumnFilter } from './filter-components';
 import {
   countActiveFilters,
@@ -960,6 +961,22 @@ interface DataTableProps<TData, TValue> {
   // Export props
   enableExport?: boolean;
   exportFilename?: string;
+  /**
+   * Optional async provider of the COMPLETE dataset for exports. When set,
+   * "Export as CSV/JSON" serialize the returned data (all server pages)
+   * instead of only the client-loaded rows — tables that partially load
+   * (e.g. a bot's closed deals, capped by the display auto-loader) would
+   * otherwise silently export a subset. Falls back to the loaded rows when
+   * the fetch fails or returns nothing.
+   */
+  getExportData?: () => Promise<TData[] | null>;
+  /**
+   * Server-side total row count when the table's data is a partial window of
+   * a larger server dataset. Rendered in the pagination footer as
+   * "start-end (loaded of total)" so a partially-loaded table doesn't read
+   * as complete.
+   */
+  serverTotalRows?: number;
   // Row interaction props
   onRowClick?: (row: TData) => void;
   getRowIsSelected?: (row: TData) => boolean;
@@ -1206,6 +1223,29 @@ function ToolbarButtonRow<TData>({
   onResetTable,
   onLayoutMetrics,
 }: ToolbarButtonRowProps<TData>) {
+  // Defensive: don't let `table` identity drive the buttonConfigs memo. The
+  // selectedRows memo below documents that react-table can hand back a fresh
+  // `table` object across renders (it caused a React #185 loop there); listing
+  // `table` as a buttonConfigs dep would rebuild the whole button array whenever
+  // that happens, feeding ResponsiveButtonRow (memoised) a new `buttons`
+  // reference and re-rendering the toolbar on parent churn. Same fix as
+  // selectedRows: read `table` via a ref, and depend only on a stable signature
+  // of what the column dropdown actually renders (column id / visibility /
+  // hideability), so the array recomputes only when the columns or their
+  // visibility genuinely change.
+  const tableRef = useRef(table);
+  tableRef.current = table;
+  const columnMenuSignature =
+    enableColumnVisibility && viewMode === 'table'
+      ? table
+          .getAllColumns()
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .map((c: any) =>
+            `${c.id}:${c.getIsVisible() ? 1 : 0}:${c.getCanHide() ? 1 : 0}`
+          )
+          .join('|')
+      : '';
+
   // Build button configs for ResponsiveButtonRow
   const buttonConfigs = useMemo((): ResponsiveButtonConfig[] => {
     const configs: ResponsiveButtonConfig[] = [];
@@ -1361,7 +1401,7 @@ function ToolbarButtonRow<TData>({
               align="end"
               className="w-[150px] max-h-[400px] overflow-y-auto"
             >
-              {table
+              {tableRef.current
                 .getAllColumns()
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 .filter((column: any) => column.getCanHide())
@@ -1408,7 +1448,7 @@ function ToolbarButtonRow<TData>({
               align="end"
               className="w-[150px] max-h-[400px] overflow-y-auto"
             >
-              {table
+              {tableRef.current
                 .getAllColumns()
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 .filter((column: any) => column.getCanHide())
@@ -1688,6 +1728,11 @@ function ToolbarButtonRow<TData>({
     }
 
     return configs;
+    // `columnMenuSignature` stands in for the fresh-every-render `table` object:
+    // it is not read in the body (the dropdown reads `tableRef.current`) but is
+    // listed so the memo recomputes exactly when the column set / visibility
+    // changes. exhaustive-deps would otherwise flag it as an unnecessary dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     enableColumnFilters,
     enableColumnResizing,
@@ -1703,7 +1748,7 @@ function ToolbarButtonRow<TData>({
     setColumnFilters,
     onShowQuickFiltersChange,
     setViewMode,
-    table,
+    columnMenuSignature,
     firstToolbarActions,
     firstToolbarActionsCompact,
     firstToolbarActionsOverflow,
@@ -1884,6 +1929,8 @@ function DataTableComponent<TData, TValue>(
     // Export props
     enableExport,
     exportFilename,
+    getExportData,
+    serverTotalRows,
     // Row interaction props
     onRowClick,
     getRowIsSelected,
@@ -1951,6 +1998,8 @@ function DataTableComponent<TData, TValue>(
       cardViewGap: props.cardViewGap ?? 16,
       enableExport: props.enableExport ?? true,
       exportFilename: props.exportFilename ?? 'data-export',
+      getExportData: props.getExportData,
+      serverTotalRows: props.serverTotalRows,
       onRowClick: props.onRowClick,
       getRowIsSelected: props.getRowIsSelected,
       finalToolbarActions: props.finalToolbarActions,
@@ -2004,6 +2053,34 @@ function DataTableComponent<TData, TValue>(
 
   // Use the provided defaultColumnVisibility prop
 
+  // The props-normalization memo above lists `[props]` as its only dependency,
+  // and `props` is a fresh object every render — so `defaultColumnVisibility`
+  // and `defaultPinnedColumns` are rebuilt as new `{}` / `{ left, right }`
+  // literals on every render. Passed straight into useTablePreferences, those
+  // fresh objects made its entire `result` (every persisted value AND setter)
+  // recompute each render, which churned the toolbar's button-config array and
+  // re-rendered the memoised ResponsiveButtonRow ~26x/s under live bot-stats
+  // updates (RenderLoopTripwire on /trading — worst on mobile, where the
+  // `isMobile` branch below also allocates a fresh object). Pin both args to
+  // their content so the preferences result stays referentially stable across
+  // parent churn.
+  const defaultColumnVisibilityKey = JSON.stringify(
+    defaultColumnVisibility ?? {}
+  );
+  const stableDefaultColumnVisibility = useMemo(
+    () => defaultColumnVisibility ?? {},
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [defaultColumnVisibilityKey]
+  );
+  const pinnedColumnsArg = useMemo(
+    () =>
+      isMobile
+        ? { left: [], right: [] }
+        : (defaultPinnedColumns ?? { left: [], right: [] }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isMobile, JSON.stringify(defaultPinnedColumns ?? { left: [], right: [] })]
+  );
+
   // Get persisted preferences from Zustand store
   const {
     columnOrder,
@@ -2014,6 +2091,7 @@ function DataTableComponent<TData, TValue>(
     viewMode: persistedViewMode,
     sorting: persistedSorting,
     columnFilters: persistedColumnFilters,
+    globalFilter: persistedGlobalFilter,
     setColumnOrder,
     setColumnVisibility,
     setColumnWidths,
@@ -2022,14 +2100,15 @@ function DataTableComponent<TData, TValue>(
     setViewMode: setPersistedViewMode,
     setSorting: setPersistedSorting,
     setColumnFilters: setPersistedColumnFilters,
+    setGlobalFilter: setPersistedGlobalFilter,
     resetPreferences,
   } = useTablePreferences(
     tableId,
     defaultColumnOrder,
-    defaultColumnVisibility,
+    stableDefaultColumnVisibility,
     initialPageSize,
     defaultView,
-    isMobile ? { left: [], right: [] } : defaultPinnedColumns
+    pinnedColumnsArg
   );
 
   // On mobile, never pin any columns regardless of persisted preferences
@@ -2078,7 +2157,20 @@ function DataTableComponent<TData, TValue>(
     [columnFilters, setPersistedColumnFilters]
   );
 
-  const [globalFilter, setGlobalFilter] = useState('');
+  // Global (search) filter is persisted per-tableId in the same store as
+  // columnFilters, so the search box survives remounts (paper/live switch,
+  // live-data skeleton flips, navigating away and back) without depending on
+  // the debounced URL sync. Setter accepts a value or an updater function so
+  // it stays drop-in compatible with react-table's onGlobalFilterChange.
+  const globalFilter = persistedGlobalFilter;
+  const setGlobalFilter = useCallback(
+    (updater: string | ((prev: string) => string)) => {
+      const next =
+        typeof updater === 'function' ? updater(persistedGlobalFilter) : updater;
+      setPersistedGlobalFilter(next);
+    },
+    [persistedGlobalFilter, setPersistedGlobalFilter]
+  );
   const [searchExpanded, setSearchExpanded] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [toolbarRowRef, toolbarRowWidth] = useContainerWidth();
@@ -3370,22 +3462,64 @@ function DataTableComponent<TData, TValue>(
   );
 
   // Export functions
-  const handleExportToCsv = useCallback(() => {
+  //
+  // When `getExportData` is provided the export serializes the COMPLETE
+  // dataset fetched from the server, not just the client-loaded subset. The
+  // fetched data is run through a detached table instance built from the
+  // live table's resolved options, so column visibility and active filters
+  // apply to the export exactly as they do on screen.
+  const buildExportRows = useCallback(
+    (fullData: TData[]): Row<TData>[] => {
+      const exportTable = createTable<TData>({
+        ...table.options,
+        data: fullData,
+        state: {
+          ...table.getState(),
+          pagination: {
+            pageIndex: 0,
+            pageSize: Math.max(fullData.length, 1),
+          },
+        },
+        onStateChange: () => {},
+      });
+      return exportTable.getFilteredRowModel().rows;
+    },
+    [table]
+  );
+
+  const resolveExportRows = useCallback(async (): Promise<Row<TData>[]> => {
+    if (getExportData) {
+      try {
+        const fullData = await getExportData();
+        if (fullData && fullData.length > 0) {
+          return buildExportRows(fullData);
+        }
+      } catch (e) {
+        logger.error(
+          '[DataTable] Full-data export fetch failed; falling back to loaded rows',
+          e
+        );
+      }
+    }
+    return table.getFilteredRowModel().rows; // Use filtered data
+  }, [getExportData, buildExportRows, table]);
+
+  const handleExportToCsv = useCallback(async () => {
     const headers = table
       .getHeaderGroups()
       .map((x) => x.headers)
       .flat();
 
-    const rows = table.getFilteredRowModel().rows; // Use filtered data
+    const rows = await resolveExportRows();
 
     const timestamp = new Date().toISOString().split('T')[0];
     const filename = `${exportFilename}-${timestamp}`;
 
-    exportToCsv(filename, headers, rows);
-  }, [table, exportFilename]);
+    downloadCsv(filename, headers, rows);
+  }, [table, exportFilename, resolveExportRows]);
 
-  const handleExportToJson = useCallback(() => {
-    const data = table.getFilteredRowModel().rows.map((row) => row.original);
+  const handleExportToJson = useCallback(async () => {
+    const data = (await resolveExportRows()).map((row) => row.original);
     const jsonStr = JSON.stringify(data, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -3400,9 +3534,15 @@ function DataTableComponent<TData, TValue>(
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }, [table, exportFilename]);
-  const tableState = useMemo(() => table.getState(), [table]);
-  const tableFilter = useMemo(() => table.getFilteredRowModel(), [table]);
+  }, [resolveExportRows, exportFilename]);
+  // Read these live each render rather than memoizing on the (stable) `table`
+  // instance: a `useMemo(..., [table])` captures the getter's result once at
+  // mount — when async/streamed data is still empty — and never recomputes, so
+  // the row count and pagination freeze at their initial (empty) values. The
+  // react-table getters are internally memoized on state, so calling them per
+  // render is cheap and always reflects the current data.
+  const tableState = table.getState();
+  const tableFilter = table.getFilteredRowModel();
   const { pageIndex, pageSize } = useMemo(
     () => tableState.pagination,
     [tableState?.pagination]
@@ -3419,13 +3559,16 @@ function DataTableComponent<TData, TValue>(
     () => Math.min(pageIndex * pageSize + pageSize, totalRows),
     [pageIndex, pageSize, totalRows]
   );
-  const pageRangeLabel = useMemo(
-    () =>
-      totalRows === 0
-        ? '0-0 (0)'
-        : `${paginationStart.toLocaleString()}-${paginationEnd.toLocaleString()} (${totalRows.toLocaleString()})`,
-    [paginationStart, paginationEnd, totalRows]
-  );
+  const pageRangeLabel = useMemo(() => {
+    if (totalRows === 0) return '0-0 (0)';
+    const range = `${paginationStart.toLocaleString()}-${paginationEnd.toLocaleString()}`;
+    // When the table only holds a window of a larger server dataset, say so
+    // — "(400 of 970)" — instead of implying the loaded rows are everything.
+    if (serverTotalRows && serverTotalRows > totalRows) {
+      return `${range} (${totalRows.toLocaleString()} of ${serverTotalRows.toLocaleString()})`;
+    }
+    return `${range} (${totalRows.toLocaleString()})`;
+  }, [paginationStart, paginationEnd, totalRows, serverTotalRows]);
   const totalPages = useMemo(
     () => Math.ceil(totalRows / pageSize),
     [totalRows, pageSize]
@@ -4146,6 +4289,7 @@ function DataTableComponent<TData, TValue>(
                   )}
                 </tbody>
                 <DataTableFooter
+                  tableId={tableId}
                   table={table}
                   pinnedColumns={effectivePinnedColumns}
                   getColumnWidth={getColumnWidth}

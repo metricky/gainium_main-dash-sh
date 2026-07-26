@@ -3,7 +3,7 @@ import { useShareContext } from '@/hooks/useShareContext';
 import { useUIStore } from '@/stores/uiStore';
 import { BotTypesEnum } from '@/types';
 import logger from '@/lib/loggerInstance';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
  * Result of resolving which trading mode (paper vs live) a specific bot
@@ -80,12 +80,25 @@ export function useBotModeGuard(
 
   // The bot is "missing" in a mode when the query resolved to a payload that
   // isn't a populated OK — the backend answers a wrong-mode lookup with
-  // `status: NOTOK` ("Bot not found"), and occasionally `OK` + null. A thrown
-  // request error leaves `data` undefined, which we deliberately do NOT treat
-  // as missing (so a transient failure never fakes a not-found).
+  // `status: NOTOK` ("Bot not found"), and occasionally `OK` + null.
+  //
+  // Only a payload this probe actually resolved FOR THE CURRENT KEY counts as
+  // evidence. `!!data` is not enough: the global
+  // `placeholderData: (prev) => prev` in `lib/queryClient` back-fills `data`
+  // with the PREVIOUS key's payload whenever this key has none of its own —
+  // on a thrown/timed-out request, and while a key change refetches (the key
+  // mixes in live/paper via `useCacheKey`, so flipping the toggle swaps it).
+  // Reading `!!data` therefore let a stale or unrelated `NOTOK` vote as "not
+  // in this mode", flipping the user's trading mode for a bot that was never
+  // in the other mode and reporting a healthy bot as notFound. `isSuccess`
+  // excludes errors; `isPlaceholderData` excludes borrowed payloads. Absence
+  // of evidence must not read as evidence of absence.
+  const currentResolved = current.isSuccess && !current.isPlaceholderData;
   const foundInCurrent =
-    current.data?.status === 'OK' && current.data.data != null;
-  const missingInCurrent = !!current.data && !foundInCurrent;
+    currentResolved &&
+    current.data?.status === 'OK' &&
+    current.data.data != null;
+  const missingInCurrent = currentResolved && !foundInCurrent;
 
   // Only reach for the OTHER mode once we know it's missing in the current
   // one — avoids a second request on every normal bot page load.
@@ -99,25 +112,50 @@ export function useBotModeGuard(
     }
   );
 
+  // Same rule for the other-mode probe (see `currentResolved`).
+  const otherResolved = other.isSuccess && !other.isPlaceholderData;
   const foundInOther =
-    other.data?.status === 'OK' && other.data.data != null;
-  const missingInOther = !!other.data && !foundInOther;
+    otherResolved && other.data?.status === 'OK' && other.data.data != null;
+  const missingInOther = otherResolved && !foundInOther;
 
   // Align the global toggle to the mode the bot actually lives in. This is a
   // store-only update (not `usePaperContext.setPaperContext`), so it doesn't
   // mutate the user's persisted profile default — it just makes the current
   // session's queries target the right collection.
+  //
+  // Realign at most ONCE per bot. `setTradingMode(!isLiveTrading)` is defined
+  // relative to the toggle it just flipped, and `isLiveTrading` is a dependency
+  // of this effect, so a second pass inverts the value straight back. The probes
+  // cannot break the tie: flipping the toggle changes BOTH probe cache keys
+  // (`useCacheKey` mixes in live/paper), and the global
+  // `placeholderData: (prev) => prev` in `lib/queryClient` keeps serving the
+  // pre-flip answers while the new keys refetch — so `missingInCurrent &&
+  // foundInOther` stays true across the flip and the toggle oscillates forever.
+  // Every pass re-filters each paper/live list (bots appear/vanish) until React
+  // trips its update-depth limit and the page dies to the ErrorBoundary (#185).
+  const realignedForRef = useRef<string | null>(null);
+
   useEffect(() => {
-    if (missingInCurrent && foundInOther) {
-      logger.info('[useBotModeGuard] realigning trading mode to bot mode', {
-        botId,
-        botType,
-        wasLive: isLiveTrading,
-        nowLive: !isLiveTrading,
-      });
-      setTradingMode(!isLiveTrading);
-    }
-  }, [missingInCurrent, foundInOther, isLiveTrading, setTradingMode, botId, botType]);
+    if (!botId) return;
+    if (!(missingInCurrent && foundInOther)) return;
+    if (realignedForRef.current === botId) return;
+
+    realignedForRef.current = botId;
+    logger.info('[useBotModeGuard] realigning trading mode to bot mode', {
+      botId,
+      botType,
+      wasLive: isLiveTrading,
+      nowLive: !isLiveTrading,
+    });
+    setTradingMode(!isLiveTrading);
+  }, [
+    missingInCurrent,
+    foundInOther,
+    isLiveTrading,
+    setTradingMode,
+    botId,
+    botType,
+  ]);
 
   if (!enabled) {
     return { status: 'ok', notFound: false, isResolving: false };

@@ -16,10 +16,6 @@ import {
   filterRestartableBots,
   filterStartableBots,
   filterStoppableBots,
-  getActionPastTense,
-  getTargetStatus,
-  isBotActive,
-  isBotDeletable,
 } from '@/utils/botStatusUtils';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
@@ -30,10 +26,10 @@ import {
   Filter,
   Grid3x3,
   MoreHorizontal,
-  Pause,
   Play,
   Plus,
   RefreshCw,
+  Square,
   Star,
   Trash2,
 } from 'lucide-react';
@@ -60,7 +56,6 @@ import WidgetContainer from '../components/layout/WidgetContainer';
 import {
   BotStatusConfirmationModal,
   DeleteConfirmationModal,
-  SuccessFeedbackModal,
 } from '../components/modals';
 import { Badge } from '../components/ui/badge';
 import BotsSkeleton from '../components/ui/BotsPageSkeleton';
@@ -90,6 +85,8 @@ import {
   useBotRestart,
   useBotStatusToggle,
 } from '../hooks/useBotMutations';
+import { useBotActions } from '../hooks/useBotActions';
+import { BotActionsModals } from '../components/bots/BotActionsModals';
 import { useCacheKey } from '../hooks/useCacheKey';
 import { useCacheStatus } from '../hooks/useCacheStatus';
 import { useGridBots, useGridBotStats } from '../hooks/useGridBots';
@@ -103,7 +100,7 @@ import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import { transformGridBotToBot, type GridBot } from '../types/gridBot';
 import { useShareContext } from '../hooks/useShareContext';
-import { useSharedBot } from '../hooks/useSharedBot';
+import { useDrawerBot } from '../hooks/useDrawerBot';
 import { useAuthStore } from '../stores/authStore';
 
 const GRID_BOT_TYPE_ID = 'grid';
@@ -118,111 +115,28 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
   bot,
   originalBotData,
 }) => {
-  const navigate = useNavigate();
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [successModalOpen, setSuccessModalOpen] = useState(false);
-  const [statusModalOpen, setStatusModalOpen] = useState(false);
-  const [successData, setSuccessData] = useState<{
-    type: 'clone' | 'delete';
-    newItemId?: string;
-  } | null>(null);
-
-  const statusToggleMutation = useBotStatusToggle(BotTypesEnum.grid);
-  const deleteMutation = useBotDelete();
-  const archiveMutation = useBotArchive();
-  const restartMutation = useBotRestart();
-
-  const handleEdit = () => {
-    navigate(`/bot/edit/${bot.id}`);
-  };
-
-  const handleClone = () => {
-    navigate(`/grid/new?load=${bot.id}`);
-  };
-
-  const handleStatusToggle = () => {
-    setStatusModalOpen(true);
-  };
-
-  const handleConfirmStatusChange = (
-    closeType?: string,
-    cancelPartiallyFilled?: boolean
-  ) => {
-    const isActive = isBotActive(bot.status);
-    const newStatus = getTargetStatus(bot.status);
-
-    statusToggleMutation.mutate(
-      {
-        id: bot.id,
-        status: newStatus,
-        closeGridType: closeType as CloseGRIDTypeEnum | undefined,
-        cancelPartiallyFilled,
-      },
-      {
-        onSuccess: () => {
-          setStatusModalOpen(false);
-          toast.success(`Bot ${getActionPastTense(bot.status)} successfully`);
-        },
-        onError: (error) => {
-          console.error('Failed to change bot status:', error);
-          toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
-        },
-      }
-    );
-  };
-
-  const handleDelete = () => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-    setDeleteModalOpen(true);
-  };
-
-  const handleRestart = () => {
-    restartMutation.mutate(
-      {
-        id: bot.id,
-        type: BotTypesEnum.grid,
-      },
-      {
-        onSuccess: () => {
-          toast.success('Bot restarted successfully');
-        },
-        onError: () => {
-          toast.error('Failed to restart bot');
-        },
-      }
-    );
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-
-    try {
-      await deleteMutation.mutateAsync({ id: bot.id, type: BotTypesEnum.grid });
-      setSuccessData({ type: 'delete' });
-      setSuccessModalOpen(true);
-    } catch (error) {
-      console.error('Failed to delete bot:', error);
-    }
-  };
-
-  const handleArchive = () => {
-    const isArchived = bot.status.toLowerCase() === 'archived';
-    archiveMutation.mutate({
-      id: bot.id,
-      archive: !isArchived,
-      type: BotTypesEnum.grid,
-    });
-  };
+  // Shared bot-action orchestration (clone opens the pre-filled create page;
+  // status/delete via the confirmation modals rendered by <BotActionsModals>).
+  const botActions = useBotActions({
+    botId: bot.id,
+    botType: BotTypesEnum.grid,
+    botName: bot.name,
+    status: bot.status,
+    // Grid "active deals" = active buy/sell levels.
+    activeDeals:
+      (originalBotData?.levels?.active?.buy || 0) +
+      (originalBotData?.levels?.active?.sell || 0),
+    totalValue: 0,
+    currency: originalBotData?.symbol?.quoteAsset || 'USD',
+    lastActivity: originalBotData?.created || 'Unknown',
+    botData: originalBotData ?? bot,
+    gridFutures: isFuturesExchange(bot.exchange),
+    gridHasOpenPosition: (originalBotData?.position?.price ?? 0) !== 0,
+    gridIsShort: originalBotData?.position?.side === PositionSide.SHORT,
+    onCopyToLive: () => {
+      toast.info('Copy to live not yet implemented for grid bots');
+    },
+  });
 
   return (
     <>
@@ -245,91 +159,14 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
             name: bot.name,
             type: bot.type as BotTypeId,
             status: bot.status as BotStatusType,
+            coldArchived: bot.coldArchived,
           }}
-          pending={{
-            statusToggle: statusToggleMutation.isPending,
-            restart: restartMutation.isPending,
-            clone: false,
-            delete: deleteMutation.isPending,
-            archive: archiveMutation.isPending,
-          }}
-          onToggleStatus={() => handleStatusToggle()}
-          onRestart={() => handleRestart()}
-          onEdit={() => handleEdit()}
-          onClone={() => handleClone()}
-          onViewClosedTrades={() => navigate(`/trades?botId=${bot.id}`)}
-          onShareConfig={async () => {
-            try {
-              const source =
-                originalBotData ?? (bot as unknown as Record<string, unknown>);
-              await navigator.clipboard.writeText(
-                JSON.stringify(source, null, 2)
-              );
-              toast.success('Configuration copied to clipboard');
-            } catch (err) {
-              console.error('Failed to copy configuration:', err);
-              toast.error('Failed to copy configuration');
-            }
-          }}
-          onCopyToLive={() => {
-            toast.info('Copy to live not yet implemented for grid bots');
-          }}
-          onDelete={() => handleDelete()}
-          onArchive={() => handleArchive()}
+          {...botActions.menuProps}
         />
       </DropdownMenu>
 
-      <DeleteConfirmationModal
-        open={deleteModalOpen}
-        onOpenChange={setDeleteModalOpen}
-        onConfirm={handleConfirmDelete}
-        title="Delete Bot"
-        description="Are you sure you want to delete this bot? This action cannot be undone."
-        itemType="bot"
-        itemName={bot.name}
-        requireConfirmation={false}
-      />
-
-      <BotStatusConfirmationModal
-        open={statusModalOpen}
-        onOpenChange={setStatusModalOpen}
-        onConfirm={handleConfirmStatusChange}
-        botName={bot.name}
-        currentStatus={bot.status}
-        targetStatus={getTargetStatus(bot.status)}
-        hasActiveDeals={
-          (originalBotData?.levels?.active?.buy || 0) +
-            (originalBotData?.levels?.active?.sell || 0) >
-          0
-        }
-        botType={BotTypesEnum.grid}
-        gridFutures={isFuturesExchange(bot.exchange)}
-        gridHasOpenPosition={(originalBotData?.position?.price ?? 0) !== 0}
-        gridIsShort={originalBotData?.position?.side === PositionSide.SHORT}
-        isLoading={statusToggleMutation.isPending}
-      />
-
-      <SuccessFeedbackModal
-        open={successModalOpen}
-        onOpenChange={(open) => {
-          setSuccessModalOpen(open);
-          if (!open) {
-            setSuccessData(null);
-          }
-        }}
-        type={successData?.type || 'clone'}
-        itemName={bot.name}
-        itemType="bot"
-        newItemId={successData?.newItemId}
-        details={
-          successData?.type === 'clone'
-            ? {
-                originalName: bot.name,
-                newName: `${bot.name} (Clone)`,
-              }
-            : undefined
-        }
-      />
+      {/* Shared status / delete / success modals, driven by useBotActions. */}
+      <BotActionsModals {...botActions.modalProps} />
     </>
   );
 };
@@ -399,11 +236,6 @@ const GridBots: React.FC = () => {
   // Share-link path: see TradingBots.tsx
   const currentUser = useAuthStore((s) => s.user);
   const { shareId } = useShareContext();
-  const sharedBotResult = useSharedBot({
-    botId: selectedBot ?? '',
-    type: BotTypesEnum.grid,
-    shareId,
-  });
 
   const deleteMutation = useBotDelete();
   const archiveMutation = useBotArchive();
@@ -675,6 +507,17 @@ const GridBots: React.FC = () => {
 
     return transformed;
   }, [gridBots, stableDependencies.prices, stableDependencies.exchanges]);
+
+  // Shared drawer-bot resolution: list lookup + by-id fallback (archived/share
+  // bots) + sticky-through-refetch, all in one place for every bot page.
+  const drawerBot = useDrawerBot({
+    selectedBotId: selectedBot,
+    listBots: transformedBots,
+    type: BotTypesEnum.grid,
+    shareId,
+    listLoading: botsLoading,
+    transformRaw: (raw) => transformGridBotToBot(raw as unknown as Bot, [], []),
+  });
 
   const handleSelectBot = useCallback(
     (botId: string | null) => {
@@ -1405,22 +1248,9 @@ const GridBots: React.FC = () => {
   // no stats, no create button). MainLayout short-circuits to
   // SharedPageLayout when isDemo, so chrome is minimal.
   if (shareId) {
-    let sharedBotForDrawer:
-      | ReturnType<typeof transformGridBotToBot>
-      | undefined;
-    if (selectedBot && sharedBotResult.bot) {
-      try {
-        sharedBotForDrawer = transformGridBotToBot(
-          sharedBotResult.bot as unknown as Bot,
-          [],
-          []
-        );
-      } catch (e) {
-        logger.warn('[GridBots] failed to transform shared bot', { error: e });
-      }
-    }
+    const sharedBotForDrawer = drawerBot.bot;
     const sharedOwnerId =
-      (sharedBotResult.bot as { userId?: string } | null)?.userId;
+      (drawerBot.rawBot as { userId?: string } | null)?.userId;
     return (
       <MainLayout pageTitle="Shared grid bot" activePage="/grid-bots">
         {sharedBotForDrawer ? (
@@ -1437,7 +1267,7 @@ const GridBots: React.FC = () => {
           </BotDetailsDrawer>
         ) : (
           <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
-            {sharedBotResult.isLoading
+            {drawerBot.isLoading
               ? 'Loading shared bot…'
               : 'Shared bot is not available.'}
           </div>
@@ -1565,30 +1395,7 @@ const GridBots: React.FC = () => {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, delay: 0.6 }}
               >
-                {gridBots.length === 0 ? (
-                  <div className="h-full w-full flex items-center justify-center">
-                    <EmptyState
-                      size="page"
-                      icon={<Grid3x3 className="w-6 h-6" />}
-                      title="No grid bots yet"
-                      description="Grid bots place a ladder of buy and sell orders to profit from price oscillations in a range. Set up your first grid to get started."
-                      action={
-                        readOnly
-                          ? undefined
-                          : {
-                              label: 'Create grid bot',
-                              onClick: () => navigate('/grid/new'),
-                              icon: <Plus className="w-5 h-5" />,
-                            }
-                      }
-                    />
-                  </div>
-                ) : (
                 <DataTable
-                  key={`grid-table-${filteredData.length}-${filteredData.reduce(
-                    (sum, bot) => sum + (bot.totalProfitUsd ?? 0),
-                    0
-                  )}`}
                   tableId="grid-bots"
                   columns={columns}
                   data={orderedFilteredData}
@@ -1605,7 +1412,44 @@ const GridBots: React.FC = () => {
                   cardComponent={BotCardWrapper}
                   cardViewBreakpoints={CARD_VIEW_COLUMNS}
                   cardViewGap={16}
-                  emptyMessage="No grid bots found"
+                  emptyContent={
+                    <EmptyState
+                      size="page"
+                      icon={<Grid3x3 className="w-6 h-6" />}
+                      title={
+                        showArchived
+                          ? 'No archived grid bots'
+                          : 'No grid bots yet'
+                      }
+                      description={
+                        showArchived
+                          ? 'Bots you archive move here. Un-archive one to bring it back to your active list.'
+                          : 'Grid bots place a ladder of buy and sell orders to profit from price oscillations in a range. Set up your first grid to get started.'
+                      }
+                      action={
+                        showArchived
+                          ? {
+                              label: 'Back to active bots',
+                              onClick: () => setShowArchived((prev) => !prev),
+                            }
+                          : readOnly
+                            ? undefined
+                            : {
+                                label: 'Create grid bot',
+                                onClick: () => navigate('/grid/new'),
+                                icon: <Plus className="w-5 h-5" />,
+                              }
+                      }
+                      secondaryAction={
+                        showArchived
+                          ? undefined
+                          : {
+                              label: 'View archived bots',
+                              onClick: () => setShowArchived((prev) => !prev),
+                            }
+                      }
+                    />
+                  }
                   className="h-full min-h-[400px]"
                   onViewModeChange={setCurrentViewMode}
                   onColumnFiltersVisibilityChange={setShowFilters}
@@ -1632,7 +1476,7 @@ const GridBots: React.FC = () => {
                           {
                             id: 'stop',
                             label: 'Stop',
-                            icon: Pause,
+                            icon: Square,
                             onAction: (bots) => {
                               handleOpenBulkStatusChange(bots, 'stop');
                             },
@@ -1774,7 +1618,6 @@ const GridBots: React.FC = () => {
                   }
                   // New button moved to widget header
                 />
-                )}
 
                 {/* Bulk delete modal */}
                 <DeleteConfirmationModal
@@ -1834,26 +1677,11 @@ const GridBots: React.FC = () => {
         {/* Bot Details Drawer - OPTIMIZED: Single shared drawer instead of one per bot */}
         {selectedBot &&
           (() => {
-            let selectedBotData = transformedBots.find(
-              (bot) => bot.id === selectedBot
-            );
-            if (!selectedBotData && shareId && sharedBotResult.bot) {
-              try {
-                selectedBotData = transformGridBotToBot(
-                  sharedBotResult.bot as unknown as Bot,
-                  [],
-                  []
-                );
-              } catch (e) {
-                logger.warn('[GridBots] failed to transform shared bot', {
-                  error: e,
-                });
-              }
-            }
+            const selectedBotData = drawerBot.bot;
             if (!selectedBotData) return null;
 
             const sharedOwnerId =
-              (sharedBotResult.bot as { userId?: string } | null)?.userId;
+              (drawerBot.rawBot as { userId?: string } | null)?.userId;
             const viewOnly =
               !!shareId ||
               (!!currentUser && !!sharedOwnerId && sharedOwnerId !== currentUser.id);

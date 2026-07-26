@@ -19,6 +19,7 @@ import {
   type ProfitQuery,
 } from '@/types';
 import { formatCurrency, formatPercentage } from '@/utils/formatters';
+import { getValidTimezone } from '@/utils/timeUtils';
 import { Skeleton } from '@/components/ui/skeleton';
 import React, { useMemo } from 'react';
 import { Cell, Pie, PieChart } from 'recharts';
@@ -86,7 +87,10 @@ function toTzDateKey(date: Date, timezone: string): string {
 export const HeroBalance: React.FC = () => {
   const privacyMode = useUIStore((s) => s.privacyMode);
   const { exchanges } = useTransformedExchangesFromContext();
-  const userTimezone = useAuthStore((s) => s.user?.timezone || 'UTC');
+  // Stored timezone is free-text and may be an invalid IANA id (e.g. the
+  // localized "Europa/Roma"); an invalid value throws in toTzDateKey's Intl
+  // call and makes getProfitByUser return NOTOK. Sanitize to a valid zone.
+  const userTimezone = useAuthStore((s) => getValidTimezone(s.user?.timezone));
 
   // Portfolio snapshots — same query the rest of the dashboard uses, so cache hits.
   const portfolioQuery = useMemo(() => GraphQlQuery.getPortfolioByUser(), []);
@@ -372,10 +376,14 @@ export const HeroBalance: React.FC = () => {
       dealsRow(terminalDealStats),
     ];
 
-    const openTrades = buckets.reduce(
-      (s, b) => s + b.normal + b.inProfit + b.eighty + b.max,
-      0
-    );
+    // `normal` is already the TOTAL number of open deals in the bucket — the
+    // backend aggregates it as `$sum: 1` over every open deal. `inProfit`,
+    // `eighty` and `max` are OVERLAPPING sub-categories of those same deals
+    // (a deal can be both in profit and at 80% DCA), so adding them on top of
+    // `normal` double-counts and inflates "Open trades". Count `normal` only —
+    // matching V1 (main-dash StatusStats) and the BotStatus widget, neither of
+    // which ever sums these four together.
+    const openTrades = buckets.reduce((s, b) => s + b.normal, 0);
     const unrealizedPnl = buckets.reduce((s, b) => s + b.unrealizedProfit, 0);
     const totalProfit =
       profitVal(dcaAllProfit) +

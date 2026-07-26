@@ -222,10 +222,22 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
       [trade]
     );
     const { getBalances } = useBotFormMutations(useBotFromMutationOptions);
+    // Tracks which deal(s) the form is currently seeded from. The effect
+    // below re-runs on every render where `onClose`/`trade` identity changes
+    // — and realtime socket traffic (`bot deal update`, `data update`) churns
+    // the parent on every incoming notification. Without this guard, each
+    // notification would re-seed the form from server state and wipe the
+    // user's in-progress edits. We only re-seed when the identity of the
+    // deal(s) being edited actually changes.
+    const seededDealKeyRef = useRef<string | null>(null);
     useEffect(() => {
       if (!trade || trade.some((t) => !isActiveDeal(t))) {
+        seededDealKeyRef.current = null;
         onClose();
       } else {
+        const dealKey = trade.map((t) => t._id).join('|');
+        if (seededDealKeyRef.current === dealKey) return;
+        seededDealKeyRef.current = dealKey;
         const isSingle = trade.length === 1;
         const combinedSettings = isSingle
           ? {
@@ -520,7 +532,12 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
           settings: localSettings,
         });
       }
-    }, [trade, formData, isAnySettingChanged, editMutation]);
+      // Depend on the stable `mutate` fn, not the whole react-query mutation
+      // object (which is a fresh reference every render and would rebuild this
+      // callback — and therefore the button-config array — on every parent
+      // re-render, re-rendering ResponsiveButtonRow under live data).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [trade, formData, isAnySettingChanged, editMutation.mutate]);
     const handleCancel = useCallback(() => {
       onClose();
     }, [onClose]);
@@ -546,7 +563,9 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
           originalSettings: localSettings,
         });
       }
-    }, [trade, formData, resetMutation]);
+      // Stable `.mutate` dep, not the whole mutation object (see handleSubmit).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [trade, formData, resetMutation.mutate]);
     const submitLabel = useMemo(() => 'Save Changes', []);
     const cancelLabel = useMemo(() => 'Cancel', []);
     const resetLabel = useMemo(() => 'Reset to Global Settings', []);

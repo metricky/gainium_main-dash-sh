@@ -1,7 +1,10 @@
 import type { PanelMenuConfig } from '@/components/bots/panels/PanelContainer';
 import { useOptionalGridPageContext } from '@/contexts/bots/grid/GridPageProvider';
 import { riskRewardRuntimeStore } from '@/contexts/bots/dca/RiskRewardRuntimeContext';
-import { indicatorStore } from '@/stores/indicatorStore';
+import {
+  useExampleOrdersStore,
+  useIndicatorStore,
+} from '@/contexts/bots/form/formStoreContexts';
 import { riskRewardPositionStore } from '@/stores/riskRewardPositionStore';
 import { IndicatorEnum } from '@/types';
 import React, {
@@ -36,7 +39,8 @@ import {
   useBotChartDisplayOptions,
   type BotChartDisplayOptionsResult,
 } from './hooks/useBotChartDisplayOptions';
-import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import { isTokenizedStockPair } from '@/utils/pairs';
+import { useOrderStore } from '@/stores/live';
 
 const DEFAULT_SYMBOL = 'BTCUSDT';
 const DEFAULT_EXCHANGE = 'binance';
@@ -124,7 +128,7 @@ const parseSymbolParts = (input?: string): ParsedSymbolParts => {
 // convention); uppercase regular pairs so legacy `btcusdt` inputs
 // still produce `BTCUSDT`.
 const normalizePairCase = (pair: string): string =>
-  pair.includes(':') ? pair : pair.toUpperCase();
+  pair.includes(':') || isTokenizedStockPair(pair) ? pair : pair.toUpperCase();
 
 // Symbol-string equality that ignores case AND treats `:`/`_` as
 // equivalent. TradingView normalizes our HIP-3 ticker (`flx:CRCL-USDH`
@@ -349,6 +353,11 @@ const BotChart: React.FC<BotChartProps> = ({
   const [exampleOrders, setExampleOrders] = useState<DCAGrid[]>([]);
   const [riskPosition, setRiskPosition] = useState<PositionChart | null>(null);
 
+  // Shared globals for regular bots; the leg's isolated instances when this
+  // chart is mounted inside an isolateStores BotFormProvider (hedge leg).
+  const indicatorStore = useIndicatorStore();
+  const exampleOrdersStore = useExampleOrdersStore();
+
   useEffect(() => {
     const unsubscribe = indicatorStore.subscribe((incoming) => {
       setIndicatorPayload(incoming);
@@ -357,14 +366,14 @@ const BotChart: React.FC<BotChartProps> = ({
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [indicatorStore]);
 
   // Keep the indicator store's chartInterval in sync with the chart's interval
   useEffect(() => {
     if (interval) {
       indicatorStore.setChartIndicatorsContext({ chartInterval: interval });
     }
-  }, [interval]);
+  }, [interval, indicatorStore]);
 
   useEffect(() => {
     const unsubscribe = exampleOrdersStore.subscribe((incoming) => {
@@ -374,7 +383,7 @@ const BotChart: React.FC<BotChartProps> = ({
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [exampleOrdersStore]);
   const resolvedBotId = useMemo(() => {
     const candidates = [
       getString(data?.['botId']),
@@ -511,6 +520,41 @@ const BotChart: React.FC<BotChartProps> = ({
   const contextBotId =
     gridPageContext?.state.bot?._id ?? gridPageContext?.state.botId ?? null;
 
+  // Live open orders for this grid bot, straight from the socket-fed order
+  // store (the `new` bucket holds NEW/PARTIALLY_FILLED orders). As the engine
+  // places the grid ladder, each `data update` event adds one order here, so
+  // overlaying these on the predicted grid makes real orders appear one-by-one
+  // on the chart — matching the legacy dashboard. Scoped to grid pages so other
+  // chart consumers (terminal, DCA/combo) are unaffected.
+  const liveOrdersBotId = resolvedBotId || contextBotId || '';
+  const liveOpenOrdersRecord = useOrderStore((s) =>
+    gridPageContext && liveOrdersBotId
+      ? s.orders.new[liveOrdersBotId]
+      : undefined
+  );
+  const liveOrderLines: ChartOrderLine[] = useMemo(() => {
+    if (!liveOpenOrdersRecord) return EMPTY_CHART_ORDER_LINES;
+    const lines: ChartOrderLine[] = [];
+    for (const order of Object.values(liveOpenOrdersRecord)) {
+      const price = parseFloat(String(order.price));
+      const qty = parseFloat(String(order.origQty));
+      const side = String(order.side).toLowerCase();
+      if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(qty)) {
+        continue;
+      }
+      lines.push({
+        price,
+        side,
+        qty,
+        label: side === 'buy' ? 'Buy' : 'Sell',
+        noLabel: false,
+        isDraggable: false,
+        lineStyle: 'solid',
+      });
+    }
+    return lines;
+  }, [liveOpenOrdersRecord]);
+
   const contextAvgPriceLines =
     gridPageContext?.state.overlays.avgPrice.lines ?? EMPTY_AVG_PRICE_LINES;
 
@@ -541,8 +585,13 @@ const BotChart: React.FC<BotChartProps> = ({
   const position = riskPosition ?? dataPosition ?? null;
 
   const orders = useMemo(
-    () => (showOrders ? rawOrders : EMPTY_CHART_ORDER_LINES),
-    [rawOrders, showOrders]
+    () =>
+      showOrders
+        ? liveOrderLines.length
+          ? [...rawOrders, ...liveOrderLines]
+          : rawOrders
+        : EMPTY_CHART_ORDER_LINES,
+    [rawOrders, liveOrderLines, showOrders]
   );
 
   const orderDrawings = useMemo(
@@ -595,7 +644,7 @@ const BotChart: React.FC<BotChartProps> = ({
         chartInterval: nextInterval,
       });
     },
-    [interval, setInterval]
+    [interval, setInterval, indicatorStore]
   );
 
   const intervalLabel = formatIntervalLabel(interval);
@@ -646,7 +695,7 @@ const BotChart: React.FC<BotChartProps> = ({
         }
       }
     },
-    [indicatorPayload]
+    [indicatorPayload, exampleOrdersStore]
   );
   const chartShell = (
     <div className={containerClassName}>

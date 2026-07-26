@@ -9,12 +9,13 @@ import ExchangeIcon from '@/components/widgets/shared/ExchangeIcon';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import type { BotFormMode, BotFormUpdateValue, Fields } from '@/features/bots';
 import type { ExchangeInUser } from '@/types';
+import { ExchangeEnum, OKXSource } from '@/types/exchange.types';
 import type { BotFormData } from '@/types/bots';
 import { getProviderIcon, isFuturesExchange } from '@/utils/exchangeUtils';
 import { useLocalUserSettingsStore } from '@/stores/localUserSettingsStore';
 import { cn } from '@/lib/utils';
 import { Star } from 'lucide-react';
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 type ExchangeSelectorProps = {
   isExchangeLocked: boolean;
@@ -67,6 +68,34 @@ const ExchangeSelector = ({
     })}`;
   }, []);
 
+  // OKX Europe (my.okx.com) has no supported futures product, yet some EU
+  // accounts still carry legacy okxLinear/okxInverse sub-accounts created
+  // before this was blocked. Hide those from the bot exchange picker so users
+  // don't land on an unusable USDT-only futures account — but never hide the
+  // one already selected, so an existing bot pinned to it still resolves.
+  const visibleExchanges = useMemo(
+    () =>
+      exchangesData?.filter(
+        (exchange) =>
+          exchange.uuid === currentExchange?.uuid ||
+          !(
+            exchange.okxSource === OKXSource.my &&
+            (exchange.provider === ExchangeEnum.okxLinear ||
+              exchange.provider === ExchangeEnum.okxInverse)
+          )
+      ),
+    [exchangesData, currentExchange?.uuid]
+  );
+
+  // The uuid we last auto-dispatched. `updateFormData` writes to the bot-form
+  // store asynchronously, so between the dispatch and `formData.exchangeUUID`
+  // reflecting it the effect can re-run (Smart Terminal re-renders on every
+  // price tick, and `visibleExchanges`/`updateFormData` are fresh identities
+  // each render). Without this in-flight latch the effect would re-dispatch
+  // the SAME selection on every one of those interim renders — the React #185
+  // "maximum update depth exceeded" loop reported on /terminal?dealType=smart.
+  const pendingSelectionRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (mode !== 'create') {
       return;
@@ -74,51 +103,68 @@ const ExchangeSelector = ({
     if (isExchangeLocked) {
       return;
     }
+    // The current selection is already valid — nothing to auto-pick. Clear the
+    // latch so a genuine future re-selection (e.g. the selected exchange gets
+    // deleted) can dispatch again.
     if (formData.exchangeUUID) {
-      const isExistExchange = exchangesData?.find(
+      const isExistExchange = visibleExchanges?.find(
         (exchange) => exchange.uuid === formData.exchangeUUID
       );
       if (isExistExchange) {
+        pendingSelectionRef.current = null;
         return;
       }
     }
-    if (!exchangesData?.length) {
+    if (!visibleExchanges?.length) {
       return;
     }
     // Honor the user's chosen default exchange (the starred one) when it
     // still exists, regardless of recency.
+    let target: string | undefined;
     if (defaultExchangeUuid) {
-      const preferred = exchangesData.find(
+      const preferred = visibleExchanges.find(
         (exchange) => exchange.uuid === defaultExchangeUuid
       );
       if (preferred) {
-        updateFormData('exchangeUUID', preferred.uuid);
-        return;
+        target = preferred.uuid;
       }
     }
-    // No (or stale) persisted exchange — pick the most-recently-active one
-    // by `lastUpdated`. Falls back to the last entry in the list (most
-    // exchange APIs append new accounts), then to the first as a last
-    // resort. This avoids the common case where the API returns the
-    // user's oldest exchange (e.g. Hyperliquid) first and it gets stuck
-    // as the default forever.
-    const sortedByRecency = [...exchangesData].sort((a, b) => {
-      const aT = typeof a.lastUpdated === 'number' ? a.lastUpdated : -1;
-      const bT = typeof b.lastUpdated === 'number' ? b.lastUpdated : -1;
-      return bT - aT;
-    });
-    const fallback =
-      sortedByRecency[0]?.lastUpdated !== undefined
-        ? sortedByRecency[0]
-        : exchangesData[exchangesData.length - 1];
-    if (fallback) {
-      updateFormData('exchangeUUID', fallback.uuid);
+    if (!target) {
+      // No (or stale) persisted exchange — pick the most-recently-active one
+      // by `lastUpdated`. Falls back to the last entry in the list (most
+      // exchange APIs append new accounts), then to the first as a last
+      // resort. This avoids the common case where the API returns the
+      // user's oldest exchange (e.g. Hyperliquid) first and it gets stuck
+      // as the default forever.
+      const sortedByRecency = [...visibleExchanges].sort((a, b) => {
+        const aT = typeof a.lastUpdated === 'number' ? a.lastUpdated : -1;
+        const bT = typeof b.lastUpdated === 'number' ? b.lastUpdated : -1;
+        return bT - aT;
+      });
+      const fallback =
+        sortedByRecency[0]?.lastUpdated !== undefined
+          ? sortedByRecency[0]
+          : visibleExchanges[visibleExchanges.length - 1];
+      target = fallback?.uuid;
     }
+    if (!target) {
+      return;
+    }
+    // Idempotency guard: never re-dispatch a selection that is already the
+    // current value or one we just dispatched and are still waiting to see
+    // reflected in `formData`. This is what converges the effect and stops the
+    // update-depth loop under unstable `visibleExchanges`/`updateFormData`
+    // identities.
+    if (target === formData.exchangeUUID || target === pendingSelectionRef.current) {
+      return;
+    }
+    pendingSelectionRef.current = target;
+    updateFormData('exchangeUUID', target);
   }, [
     mode,
     isExchangeLocked,
     formData.exchangeUUID,
-    exchangesData,
+    visibleExchanges,
     updateFormData,
     defaultExchangeUuid,
   ]);
@@ -166,7 +212,7 @@ const ExchangeSelector = ({
               />
             </SelectTrigger>
             <SelectContent>
-              {exchangesData?.map((exchange) => {
+              {visibleExchanges?.map((exchange) => {
                 const balanceValue =
                   typeof exchange.balance === 'number' &&
                   Number.isFinite(exchange.balance)
@@ -247,7 +293,7 @@ const ExchangeSelector = ({
                   </SelectItem>
                 );
               })}
-              {!exchangesData?.length && (
+              {!visibleExchanges?.length && (
                 <SelectItem value="__no-exchanges__" disabled>
                   No exchanges available
                 </SelectItem>

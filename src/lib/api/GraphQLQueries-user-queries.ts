@@ -53,6 +53,7 @@ const ALLOWED_LOGIN_METHODS_SELECTION = IS_CLOUD
   ? `allowedLoginMethods {
                                   password
                                   google
+                                  discord
                                   emailLink
                                   passkey
                                 }`
@@ -434,16 +435,18 @@ export const userQueries = {
     return { query, variables };
   },
 
-  getPortfolioByUser: (input?: { timezone?: string }) => {
-    const query = `query getPortfolioByUser($input: getPortfolioByUser) {
-                        getPortfolioByUser(input:$input){
-                            status
-                            reason
-                            data{
-                                result{
-                                    updateTime
-                                    totalUsd
-                                    assets {
+  getPortfolioByUser: (input?: {
+    timezone?: string;
+    from?: number;
+    to?: number;
+    includeAssets?: boolean;
+  }) => {
+    // The line only needs updateTime+totalUsd; per-day assets[] are only for the
+    // coin/exchange filter. Omit them (includeAssets:false) for the common
+    // all-coins/all-exchanges case so the payload stays small over a long range.
+    const includeAssets = input?.includeAssets !== false;
+    const assetsSelection = includeAssets
+      ? `assets {
                                         name
                                         amount
                                         amountUsd
@@ -452,7 +455,17 @@ export const userQueries = {
                                           amount
                                           amountUsd
                                         }
-                                    }
+                                    }`
+      : '';
+    const query = `query getPortfolioByUser($input: getPortfolioByUser) {
+                        getPortfolioByUser(input:$input){
+                            status
+                            reason
+                            data{
+                                result{
+                                    updateTime
+                                    totalUsd
+                                    ${assetsSelection}
                                 }
                             }
                         }
@@ -516,6 +529,7 @@ export const userQueries = {
   setAllowedLoginMethods: (input: {
     password: boolean;
     google: boolean;
+    discord: boolean;
     emailLink: boolean;
     passkey: boolean;
   }) => {
@@ -526,6 +540,7 @@ export const userQueries = {
                             data {
                                 password
                                 google
+                                discord
                                 emailLink
                                 passkey
                             }
@@ -936,6 +951,19 @@ export const userQueries = {
     return { query, variables };
   },
 
+  getUserPeriods: () => {
+    const query = `query getUserPeriods {
+  getUserPeriods {
+  status
+  reason
+  data {
+  ${period}
+  }
+  }
+  }`;
+    return { query };
+  },
+
   saveUserPeriod: (input: Omit<Period, '_id'>) => {
     const query = `mutation saveUserPeriod($input: userPeriodInput!) {
   saveUserPeriod(input: $input) {
@@ -1203,5 +1231,47 @@ export const userQueries = {
                 }`;
     const variables = { input };
     return { query, variables };
+  },
+
+  // ===== Active sessions (device / login session management) =====
+  // Admin-impersonation sessions are filtered out server-side, so they
+  // never appear in this list.
+  activeSessions: () => {
+    const query = `query activeSessions {
+                    activeSessions {
+                        status
+                        reason
+                        data {
+                            id
+                            source
+                            device
+                            ip
+                            location
+                            createdAt
+                            expiredAt
+                            current
+                        }
+                    }
+                }`;
+    return { query };
+  },
+  revokeSession: (input: { id: string }) => {
+    const query = `mutation revokeSession($input: revokeSessionInput!) {
+                    revokeSession(input: $input) {
+                        status
+                        reason
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+  logoutOtherSessions: () => {
+    const query = `mutation logoutOtherSessions {
+                    logoutOtherSessions {
+                        status
+                        reason
+                    }
+                }`;
+    return { query };
   },
 };

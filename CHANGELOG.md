@@ -5,6 +5,763 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.7] - 2026-07-26
+
+### Fixed
+
+- Bot chart: the page no longer crashes to the error screen when the chart is rebuilt while live data is still arriving — changing the pair or timeframe, or navigating away mid-update, could take down the whole Grid bot edit page. Average-price lines, indicators and the position overlay now wait for the new chart instead.
+
+## [2.38.6] - 2026-07-25
+
+### Removed
+
+- DCA and Combo bot settings: the "Volume based on" control and its "Required change" mode are gone from the bot form. Safety-order volume is always scaled, which is what the DCA overview table and graph already project — use volume and volume scale to shape the ladder. The dependent fields ("Required changed based on", "Required change", "Max volume per DCA", and the required-change order size reference) go with it. Existing bots keep the settings they were saved with.
+
+## [2.38.5] - 2026-07-25
+
+### Fixed
+
+- Saved backtesting periods are stored on your account again instead of only in the browser, so periods created in the previous dashboard — or on another browser or device — show up in the backtest settings. Periods that only existed locally are uploaded once on first load.
+- The backtest run that creates a new saved period now records that period's name, so it no longer appears as `N/A` in the Testing Period Name column of the backtest list.
+- Client-side backtests now show the saved period's name in the Testing Period Name column. The name was stored correctly on the server but the browser's local copy of the result — which takes precedence in the list — was written without it, so every client-side run displayed `N/A`.
+
+## [2.38.3] - 2026-07-24
+
+### Fixed
+
+- Quick bot setup: editing the auto-filled bot name no longer snaps back to the generated value when the form re-renders (market data settling, switching the strategy preset). A name you type is now kept, including edits that leave the trailing preset and date in place.
+
+### Changed
+
+- Quick bot setup: auto-generated bot names now always include the bot type (e.g. `BTCUSDT Hedge DCA Balanced 2026-07-24`, `BTCUSDT DCA 2026-07-24`) — Hedge DCA/Combo previously omitted it. The strategy preset, when one is selected, follows the bot type.
+
+## [2.38.2] - 2026-07-23
+
+### Changed
+
+- Take Profit & Stop Loss: selecting "Dynamic ATR/ADR" now auto-adds a default ATR indicator when none is configured (matches the legacy dashboard), instead of showing an "Add an ATR or ADR indicator" error.
+
+## [2.38.1] - 2026-07-23
+
+### Fixed
+
+- Take Profit → Dynamic ATR/ADR: configured ATR/ADR indicators are now saved with the bot — previously they vanished after saving and reopening the editor ("No ATR/ADR indicators configured"). The same fix applies to Stop Loss in Dynamic ATR/ADR mode.
+- Take Profit → Dynamic ATR/ADR: editing the indicator's Length (and Interval) no longer snaps back to the previous value.
+- Risk:Reward: editing an indicator's parameters in the inline config no longer snaps back to the previous value.
+
+## [2.38.0] - 2026-07-23
+
+### Added
+
+- Settings → Login & Security: Discord can now be enabled/disabled as a login method, like the other methods (cloud). Discord-minted sessions are labeled in the sessions list.
+
+## [2.37.0] - 2026-07-23
+
+### Added
+
+- Dedicated sign-up page at /signup (cloud): create an account with Google, Discord, or an email link — no password needed. The login page links to it ("Don't have an account? Sign up"), and /register redirects there.
+- Discord sign-in/sign-up (cloud): new "Continue with Discord" option on the login and sign-up pages, with a dedicated /auth/discord callback. Enabled when VITE_DISCORD_CLIENT_ID is configured.
+
+### Changed
+
+- Login page redesigned: each sign-in method is a full-width row (Google, Discord, passkey, email link) with even spacing; the Google button now matches the app's button style instead of the Google-rendered widget; clearer headings on login and sign-up.
+- The passkey button now explains via tooltip that terms must be accepted first.
+
+## [2.36.3] - 2026-07-23
+
+### Changed
+
+- Login page: the email-link option now says "Sign in or sign up with email" and explains that the same link creates an account for new users — no Google account or password needed. The "check your inbox" confirmation mentions sign-up too.
+
+## [2.36.2] - 2026-07-21
+
+### Changed
+
+- OKX exchange form: choosing the OKX Europe origin (my.okx.com) now switches the account to spot-only, since EU accounts have no supported futures product. The existing OKX Europe notice explains the restriction.
+
+### Fixed
+
+- Bot forms (DCA/Grid): OKX Europe futures accounts (leftover Linear/Inverse sub-accounts) are hidden from the exchange picker, so EU users land on their tradeable USDC/EUR spot account instead of an unusable USDT-only futures account.
+
+## [2.36.1] - 2026-07-20
+
+### Fixed
+
+- Bot drawer deals table: open deals on a symbol that isn't in the bot's `settings.pair` (e.g. a pair the user removed while a deal stayed open) no longer show "Price unavailable" for unrealized P&L. Fees are now fetched for the union of `settings.pair` and every displayed deal symbol — matching the Overview/positions view — so the client-side P&L can be computed for those deals.
+
+## [2.36.0] - 2026-07-20
+
+### Added
+
+- Restore action for canceled deals: canceled DCA and Terminal deals now have a "Restore" option in the deal actions menu that re-activates the deal as a bare position — adopting its existing holdings with no DCA, take profit or stop loss. The confirmation states this. Shown only on canceled DCA and Terminal deals (no other bot types or statuses). Requires the matching `restoreDeal` backend support.
+
+## [2.35.9] - 2026-07-20
+
+### Added
+
+- Hedge DCA and Hedge Combo bot tables now show a totals row for Cost, Max cost, Total profit and Unrealized PnL (summed) and Avg daily (averaged), matching the DCA, Combo and Grid tables. The aggregation for each column can be switched (Sum/Average/Min/Max) and is remembered.
+
+## [2.35.8] - 2026-07-20
+
+### Fixed
+
+- Importing bot settings whose "name" is a number (via Import / Export settings) no longer crashes the new-bot Quick form — the name is now safely coerced to text instead of throwing.
+
+## [2.35.7] - 2026-07-20
+
+### Added
+
+- Hedge DCA and Hedge Combo bot tables now show a Usage column (filled value vs. max value), matching the DCA, Combo, and legacy dashboard bot tables.
+
+## [2.35.6] - 2026-07-20
+
+### Fixed
+
+- New-bot form no longer forces Profit Currency to "base" on spot and USDⓈ-M (linear) exchanges — it now defaults to "quote" and only uses "base" for inverse (coin-m) exchanges, matching the legacy dashboard.
+- New-bot form reliably reflects the selected exchange's market type, so the futures-only controls (Order Size Reference, Margin & Leverage) show up on futures exchanges instead of occasionally staying hidden after a form reset.
+
+## [2.35.5] - 2026-07-20
+
+### Changed
+
+- Pressing a page's navigation keyboard shortcut while already on that page now refreshes the page instead of doing nothing.
+
+## [2.35.4] - 2026-07-20
+
+### Changed
+
+- Renamed the Combo bot's "Base grid step (%)" and "DCA grid step (%)" fields to "Base grid range (%)" and "DCA grid range (%)". The value has always been the grid's total span (split across the levels), not the per-level step — the derived per-level spacing is still shown below each field. No change to bot behavior.
+
+## [2.35.3] - 2026-07-20
+
+### Changed
+
+- Data tables now remember your totals-row aggregation choice (Total, Average, Min, Max) per column between sessions, alongside the already-saved filters and sorting.
+
+## [2.35.2] - 2026-07-17
+
+### Fixed
+
+- A slow or failed connection while opening a bot no longer makes the app think the bot is missing — it could switch your Live/Paper toggle on its own, or wrongly report a healthy bot as not found.
+
+## [2.35.1] - 2026-07-17
+
+### Fixed
+
+- Bot view pages no longer crash to "Something went wrong" when a bot's paper/live mode differs from the active trading mode. The page now switches to the bot's real mode once instead of flipping back and forth until the page gave up.
+
+## [2.35.0] - 2026-07-17
+
+### Added
+
+- **Active sessions** section in Login & Security: see every device and browser signed in to your account (device, approximate location, IP, login method and sign-in time), log out an individual session, or log out all other sessions at once. Sessions opened by support to check your account are not shown.
+
+## [2.34.1] - 2026-07-17
+
+### Added
+
+- Each backtest in the backtests list now has an **Export** option in its row action menu, so a single backtest can be exported without first selecting it. Available for DCA, Combo, and Grid backtests. The option is enabled only for locally-stored backtests (those with a full local payload to export); server-only backtests show it disabled. The exported JSON file is named after the backtest (`<name>_<TYPE>_<date>.json`).
+
+### Changed
+
+- Backtest export is now JSON only; the CSV export option was removed (single-row menu and bulk action).
+- Backtest export reads the complete backtest from local storage, so locally-run backtests export their full, re-importable data.
+
+## [2.34.0] - 2026-07-17
+
+### Added
+
+- New `settings.savedData` extension slot on the Settings page, letting a host build mount a data-management section. The cloud dashboard fills it with the **Saved Data** manager (export/import of local data — rulebooks, trade journal, chart layouts, cached candles, saved backtests — plus remote backtests). The section is host-gated, so self-hosted builds that register no filler don't surface an empty tab.
+
+## [2.33.18] - 2026-07-16
+
+### Added
+
+- Combo and DCA deal details now show an **Auto-Compounding** breakdown. For each order — the initial buy and every DCA safety order — it lists the configured size, the amount auto-compounding added on top, and the resulting effective size. The dashboard already fetched this data but never displayed it, so there was no way to see how much compounding contributed to a deal; this restores the visibility the legacy dashboard had.
+
+## [2.33.17] - 2026-07-16
+
+### Fixed
+
+- Opening a grid or DCA bot's edit page no longer freezes the tab on cold load. When the detailed-settings query hadn't resolved yet and the form fell back to basic bot data, that fallback was rebuilt as a fresh object on every render, defeating the downstream memoization and spinning the bot form into an infinite re-render loop that pegged the browser. The fallback is now memoized, so the edit page mounts and settles normally.
+
+## [2.33.16] - 2026-07-16
+
+### Fixed
+
+- Editing a grid bot whose exchange is missing or invalid no longer crashes the bot form. The pair-metadata effect could rewrite an empty value on every render, spinning the form into an infinite re-render loop (React error #185) and taking down the edit page. It now seeds pair metadata only on initial mount, so the form loads and recovers instead of crashing.
+
+## [2.33.15] - 2026-07-16
+
+### Fixed
+
+- Backtests on Bybit (and any exchange whose candle endpoint returns partial history on a cold cache) no longer run on incomplete data. Fine-timeframe candle loading could silently drop the head of each fetched window, leaving large interior gaps — a Bybit run could cover as little as ~25% of the period while the identical Binance run covered 100%, making the same strategy look drastically worse on Bybit. The candle loader now detects residual gaps in the assembled series and refills them, so backtests replay the full period on every exchange. Contiguous series (the common case) are unaffected.
+
+## [2.33.14] - 2026-07-16
+
+### Fixed
+
+- A slow or unreachable backend no longer leaves data widgets spinning indefinitely. Interactive data reads across every main page (Overview, Portfolio, the bot/combo/grid pages, Terminal, and the new bot/grid/combo forms) now fail fast with a clear "request timed out" message after 30 seconds instead of pending until the ~5-minute server cutoff. Genuinely long reads — full-history profit charts, backtest-result lists, and archived (cold-store) bot lists — get a more generous 60-second cap, while backtest runs stay uncapped. Timed-out reads no longer silently retry three times before surfacing the error, and the REST-backed widgets (market screener, curated presets, price tickers) gained the same protection.
+
+## [2.33.13] - 2026-07-16
+
+### Fixed
+
+- Dashboard chart widgets: switching a timeframe/range now updates the selected chip and chart immediately instead of appearing frozen for several seconds. Affected every widget backed by a persisted setting (Profit over time's Daily/Weekly/Monthly/Total, Portfolio Value's 1M/3M/12M). The persisted-setting hook had stopped subscribing to its own stored value (a regression from the 2.32.17 re-render cleanup, which switched the store access to method selectors), so clicking a chip wrote the new value but re-rendered nothing — the widget only repainted later when an unrelated update (a socket tick or the minute clock) happened to flush a render. Restored a precise per-setting subscription so the owning widget re-renders the instant its own setting changes.
+
+## [2.33.12] - 2026-07-16
+
+### Fixed
+
+- A slow or unreachable backend no longer destroys the session or hangs the app at boot. Opening the dashboard while the API was degraded used to show a full-screen "Loading…" for minutes (boot token validation had no timeout, so the request pended until the ~5-minute server cutoff) and then kick the user to the login page even though their session was perfectly valid (every failure — timeout, network error, 5xx — was treated as "invalid token" and wiped the stored session). Boot now restores the session instantly from the last known state and validates it in the background with a 15-second cap; only an actual server-side rejection (revoked token, deleted user, 401/403) logs the user out, while network failures and server errors keep the session and retry on the next boot.
+
+## [2.33.11] - 2026-07-16
+
+### Removed
+
+- Dropped the global Binance Quantitative Rules cooldown banner and its per-page `getQuantRulesStatus` poll. The cooldown is already surfaced once per window as a bot message (notification bell + toast) over the existing live socket, so the dedicated banner and its own polling request were redundant.
+
+## [2.33.10] - 2026-07-16
+
+### Fixed
+
+- Reverted the `useDeferredValue` experiment on the Portfolio Value chart (2.33.9) — it made the chip selection lag/freeze instead of updating. Chip range switches are client-side and fast (~2ms compute); the chart uses `timeFilter` directly and the loading spinner shows only during an actual (re)fetch (initial load / filter change). Chips still work on the portfolio page (fixedTimeframe lock removed in 2.33.9).
+
+## [2.33.9] - 2026-07-16
+
+### Fixed
+
+- Portfolio page: the 1M/3M/12M chips were inert (locked to 1M) — the page wrapped the chart with a `fixedTimeframe`, which forced the range back on every click. Removed, so the chips work on the portfolio page too. Chips are now hidden entirely when a fixed timeframe is intentionally set (instead of rendering non-functional).
+- Portfolio Value chart: switching a chip now updates the selected chip **instantly** and shows a loading spinner on the chart while it redraws, instead of the chip appearing frozen until the redraw finishes (`useDeferredValue` splits the urgent chip highlight from the deferred chart render).
+
+## [2.33.8] - 2026-07-16
+
+### Fixed
+
+- Portfolio Value chart: switching time chips (1M/3M/12M) is now instant. The chart fetches the full 12-month range **once** and the chips filter the loaded series client-side, instead of re-fetching from the backend on every switch (which caused a multi-second loading delay). For the default all-coins/all-exchanges view it also requests a lean `updateTime+totalUsd` payload (no per-day asset breakdown), pulling assets only when a coin/exchange filter is active — so the one initial fetch stays small.
+
+## [2.33.7] - 2026-07-16
+
+### Fixed
+
+- Portfolio Value chart no longer draws a line up from $0 to the first value. Accounts funded later have a run of $0 snapshots at the start of their history; the chart now trims those leading empty points and starts at the first funded value. Interior/trailing $0 (real drawdowns) are unaffected.
+
+## [2.33.6] - 2026-07-16
+
+### Changed
+
+- Portfolio Value chart time chips are now **1M / 3M / 12M** (was 30D / 60D / 90D). The chart fetches the whole selected range from the backend instead of only the last 30 days, so the longer ranges actually show more history. Legacy persisted 30/60/90 selections migrate to the new chips.
+
+## [2.33.5] - 2026-07-16
+
+### Fixed
+
+- Deal action menu: for deals that are no longer open (cancelled, closed), Add Funds, Reduce Funds, Edit, Cancel and Close are now greyed out — matching how Change DCA levels and Move to Terminal already behaved. Applies to the trade cards, the bot drawer deals table and the open-orders widget.
+
+## [2.33.4] - 2026-07-16
+
+### Changed
+
+- Auto-archive notices now show as info messages, visually distinct from warnings and errors. The bot error/warning banner renders an `info` severity with a calm blue Info icon and neutral tone instead of the amber warning style.
+
+## [2.33.3] - 2026-07-15
+
+### Changed
+
+- Bot creation/editing forms: extended the per-keystroke re-render cleanup to more sections. The Basic (name/exchange/pair), Deal Start, Risk/Reward and Webhook sections now read their data from the form store directly, so typing in one field no longer re-renders those sections. Applies across DCA, Grid, Combo and Hedge forms (including Quick mode and hedge legs).
+
+## [2.33.2] - 2026-07-15
+
+### Changed
+
+- Bot creation/editing forms: typing in a field (bot name, take-profit %, etc.) is smoother. The form no longer re-renders unrelated sections or re-runs the pair/exchange lookup on every keystroke — a chunk of per-keystroke work has been removed from the Take Profit section and the shared form data layer. Applies to DCA, Grid, Combo and Hedge forms.
+
+## [2.33.1] - 2026-07-15
+
+### Fixed
+
+- Bot details drawer: the Deals tab now shows a "Loading deals…" indicator while open/closed deals are being fetched, instead of flashing "No trades found" / an empty table. The same indicator is used for every bot type (DCA, Combo, Grid and Hedge DCA/Combo).
+- Bot details drawer: deals now render incrementally as each page arrives, so large bots (thousands of closed deals) show their first deals within a couple of seconds instead of blocking on the full multi-page fetch. Applies to all bot types.
+- Bot details drawer: the deals table footer count no longer stays stuck at "0-0 (0)" when deals load asynchronously — it now reflects the actual number of loaded and total deals (e.g. "1-10 (15,418)"). This also fixes the row count/pagination label on other data tables that populate after mount.
+
+## [2.33.0] - 2026-07-15
+
+### Added
+
+- Hedge DCA and Hedge Combo bot pages now have a "Show Archived" toggle and an archived-bots view, matching the Trading/Grid/Combo pages. Archive a stopped hedge bot from its row/card menu, view your archived hedge bots via the toggle, and un-archive to bring one back to the active list. The archived list is isolated from the live-bots store, so opening an archived bot's deals no longer flips the background list to your active bots.
+
+### Fixed
+
+- Hedge bot lists (`useHedgeDcaBots`/`useHedgeComboBots`) no longer let a live/active refetch clobber the archived view. The archived query now reads and writes its own isolated result instead of the shared bot store — same isolation already applied to the DCA/Grid/Combo lists.
+
+## [2.32.21] - 2026-07-15
+
+### Changed
+
+- Live-update context: hoisted the store-selector groups to module scope, dropping 28 render-time selector subscriptions and shrinking the context-value dependency list. Live bot stats, orders, balances, deals, and messages update exactly as before — this only removes redundant subscription bookkeeping per provider mount.
+- Dashboard Bot Status and Latest Orders widgets: collapsed the redundant wrapper-props container memos now that the widget wrapper is memoized. No visible change; the wrapper's re-render behavior is unchanged.
+
+## [2.32.20] - 2026-07-15
+
+### Fixed
+
+- Bot list pages (DCA and Combo): a live-stats update for one bot no longer re-renders every card in the list. Each card now keeps its data unless that specific bot changed, so the grid stays smooth while stats stream in on accounts with many bots.
+
+## [2.32.19] - 2026-07-15
+
+### Fixed
+
+- Bot list pages (DCA, Grid, Combo, Hedge DCA, Hedge Combo): the empty-state message now renders inside the table area instead of replacing the whole table, so the toolbar — including the Archived toggle — stays visible when you have no active bots. Previously, an account with zero active bots hid the Archived switch, making archived bots unreachable.
+
+## [2.32.18] - 2026-07-15
+
+### Fixed
+
+- CSV export from any table (portfolio, trades, deals, etc.) now quotes and escapes every value, so cells containing commas, quotes, or line breaks no longer shift columns or split one row across several lines. Exporting a bot's closed deals previously produced roughly twice as many lines as deals; the file now round-trips cleanly through spreadsheet apps and CSV parsers.
+
+## [2.32.17] - 2026-07-15
+
+### Fixed
+
+- Idle CPU/battery drain: the dashboard re-rendered the entire app about 4 times per second while sitting idle (widget staleness timers plus a provider-chain subscription cascade). Idle render work is now ~99% lower; live data still updates as before.
+- Bot create/edit form input lag: typing in any field re-rendered every form section (~250 ms per keystroke on large forms). Keystrokes now re-render only what changed (~10× fewer render passes, roughly half the input latency), and validation/order-preview updates are debounced without starving during rapid input or stepper holds.
+- Live-data widgets (bot stats, open orders, messages, portfolio balances) now subscribe to their live stores directly, so socket updates keep reaching them; previously they refreshed only as a side effect of unrelated app re-renders.
+- Time-windowed charts keep sliding while the dashboard stays open: the portfolio value window and the daily profit rollover no longer freeze at their initial load time.
+- Widget settings could be saved into the wrong widget's namespace after a widget id changed in place (e.g. workbench mode switch).
+
+## [2.32.16] - 2026-07-15
+
+### Fixed
+
+- Trading Bots list loads much faster for accounts with many bots: the list query no longer ships per-bot time-series arrays and per-symbol stats that nothing in the list reads (cards, table and drawer stream live stats via websocket; the single-bot drawer query still fetches everything), roughly halving the response for large accounts.
+- The bot list no longer fetches twice on a cold start: the paper-to-live trading-mode settle used to re-fire the heavy list query under both contexts back to back; it now waits until the mode matches the profile and fires exactly once.
+
+## [2.32.15] - 2026-07-15
+
+### Fixed
+
+- Deals table export (CSV/JSON) in the bot details drawer now downloads every deal by fetching the complete set from the server. Previously it silently exported only the rows the table had loaded — bots with many closed deals (or a partially-loaded table) exported a small subset.
+- The deals table pagination footer now shows "loaded of total" (e.g. "1-10 (400 of 970)") when the table holds only part of a larger closed-deals set, instead of implying the loaded rows are everything.
+
+## [2.32.14] - 2026-07-14
+
+### Added
+
+- Grid bots now show live order-placement progress. While the bot places its grid ladder the settings form is replaced by a progress bar (current stage / total), and the orders appear on the chart one-by-one as they are placed. The form stays locked until every order is placed. Restores the behavior from the legacy dashboard.
+
+### Fixed
+
+- Changing a grid bot's pair (for example after cloning one) now recomputes the price range to ±10% of the new pair's current price. Previously the range kept the source pair's values — e.g. a BTC bot's ~50,000 bounds carried onto an ADA pair trading near 0.16 — producing an out-of-scale grid that failed on start with repeated "not enough balance" errors on the sell orders.
+
+## [2.32.13] - 2026-07-14
+
+### Fixed
+
+- The deal edit drawer no longer resets your in-progress changes when new deal notifications arrive. Realtime deal updates can no longer re-seed the form while you're editing it; the form only re-initializes when you open a different deal.
+
+## [2.32.12] - 2026-07-14
+
+### Fixed
+
+- Viewing an archived bot's Closed deals no longer flips the background bot list back to your active bots. The archived list (Trading / Grid / Combo) is now isolated from the shared live-bots store, so when the detail drawer's widgets refetch active bots they can't overwrite what the archived list shows. The "Show Archived" toggle stays on and the list keeps showing your archived bots throughout.
+
+## [2.32.11] - 2026-07-14
+
+### Fixed
+
+- Cloning a combo or grid bot from its detail drawer now opens the create form pre-filled with the bot's settings (so you can change the pair/exchange before saving), matching how cloning a trading bot already worked. Previously combo/grid clone from the drawer immediately created a copy without opening it, leaving the pair unchangeable.
+- Cloning a paper trading bot no longer fails with "Bot not found" — the new-bot page now fetches the source bot in the same paper/live context it lives in (it previously always looked in live).
+- Cloning a bot now opens the create form in Manual mode, so the cloned strategy is shown as-is instead of being overwritten by a Quick-mode risk profile. Applies to every bot type.
+
+### Changed
+
+- Bot actions (start/stop, restart, clone, delete, plus their confirmation and success modals) are now driven by one shared `useBotActions` hook + `BotActionsModals` component instead of each surface hand-rolling its own handlers and modals. Every bot surface — the trading/grid/hedge cards, the detail drawer, and the Trading/Combo/Grid/Hedge list-row menus — routes through it, so an action behaves identically everywhere. Hedge start/stop now goes through the same status-toggle path as every other bot type (retiring a duplicated inline implementation).
+
+## [2.32.10] - 2026-07-14
+
+### Changed
+
+- All bot list pages (Trading / Grid / Combo / Hedge Combo / Hedge DCA) now resolve the detail-drawer bot through one shared `useDrawerBot` hook instead of each page hand-rolling its own logic. The hook owns list lookup, the by-id fallback that keeps archived (and shared) bots viewable, the sticky-through-refetch behavior that prevents the drawer flickering/remounting when the list refetches in the background, and the not-found redirect signal — so this behavior is fixed once for every bot type. Also gives hedge bot pages the by-id fallback they previously lacked.
+
+## [2.32.9] - 2026-07-14
+
+### Fixed
+
+- Opening a bot's detail drawer no longer flickers/remounts (which reset the Deals sub-tab back to Open and briefly flashed the bots list) when the bots list refetches in the background. The drawer resolves its bot from the live list, which momentarily empties during a websocket-driven refetch; the resolved bot is now "sticky" for the current selection so the drawer stays mounted. Most visible when viewing an archived bot's closed deals.
+
+## [2.32.8] - 2026-07-14
+
+### Fixed
+
+- Un-archiving from a bot's detail drawer (and the list row menus) now actually un-archives. The archive toggle checked `status === 'archived'`, but the real status is `archive`, so on an archived bot it computed "not archived" and re-archived instead of un-archiving. Now matches both spellings (drawer + Trading/Grid/Combo pages).
+- Archived bots no longer show Start / Restart / Edit in the detail drawer's footer (they can't be started or edited until un-archived — use Unarchive in the ⋯ menu). The footer bar is hidden entirely when it would be empty.
+
+## [2.32.7] - 2026-07-14
+
+### Fixed
+
+- Un-archiving a bot now makes it reappear in the bots list immediately. Archiving records a client-side tombstone (to block stale replays); un-archive now clears that tombstone, so the returning bot is no longer filtered out — previously the list could show empty after un-archiving your only bot.
+
+### Changed
+
+- The bots-list empty state is now archive-aware and never a dead end: with archived bots hidden it offers a "View archived bots" link, and the archived view shows "No archived bots" with a "Back to active bots" action. Applies to Trading/Grid/Combo lists.
+
+## [2.32.6] - 2026-07-14
+
+### Fixed
+
+- Archived bots now show the correct actions menu: the toggle reads **Unarchive** (previously showed "Archive" because the label only matched the `archived` spelling, not the actual `archive` status), and **Start**, **Restart** and **Edit** are hidden for archived bots (an archived bot can't be started or edited — un-archive it first).
+
+## [2.32.5] - 2026-07-14
+
+### Fixed
+
+- Archiving a bot no longer shows a confirmation dialog — it archives directly (archiving is reversible via un-archive). Archive is now handled centrally in the shared bot actions menu (`BotActionsMenuItems`), so the Archive action works from every surface, including bot cards where it previously did nothing.
+- Opening an **archived** bot's detail/deals no longer redirects to the bots list. Archived bots are filtered out of the default list, so the drawer couldn't resolve them; it now fetches the selected bot by id (shared `useSharedBot` fallback) and its trades load from cold storage in the drawer's existing open/closed deals tabs — no navigation.
+
+### Changed
+
+- Removed the per-page archive confirmation dialog and its duplicated wiring across the bot pages (Trading/Grid/Combo/BotForm/BotDetailsDrawer); the shared menu owns the archive action.
+
+## [2.32.4] - 2026-07-14
+
+### Changed
+
+- Cold-store archive UX now reflects that archiving is **reversible**. The archive confirmation dialog says archiving moves the bot's history to cold storage and can be undone by un-archiving (was "read-only / clone to reuse / can't be undone"). Cold-archived bots no longer disable their Unarchive action — un-archiving restores the history. Still gated on `VITE_COLD_STORE_ENABLED` (dark until rollout).
+
+## [2.32.3] - 2026-07-14
+
+### Fixed
+
+- Archiving a bot from the bot detail/view page (`/…/view/:id`) now works. The view-page action menu never wired its Archive action, so clicking Archive there did nothing; it now archives (and shows the read-only warning when the cold-store UX is enabled), matching the bot-list menus.
+
+## [2.32.2] - 2026-07-14
+
+### Fixed
+
+- Notification sounds now actually play when you turn on "Enable sounds". Previously that master switch was a no-op unless you had also enabled a per-type sound on the Settings page (all off by default), so it looked broken. Turning it on now seeds the default deal/order sounds, and enabling any per-type sound automatically un-mutes the master. Added a matching "Notification sounds" master switch to Settings → Notification Preferences so its state is visible where sounds are configured.
+
+## [2.32.1] - 2026-07-14
+
+### Fixed
+
+- Order/deal price displays now show adaptive decimal precision for sub-$1 "penny" coins. Prices like DOGE render `$0.07120` (and smaller coins get more significant digits) instead of collapsing to `$0.07`, in the deal orders list, bot drawer orders table, and trade detail. Prices ≥ 1 are unchanged.
+
+## [2.32.0] - 2026-07-12
+
+### Added
+
+- Bot details drawer: show a dismissible alert when a running bot has logged error or warning events, with a link that jumps to the bot's Events tab. Dismissing it clears the flag. Mirrors the error/warning notice the legacy dashboard showed.
+
+## [2.31.1] - 2026-07-11
+
+### Added
+
+- Extend the archive read-only warning to the bot edit page's Archive action (previously only the bot-list menus warned). Same flag gate (`VITE_COLD_STORE_ENABLED`).
+
+## [2.31.0] - 2026-07-11
+
+### Added
+
+- Archiving a bot now warns that archived bots become read-only (a new confirmation on the Grid/DCA/Combo bot menus): the trade history is preserved but the bot can't be started again — clone it to reuse. Cold-store (read-only) archived bots also hide their un-archive action. Ships behind `VITE_COLD_STORE_ENABLED` (off by default) in lock-step with the backend cold-store rollout.
+
+## [2.30.32] - 2026-07-11
+
+### Fixed
+
+- Bots on dash-separated exchanges (Coinbase, Kraken, OKX, KuCoin) with a non-USD quote asset (e.g. a SOL/EUR grid) no longer show a Current Funds value of $0.00 and a wildly wrong Total P&L. The USD-rate lookup only matched concatenated ticker symbols (`EURUSDT`), so it never found a USD bridge for exchanges whose symbols use a separator (`USDT-EUR`), returning a rate of 0. It now matches all separator forms, so current-funds value, Total P&L, and unrealized PnL are correct. Also fixes the USDT→USD leg for every exchange.
+
+## [2.30.31] - 2026-07-11
+
+### Fixed
+
+- DCA / Combo / Futures bots: Risk:Reward settings can be saved again. Enabling Risk:Reward and picking a stop-loss indicator failed with "At least one indicator is required when Risk:Reward is enabled" (and silently dropped every risk setting on edit), because the indicator lookup collected a single match but then required an array. It now collects all matching indicators, so the whole Risk:Reward configuration round-trips correctly on create and edit.
+- DCA / Combo bots: paying subscribers get the full multi-pair limit again. In multi-pair mode the pair selector was capping paid users at the free-tier maximum (50) instead of the paid maximum (500), because the plan lookup fell back to a free-tier default when only the free/paid flag (not a plan name) was available.
+
+## [2.30.30] - 2026-07-11
+
+### Fixed
+
+- Combo & Grid bots: a grid/minigrid order's price line no longer lingers on the performance chart after that order fills. When an order executed, its filled copy was cached but the stale pending copy was left behind, so the chart's pending-orders filter kept drawing the line (e.g. a combo minigrid sell line staying after the sell). The line now disappears as soon as the order fills.
+
+## [2.30.29] - 2026-07-11
+
+### Fixed
+
+- DCA bots: the Minimum take profit filter (shown for Indicator/Webhook close conditions) can again be edited when editing an existing bot. Its toggle and percentage field were incorrectly locked — and the whole row hidden when the filter was off — on existing bots; they now behave the same as when creating a bot.
+
+## [2.30.28] - 2026-07-11
+
+### Fixed
+
+- Hedge Combo & Hedge DCA bots: corrected the combined Take Profit / Stop Loss tooltips. The combined TP/SL is a portfolio-level close on the hedge's combined PnL that runs *in addition to* each leg's own TP/SL (whichever triggers first closes); it does not replace the per-leg TP/SL as the previous wording implied. Also clarifies that the combined Stop Loss takes a negative percentage.
+
+## [2.30.27] - 2026-07-11
+
+### Fixed
+
+- Hedge Combo & Hedge DCA bots: the combined Stop Loss now accepts a negative percentage (a loss threshold on the hedge's combined PnL), matching the engine and the DCA/combo/grid convention. It previously required a value greater than 0, so a normal stop such as `-25%` could not be saved — and any positive value the form did accept was already satisfied the moment a deal opened, closing the position instantly.
+
+## [2.30.26] - 2026-07-11
+
+### Fixed
+
+- Cloning a hedge combo bot no longer inherits the source bot's state. Previously, cloning a bot that had open deals wrongly reported the clone as having "active deals" and locked leverage, margin and other settings, and the base-order balance stayed at $0 (with "value exceeds the available balance") when a different exchange was picked — the "Update balance" button couldn't fix it. A clone is now treated as a brand-new bot: deal-based locks only apply when actually editing a live bot, and the base-order balance follows the exchange you select in the form.
+
+## [2.30.25] - 2026-07-10
+
+### Fixed
+
+- Bot-creation charts on USD/USDC-quoted exchanges (Kraken futures, Hyperliquid) now render historical candles immediately instead of staying blank when the trading-pairs list is slow to load. The bot form seeds an exchange-appropriate default pair up front (BTC/USD for Kraken futures, BTC/USDC for Hyperliquid) rather than the generic BTC/USDT, which those exchanges don't list, so the chart no longer requests an unsupported pair while pairs load.
+
+## [2.30.24] - 2026-07-10
+
+### Fixed
+
+- Hedge bots (Quick mode): the Investment field now shows a cleanly rounded amount instead of a long floating-point tail (e.g. `600.07828125`).
+- Hedge Combo bots (Quick mode): the Investment field is editable again — it previously read the DCA leg's value while writes went to the combo leg, so it appeared frozen.
+
+## [2.30.23] - 2026-07-10
+
+### Fixed
+
+- Kraken and Hyperliquid futures charts now receive live candle updates again — the exchange-native product id (`code`/`wsCode`) is threaded from the resolved symbol to the realtime streamer, which previously logged "product id missing" and never subscribed.
+
+## [2.30.22] - 2026-07-10
+
+### Fixed
+
+- Hedge Combo bots in Quick mode now draw both legs' full grid + DCA ladder on the chart instead of only the DCA safety orders, so the combined view matches the single-leg Manual view.
+
+## [2.30.21] - 2026-07-10
+
+### Fixed
+
+- Switching to another exchange or trading pair no longer freezes the price chart while the previous one is still loading candles — the in-flight request is cancelled immediately instead of blocking the chart until it times out (notably slow endpoints such as Hyperliquid).
+
+### Changed
+
+- During a scheduled maintenance window, tabs running an older build now pick up the new version sooner (still only while you're idle, never mid-interaction), so the maintenance notice and post-deploy code load in time.
+
+## [2.30.20] - 2026-07-10
+
+### Fixed
+
+- Base Order Size now recalculates when you switch its denomination (e.g. quote/USD ↔ base token). Previously the raw number was kept and only re-labelled, so a $10 order became "10 tokens" (~10× price in notional). Affects the DCA, Combo, and Hedge bot forms, which share the base-order control.
+
+## [2.30.19] - 2026-07-10
+
+### Fixed
+
+- Notional Value on leveraged futures deals now shows Cost × leverage instead of collapsing onto the Cost figure. Affected the open-orders table, deal cards, and the Trading page for every futures bot type (DCA, Combo, and Hedge Combo).
+
+## [2.30.18] - 2026-07-10
+
+### Changed
+
+- App updates now apply automatically at the next idle moment — when you switch away from the tab or pause interacting — instead of only when you click the "update available" prompt. Long-lived tabs pick up new releases on their own, and the reload never interrupts an in-progress form or bot setup.
+
+### Fixed
+
+- Price chart now loads on the Hedge Combo create screen for OKX and Coinbase pairs (previously stuck on "Loading chart…" until the bot was saved and reopened).
+- Exchange dropdown now scrolls when you have many accounts, instead of overflowing past the screen.
+
+## [2.30.17] - 2026-07-09
+
+### Added
+
+- Hedge Quick chart now draws BOTH legs' base, safety (DCA), and take-profit orders together, instead of flickering between the long or short leg's orders.
+- Hedge bot form now has a header validation-alerts button, and Quick mode shows an order-minimum "Min to run" hint plus per-leg below-minimum warnings.
+- Hedge footer shows a "Backtest complete · View results" summary chip after a run.
+
+### Fixed
+
+- Hedge Quick risk profiles (Conservative / Balanced / Aggressive) now actually reconfigure both legs when selected — previously only the card highlight changed.
+- Selecting a hedge risk profile no longer resets the form's scroll position.
+- Hedge Quick now auto-selects the Balanced profile for a new bot.
+- Saving a hedge bot now validates each leg's required fields and the shared take-profit / stop-loss, routing to the offending leg and field instead of a raw error toast.
+- The hedge bot lists now honor Privacy Mode and disable the "New" button in demo / read-only sessions.
+- The risk-profile cards wrap responsively instead of clipping their labels on narrow panels.
+
+### Changed
+
+- Hedge form loading now shows shaped skeletons, and the Quick / Manual toggle collapses to icons when the panel is narrow.
+
+## [2.30.16] - 2026-07-09
+
+### Fixed
+
+- Terminal deals no longer show an "open bot" link. Terminal deals live in the terminal and have no bot page, so the external-link buttons on their cards and rows (and the edit-in-bot navigation) have been removed for them.
+
+## [2.30.15] - 2026-07-09
+
+### Changed
+
+- Internal: the bot-form example-orders and indicator side-effect stores are now instance-scoped via `BotFormProvider` (opt-in `isolateStores`), instead of being shared module globals. Regular DCA, grid, combo, and hedge bots keep using the shared instance and behave identically; this is groundwork so two hedge legs can eventually co-mount one workbench without their order-estimation and indicator pipelines clobbering each other. Risk:Reward stores are intentionally out of scope.
+
+## [2.30.14] - 2026-07-09
+
+### Changed
+
+- Bot edit pages (`/bot/edit`, `/combo/edit`, `/grid/edit`, `/hedge/bot/edit`, `/hedge/combo/edit`) now open ready to edit instead of starting locked behind a "Press Edit" step — reaching an edit page from the sidebar, a bot card, or the drawer always expresses intent to edit. The drawer view routes (`/…/view/:id`) remain the read-only surface, and the footer EDIT/CANCEL toggle still locks the form on demand.
+- Unified the DCA, grid, combo, and hedge bot **new & edit** pages onto a shared workbench, page-descriptor, and route table. Cross-cutting concerns — the paper/live mode guard, premium gate, not-found handling, store resets, and the backtests panel — are now declared once per bot type instead of copy-pasted per page, so a bot type can no longer silently miss one. No change to which page renders at any path or to how bots behave.
+- Demo / shared-link viewers are now redirected off **every** bot edit page back to the list (previously only grid bots did this; the other types left them on a form that looked editable but couldn't be saved).
+
+### Removed
+
+- Deleted the unused legacy bot detail pages (`TradingBotDetails`, `ComboBotDetails`, `GridBotDetails`) and the unreferenced `pages/bots` barrel; these were superseded by the drawer view routes and were no longer reachable.
+
+## [2.30.13] - 2026-07-09
+
+### Fixed
+
+- Bot create/edit forms (`/bot/new`, `/combo/new`, `/grid/edit`, …): the form footer's action buttons no longer re-render on every live-price tick. `useDcaTradingContext` returned a brand-new object each render, which cascaded into the footer's button-config array and re-rendered the button row ~26×/second — the largest source of the render-loop tripwire in production. The trading context is now referentially stable, which also benefits every other consumer of that hook.
+- Bot detail drawer (`/bot/view`, `/combo/view`, `/hedge/combo/view`): the footer Start/Stop/Restart/Edit buttons no longer rebuild on every live bot-stats/deal update — the button list and its handlers are now memoized, so the drawer stays idle while the bot streams data.
+- Deal edit drawer: the Save/Reset action buttons no longer rebuild every render (the callbacks depended on the whole react-query mutation object instead of its stable `mutate` function).
+
+
+
+### Fixed
+
+- Data tables (e.g. the Trading page's bot/trade toolbar): the toolbar button row no longer re-renders on every live price/stats update. The table-preferences state was being rebuilt on every render (fresh default column-visibility/pinned-column objects fed in from the props normalizer), which churned the toolbar's button configs and re-rendered the responsive button row ~26×/second under live data — wasteful work that could push slower devices toward an out-of-memory crash. Default column-visibility and pinned-column inputs are now stable, the bulk-action list depends on a stable handler, and the column dropdown reads a stable table reference, so the toolbar stays idle while data streams.
+
+
+
+### Fixed
+
+- Hedge bots: opening or refreshing a hedge bot's edit or detail page while the global Live/Paper toggle is set to the other mode no longer shows a blank form with the exchange undetected. The page now realigns the toggle to the bot's real mode (as the other bot types already did), or shows a clear "Bot not found" notice if the bot exists in neither mode.
+
+## [2.30.10] - 2026-07-09
+
+### Fixed
+
+- Keyboard shortcuts: a malformed or legacy saved shortcut (missing its key binding) no longer crashes the whole dashboard with a blank screen on every page. Such entries now fall back to their default key or are skipped.
+
+## [2.30.9] - 2026-07-09
+
+### Fixed
+
+- Bot DCA Analysis: "Max Configured DCAs" now reflects the bot's real configured DCA orders for indicator- and custom-condition bots (the indicator DCA count / custom DCA table length) instead of the stale `ordersCount` field, which could show a much larger number (e.g. 32) than the bot actually uses. DCA coverage percentages use the same corrected count.
+
+## [2.30.8] - 2026-07-08
+
+### Added
+
+- Backtest settings: custom period start/end now include a time-of-day (date + time), matching the legacy dashboard, instead of dates only.
+
+### Fixed
+
+- Backtest settings: saved periods can now be edited and deleted via a "Manage periods…" option in the period dropdown (the manager dialog was previously unreachable).
+
+## [2.30.7] - 2026-07-08
+
+### Removed
+
+- New-bot page: removed the "Please help us improve this page!" DCA survey prompt pill and its dialog.
+
+## [2.30.6] - 2026-07-08
+
+### Added
+
+- Bot detail sidebar: a bottom action bar with Stop/Start, Restart, and a full-width primary Edit button, shown for every bot type.
+
+### Changed
+
+- Bot detail sidebar: Start/Stop, Restart, and Edit moved out of the header ⋮ menu into the new footer action bar, so they are no longer duplicated. The ⋮ menu keeps Star, Clone, Share Configuration, Duplicate, Archive, and Delete.
+
+## [2.30.5] - 2026-07-08
+
+### Fixed
+
+- Grid bot settings: "Grid step" and "Sell displacement" now display as a percentage (e.g. `1%`) instead of the raw decimal (`0.01`) when reading a bot's configuration — both in the read-only settings drawer and the edit form.
+- Grid bot stop loss no longer rejects the negative percentage its own quick-buttons and default fill in. Grid stop loss is a negative drawdown, so a negative value is now accepted (an empty or zero value still prompts you to configure it).
+- Grid bot stop-loss and take-profit "action" no longer offers an option that failed to save. "Close position" is now shown as the futures label on the existing "cancel orders and sell base" action rather than a separate option that the backend rejected.
+
+## [2.30.4] - 2026-07-08
+
+### Fixed
+
+- Bot and trade sidebars no longer fetch unused backtest data when they open. The side chart panel never rendered backtest markers, so the request was pure overhead on every sidebar open (across grid, DCA, combo, and hedge bots).
+
+## [2.30.3] - 2026-07-08
+
+### Fixed
+
+- Responsive toolbars (bot/combo deals tables, trades, form footers) no longer trigger a render loop that could freeze the page or crash it with "This page is having a problem / Out of Memory". Rebuilt `ResponsiveButtonRow` so button compaction/overflow recomputes only on a real container-size or button-set change, never on every parent re-render — a parent that recreates its button array on live-data ticks no longer drives the layout math or the parent layout-metrics callback.
+
+## [2.30.2] - 2026-07-07
+
+### Changed
+
+- Wrap ResponsiveButtonRow and BotFormFooter in React.memo. Extract button props in TradeSetupPanel
+
+## [2.30.1] - 2026-07-07
+
+### Fixed
+
+- Portfolio Balances now shows the logo and company name for tokenized-stock holdings (Kraken xStocks, Bybit spot xstocks, Hyperliquid spot RWA) instead of a blank first-letter tile. The row's asset class + venue + human-readable name are resolved from the loaded trading pairs and passed to the coin icon. `normalizeStockTicker` also strips Kraken's tokenized-ledger `.T` suffix (`PGx.T` → `PG`), and a new `balanceAssetToPairBase` maps a ledger code to its tradeable pair base. Paired with the main-app snapshot fix, these holdings also show a real USD value instead of $0.00.
+
+## [2.30.0] - 2026-07-07
+
+### Added
+
+- Deal action menus now offer "Change DCA levels" for DCA and Combo bot deals (across the trades card view, trades table, and bot deals table), letting you raise or lower a running deal's max DCA safety orders — disabled for risk-based and non-open deals.
+
+### Fixed
+
+- "Move to Terminal" now appears on Combo and Grid bot deals as well as DCA (trades card view, trades table, bot deals table, and their bulk actions), matching the legacy dashboard; combo deals correctly pass the combo flag when moved.
+
+## [2.29.3] - 2026-07-07
+
+### Fixed
+
+- A deal sitting exactly at breakeven (unrealized P&L of $0.00) showed "Price unavailable" instead of "$0.00". The deals-table transform treated a legitimate zero as a missing value. Most visible on Kraken tokenized stocks while the market is closed and the live price is frozen at the average entry price.
+
+
+## [2.29.2] - 2026-07-07
+
+### Fixed
+
+- Kraken deals showed "Price unavailable" for unrealized P&L: the price fetcher's `essential` exchange list omitted Kraken (and the dynamic active-exchanges effect is disabled), so the dashboard never fetched Kraken prices. Added Kraken (spot + USD-M) to the fetch list.
+
+
+## [2.29.1] - 2026-07-06
+
+### Fixed
+
+- Tokenized-stock (xStock) chart now shows data: stop uppercasing the pair on the chart path (`AAPLx`→`AAPLX` corrupted the case-sensitive Kraken candle symbol → no bars). xStock pairs are now preserved like `:`-prefixed HIP-3 pairs.
+- Stock/ETF icons now render on EVERY surface (bot sidebar, tables, cards): `CoinPair` resolves the base asset's class/venue/name itself from the loaded pairs, so a call site no longer has to pass `assetClass`/`exchange` to get the right logo.
+
+
+## [2.29.0] - 2026-07-06
+
+### Added
+
+- Human-readable asset names alongside tickers. The pair picker now shows the base asset's name under the ticker (e.g. "Apple Inc. · USD", "Bitcoin · USDT"), and bot/deal cards reveal it on hover — for all exchanges and asset classes (crypto + tokenized stocks/ETFs). Names come from the new `baseAsset.displayName` field on pairs (`getAllPairs`); the UI falls back to the ticker when a name isn't resolved yet.
+
+## [2.28.3] - 2026-07-06
+
+### Fixed
+
+- Tokenized-stock (xStocks) icons: `normalizeStockTicker` now strips the `x`/`X` wrapper from dotted tickers (`BRK.Bx` → `BRK.B`) so the stock logo resolves instead of a letter monogram. Kept in lock-step with the main-app backend copy.
+
+
+## [2.28.2] - 2026-07-06
+
+### Fixed
+
+- Add Custom Nav Item dialog: de-duplicate the icon picker so each Lucide icon appears only once (previously `Menu` and `Cloud` showed twice). The list is now deduplicated at render, so accidental repeats can't resurface.
+
+## [2.28.1] - 2026-07-06
+
+### Fixed
+
+- Recent-items page tracking: narrow `MainLayout`'s subscription to the user-sessions store so the app chrome no longer re-renders on unrelated store writes. This removes the amplifier behind a rare navigation crash (React #185) on bot detail pages reached via a redirect.
+
+### Changed
+
+- Crash instrumentation: add an invocation-storm tripwire around page-visit tracking that files a single non-fatal diagnostic (with the recent navigation trail) if start/end-page-visit ever re-enters abnormally fast, and tune the render-loop tripwire to require a sustained burst across consecutive windows so a normal mount/hydration spike no longer reports. Both honor the existing `gainium:tripwire` kill switch.
+
 ## [2.28.0] - 2026-07-04
 
 ### Added

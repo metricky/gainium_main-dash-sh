@@ -1,5 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { GraphQLClient, type ReturnResult } from '@/lib/api';
+import {
+  GraphQLClient,
+  DEFAULT_READ_TIMEOUT_MS,
+  type ReturnResult,
+} from '@/lib/api';
 import GraphQlQuery from '@/lib/api/GraphQLQueries';
 import { useAuthStore } from '@/stores/authStore';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,6 +15,7 @@ import { logger } from '@/lib/loggerInstance';
 export interface AllowedLoginMethods {
   password: boolean;
   google: boolean;
+  discord: boolean;
   emailLink: boolean;
   passkey: boolean;
 }
@@ -106,7 +111,7 @@ export function useUserSettings() {
       const { query } = GraphQlQuery.userSettings();
       const response = await client.request<{
         user: ReturnResult<UserSettingsData>;
-      }>(query);
+      }>(query, undefined, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
 
       return response.user;
     },

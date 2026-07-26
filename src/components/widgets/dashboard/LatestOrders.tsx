@@ -320,31 +320,44 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
     </div>
   );
 
-  const wrapperProps = {
-    metadata: {
+  const metadata = useMemo(
+    () => ({
       ...getWidgetMetadata('latest-orders'),
       id: widgetId,
-    },
+    }),
+    [widgetId]
+  );
+
+  const cacheQueries = useMemo(
+    () => [
+      {
+        queryKey: 'getLatestOrders',
+        variables: { page } as Record<string, unknown>,
+      },
+    ],
+    [page]
+  );
+
+  // Plain literal (not a memo): every value here is already reference-stable —
+  // `metadata`/`cacheQueries` are memoized above, the callbacks come from props,
+  // and `menuActions` is passed through directly (the wrapper only reads it).
+  // `WidgetWrapper` is `React.memo`'d and receives these spread as individual
+  // props, so a container memo bought nothing over per-key stability while
+  // adding a hand-maintained dep-array to keep in sync.
+  const wrapperProps = {
+    metadata,
     isEditable: isEditable ?? false,
     isCollapsible,
     ...(onRemove && { onRemove }),
     ...(onSettings && { onSettings }),
     ...(onCollapse && { onCollapse }),
     ...(onTabMove && { onTabMove }),
-    ...(menuActions && {
-      menuActions: {
-        ...menuActions,
-      },
-    }),
-    cacheQueries: [
-      {
-        queryKey: 'getLatestOrders',
-        variables: { page } as Record<string, unknown>,
-      },
-    ],
+    ...(menuActions && { menuActions }),
+    cacheQueries,
   };
 
   return <WidgetWrapper {...wrapperProps}>{content}</WidgetWrapper>;
 };
 
-export default LatestOrders;
+export default React.memo(LatestOrders);
+

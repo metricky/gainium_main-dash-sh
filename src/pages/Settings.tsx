@@ -8,6 +8,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Database,
   Download,
   Edit,
   Eye,
@@ -26,6 +27,7 @@ import {
   Trash2,
   User,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
@@ -58,6 +60,7 @@ import { Switch } from '../components/ui/switch';
 import { InfoIcon, Tooltip } from '../components/ui/tooltip';
 import VisualSettings from '../components/VisualSettings';
 import PasskeyManager from '../components/auth/PasskeyManager';
+import SessionsCard from '../components/settings/SessionsCard';
 import QRCode from 'react-qr-code';
 import {
   Dialog,
@@ -90,6 +93,7 @@ import {
   useNotificationsSettingsStore,
 } from '../stores/notificationsSettingsStore';
 import { playNotificationSound } from '../utils/soundUtils';
+import { useVisualSettingsStore } from '../stores/visualSettingsStore';
 import { useShortcutStore } from '../stores/shortcutStore';
 import { useUIStore } from '../stores/uiStore';
 // Note: Using logger.info for now - toast can be added later if needed
@@ -245,6 +249,18 @@ const settingsSections: SettingsSection[] = [
     title: 'Connected Apps',
     icon: <Plug className="w-4 h-4" />,
   },
+  // Cloud-only: the Saved Data manager lives in the cloud overlay and
+  // fills `settings.savedData`. Sh has no filler, so it never shows the
+  // section rather than surfacing an empty tab.
+  ...(IS_CLOUD
+    ? [
+        {
+          id: 'saved-data',
+          title: 'Local Data',
+          icon: <Database className="w-4 h-4" />,
+        },
+      ]
+    : []),
   {
     id: 'danger-zone',
     title: 'Danger Zone',
@@ -400,6 +416,16 @@ const Settings: React.FC = () => {
   );
   const setSoundSetting = useNotificationsSettingsStore(
     (state) => state.setSoundSetting
+  );
+  // Global sound gate (also toggleable from the navbar). Surfaced here so the
+  // on/off state is visible where per-type sounds are configured — otherwise an
+  // enabled sound could stay silent with no hint the master switch is off.
+  const soundEnabled = useVisualSettingsStore((state) => state.soundEnabled);
+  const setSoundEnabled = useVisualSettingsStore(
+    (state) => state.setSoundEnabled
+  );
+  const enableDefaultSoundsIfNone = useNotificationsSettingsStore(
+    (state) => state.enableDefaultSoundsIfNone
   );
 
   // Local user settings store (for invoice address)
@@ -831,6 +857,7 @@ const Settings: React.FC = () => {
     const allowedMethods: AllowedLoginMethods = {
       password: user?.allowedLoginMethods?.password !== false,
       google: user?.allowedLoginMethods?.google !== false,
+      discord: user?.allowedLoginMethods?.discord !== false,
       emailLink: user?.allowedLoginMethods?.emailLink !== false,
       passkey: user?.allowedLoginMethods?.passkey !== false,
     };
@@ -850,6 +877,11 @@ const Settings: React.FC = () => {
         key: 'google',
         label: 'Google',
         description: 'Sign in with your linked Google account.',
+      },
+      {
+        key: 'discord',
+        label: 'Discord',
+        description: 'Sign in with your linked Discord account.',
       },
       {
         key: 'emailLink',
@@ -1278,6 +1310,11 @@ const Settings: React.FC = () => {
               </CardContent>
             </Card>
           )}
+
+          {/* Active sessions — device/session management. In core so both
+              self-hosted and cloud ship it; admin-impersonation sessions are
+              filtered out server-side. */}
+          <SessionsCard />
         </div>
 
         {/* Regenerate recovery codes dialog */}
@@ -1942,6 +1979,29 @@ const Settings: React.FC = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-md">
+            <div className="flex items-center justify-between gap-md rounded-lg bg-surface-1 px-md py-sm">
+              <div className="flex items-center gap-sm">
+                {soundEnabled ? (
+                  <Volume2 className="h-4 w-4 text-primary" />
+                ) : (
+                  <VolumeX className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <p className="text-sm font-medium">Notification sounds</p>
+                  <p className="text-xs text-muted-foreground">
+                    Master switch for the per-type sounds below. Also available
+                    from the account menu.
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={soundEnabled}
+                onCheckedChange={(checked) => {
+                  setSoundEnabled(checked);
+                  if (checked) enableDefaultSoundsIfNone();
+                }}
+              />
+            </div>
             <div>
               <Label className="text-muted-foreground uppercase text-xs tracking-wider">
                 Type
@@ -2105,6 +2165,14 @@ const Settings: React.FC = () => {
     </div>
   );
 
+  const renderSavedData = () => (
+    // Full-width — the Saved Data manager renders wide local/remote data
+    // tables, so it isn't constrained to the max-w-4xl form column.
+    // Cloud fills with the embedded SavedDataPage; sh registers nothing
+    // (and the section is cloud-gated out of the sidebar anyway).
+    <Slot name="settings.savedData" />
+  );
+
   const renderContent = () => {
     switch (activeSection) {
       case 'personal-data':
@@ -2123,6 +2191,8 @@ const Settings: React.FC = () => {
         return renderNotificationPreferences();
       case 'connected-apps':
         return renderConnectedApps();
+      case 'saved-data':
+        return renderSavedData();
       case 'danger-zone':
         return renderDangerZone();
       default:

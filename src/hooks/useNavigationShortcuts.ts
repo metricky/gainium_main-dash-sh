@@ -12,13 +12,14 @@ import { useNotificationsStore } from '@/stores/notificationsStore';
 import { useShortcutStore, type ShortcutConfig } from '@/stores/shortcutStore';
 import { useSplitPanelShortcutStore } from '@/stores/splitPanelShortcutStore';
 import { useEffect, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 /**
  * Hook that initializes and manages all navigation shortcuts
  */
 export function useNavigationShortcuts() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { toggleTradingMode } = usePaperContext();
   const { toggleNotificationsPanel } = useNotificationsStore();
   const { toggleSearch } = useGlobalSearchStore();
@@ -30,6 +31,7 @@ export function useNavigationShortcuts() {
 
   // Keep latest function refs without re-triggering effects
   const navRef = useRef(navigate);
+  const pathnameRef = useRef(location.pathname);
   const toggleTradingModeRef = useRef(toggleTradingMode);
   const toggleNotificationsPanelRef = useRef(toggleNotificationsPanel);
   const toggleSearchRef = useRef(toggleSearch);
@@ -37,6 +39,22 @@ export function useNavigationShortcuts() {
   useEffect(() => {
     navRef.current = navigate;
   }, [navigate]);
+
+  useEffect(() => {
+    pathnameRef.current = location.pathname;
+  }, [location.pathname]);
+
+  // Navigate to a path, but if we're already on that page, refresh it
+  // instead — so a nav shortcut for the current page reloads it rather than
+  // being a silent no-op. Stable (closes over refs), safe to capture in
+  // the mount-only effect below.
+  const navOrReload = useRef((path: string) => {
+    if (pathnameRef.current === path) {
+      window.location.reload();
+    } else {
+      navRef.current(path);
+    }
+  }).current;
 
   useEffect(() => {
     toggleTradingModeRef.current = toggleTradingMode;
@@ -100,29 +118,29 @@ export function useNavigationShortcuts() {
       [SHORTCUT_IDS.PanelExpandDown]: () =>
         useSplitPanelShortcutStore.getState().handleVerticalArrow('down'),
       // Navigation actions
-      [SHORTCUT_IDS.NavTradingTerminal]: () => navRef.current('/terminal'),
-      [SHORTCUT_IDS.NavDashboard]: () => navRef.current('/dashboard'),
-      [SHORTCUT_IDS.NavOverview]: () => navRef.current('/overview'),
-      [SHORTCUT_IDS.NavHedgeDcaBots]: () => navRef.current('/hedge/bot'),
-      [SHORTCUT_IDS.NavHedgeComboBots]: () => navRef.current('/hedge/combo'),
-      [SHORTCUT_IDS.NavTradingBots]: () => navRef.current('/bot'),
-      [SHORTCUT_IDS.NavComboBots]: () => navRef.current('/combo'),
-      [SHORTCUT_IDS.NavGridBots]: () => navRef.current('/grid'),
-      [SHORTCUT_IDS.NavRulebooks]: () => navRef.current('/rulebooks'),
+      [SHORTCUT_IDS.NavTradingTerminal]: () => navOrReload('/terminal'),
+      [SHORTCUT_IDS.NavDashboard]: () => navOrReload('/dashboard'),
+      [SHORTCUT_IDS.NavOverview]: () => navOrReload('/overview'),
+      [SHORTCUT_IDS.NavHedgeDcaBots]: () => navOrReload('/hedge/bot'),
+      [SHORTCUT_IDS.NavHedgeComboBots]: () => navOrReload('/hedge/combo'),
+      [SHORTCUT_IDS.NavTradingBots]: () => navOrReload('/bot'),
+      [SHORTCUT_IDS.NavComboBots]: () => navOrReload('/combo'),
+      [SHORTCUT_IDS.NavGridBots]: () => navOrReload('/grid'),
+      [SHORTCUT_IDS.NavRulebooks]: () => navOrReload('/rulebooks'),
       [SHORTCUT_IDS.NavManualBacktesting]: () =>
-        navRef.current('/manual-backtesting/sessions'),
-      [SHORTCUT_IDS.NavSettings]: () => navRef.current('/settings'),
-      [SHORTCUT_IDS.NavPortfolio]: () => navRef.current('/portfolio'),
-      [SHORTCUT_IDS.NavTrades]: () => navRef.current('/trading'),
-      [SHORTCUT_IDS.NavJournal]: () => navRef.current('/journal'),
-      [SHORTCUT_IDS.NavReports]: () => navRef.current('/reports'),
-      [SHORTCUT_IDS.NavExchanges]: () => navRef.current('/exchanges'),
-      [SHORTCUT_IDS.NewDcaBot]: () => navRef.current('/bot/new'),
-      [SHORTCUT_IDS.NewComboBot]: () => navRef.current('/combo/new'),
-      [SHORTCUT_IDS.NewGridBot]: () => navRef.current('/grid/new'),
-      [SHORTCUT_IDS.NewHedgeDcaBot]: () => navRef.current('/hedge/bot/new'),
+        navOrReload('/manual-backtesting/sessions'),
+      [SHORTCUT_IDS.NavSettings]: () => navOrReload('/settings'),
+      [SHORTCUT_IDS.NavPortfolio]: () => navOrReload('/portfolio'),
+      [SHORTCUT_IDS.NavTrades]: () => navOrReload('/trading'),
+      [SHORTCUT_IDS.NavJournal]: () => navOrReload('/journal'),
+      [SHORTCUT_IDS.NavReports]: () => navOrReload('/reports'),
+      [SHORTCUT_IDS.NavExchanges]: () => navOrReload('/exchanges'),
+      [SHORTCUT_IDS.NewDcaBot]: () => navOrReload('/bot/new'),
+      [SHORTCUT_IDS.NewComboBot]: () => navOrReload('/combo/new'),
+      [SHORTCUT_IDS.NewGridBot]: () => navOrReload('/grid/new'),
+      [SHORTCUT_IDS.NewHedgeDcaBot]: () => navOrReload('/hedge/bot/new'),
       [SHORTCUT_IDS.NewHedgeComboBot]: () =>
-        navRef.current('/hedge/combo/new'),
+        navOrReload('/hedge/combo/new'),
       [SHORTCUT_IDS.ActionToggleTradingMode]: () =>
         toggleTradingModeRef.current(),
     };
@@ -138,7 +156,7 @@ export function useNavigationShortcuts() {
         // Register a fresh action that navigates to the path
         registerShortcut({
           ...sc,
-          action: () => navRef.current(sc.path as string),
+          action: () => navOrReload(sc.path as string),
         } as ShortcutConfig);
       }
     });
@@ -167,7 +185,7 @@ export function useNavigationShortcuts() {
           label,
           description,
           defaultKey: shortcuts[id].defaultKey || defaultKey,
-          action: () => navRef.current(getDashboardPathByName(d.name)),
+          action: () => navOrReload(getDashboardPathByName(d.name)),
           path: getDashboardPathByName(d.name),
         } as ShortcutConfig);
         return;
@@ -180,12 +198,12 @@ export function useNavigationShortcuts() {
         currentKey: defaultKey,
         enabled: false,
         category: 'dashboards',
-        action: () => navRef.current(getDashboardPathByName(d.name)),
+        action: () => navOrReload(getDashboardPathByName(d.name)),
         path: getDashboardPathByName(d.name),
         deleted: false,
       });
     });
-  }, [dashboards, registerShortcut]);
+  }, [dashboards, registerShortcut, navOrReload]);
 
   // Derive from store via selector to avoid missing initial bulkRegister update on reload
   const shortcutsObj = useShortcutStore((s) => s.shortcuts);
@@ -200,26 +218,39 @@ export function useNavigationShortcuts() {
             s.id === SHORTCUT_IDS.ManagerShortcuts ||
             s.id === SHORTCUT_IDS.ManagerGlobalSearch)
       )
-      .map((s) => ({
-        key: s.currentKey.key.toLowerCase(),
-        modifiers: {
-          cmd: s.currentKey.modifiers.cmd || false,
-          ctrl: s.currentKey.modifiers.ctrl || false,
-          shift: s.currentKey.modifiers.shift || false,
-          alt: s.currentKey.modifiers.alt || false,
-        },
-        callback: s.action,
-        priority: 80,
-        enabled: true,
-        // Allow these shortcuts to fire even while inputs are focused:
-        // - GlobalSearch: re-pressing should close it.
-        // - ActionChat: users typing into the Max chat input still need
-        //   the toggle shortcut to work so they can close/reopen the
-        //   panel without having to click out of the input first.
-        allowInInputs:
-          s.id === SHORTCUT_IDS.ManagerGlobalSearch ||
-          s.id === SHORTCUT_IDS.ActionChat,
-      }));
+      .flatMap((s) => {
+        // Persisted state (localStorage) can carry a shortcut from an older
+        // build or a partial write that is missing `currentKey`; fall back to
+        // `defaultKey`, and skip entirely if neither has a usable key. Without
+        // this guard a single malformed record throws
+        // "Cannot read properties of undefined (reading 'key')" here and, since
+        // this hook runs in <App>, white-screens the whole dashboard.
+        const activeKey = s.currentKey ?? s.defaultKey;
+        if (!activeKey?.key) return [];
+        const modifiers = activeKey.modifiers ?? {};
+        return [
+          {
+            key: activeKey.key.toLowerCase(),
+            modifiers: {
+              cmd: modifiers.cmd || false,
+              ctrl: modifiers.ctrl || false,
+              shift: modifiers.shift || false,
+              alt: modifiers.alt || false,
+            },
+            callback: s.action,
+            priority: 80,
+            enabled: true,
+            // Allow these shortcuts to fire even while inputs are focused:
+            // - GlobalSearch: re-pressing should close it.
+            // - ActionChat: users typing into the Max chat input still need
+            //   the toggle shortcut to work so they can close/reopen the
+            //   panel without having to click out of the input first.
+            allowInInputs:
+              s.id === SHORTCUT_IDS.ManagerGlobalSearch ||
+              s.id === SHORTCUT_IDS.ActionChat,
+          },
+        ];
+      });
   }, [shortcutsObj]);
 
   // Register with keyboard shortcut manager

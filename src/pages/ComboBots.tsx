@@ -17,10 +17,6 @@ import {
   filterRestartableBots,
   filterStartableBots,
   filterStoppableBots,
-  getActionPastTense,
-  getTargetStatus,
-  isBotActive,
-  isBotDeletable,
 } from '@/utils/botStatusUtils';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
@@ -31,10 +27,10 @@ import {
   ExternalLink,
   Filter,
   MoreHorizontal,
-  Pause,
   Play,
   Plus,
   RefreshCw,
+  Square,
   Star,
   Trash2,
 } from 'lucide-react';
@@ -60,7 +56,6 @@ import WidgetContainer from '../components/layout/WidgetContainer';
 import {
   BotStatusConfirmationModal,
   DeleteConfirmationModal,
-  SuccessFeedbackModal,
 } from '../components/modals';
 import { Badge } from '../components/ui/badge';
 import BotsSkeleton from '../components/ui/BotsPageSkeleton';
@@ -97,6 +92,8 @@ import {
   useBotRestart,
   useBotStatusToggle,
 } from '../hooks/useBotMutations';
+import { useBotActions } from '../hooks/useBotActions';
+import { BotActionsModals } from '../components/bots/BotActionsModals';
 import { useBotModeGuard } from '../hooks/bots/base/useBotModeGuard';
 import { useCacheKey } from '../hooks/useCacheKey';
 import { useCacheStatus } from '../hooks/useCacheStatus';
@@ -119,8 +116,9 @@ import { useAuthStore } from '@/stores/authStore';
 import { useBotStatsStore } from '@/stores/live';
 import { transformDcaBotToBot } from '@/types/dcaBot';
 import { useShareContext } from '../hooks/useShareContext';
-import { useSharedBot } from '../hooks/useSharedBot';
-import { buildBotEditRoute } from '@/utils/bots/navigation';
+import { useDrawerBot } from '../hooks/useDrawerBot';
+import { useStableBotTransforms } from '../hooks/useStableBotTransforms';
+import type { CalculatedBotStats } from '../services/metrics/BotMetricsCalculator';
 import { useComboDeals } from '../hooks/useComboDeals';
 
 const COMBO_BOT_TYPE_ID = 'combo';
@@ -135,110 +133,22 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
   bot,
   originalBotData,
 }) => {
-  const navigate = useNavigate();
-  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [successModalOpen, setSuccessModalOpen] = useState(false);
-  const [statusModalOpen, setStatusModalOpen] = useState(false);
-  const [successData, setSuccessData] = useState<{
-    type: 'clone' | 'delete';
-    newItemId?: string;
-  } | null>(null);
-
-  const statusToggleMutation = useBotStatusToggle(BotTypesEnum.combo);
-  const restartMutation = useBotRestart();
-  const deleteMutation = useBotDelete();
-  const archiveMutation = useBotArchive();
-
-  const handleEdit = () => {
-    navigate(buildBotEditRoute(BotTypesEnum.combo, bot.id));
-  };
-
-  const handleClone = () => {
-    navigate(`/combo/new?load=${bot.id}`);
-  };
-
-  const handleStatusToggle = () => {
-    setStatusModalOpen(true);
-  };
-
-  const handleConfirmStatusChange = (closeType?: string) => {
-    const isActive = isBotActive(bot.status);
-    const newStatus = getTargetStatus(bot.status);
-
-    statusToggleMutation.mutate(
-      {
-        id: bot.id,
-        status: newStatus,
-        closeType: closeType as CloseDCATypeEnum | undefined,
-      },
-      {
-        onSuccess: () => {
-          setStatusModalOpen(false);
-          toast.success(`Bot ${getActionPastTense(bot.status)} successfully`);
-        },
-        onError: (error) => {
-          console.error('Failed to change bot status:', error);
-          toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
-        },
-      }
-    );
-  };
-
-  const handleDelete = () => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-    setDeleteModalOpen(true);
-  };
-
-  const handleRestart = () => {
-    restartMutation.mutate(
-      {
-        id: bot.id,
-        type: BotTypesEnum.combo,
-      },
-      {
-        onSuccess: () => {
-          toast.success('Bot restarted successfully');
-        },
-        onError: () => {
-          toast.error('Failed to restart bot');
-        },
-      }
-    );
-  };
-
-  const handleConfirmDelete = async () => {
-    if (!isBotDeletable(bot.status)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop the bot first.'
-      );
-      return;
-    }
-
-    try {
-      await deleteMutation.mutateAsync({
-        id: bot.id,
-        type: BotTypesEnum.combo,
-      });
-      setSuccessData({ type: 'delete' });
-      setSuccessModalOpen(true);
-    } catch (error) {
-      console.error('Failed to delete bot:', error);
-    }
-  };
-
-  const handleArchive = () => {
-    const isArchived = bot.status.toLowerCase() === 'archived';
-    archiveMutation.mutate({
-      id: bot.id,
-      archive: !isArchived,
-      type: BotTypesEnum.combo,
-    });
-  };
+  // Shared bot-action orchestration (clone opens the pre-filled create page;
+  // status/delete via the confirmation modals rendered by <BotActionsModals>).
+  const botActions = useBotActions({
+    botId: bot.id,
+    botType: BotTypesEnum.combo,
+    botName: bot.name,
+    status: bot.status,
+    activeDeals: originalBotData?.dealsInBot?.active || 0,
+    totalValue: originalBotData?.usage?.current?.quote || 0,
+    currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
+    lastActivity: originalBotData?.created || 'Unknown',
+    botData: originalBotData ?? bot,
+    onCopyToLive: () => {
+      toast.info('Copy to live not yet implemented for combo bots');
+    },
+  });
 
   return (
     <>
@@ -261,83 +171,14 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
             name: bot.name,
             type: bot.type as BotTypeId,
             status: bot.status as BotStatusType,
+            coldArchived: bot.coldArchived,
           }}
-          pending={{
-            statusToggle: statusToggleMutation.isPending,
-            restart: restartMutation.isPending,
-            clone: false,
-            delete: deleteMutation.isPending,
-            archive: archiveMutation.isPending,
-          }}
-          onToggleStatus={() => handleStatusToggle()}
-          onRestart={() => handleRestart()}
-          onEdit={() => handleEdit()}
-          onClone={() => handleClone()}
-          onViewClosedTrades={() => navigate(`/trades?botId=${bot.id}`)}
-          onShareConfig={async () => {
-            try {
-              const source =
-                originalBotData ?? (bot as unknown as Record<string, unknown>);
-              await navigator.clipboard.writeText(
-                JSON.stringify(source, null, 2)
-              );
-              toast.success('Configuration copied to clipboard');
-            } catch (err) {
-              console.error('Failed to copy configuration:', err);
-              toast.error('Failed to copy configuration');
-            }
-          }}
-          onCopyToLive={() => {
-            toast.info('Copy to live not yet implemented for combo bots');
-          }}
-          onDelete={() => handleDelete()}
-          onArchive={() => handleArchive()}
+          {...botActions.menuProps}
         />
       </DropdownMenu>
 
-      <DeleteConfirmationModal
-        open={deleteModalOpen}
-        onOpenChange={setDeleteModalOpen}
-        onConfirm={handleConfirmDelete}
-        title="Delete Bot"
-        description="Are you sure you want to delete this bot? This action cannot be undone."
-        itemType="bot"
-        itemName={bot.name}
-        requireConfirmation={false}
-      />
-
-      <BotStatusConfirmationModal
-        open={statusModalOpen}
-        onOpenChange={setStatusModalOpen}
-        onConfirm={handleConfirmStatusChange}
-        botName={bot.name}
-        currentStatus={bot.status}
-        targetStatus={getTargetStatus(bot.status)}
-        hasActiveDeals={(originalBotData?.dealsInBot?.active || 0) > 0}
-        isLoading={statusToggleMutation.isPending}
-      />
-
-      <SuccessFeedbackModal
-        open={successModalOpen}
-        onOpenChange={(open) => {
-          setSuccessModalOpen(open);
-          if (!open) {
-            setSuccessData(null);
-          }
-        }}
-        type={successData?.type || 'clone'}
-        itemName={bot.name}
-        itemType="bot"
-        newItemId={successData?.newItemId}
-        details={
-          successData?.type === 'clone'
-            ? {
-                originalName: bot.name,
-                newName: `${bot.name} (Clone)`,
-              }
-            : undefined
-        }
-      />
+      {/* Shared status / delete / success modals, driven by useBotActions. */}
+      <BotActionsModals {...botActions.modalProps} />
     </>
   );
 };
@@ -636,11 +477,6 @@ const ComboBots: React.FC = () => {
   // Share-link path: see TradingBots.tsx — single-bot fetch when `?share=…`
   // is present on a combo URL, used to hydrate the drawer for non-owners.
   const { shareId } = useShareContext();
-  const sharedBotResult = useSharedBot({
-    botId: selectedBot ?? '',
-    type: BotTypesEnum.combo,
-    shareId,
-  });
 
   useEffect(() => {
     if (botSymbolsMap.size === 0) {
@@ -762,26 +598,22 @@ const ComboBots: React.FC = () => {
 
   const liveBotStats = useBotStatsStore((state) => state.botStats);
 
-  // Transform Combo bots to the format expected by the UI
-  const transformedBots = useMemo(() => {
-    if (import.meta.env.DEV) {
-      logger.debug('[ComboBots] Combo bots received:', {
-        count: comboBots.length,
-        sample: comboBots.slice(0, 3),
-      });
-    }
-
-    const transformed = comboBots.map((comboBot: ComboBot) => {
+  // Transform each combo bot with a per-bot memo so a live-stats tick for one
+  // bot doesn't produce fresh `item` objects for the whole grid (which would
+  // defeat the card React.memo and re-render every card). Only the ticking
+  // bot's slice changes, so only that card gets a new object.
+  // See useStableBotTransforms.
+  const transformComboBot = useCallback(
+    (comboBot: ComboBot, slice: CalculatedBotStats | undefined) => {
       try {
-        const result = transformDcaBotToBot(
+        return transformDcaBotToBot(
           comboBot,
           stableDependencies.fees,
           stableDependencies.prices,
           true,
           stableDependencies.exchanges,
-          liveBotStats[comboBot._id]
+          slice
         );
-        return result;
       } catch (error) {
         if (import.meta.env.DEV) {
           logger.error('[ComboBots] Error transforming bot:', {
@@ -791,17 +623,29 @@ const ComboBots: React.FC = () => {
         }
         throw error;
       }
-    });
+    },
+    [stableDependencies]
+  );
 
-    if (import.meta.env.DEV) {
-      logger.debug('[ComboBots] Final transformed bots:', {
-        count: transformed.length,
-        bots: transformed,
-      });
-    }
+  const transformedBots = useStableBotTransforms(
+    comboBots,
+    (comboBot) => comboBot._id,
+    (id) => liveBotStats[id],
+    stableDependencies,
+    transformComboBot
+  );
 
-    return transformed;
-  }, [comboBots, stableDependencies, liveBotStats]);
+  // Shared drawer-bot resolution: list lookup + by-id fallback (archived/share
+  // bots) + sticky-through-refetch, all in one place for every bot page.
+  const drawerBot = useDrawerBot({
+    selectedBotId: selectedBot,
+    listBots: transformedBots,
+    type: BotTypesEnum.combo,
+    shareId,
+    listLoading: botsLoading,
+    transformRaw: (raw) =>
+      transformDcaBotToBot(raw as ComboBot, [], [], true, [], undefined),
+  });
 
   // Register cache status to show stale indicator and auto revalidation
   // Use the same variables as the query so the cache key matches the real query
@@ -1706,25 +1550,9 @@ const ComboBots: React.FC = () => {
   // no create button). MainLayout short-circuits to SharedPageLayout so
   // the outer chrome is already minimal.
   if (shareId) {
-    let sharedBotForDrawer:
-      | ReturnType<typeof transformDcaBotToBot>
-      | undefined;
-    if (selectedBot && sharedBotResult.bot) {
-      try {
-        sharedBotForDrawer = transformDcaBotToBot(
-          sharedBotResult.bot as ComboBot,
-          [],
-          [],
-          true,
-          [],
-          undefined
-        );
-      } catch (e) {
-        logger.warn('[ComboBots] failed to transform shared bot', { error: e });
-      }
-    }
+    const sharedBotForDrawer = drawerBot.bot;
     const sharedOwnerId =
-      (sharedBotResult.bot as { userId?: string } | null)?.userId;
+      (drawerBot.rawBot as { userId?: string } | null)?.userId;
     return (
       <MainLayout pageTitle="Shared combo bot" activePage="/combo-bots">
         {sharedBotForDrawer ? (
@@ -1741,7 +1569,7 @@ const ComboBots: React.FC = () => {
           </BotDetailsDrawer>
         ) : (
           <div className="flex h-[60vh] items-center justify-center text-muted-foreground">
-            {sharedBotResult.isLoading
+            {drawerBot.isLoading
               ? 'Loading shared bot…'
               : 'Shared bot is not available.'}
           </div>
@@ -1881,30 +1709,7 @@ const ComboBots: React.FC = () => {
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.4, delay: 0.6 }}
                   >
-                    {comboBots.length === 0 ? (
-                      <div className="h-full w-full flex items-center justify-center">
-                        <EmptyState
-                          size="page"
-                          icon={<Boxes className="w-6 h-6" />}
-                          title="No combo bots yet"
-                          description="Combo bots blend DCA and grid strategies under one configuration. Set one up to start trading multiple pairs at once."
-                          action={
-                            readOnly
-                              ? undefined
-                              : {
-                                  label: 'Create combo bot',
-                                  onClick: () => navigate('/combo/new'),
-                                  icon: <Plus className="w-5 h-5" />,
-                                }
-                          }
-                        />
-                      </div>
-                    ) : (
                     <DataTable
-                      key={`combo-table-${orderedFilteredData.length}-${orderedFilteredData.reduce(
-                        (sum, bot) => sum + (bot.totalProfitUsd ?? 0),
-                        0
-                      )}`}
                       tableId="combo-bots"
                       columns={columns}
                       data={orderedFilteredData}
@@ -1925,7 +1730,46 @@ const ComboBots: React.FC = () => {
                       cardComponent={BotCardWrapper}
                       cardViewBreakpoints={CARD_VIEW_COLUMNS}
                       cardViewGap={16}
-                      emptyMessage="No combo bots found"
+                      emptyContent={
+                        <EmptyState
+                          size="page"
+                          icon={<Boxes className="w-6 h-6" />}
+                          title={
+                            showArchived
+                              ? 'No archived combo bots'
+                              : 'No combo bots yet'
+                          }
+                          description={
+                            showArchived
+                              ? 'Bots you archive move here. Un-archive one to bring it back to your active list.'
+                              : 'Combo bots blend DCA and grid strategies under one configuration. Set one up to start trading multiple pairs at once.'
+                          }
+                          action={
+                            showArchived
+                              ? {
+                                  label: 'Back to active bots',
+                                  onClick: () =>
+                                    setShowArchived((prev) => !prev),
+                                }
+                              : readOnly
+                                ? undefined
+                                : {
+                                    label: 'Create combo bot',
+                                    onClick: () => navigate('/combo/new'),
+                                    icon: <Plus className="w-5 h-5" />,
+                                  }
+                          }
+                          secondaryAction={
+                            showArchived
+                              ? undefined
+                              : {
+                                  label: 'View archived bots',
+                                  onClick: () =>
+                                    setShowArchived((prev) => !prev),
+                                }
+                          }
+                        />
+                      }
                       className="h-full min-h-[400px]"
                       onViewModeChange={setCurrentViewMode}
                       onColumnFiltersVisibilityChange={setShowFilters}
@@ -1954,7 +1798,7 @@ const ComboBots: React.FC = () => {
                               {
                                 id: 'stop',
                                 label: 'Stop',
-                                icon: Pause,
+                                icon: Square,
                                 onAction: (bots) => {
                                   handleOpenBulkStatusChange(bots, 'stop');
                                 },
@@ -2110,7 +1954,7 @@ const ComboBots: React.FC = () => {
                       }
                       // New button moved to widget header
                     />
-                    )}
+
 
                     {/* Bulk delete modal */}
                     <DeleteConfirmationModal
@@ -2181,29 +2025,11 @@ const ComboBots: React.FC = () => {
         {/* Bot Details Drawer - OPTIMIZED: Single shared drawer instead of one per bot */}
         {selectedBot &&
           (() => {
-            let selectedBotData = transformedBots.find(
-              (bot) => bot.id === selectedBot
-            );
-            if (!selectedBotData && shareId && sharedBotResult.bot) {
-              try {
-                selectedBotData = transformDcaBotToBot(
-                  sharedBotResult.bot as ComboBot,
-                  [],
-                  [],
-                  true,
-                  [],
-                  undefined
-                );
-              } catch (e) {
-                logger.warn('[ComboBots] failed to transform shared bot', {
-                  error: e,
-                });
-              }
-            }
+            const selectedBotData = drawerBot.bot;
             if (!selectedBotData) return null;
 
             const sharedOwnerId =
-              (sharedBotResult.bot as { userId?: string } | null)?.userId;
+              (drawerBot.rawBot as { userId?: string } | null)?.userId;
             const viewOnly =
               !!shareId ||
               (!!currentUser && !!sharedOwnerId && sharedOwnerId !== currentUser.id);

@@ -56,6 +56,8 @@ import { gridTabDescriptors } from '@/features/bots/bot-types/grid/form/tabs';
   HEDGE_DCA_BOT_TYPE_ID,
 } from '@/features/bots/modules/hedgeModule'; */
 import SettingsAlert from '@/components/ui/SettingsAlert';
+import { BotPlacementProgress } from '@/features/bots/widgets/BotForm/BotPlacementProgress';
+import { useGridBotsStore } from '@/stores/live/gridBotsStore';
 import { GRID_BOT_TYPE_ID } from '@/features/bots/registry/entries/grid';
 import {
   AddFundsDialog,
@@ -134,7 +136,7 @@ import {
 import type { BotFormData } from '@/types/bots/form';
 import type { ComboBot } from '@/types/comboBot';
 import type { GridBot } from '@/types/gridBot';
-import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
+import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
 import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-core';
 import { validateDcaFormData } from '@/utils/bots/dca/validation';
 import { validateGridFormData } from '@/utils/bots/grid/validation';
@@ -481,6 +483,10 @@ const BotForm: React.FC<BotFormProps> = ({
   tabDescriptorsFilter,
   onBacktestComplete,
 }) => {
+  // Active example-orders store — the shared global for regular bots, or this
+  // form's isolated instance when rendered inside an isolateStores
+  // BotFormProvider (hedge leg).
+  const exampleOrdersStore = useExampleOrdersStore();
   // Register template shortcuts and remove stale ones
   useBotTemplateShortcuts();
   const dataMode = data?.['mode'] as BotFormMode | undefined;
@@ -526,7 +532,6 @@ const BotForm: React.FC<BotFormProps> = ({
     activeTab,
     setActiveTab,
     isLoading,
-    setIsLoading,
     errors,
     setErrors,
     setAlerts,
@@ -656,60 +661,50 @@ const BotForm: React.FC<BotFormProps> = ({
     botType: formData.type,
   });
 
-  useEffect(() => {
-    if (mode !== 'edit' && bot?._id) {
-      setIsLoading(false);
-      return;
-    }
-
-    if (bot?.exchangeUUID) {
-      getBalances(bot.exchangeUUID).catch((error: unknown) => {
-        console.error('❌ [BotFormShell] Failed to load balances', error);
-      });
-      return;
-    }
-
-    // In create/new mode the bot prop is null; once the form picks an
-    // exchange (e.g. right after onboarding creates one), refetch
-    // balances for that specific exchange so the manual tab's balance
-    // store hydrates. Without this, balances stay at whatever the
-    // initial "all" fetch returned — which won't include an exchange
-    // created mid-session.
+  // The exchange whose balances the form should hydrate. In edit mode the
+  // exchange is locked to the persisted bot. In create/clone mode the user's
+  // live selection (`formData.exchangeUUID`) is authoritative — a bot cloned
+  // from a source on another exchange must NOT keep reading the source's
+  // balances, which left the base order showing $0 for the picked exchange.
+  const effectiveBalanceExchangeUUID = useMemo(() => {
     const formExchangeUUID =
       typeof formData.exchangeUUID === 'string' &&
       formData.exchangeUUID.trim().length > 0
-        ? formData.exchangeUUID
+        ? formData.exchangeUUID.trim()
         : undefined;
 
-    if (formExchangeUUID) {
-      getBalances(formExchangeUUID).catch((error: unknown) => {
+    return mode === 'edit'
+      ? (bot?.exchangeUUID ?? formExchangeUUID)
+      : (formExchangeUUID ?? bot?.exchangeUUID);
+  }, [mode, bot?.exchangeUUID, formData.exchangeUUID]);
+
+  useEffect(() => {
+    // Load balances for the currently-selected exchange. A clone seeds a
+    // non-null `bot` while in create mode, so we must NOT early-out on
+    // `bot?._id` here (that skipped balance loading entirely and left the
+    // base-order balance stuck at $0). `isLoading` already defaults to false
+    // in create mode, so nothing else needs clearing.
+    if (effectiveBalanceExchangeUUID) {
+      getBalances(effectiveBalanceExchangeUUID).catch((error: unknown) => {
         console.error('❌ [BotFormShell] Failed to load balances', error);
       });
       return;
     }
 
+    // No specific exchange yet (fresh create before a pick) — fetch all.
     if (!bot?._id) {
       getBalances(undefined, true).catch((error: unknown) => {
         console.error('❌ [BotFormShell] Failed to load balances', error);
       });
     }
-  }, [
-    mode,
-    bot?._id,
-    bot?.exchangeUUID,
-    formData.exchangeUUID,
-    getBalances,
-    setIsLoading,
-  ]);
+  }, [effectiveBalanceExchangeUUID, bot?._id, getBalances]);
 
   const handleUpdateBalances =
     useCallback(async (): Promise<RefreshBalancesResult> => {
-      const targetExchangeUUID =
-        bot?.exchangeUUID ??
-        (typeof formData.exchangeUUID === 'string' &&
-        formData.exchangeUUID.trim().length > 0
-          ? formData.exchangeUUID
-          : undefined);
+      // Refresh the exchange the user is actually configuring — in clone mode
+      // that's the picked exchange, not the source bot's (which made the
+      // "Update balance" button refresh the wrong account and stay at $0).
+      const targetExchangeUUID = effectiveBalanceExchangeUUID;
 
       if (!targetExchangeUUID) {
         if (debugEnabled) {
@@ -739,12 +734,7 @@ const BotForm: React.FC<BotFormProps> = ({
         toast.warning(outcome.reason);
       }
       return outcome;
-    }, [
-      bot?.exchangeUUID,
-      debugEnabled,
-      formData.exchangeUUID,
-      updateBalances,
-    ]);
+    }, [effectiveBalanceExchangeUUID, debugEnabled, updateBalances]);
 
   const handleCreateSuccess = useCallback(
     (created: unknown) => {
@@ -1929,6 +1919,22 @@ const BotForm: React.FC<BotFormProps> = ({
   >(null);
 
   const botId = bot?._id ?? null;
+
+  // Live order-placement progress (grid). The engine streams a `progress`
+  // field ({ stage, total, text, isAllowedToCancel }) into the grid socket
+  // store while it places the grid ladder. While placement is in flight we
+  // replace the settings body with a blocking progress panel and gate the
+  // footer, matching the legacy dashboard.
+  const gridPlacementProgress = useGridBotsStore((s) =>
+    isGridBot && botId ? (s.getBot(botId)?.progress ?? null) : null
+  );
+  const isPlacingOrders =
+    !!gridPlacementProgress &&
+    typeof gridPlacementProgress.stage === 'number' &&
+    typeof gridPlacementProgress.total === 'number' &&
+    gridPlacementProgress.total > 0 &&
+    gridPlacementProgress.stage !== gridPlacementProgress.total;
+
   const botForOperations = useMemo(() => {
     if (isDcaBotEntity(bot)) {
       return bot as DCABot;
@@ -2230,7 +2236,7 @@ const BotForm: React.FC<BotFormProps> = ({
       onDrag: (price, type, index, meta) =>
         dragHandlerRef.current?.(price, type, index, meta),
     });
-  }, []);
+  }, [exampleOrdersStore]);
 
   useEffect(() => {
     // The chart follows the first pair by default, but a clicked pair chip
@@ -2295,6 +2301,7 @@ const BotForm: React.FC<BotFormProps> = ({
     onFormDataChange,
     formData.pairMetadata,
     currentExchange,
+    exampleOrdersStore,
   ]);
 
   const handleStatusToggle = useCallback(
@@ -2960,7 +2967,7 @@ const BotForm: React.FC<BotFormProps> = ({
             const gridSettings = {
               ...formData.grid,
               pair: primaryPair,
-              name: formData.name || 'Grid Bot',
+              name: formData.name || 'New Bot',
               // Legacy forces this flag true at backtest time (gridbot
               // `{ ...settings, updatedBudget: true }`). The form mapper
               // defaults it to `false` for edited/cloned bots (the stored
@@ -3348,23 +3355,47 @@ const BotForm: React.FC<BotFormProps> = ({
 
   const isContentReadOnly = mode === 'edit' ? isReadOnly : false;
 
-  const componentProps: BotFormTabComponentProps = {
-    currentExchange,
-    formData,
-    updateFormData:
-      updateFormData as BotFormTabComponentProps['updateFormData'],
-    errors,
-    mode,
-    isFieldLocked,
-    getBalance: getBalanceFn,
-    bot,
-    handleUpdateBalances,
-    exchangesData: exchanges,
-    exchangesLoading,
-    activeTab,
-    onTabChange: handleTabChangeWithScroll,
-    features,
-  };
+  // Memoized so unrelated re-renders of BotFormShell don't hand every
+  // section a fresh props object. Identity still changes when formData
+  // (or any other listed input) changes — that's expected; the win is
+  // for renders that don't touch these values. The functions below
+  // (updateFormData, isFieldLocked, getBalanceFn, handleUpdateBalances,
+  // handleTabChangeWithScroll) are already stable references.
+  const componentProps = useMemo<BotFormTabComponentProps>(
+    () => ({
+      currentExchange,
+      formData,
+      updateFormData:
+        updateFormData as BotFormTabComponentProps['updateFormData'],
+      errors,
+      mode,
+      isFieldLocked,
+      getBalance: getBalanceFn,
+      bot,
+      handleUpdateBalances,
+      exchangesData: exchanges,
+      exchangesLoading,
+      activeTab,
+      onTabChange: handleTabChangeWithScroll,
+      features,
+    }),
+    [
+      currentExchange,
+      formData,
+      updateFormData,
+      errors,
+      mode,
+      isFieldLocked,
+      getBalanceFn,
+      bot,
+      handleUpdateBalances,
+      exchanges,
+      exchangesLoading,
+      activeTab,
+      handleTabChangeWithScroll,
+      features,
+    ]
+  );
 
   // For terminal mode, only hide navigation if it's "simple" mode (only basic tab)
   const hasManualNavigation =
@@ -3476,6 +3507,10 @@ const BotForm: React.FC<BotFormProps> = ({
                 ref={scrollContainerRef}
                 className="custom-scrollbar h-full overflow-y-auto px-2"
               >
+                {isPlacingOrders && gridPlacementProgress ? (
+                  <BotPlacementProgress progress={gridPlacementProgress} />
+                ) : (
+                  <>
                 {isContentReadOnly && (
                   <div className="mb-4 flex items-center gap-xs rounded-md border border-border/60 bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
                     <Lock className="h-4 w-4" />
@@ -3597,6 +3632,8 @@ const BotForm: React.FC<BotFormProps> = ({
                     );
                   })}
                 </fieldset>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -3632,7 +3669,8 @@ const BotForm: React.FC<BotFormProps> = ({
                 errors={errors}
                 submitLabel={footerOverride?.submitLabel ?? submitLabel}
                 submitDisabled={
-                  footerOverride?.submitDisabled ?? submitDisabled
+                  footerOverride?.submitDisabled ??
+                  (submitDisabled || isPlacingOrders)
                 }
                 submitIsPending={
                   footerOverride?.submitIsPending ?? submitIsPending
@@ -3675,7 +3713,10 @@ const BotForm: React.FC<BotFormProps> = ({
                 }
                 toggleDisabled={
                   footerOverride?.toggleDisabled ??
-                  (statusToggleMutation.isPending || !botId)
+                  (statusToggleMutation.isPending ||
+                    !botId ||
+                    (isPlacingOrders &&
+                      !gridPlacementProgress?.isAllowedToCancel))
                 }
                 togglePending={
                   footerOverride?.togglePending ??
@@ -4070,9 +4111,15 @@ const BotForm: React.FC<BotFormProps> = ({
             onSubmit={footerOverride?.onSubmit ?? handleSubmit}
             backtestPending={footerOverride?.backtestPending ?? backtestPending}
             onBacktest={footerOverride?.onBacktest ?? onBacktestClick}
-            onRunBacktestDirect={onRunBacktest}
-            backtestProgress={backtestProgress}
-            onCancelBacktest={cancelLocalBacktest}
+            onRunBacktestDirect={
+              footerOverride?.onRunBacktestDirect ?? onRunBacktest
+            }
+            backtestProgress={
+              footerOverride?.backtestProgress ?? backtestProgress
+            }
+            onCancelBacktest={
+              footerOverride?.onCancelBacktest ?? cancelLocalBacktest
+            }
             backtestSummary={
               footerOverride?.backtestSummary ?? backtestSummary
             }

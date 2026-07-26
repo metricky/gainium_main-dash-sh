@@ -211,10 +211,28 @@ export const TradingViewChartCore = forwardRef<
       const widget = widgetRef.current as ExtendedWidget | null;
       if (!widget) return null;
 
-      const chartCandidate =
-        typeof widget.activeChart === 'function'
-          ? widget.activeChart?.()
-          : widget.chart?.();
+      // Optional chaining only guards the accessor *existing* — it does not
+      // guard it throwing. Both `activeChart()` and `chart()` funnel through the
+      // vendor's `_innerAPI()` → `_innerWindow().tradingViewApi` →
+      // `_iFrame.contentWindow`. Once the chart iframe is detached (chart
+      // re-created on a pair/interval change, or navigated away mid-update)
+      // `contentWindow` is null and the vendor throws "Cannot read properties of
+      // null (reading 'tradingViewApi')"; before the iframe finishes booting
+      // `tradingViewApi` is undefined and it throws on `.activeChart` instead.
+      // `widgetRef.current` stays truthy through both, so the callers'
+      // `widgetRef.current && isChartReady` guards cannot detect it — the throw
+      // escaped the passive effect behind `renderAvgPriceLines` and tripped
+      // AppErrorBoundary on /grid/edit. Treat "chart unreachable" as "no chart".
+      let chartCandidate: unknown;
+      try {
+        chartCandidate =
+          typeof widget.activeChart === 'function'
+            ? widget.activeChart?.()
+            : widget.chart?.();
+      } catch (error) {
+        logger.debug('Chart API unreachable (widget torn down)', error);
+        return null;
+      }
 
       if (!chartCandidate) {
         return null;
@@ -226,6 +244,11 @@ export const TradingViewChartCore = forwardRef<
           options: Record<string, unknown>
         ) => unknown;
         createOrderLine?: () => OrderLineInstance;
+        createShape?: (
+          point: { time: number; price: number },
+          options: Record<string, unknown>
+        ) => unknown;
+        removeEntity?: (entity: unknown) => void;
         dataReady?: (callback: () => void) => void;
         getVisibleRange?: () => { from: number; to: number } | null;
       };
@@ -1074,14 +1097,10 @@ export const TradingViewChartCore = forwardRef<
         }
 
         try {
-          const widget = widgetRef.current as ExtendedWidget | null;
-          const chart =
-            chartInstance ??
-            (typeof widget?.chart === 'function'
-              ? (widget.chart?.() as ChartInstance & {
-                  removeEntity?: (entity: unknown) => void;
-                })
-              : null);
+          // Must resolve the chart the same way `addPositionOverlay` does, or
+          // in a multi-chart layout we'd remove the entity from a different
+          // chart than we drew it on and leak the overlay.
+          const chart = chartInstance ?? getActiveChart();
 
           chart?.removeEntity?.(positionEntityRef.current);
         } catch (error) {
@@ -1092,7 +1111,7 @@ export const TradingViewChartCore = forwardRef<
           positionPrecisionRef.current = undefined;
         }
       },
-      [widgetRef]
+      [getActiveChart]
     );
 
     const addPositionOverlay = useCallback(
@@ -1105,16 +1124,12 @@ export const TradingViewChartCore = forwardRef<
           return;
         }
 
-        const widget = widgetRef.current as ExtendedWidget;
-        const chart = widget.chart?.() as
-          | (ChartInstance & {
-              createShape?: (
-                point: { time: number; price: number },
-                options: Record<string, unknown>
-              ) => unknown;
-              removeEntity?: (entity: unknown) => void;
-            })
-          | null;
+        // Via the guarded accessor: a bare `widget.chart?.()` here throws the
+        // same "reading 'tradingViewApi'" TypeError when the iframe is gone, and
+        // this callback has no try/catch of its own. Also aligns the position
+        // overlay with every other overlay renderer in this component, which all
+        // draw onto `getActiveChart()`.
+        const chart = getActiveChart();
 
         if (!chart || typeof chart.createShape !== 'function') {
           logger.warn(
@@ -1179,7 +1194,7 @@ export const TradingViewChartCore = forwardRef<
           logger.warn('Failed to create position overlay', error);
         }
       },
-      [isChartReady, removePositionOverlay, widgetRef]
+      [getActiveChart, isChartReady, removePositionOverlay, widgetRef]
     );
 
     useImperativeHandle(ref, (): TradingViewChartCoreRef => {
@@ -1311,8 +1326,10 @@ export const TradingViewChartCore = forwardRef<
         },
         updateIndicators: async (indicators?: ChartIndicatorsConfig | null) => {
           if (!widgetRef.current || !isChartReady) return;
-          const widget = widgetRef.current as ExtendedWidget;
-          const chart = widget.activeChart?.();
+          // Guarded accessor — this handler has no try/catch, so a raw
+          // `widget.activeChart?.()` throws straight into the error boundary
+          // when the chart iframe has been torn down.
+          const chart = getActiveChart();
           if (!chart) return;
           clearCustomIndicators(chart as never);
           const configs = Array.isArray(indicators) ? indicators : [];
@@ -1320,7 +1337,7 @@ export const TradingViewChartCore = forwardRef<
             await addTradingViewIndicator(chart as never, config);
           }
         },
-        centerAtTimestampMs: (timestampMs: number) => {
+        centerAtTimestampMs: (timestampMs: number, endTimestampMs?: number) => {
           if (!widgetRef.current || !isChartReady) return;
           try {
             const widget = widgetRef.current as ExtendedWidget;
@@ -1333,15 +1350,27 @@ export const TradingViewChartCore = forwardRef<
               secondsPerBar = parseInt(norm, 10) * 60; // minutes
             else if (norm.endsWith('D')) secondsPerBar = 86400;
             else if (norm.endsWith('W')) secondsPerBar = 604800;
-            const timeSec = Math.floor(timestampMs / 1000);
-            const halfBars = 100;
-            const halfWindow = Math.max(1, halfBars * secondsPerBar);
-            const range = {
-              from: timeSec - halfWindow,
-              to: timeSec + halfWindow,
-            };
+            const startSec = Math.floor(timestampMs / 1000);
+            const endSec =
+              endTimestampMs != null && Number.isFinite(endTimestampMs)
+                ? Math.floor(endTimestampMs / 1000)
+                : null;
+            let range: { from: number; to: number };
+            if (endSec != null && endSec > startSec) {
+              // Frame the deal's actual entry→close span plus 20 bars of
+              // padding each side (mirrors dealToTradingView's PAD_BARS), so a
+              // short deal on a coarse interval fills the viewport instead of
+              // being a 1-2 bar sliver inside a fixed ±100-bar window.
+              const pad = 20 * secondsPerBar;
+              range = { from: startSec - pad, to: endSec + pad };
+            } else {
+              // No span given (or degenerate) — center a fixed window on the
+              // point (used by the grid transactions chart).
+              const halfWindow = Math.max(1, 100 * secondsPerBar);
+              range = { from: startSec - halfWindow, to: startSec + halfWindow };
+            }
             if (api.setVisibleRange) api.setVisibleRange(range);
-            else api.scrollToTime?.(timeSec, true, true);
+            else api.scrollToTime?.(startSec, true, true);
           } catch (e) {
             logger.error('centerAtTimestampMs failed', e);
           }
@@ -1857,6 +1886,7 @@ export const TradingViewChartCore = forwardRef<
       return _ensureHandleMatches;
     }, [
       addPositionOverlay,
+      getActiveChart,
       isChartReady,
       removePositionOverlay,
       reapplyRangeFilteredOverlays,

@@ -1,5 +1,9 @@
 import { useUsdRateStore } from '@/stores/usdRateStore';
-import { GraphQLClient } from '../lib/api/GraphQLClient';
+import {
+  GraphQLClient,
+  DEFAULT_READ_TIMEOUT_MS,
+} from '../lib/api/GraphQLClient';
+import { fetchWithTimeout } from '../lib/fetchWithTimeout';
 import { otherQueries } from '../lib/api/GraphQLQueries-other-queries';
 import { logger } from '../lib/loggerInstance';
 import { getCachedPrices, saveCachedPrices } from '../lib/priceCache';
@@ -53,6 +57,12 @@ const getExchangesToFetch = (loadUs: boolean) => {
     ExchangeEnum.coinbase,
     ExchangeEnum.hyperliquid,
     ExchangeEnum.hyperliquidLinear,
+    // Kraken (incl. tokenized-stock "xStocks") was missing here, and the
+    // dynamic activeExchanges effect (useDcaDeals) is commented out — so the
+    // dashboard never fetched Kraken prices, leaving every Kraken deal's
+    // unrealized P&L stuck on "Price unavailable".
+    ExchangeEnum.kraken,
+    ExchangeEnum.krakenUsdm,
   ];
 
   // Combine essential exchanges with active exchanges
@@ -100,7 +110,7 @@ const requestPrices = async (exchange: ExchangeEnum) => {
     logger.debug(`[Price] Fetching prices for ${exchange} from:`, url);
     logger.debug(`[Price] API endpoint:`, import.meta.env.VITE_API_ENDPOINT);
 
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -234,7 +244,9 @@ export async function getPrices(loadUs: boolean, returnPrice: boolean) {
             reason: string | null;
             data: number;
           };
-        }>(otherQueries.getUsdRate().query);
+        }>(otherQueries.getUsdRate().query, undefined, {
+          timeoutMs: DEFAULT_READ_TIMEOUT_MS,
+        });
 
         if (usdRateRequest.getUsdRate.status === 'OK') {
           usdRateRequested = true;

@@ -18,11 +18,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import {
+  useBotFormActions,
+  useBotFormAlerts,
+  useBotFormErrors,
   useBotFormSelector,
-  useBotFormState,
-  type BotFormUpdateValue,
+  useBotFormTopLevelSelector,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
+import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { IndicatorGroupsManager } from '@/features/bots/shared/components/IndicatorGroupsManager';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import useBotVarBinding from '@/hooks/bots/global-variables/useBotVarBinding';
@@ -43,11 +46,6 @@ import {
   VolumeValueEnum,
   type DCABotSettings,
 } from '@/types';
-import type {
-  BotFormData,
-  BotFormErrors,
-  ExchangeBotForm,
-} from '@/types/bots/form';
 import type { GlobalVariable } from '@/types/globalVariables';
 import type { IndicatorConfig, IndicatorGroup } from '@/types/indicators';
 import { getIndicatorDefaultParams } from '@/types/indicators/indicatorLogic';
@@ -62,6 +60,7 @@ import {
   buildIndicatorConfig,
   sanitizeIndicatorParams,
 } from '@/utils/indicators/indicatorConfigUtils';
+import { getValidTimezone } from '@/utils/timeUtils';
 import { Info } from 'lucide-react';
 import React, { useMemo } from 'react';
 
@@ -166,19 +165,13 @@ const toLocalDateTimeInputValue = (date: Date): string => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
 
-interface DealStartSettingsProps {
-  currentExchange: ExchangeBotForm | null;
-  formData: BotFormData;
-  updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
-  errors: BotFormErrors;
-}
-
-export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
-  currentExchange,
-  formData,
-  updateFormData,
-  errors,
-}) => {
+export const DealStartSettings: React.FC = () => {
+  const { currentExchange } = useBotFormQuery();
+  const { updateFormData } = useBotFormActions();
+  const errors = useBotFormErrors();
+  const formTerminal = useBotFormTopLevelSelector('terminal');
+  const formPair = useBotFormTopLevelSelector('pair');
+  const formPairMetadata = useBotFormTopLevelSelector('pairMetadata');
   const timerTimes = React.useMemo(
     () =>
       Array.from(
@@ -301,15 +294,16 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
     },
     [updateFormData]
   );
+  // Stored timezone is free-text and may be an invalid IANA id (e.g. the
+  // localized "Europa/Roma"), which throws when fed to Intl/date pickers.
+  // Sanitize to a valid zone (falls back to the browser's own).
   const timezone = React.useMemo(
-    () =>
-      userSettings?.timezone ||
-      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    () => getValidTimezone(userSettings?.timezone),
     [userSettings?.timezone]
   );
 
   const normalizedSymbols = React.useMemo<NormalizedSymbol[]>(() => {
-    const pairs = [formData.pair || []]
+    const pairs = [formPair || []]
       .flat()
       .map((pair) => normalizeSymbol(pair))
       .filter((symbol): symbol is NormalizedSymbol => Boolean(symbol));
@@ -318,12 +312,12 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
       return pairs;
     }
 
-    const metadataPairs = Object.keys(formData.pairMetadata || {})
+    const metadataPairs = Object.keys(formPairMetadata || {})
       .map((key) => normalizeSymbol(key))
       .filter((symbol): symbol is NormalizedSymbol => Boolean(symbol));
 
     return metadataPairs;
-  }, [formData.pair, formData.pairMetadata]);
+  }, [formPair, formPairMetadata]);
 
   const primarySymbol = normalizedSymbols[0] ?? { base: 'BTC', quote: 'USDT' };
   const useMulti = useBotFormSelector('useMulti');
@@ -590,7 +584,7 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
 
   const startIndicatorErrorMessage = errors['indicators'];
 
-  const { alerts } = useBotFormState();
+  const alerts = useBotFormAlerts();
 
   // Automatically add first indicator group when enabling technical indicators
   React.useEffect(() => {
@@ -885,7 +879,7 @@ export const DealStartSettings: React.FC<DealStartSettingsProps> = ({
     };
   }, [hodlAt, hodlDay, hodlHourly, hodlNextBuy, timezone]);
 
-  const isTerminal = useMemo(() => !!formData.terminal, [formData.terminal]);
+  const isTerminal = useMemo(() => !!formTerminal, [formTerminal]);
 
   const shouldAutoExpand = Boolean(
     (!isTerminal && useStaticPriceFilter) ||

@@ -1,4 +1,5 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
+import { fetchWithTimeout } from '@/lib/fetchWithTimeout';
 import { GraphQlQuery } from '@/lib/api';
 import { StatusEnum, type Asset, type ScreenerCoinData } from '@/types';
 import { formatPriceWithPrecision } from '@/utils/formatters';
@@ -17,7 +18,7 @@ import React, {
   useState,
 } from 'react';
 import { getWidgetMetadata } from '.';
-import { useLiveUpdate } from '../../../contexts/LiveUpdateContext';
+import { useBalanceStore } from '@/stores/live';
 import { PortfolioContext } from '../../../contexts/PortfolioContext';
 import {
   useWidgetSettings,
@@ -90,9 +91,11 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     )
   );
 
-  // Get live update context for real-time balance updates
-  const { balanceSelectors } = useLiveUpdate();
-  const { getBalances } = balanceSelectors;
+  // Subscribe to the raw balances slice for real-time balance updates. The
+  // memoized LiveUpdateContext no longer re-renders on store writes, so a
+  // render-time getBalances() read (used inside the balancesRows memo below)
+  // would stay frozen while socket 'balance' events update the store.
+  const liveBalances = useBalanceStore((s) => s.balances);
 
   // Get real exchange data from the shared hook
   const { exchanges } = useTransformedExchangesFromContext();
@@ -147,7 +150,7 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     queryFn: async () => {
       const apiEndpoint =
         import.meta.env.VITE_API_ENDPOINT || 'https://api.gainium.io';
-      const resp = await fetch(`${apiEndpoint}/api/screener`, {
+      const resp = await fetchWithTimeout(`${apiEndpoint}/api/screener`, {
         method: 'POST',
         body: JSON.stringify({ page: 0, pageSize: 500 }),
         headers: { 'Content-type': 'application/json' },
@@ -175,7 +178,6 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     const screenerMap = buildScreenerSymbolMap(screener);
 
     // Prefer live balance data when available
-    const liveBalances = getBalances();
     if (liveBalances && liveBalances.length > 0) {
       return liveBalances.map((b) => {
         const total = parseMaybeNumber(
@@ -237,7 +239,7 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
         usdValue,
       } as BalanceRow;
     });
-  }, [balancesData, getBalances, parseMaybeNumber, propData, screenerResp]);
+  }, [balancesData, liveBalances, parseMaybeNumber, propData, screenerResp]);
 
   // Use the generic widget settings hook with type safety
   const { usePersistedState } =

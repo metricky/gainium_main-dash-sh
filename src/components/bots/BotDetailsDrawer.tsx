@@ -3,8 +3,6 @@ import {
   BotStartTypeEnum,
   BotTypesEnum,
   CloseConditionEnum,
-  CloseDCATypeEnum,
-  CloseGRIDTypeEnum,
   DCAConditionEnum,
   DCAOrderTypeEnum,
   ScaleDcaTypeEnum,
@@ -27,12 +25,15 @@ import type { DrawerBot } from '@/types/bots/drawer';
 import type { GridBot } from '@/types/gridBot';
 import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { exampleOrdersStore } from '@/utils/bots/dca/example-orders';
-import { buildBotEditRoute } from '@/utils/bots/navigation';
 import {
-  getActionPastTense,
-  getTargetStatus,
+  canToggleBotStatus,
+  getActionPresent,
+  getActionText,
   isBotActive,
+  isBotRestartable,
 } from '@/utils/botStatusUtils';
+import { cn } from '@/lib/utils';
+import { isReadOnly } from '@/lib/demoMode';
 import { getOrderTypeLabel } from '@/utils/mapOrderName';
 import { motion } from 'framer-motion';
 import {
@@ -40,8 +41,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Edit as EditIcon,
+  Loader2,
   MoreVertical,
+  Play,
+  RefreshCw,
   Share2,
+  Square,
   X,
 } from 'lucide-react';
 import React, {
@@ -55,12 +61,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { TradeDetailContent } from '../../components/trades/TradeDetailContent';
 import { ShareBotDialog } from '../../features/bots/shared/runtime/dialogs/ShareBotDialog';
 import { useBotViewTracking } from '../../hooks/useBotAnalytics';
-import {
-  useBotClone,
-  useBotDelete,
-  useBotRestart,
-  useBotStatusToggle,
-} from '../../hooks/useBotMutations';
+import { useBotActions } from '../../hooks/useBotActions';
 import { useAuthStore } from '../../stores/authStore';
 /* import { useCacheKey } from '../../hooks/useCacheKey'; */
 /* import { useCacheStatus } from '../../hooks/useCacheStatus'; */
@@ -73,12 +74,12 @@ import {
   type BotTypeId,
 } from '../bots/BotActionsMenuItems';
 import { DealEditDrawer } from '../deals/DealEditDrawer';
-import {
-  BotStatusConfirmationModal,
-  DeleteConfirmationModal,
-  SuccessFeedbackModal,
-} from '../modals';
+import { BotActionsModals } from './BotActionsModals';
 import { Button } from '../ui/button';
+import {
+  ResponsiveButtonRow,
+  type ResponsiveButtonConfig,
+} from '../ui/ResponsiveButtonRow';
 import { StatusChip } from '../ui/chip';
 import {
   DetailDrawer,
@@ -91,8 +92,10 @@ import {
 import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import DrawerWidgetRenderer from '../widgets/bots/drawer/DrawerWidgetRenderer';
+import { DealsLoadingIndicator } from '../widgets/bots/drawer/DealsLoadingIndicator';
 import OpenOrdersWidget from '../widgets/shared/OpenOrdersWidget';
 import StaleIndicator from '../widgets/shared/StaleIndicator';
+import { BotErrorWarningAlert } from './BotErrorWarningAlert';
 import { getDrawerWidgetsForBot } from './drawerWidgetConfig';
 import { UnfoldingChartPanel } from './panels/contents';
 import HedgeOverviewPanel from './panels/HedgeOverviewPanel';
@@ -101,6 +104,7 @@ import { useHedgeDeals } from '@/hooks/useHedgeDeals';
 import type { ComboDeal } from '@/hooks/useComboDeals';
 import { dcaDealToOpenTrade } from '@/lib/utils/dcaDealToOpenTrade';
 import { comboDealToOpenTrade } from '@/lib/utils/comboDealToOpenTrade';
+import type { CompoundBreakdownEntry } from '@/lib/utils/compoundBreakdown';
 import type { HedgeUnPnlResult } from '@/utils/bots/hedge/computeHedgeUnPnl';
 
 /**
@@ -171,6 +175,7 @@ export interface TradeDetails {
     all: number;
   };
   created?: number | undefined;
+  compoundBreakdown?: CompoundBreakdownEntry[] | undefined;
   botId?: string;
   pair?: string;
 }
@@ -320,6 +325,54 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       // No manual URL update needed - Tabs component handles it
     }, []);
 
+    // Runtime error/warning banner (backend `showErrorWarning` flag). For hedge
+    // bots, surface if either leg is flagged and clear both legs on dismiss.
+    const errorWarning = useMemo<{
+      severity: 'error' | 'warning';
+      targets: { id: string; type: BotTypesEnum }[];
+    } | null>(() => {
+      const flags: (DrawerBot['showErrorWarning'] | undefined)[] = [];
+      const targets: { id: string; type: BotTypesEnum }[] = [];
+      if (isHedge && hedge) {
+        const legType = hedge.isCombo ? BotTypesEnum.combo : BotTypesEnum.dca;
+        for (const leg of [hedge.longBot, hedge.shortBot]) {
+          if (!leg) continue;
+          flags.push(leg.showErrorWarning);
+          if (
+            leg.showErrorWarning === 'error' ||
+            leg.showErrorWarning === 'warning'
+          ) {
+            targets.push({ id: leg._id, type: legType });
+          }
+        }
+      } else {
+        flags.push(bot.showErrorWarning);
+        if (
+          bot.showErrorWarning === 'error' ||
+          bot.showErrorWarning === 'warning'
+        ) {
+          targets.push({ id: bot._id, type });
+        }
+      }
+      if (!targets.length) return null;
+      return {
+        severity: flags.includes('error') ? 'error' : 'warning',
+        targets,
+      };
+    }, [isHedge, hedge, bot, type]);
+
+    // Deep-link the alert's "review events" action to the Events tab.
+    const goToEvents = useCallback(() => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set('tab', 'events');
+          return next;
+        },
+        { replace: false }
+      );
+    }, [setSearchParams]);
+
     // Combined hedge deals (both legs of THIS hedge bot). Fetched only while
     // the Deals tab is active, via the dedicated hedge query that keeps its
     // own react-query cache and never clobbers the shared deal store.
@@ -338,7 +391,11 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
     // the client-side price calc can't value bots on exchanges missing from
     // the price feed (e.g. Kraken futures) — only the server-computed deal
     // unrealized is reliable there.
-    const { deals: allHedgeDeals } = useHedgeDeals(hedge?.isCombo ?? false, {
+    const {
+      deals: allHedgeDeals,
+      isLoading: hedgeDealsLoading,
+      isFetching: hedgeDealsFetching,
+    } = useHedgeDeals(hedge?.isCombo ?? false, {
       status:
         hedgeDealsStatus === 'closed'
           ? DCADealStatusEnum.closed
@@ -449,16 +506,9 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       [hedge, bot]
     );
 
-    // Modal state
-    const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-    const [successModalOpen, setSuccessModalOpen] = useState(false);
-    const [statusModalOpen, setStatusModalOpen] = useState(false);
+    // Modal state — the status/delete/success modals are owned by
+    // useBotActions now; only the Share dialog stays local to the drawer.
     const [shareDialogOpen, setShareDialogOpen] = useState(false);
-    const [successData, setSuccessData] = useState<{
-      type: 'clone' | 'delete';
-      newItemId?: string;
-      botTypeId?: string;
-    } | null>(null);
 
     // Owner-only Share entry point. We resolve the owner via the
     // `ownerUserId` prop (which the list page derives from either the
@@ -470,13 +520,6 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       ownerUserId ?? (bot as DCABot & { userId?: string }).userId ?? null;
     const isOwner =
       !viewOnly && !!currentUserId && resolvedOwnerId === currentUserId;
-
-    // Mutations
-    const deleteMutation = useBotDelete();
-    const cloneMutation = useBotClone();
-    const restartMutation = useBotRestart();
-
-    const statusToggleMutation = useBotStatusToggle(type);
 
     // Track bot pageview when drawer opens
     const location = useLocation();
@@ -679,8 +722,10 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       [setSearchParams]
     );
 
-    // Handler to go back to bot view
-    const handleBackToBot = () => {
+    // Handler to go back to bot view. Memoized so realtime socket updates
+    // (which re-render this drawer via the deal/order stores) don't hand a
+    // fresh `onClose` identity to child drawers on every notification.
+    const handleBackToBot = useCallback(() => {
       setViewMode('bot');
       setSelectedTrade(null);
       setEditingTrade(null);
@@ -693,7 +738,7 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
         },
         { replace: true }
       );
-    };
+    }, [setSearchParams]);
 
     // Handler for when edit deal is clicked in the deals table
     const handleEditDeal = useCallback((deal: DCADeals[]) => {
@@ -715,114 +760,59 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
     // (`hedgeDca` / `hedgeCombo`) for hedge bots.
     const actionBotId = parentBotId ?? bot._id;
 
-    // Event handlers
-    const handleEdit = () => {
-      const editPath = buildBotEditRoute(type, actionBotId);
-      if (onEdit) {
-        onEdit(actionBotId);
-      } else {
-        navigate(editPath);
-      }
-    };
-
-    const handleClone = () => {
-      if (onClone) {
-        onClone(actionBotId);
-      } else if (type === BotTypesEnum.dca) {
-        navigate(`/bot/new?load=${actionBotId}`);
-      } else {
-        cloneMutation.mutate(
-          {
-            id: actionBotId,
-            name: `${bot.settings.name} (Clone)`,
-            type,
-            // Note: No botData provided - will use query cache fallback
-          },
-          {
-            onSuccess: (data) => {
-              // Show success modal with clone feedback
-              setSuccessData({
-                type: 'clone',
-                newItemId: data?._id || `clone_${Date.now()}`,
-                botTypeId: type,
-              });
-              setSuccessModalOpen(true);
-            },
+    // Shared bot-action orchestration: clone (opens the pre-filled create
+    // page — this is what fixes the old combo/grid "immediate copy" that
+    // locked the pair), start/stop + delete (confirmation modals rendered by
+    // <BotActionsModals> below), restart. Overrides preserve the drawer's
+    // caller-supplied onEdit/onClone hooks (used by hedge/list pages) and its
+    // bespoke "Duplicate to live/paper" staging. Archive is intentionally not
+    // passed — BotActionsMenuItems owns it.
+    const botActions = useBotActions({
+      botId: actionBotId,
+      botType: type,
+      botName: bot.settings.name,
+      status: bot.status,
+      activeDeals: (bot as DCABot)?.dealsInBot?.active || 0,
+      totalValue: (bot as DCABot)?.usage?.current?.quote || 0,
+      currency: Array.isArray((bot as DCABot)?.symbol)
+        ? (bot as DCABot).symbol[0]?.value?.quoteAsset || 'USDT'
+        : 'USDT',
+      lastActivity: bot.created || 'Unknown',
+      botData: bot,
+      ...(isGrid
+        ? {
+            gridFutures: isFuturesExchange(bot.exchange),
+            gridHasOpenPosition: ((bot as GridBot).position?.price ?? 0) !== 0,
+            gridIsShort:
+              (bot as GridBot).position?.side === PositionSide.SHORT,
           }
-        );
-      }
-    };
-
-    const handleStatusToggle = () => {
-      setStatusModalOpen(true);
-    };
-
-    const handleConfirmStatusChange = (
-      closeType?: string,
-      cancelPartiallyFilled?: boolean
-    ) => {
-      const newStatus = getTargetStatus(bot.status);
-
-      // Use the mutation directly with callbacks for modal close and toast.
-      // Grid bots route the close decision through `closeGridType`
-      // (+ cancelPartiallyFilled); DCA/combo use `closeType`.
-      statusToggleMutation.mutate(
-        {
-          id: actionBotId,
-          status: newStatus,
-          ...(isGrid
-            ? {
-                closeGridType: closeType as CloseGRIDTypeEnum | undefined,
-                cancelPartiallyFilled,
-              }
-            : { closeType: closeType as CloseDCATypeEnum | undefined }),
-        },
-        {
-          onSuccess: () => {
-            setStatusModalOpen(false);
-            toast.success(`Bot ${getActionPastTense(bot.status)} successfully`);
-            // Note: Don't call onToggleStatus here as it would trigger another mutation
-            // The parent will receive updates through React Query cache invalidation
-          },
-          onError: (error) => {
-            console.error('Failed to change bot status:', error);
-            toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
-          },
-        }
-      );
-    };
-
-    const handleDelete = () => {
-      setDeleteModalOpen(true);
-    };
-
-    const handleRestart = () => {
-      restartMutation.mutate(
-        {
-          id: actionBotId,
+        : {}),
+      ...(onEdit ? { onEdit: () => onEdit(actionBotId) } : {}),
+      ...(onClone ? { onClone: () => onClone(actionBotId) } : {}),
+      // "Duplicate to live/paper" stages the config and opens a fresh create form.
+      onCopyToLive: () => {
+        const botConfig = {
+          name: `${bot.settings.name} (Live)`,
           type,
-        },
-        {
-          onSuccess: () => {
-            toast.success('Bot restarted successfully');
-          },
-          onError: () => {
-            toast.error('Failed to restart bot');
-          },
+          exchange: bot.exchange,
+          symbol: bot.symbol,
+          settings: bot.settings,
+        };
+        try {
+          sessionStorage.setItem('botConfig', JSON.stringify(botConfig));
+          navigate('/bot/new');
+        } catch (error) {
+          console.error('Failed to stage config for live trading:', error);
+          toast.error('Failed to stage configuration');
         }
-      );
-    };
+      },
+    });
 
-    const handleConfirmDelete = async () => {
-      try {
-        await deleteMutation.mutateAsync({ id: actionBotId, type });
-        setSuccessData({ type: 'delete' });
-        setSuccessModalOpen(true);
-      } catch (error) {
-        console.error('Failed to delete bot:', error);
-        // Error handling is done by the mutation
-      }
-    };
+    // Thin aliases so the footer button-config array and the actions menu keep
+    // their existing call sites — the behaviour now lives in useBotActions.
+    const handleEdit = botActions.edit;
+    const handleStatusToggle = botActions.openStatusModal;
+    const handleRestart = botActions.restart;
 
     const handleDrawerClose = () => {
       handleDrawerOpenChange(false);
@@ -1254,6 +1244,186 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
       [isLeftPanelCollapsed]
     );
 
+    // Bottom action bar (mirrors the edit/new bot form footer, minus the
+    // backtest row). Shown for every bot type in the main "bot" view.
+    // Memoised: `bot` is replaced on every socket stats/deal tick (~26x/s), so
+    // building this array unconditionally each render fed the memoised
+    // ResponsiveButtonRow a fresh `buttons` reference every tick and re-rendered
+    // it (RenderLoopTripwire on /bot/view, /combo/view, /hedge/combo/view). It
+    // now depends only on the status-derived primitives + stable handlers, so it
+    // recomputes only when the bot's status/pending state actually changes.
+    const footerReadOnly = isReadOnly() || viewOnly;
+    const footerStatus = bot.status.toLowerCase();
+    const isArchivedBot =
+      footerStatus === 'archive' || footerStatus === 'archived';
+    const canToggle = canToggleBotStatus(bot.status);
+    const canRestart = isBotRestartable(bot.status);
+    const statusTogglePending = botActions.pending.statusToggle;
+    const restartPending = botActions.pending.restart;
+    const toggleLabel = getActionText(bot.status);
+    const botStatus = bot.status;
+    const footerActionButtons = useMemo<ResponsiveButtonConfig[]>(() => {
+      const configs: ResponsiveButtonConfig[] = [];
+
+      // Archived bots can't be started, restarted or edited — un-archive first
+      // (via the ⋯ menu). So the lifecycle footer is empty for them.
+      if (isArchivedBot) return configs;
+
+      if (canToggle) {
+        configs.push({
+        id: 'toggle',
+        // Lowest priority → renders leftmost (Stop/Start).
+        priority: 1,
+        fullContent: (
+          <Button
+            onClick={() => handleStatusToggle()}
+            disabled={statusTogglePending || footerReadOnly}
+            variant="outline"
+            className="flex items-center justify-center gap-xs font-semibold uppercase px-4 py-2"
+            aria-pressed={isActive}
+            aria-label={toggleLabel}
+          >
+            {statusTogglePending ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="truncate">{getActionPresent(botStatus)}…</span>
+              </>
+            ) : isActive ? (
+              <>
+                <Square className="w-4 h-4 shrink-0" />
+                <span className="truncate">{toggleLabel}</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 shrink-0" />
+                <span className="truncate">{toggleLabel}</span>
+              </>
+            )}
+          </Button>
+        ),
+        compactContent: (
+          <Button
+            onClick={() => handleStatusToggle()}
+            size="icon"
+            disabled={statusTogglePending || footerReadOnly}
+            variant="outline"
+            aria-pressed={isActive}
+            aria-label={toggleLabel}
+          >
+            {statusTogglePending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : isActive ? (
+              <Square className="w-4 h-4" />
+            ) : (
+              <Play className="w-4 h-4" />
+            )}
+            <span className="sr-only">{toggleLabel}</span>
+          </Button>
+        ),
+        menuLabel: statusTogglePending
+          ? `${getActionPresent(botStatus)}…`
+          : toggleLabel,
+        menuIcon: isActive ? Square : Play,
+        onMenuClick: () => handleStatusToggle(),
+        disabled: statusTogglePending || footerReadOnly,
+      });
+    }
+
+      configs.push({
+      id: 'edit',
+      // Highest priority → with `highestPriorityFullWidth` it becomes the
+      // full-width primary button, anchored to the right of the row.
+      priority: 3,
+      fullContent: (
+        <Button
+          onClick={() => handleEdit()}
+          disabled={footerReadOnly}
+          variant="default"
+          className="flex w-full items-center justify-center gap-xs font-semibold uppercase px-4 py-2"
+          aria-label="Edit bot"
+          title={footerReadOnly ? 'Editing is not available in demo mode' : undefined}
+        >
+          <EditIcon className="w-4 h-4 shrink-0" />
+          <span className="truncate">Edit</span>
+        </Button>
+      ),
+      compactContent: (
+        <Button
+          onClick={() => handleEdit()}
+          size="icon"
+          disabled={footerReadOnly}
+          variant="default"
+          aria-label="Edit bot"
+          title={footerReadOnly ? 'Editing is not available in demo mode' : undefined}
+        >
+          <EditIcon className="w-4 h-4" />
+          <span className="sr-only">Edit</span>
+        </Button>
+      ),
+      menuLabel: 'Edit',
+      menuIcon: EditIcon,
+      onMenuClick: () => handleEdit(),
+      disabled: footerReadOnly,
+    });
+
+    if (canRestart) {
+        configs.push({
+        id: 'restart',
+        // Middle priority → sits between Stop (left) and the full-width Edit.
+        priority: 2,
+        fullContent: (
+          <Button
+            onClick={() => handleRestart()}
+            disabled={restartPending || footerReadOnly}
+            variant="outline"
+            className="flex items-center justify-center gap-xs font-semibold uppercase px-4 py-2"
+            aria-label="Restart bot"
+          >
+            <RefreshCw
+              className={cn('w-4 h-4 shrink-0', restartPending && 'animate-spin')}
+            />
+            <span className="truncate">
+              {restartPending ? 'Restarting…' : 'Restart'}
+            </span>
+          </Button>
+        ),
+        compactContent: (
+          <Button
+            onClick={() => handleRestart()}
+            size="icon"
+            disabled={restartPending || footerReadOnly}
+            variant="outline"
+            aria-label="Restart bot"
+          >
+            <RefreshCw
+              className={cn('w-4 h-4', restartPending && 'animate-spin')}
+            />
+            <span className="sr-only">Restart</span>
+          </Button>
+        ),
+        menuLabel: restartPending ? 'Restarting…' : 'Restart',
+        menuIcon: RefreshCw,
+        onMenuClick: () => handleRestart(),
+        disabled: restartPending || footerReadOnly,
+      });
+      }
+
+      return configs;
+    }, [
+      isArchivedBot,
+      canToggle,
+      canRestart,
+      statusTogglePending,
+      restartPending,
+      toggleLabel,
+      footerReadOnly,
+      isActive,
+      botStatus,
+      handleStatusToggle,
+      handleEdit,
+      handleRestart,
+    ]);
+
     return (
       <DetailDrawer open={actualOpen} onOpenChange={handleDrawerOpenChange}>
         <DetailDrawerTrigger asChild>{children}</DetailDrawerTrigger>
@@ -1344,64 +1514,16 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
                           align="end"
                           className="w-56 z-50"
                           viewOnly={viewOnly}
+                          hideLifecycleActions
                           bot={{
                             id: bot._id,
                             name: bot.settings.name,
                             type: type as BotTypeId,
                             status: bot.status as BotStatusType,
+                            coldArchived: (bot as { coldArchived?: boolean })
+                              .coldArchived,
                           }}
-                          pending={{
-                            statusToggle: statusToggleMutation.isPending,
-                            restart: restartMutation.isPending,
-                            clone: cloneMutation.isPending,
-                            delete: deleteMutation.isPending,
-                          }}
-                          onToggleStatus={() => handleStatusToggle()}
-                          onRestart={() => handleRestart()}
-                          onEdit={() => handleEdit()}
-                          onClone={() => handleClone()}
-                          onViewClosedTrades={() =>
-                            navigate(`/trades?botId=${bot._id}`)
-                          }
-                          onShareConfig={async () => {
-                            try {
-                              await navigator.clipboard.writeText(
-                                JSON.stringify(bot, null, 2)
-                              );
-                              toast.success(
-                                'Configuration copied to clipboard'
-                              );
-                            } catch (error) {
-                              console.error(
-                                'Failed to copy configuration:',
-                                error
-                              );
-                              toast.error('Failed to copy configuration');
-                            }
-                          }}
-                          onCopyToLive={() => {
-                            const botConfig = {
-                              name: `${bot.settings.name} (Live)`,
-                              type: type,
-                              exchange: bot.exchange,
-                              symbol: bot.symbol,
-                              settings: bot.settings,
-                            };
-                            try {
-                              sessionStorage.setItem(
-                                'botConfig',
-                                JSON.stringify(botConfig)
-                              );
-                              navigate('/bot/new');
-                            } catch (error) {
-                              console.error(
-                                'Failed to stage config for live trading:',
-                                error
-                              );
-                              toast.error('Failed to stage configuration');
-                            }
-                          }}
-                          onDelete={() => handleDelete()}
+                          {...botActions.menuProps}
                         />
                       </DropdownMenu>
                       <Button
@@ -1446,6 +1568,16 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
               </DetailDrawerHeader>
 
               <DetailDrawerBody className="px-4 py-5 sm:px-6 sm:py-6">
+                {errorWarning && (
+                  <BotErrorWarningAlert
+                    severity={errorWarning.severity}
+                    targets={errorWarning.targets}
+                    onReviewEvents={
+                      activeTab === 'events' ? undefined : goToEvents
+                    }
+                    className="mb-md"
+                  />
+                )}
                 <TabsContent
                   value="deals"
                   className="mt-0 flex-1 overflow-hidden"
@@ -1465,6 +1597,18 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
                       <OpenOrdersWidget
                         widgetId={`hedge-bot-${hedge?.wrapperId}-deals`}
                         data={{ trades: hedgeDealsAsOpenTrades }}
+                        // Show the loading skeleton only while a fetch is in
+                        // flight AND we have nothing to render yet. Once the
+                        // first page of a large bot streams in, the table takes
+                        // over and keeps filling incrementally — so we never
+                        // block the whole widget on the full multi-page fetch,
+                        // and never flash "No trades found" mid-load. Covers the
+                        // initial load and a refetch over stale/empty cache.
+                        externalLoading={
+                          (hedgeDealsLoading || hedgeDealsFetching) &&
+                          hedgeDealsAsOpenTrades.length === 0
+                        }
+                        loadingIndicator={<DealsLoadingIndicator />}
                         rawDeals={hedgeRawDeals as DCADeals[]}
                         enableStatusToggle={true}
                         onStatusFilterChange={setHedgeDealsStatus}
@@ -1735,6 +1879,26 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
                   </motion.div>
                 </TabsContent>
               </DetailDrawerBody>
+
+              {/* Bottom action bar — Stop (left), Restart, and a full-width
+                  primary Edit (right), for every bot type. Mirrors the
+                  edit/new bot form footer (without the backtest row). These
+                  actions are intentionally NOT duplicated in the header ⋮
+                  menu (see hideLifecycleActions above). Hidden for share-link
+                  / non-owner viewers. */}
+              {!viewOnly && footerActionButtons.length > 0 && (
+                <div className="shrink-0 border-t border-border px-3 py-2 sm:px-4">
+                  <ResponsiveButtonRow
+                    buttons={footerActionButtons}
+                    gap={8}
+                    buffer={16}
+                    alignment="left"
+                    highestPriorityFullWidth
+                    enableOverflowMenu
+                    overflowMenuTriggerClassName="rounded-lg"
+                  />
+                </div>
+              )}
             </Tabs>
           ) : viewMode === 'edit-deal' && editingTrade ? (
             <>
@@ -1928,65 +2092,8 @@ export const BotDetailsDrawer: React.FC<BotDetailsDrawerProps> = React.memo(
           {/* Footer removed - all actions moved to header 3-dot menu */}
         </DetailDrawerContent>
 
-        {/* Modals */}
-        <BotStatusConfirmationModal
-          open={statusModalOpen}
-          onOpenChange={setStatusModalOpen}
-          onConfirm={handleConfirmStatusChange}
-          botName={bot.settings.name}
-          currentStatus={bot.status}
-          targetStatus={getTargetStatus(bot.status)}
-          hasActiveDeals={((bot as DCABot)?.dealsInBot?.active || 0) > 0}
-          botType={isGrid ? BotTypesEnum.grid : undefined}
-          gridFutures={isGrid ? isFuturesExchange(bot.exchange) : undefined}
-          gridHasOpenPosition={
-            isGrid ? ((bot as GridBot).position?.price ?? 0) !== 0 : undefined
-          }
-          gridIsShort={
-            isGrid
-              ? (bot as GridBot).position?.side === PositionSide.SHORT
-              : undefined
-          }
-          isLoading={statusToggleMutation.isPending}
-        />
-
-        <DeleteConfirmationModal
-          open={deleteModalOpen}
-          onOpenChange={setDeleteModalOpen}
-          onConfirm={handleConfirmDelete}
-          title="Delete Bot"
-          description="Are you sure you want to delete this bot? This action cannot be undone."
-          itemName={bot.settings.name}
-          itemType="bot"
-          additionalInfo={{
-            activeDeals: (bot as DCABot)?.dealsInBot?.active || 0,
-            totalValue: (bot as DCABot)?.usage?.current?.quote || 0,
-            currency: Array.isArray((bot as DCABot)?.symbol)
-              ? (bot as DCABot).symbol[0]?.value?.quoteAsset || 'USDT'
-              : 'USDT',
-            lastActivity: bot.created || 'Unknown',
-          }}
-          isLoading={deleteMutation.isPending}
-          requireConfirmation={false}
-        />
-
-        <SuccessFeedbackModal
-          open={successModalOpen}
-          onOpenChange={setSuccessModalOpen}
-          type={successData?.type || 'clone'}
-          itemName={bot.settings.name}
-          itemType="bot"
-          newItemId={successData?.newItemId || undefined}
-          details={
-            successData?.type === 'clone'
-              ? {
-                  originalName: bot.settings.name,
-                  newName: `${bot.settings.name} (Clone)`,
-                  botTypeId: successData?.botTypeId ?? type,
-                }
-              : undefined
-          }
-        />
+        {/* Shared status / delete / success modals, driven by useBotActions. */}
+        <BotActionsModals {...botActions.modalProps} />
 
         {/* Share dialog — only mounted for the bot's owner.
             ShareBotDialog handles the toggle mutation + URL build. */}
