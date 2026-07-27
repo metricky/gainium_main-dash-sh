@@ -5,6 +5,125 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.17] - 2026-07-27
+
+### Fixed
+
+- Connecting or removing an exchange now updates the onboarding checklist and
+  the "no exchanges yet" empty states immediately, instead of leaving them on
+  the previous state until the next full page load. Same root cause as the
+  trading-mode revert in 2.38.16: the locally-kept copy of the profile was
+  never refreshed after the change.
+- Marking notifications or changelog entries as read no longer re-downloads the
+  exchange, backtest and market-data caches as a side effect.
+
+### Changed
+
+- Removed the dead React Query cache operations against the `['exchanges']` key
+  in the exchange mutations. No query has ever owned that key — the exchange
+  list is cached under `['user', …]` — so the invalidations and the optimistic
+  `setQueryData` blocks were no-ops. The `['user']` invalidations and the
+  `useExchangesStore` updates, which are what actually refresh the UI, are
+  unchanged. Internal cleanup, no behavior change.
+
+## [2.38.16] - 2026-07-27
+
+### Fixed
+
+- Switching to Live trading no longer reverts to Paper after a page reload.
+  The mode a user picks is written to their profile on the server, but the
+  copy of that profile the app keeps locally was never updated — so the next
+  reload restored the previous mode, and the one after that flipped it back,
+  which read as the toggle randomly resetting itself. The saved profile now
+  moves with the toggle, and a profile that genuinely changed (including a
+  switch made on another device) is still applied instead of being ignored
+  for the rest of the session.
+
+## [2.38.15] - 2026-07-27
+
+### Fixed
+
+- Multi-select table filters (exchange, status, strategy, and numeric/date
+  "between" ranges) no longer break when the page reloads — for example after
+  pressing the `B` navigation shortcut while already on Trading Bots. Selecting
+  two or more values collapsed them into one comma-joined string in the URL, so
+  the reloaded list matched nothing and looked like the filters had been reset.
+  Most visible in paper trading, where several paper accounts are typically
+  selected at once.
+
+## [2.38.14] - 2026-07-27
+
+### Fixed
+
+- The app now honours the browser's font-size setting everywhere. Text was
+  sized in absolute pixels while every container, gap and sidebar width scaled
+  with the browser's setting, so anyone who had changed it (Chrome →
+  Appearance → Font size) got boxes that no longer matched their text —
+  overflowing and truncating labels, with page zoom unable to help because it
+  scales both sides at once. Text and layout are now on the same scale, so the
+  app simply renders larger or smaller as a whole. Rendering is unchanged for
+  anyone on the default 16px, and the in-app font-size setting is unaffected.
+
+## [2.38.13] - 2026-07-27
+
+### Fixed
+
+- Pair/coin picker: rows were unreadable — the pair name squeezed down to a
+  sliver next to its ROI / 24h chips, and the search placeholder clipped — for
+  anyone whose browser font size isn't the 16px default (Chrome's Appearance →
+  Font size, or a minimum-font-size setting). The dialog was sized in `rem`
+  (browser font size) while all its text is sized from `--base-font-size`, so
+  the two drifted apart and the pair name, as the only flexible cell, absorbed
+  the whole shortfall. The dialog now scales with the same setting its text
+  does, rows reflow based on the dialog's own width, and the name keeps a
+  readable minimum.
+
+### Changed
+
+- Pair/coin picker: the dialog now widens on larger screens instead of staying
+  at a fixed 26rem, so more of each pair's name and metrics is visible.
+
+## [2.38.12] - 2026-07-27
+
+### Changed
+
+- Trading terminal: the Amount and Total order-size fields now use the same funds control as the bot forms, so both show the funding wallet's balance with a refresh button instead of a bare number box. The percentage row, the canonical-unit lock and the max hints are unchanged.
+- Trading terminal: Quick mode no longer shows a Bot Name field or generates a name for the order — matching Manual mode, which never had one.
+- Grid bot form: the manual Investment field gains the same balance readout and refresh control the quick setup already had.
+
+### Fixed
+
+- Trading terminal: a base amount derived from the Total no longer displays as `0` on pairs with a coarse lot step (a 10 USDT total on a 0.001-step futures pair read "0 BTC" instead of 0.00015318). The exchange step still rounds the value that gets ordered; it no longer rounds the readout.
+- Trading terminal: with no price loaded — the pair query failing, or nothing selected yet — the derived field now shows nothing instead of echoing the other field's figure in the wrong unit (a 10 USDT total rendered as "10 BTC").
+- Bot forms: the shared funds input now honors `disabled`/`readOnly`, so a locked or variable-bound order size can no longer be typed into.
+
+## [2.38.11] - 2026-07-27
+
+### Fixed
+
+- Bot form: pairs whose exchange symbol is not simply base + quote — Binance COIN-M (`BTCUSD_PERP`), dated futures (`BTCUSDT_260925`, `BTCUSDT-25SEP26`) and USDC perpetuals (`BTCPERP`, `BTCUSDU26`) on Bybit, Bitget and KuCoin — are now identified by their exchange symbol instead of a rebuilt `BASE+QUOTE`. Previously the chart showed "No data here" or silently plotted a different contract (the perpetual instead of the dated future), selecting such a pair left the chart on the previous one, and the pair label rendered as nonsense (`BTCUSD_P/ERP`).
+- Bot form: the pair picker no longer hides contracts that share a base and quote. Every expiry of a market collapsed onto a single row, so 10 of 30 Binance COIN-M pairs and 36 of 760 Bybit linear pairs were unreachable.
+
+## [2.38.10] - 2026-07-27
+
+### Fixed
+
+- Bot form: after "Reset to defaults", a bot form on a futures exchange no longer silently reverts to spot behavior. The Order Size Reference and Margin & Leverage rows stayed hidden (and the spot-only Profit Currency row appeared) because the derived futures/coin-m flags were only ever set when the selected exchange changed; they are now kept in sync with the exchange.
+
+## [2.38.9] - 2026-07-27
+
+### Fixed
+
+- Charts: recently listed pairs no longer render a permanently empty chart ("No data here", `O∅ H∅ L∅ C∅`). When the requested window started before the market existed, the candle loader stopped at the first empty range and threw away the whole load; it now skips the leading pre-listing gap and returns the candles that do exist.
+
+## [2.38.8] - 2026-07-26
+
+### Fixed
+
+- DCA bot form: switching the DCA type tab away from Indicators (or Custom) and back no longer clears the configuration — the indicator list and custom DCA rows now survive the round-trip in both directions.
+- DCA bot form: "Add DCA Indicator" now starts from a copy of the previous start-DCA indicator (type, parameters, minimum % from last order, order size) instead of resetting to RSI defaults. Only the first indicator falls back to defaults.
+- Indicator settings: fields gated on another field's value now respect that field's default, so the Moving Average Ratio "Comparison MA length" input is hidden while Reference is "Current price" instead of lingering above "Relative to".
+
 ## [2.38.7] - 2026-07-26
 
 ### Fixed

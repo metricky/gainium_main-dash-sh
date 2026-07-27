@@ -13,6 +13,7 @@ import {
 import type { CoinFilterPairMetadata } from '@/components/widgets/shared/CoinSelect';
 import {
   useBotFormActions,
+  useBotFormSelector,
   useBotFormTopLevelSelector,
   type BotFormMode,
 } from '@/contexts/bots/form/BotFormProvider';
@@ -21,6 +22,10 @@ import {
   type UseBotFormDataQueryResult,
 } from '@/hooks/bots/forms/useBotFormDataQuery';
 import { type TradingPair } from '@/hooks/useTradingPairs';
+import {
+  normalizePairKey,
+  resolvePairSelectionSymbol,
+} from '@/utils/pairs';
 import { useUserFee } from '@/hooks/useUserFee';
 import type { Asset, CoinListItem, ExchangeInUser } from '@/types';
 import { OKXSource } from '@/types/exchange.types';
@@ -169,7 +174,19 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
           return;
         }
 
-        const selectionSymbol = `${base}-${quote}`;
+        // Identify the pair by its exchange-native symbol whenever that symbol
+        // can't be rebuilt from base + quote (COIN-M `BTCUSD_PERP`, dated
+        // futures `BTCUSDT_260925` / `BTCUSDT-25SEP26`, `BTCPERP`, `BTCUSDU26`,
+        // OKX X-Perps). Rebuilding those produces a symbol the candle API
+        // rejects — or one that silently resolves to the perpetual instead of
+        // the dated contract — and it also collapsed every expiry of a market
+        // onto one `BASE-QUOTE` row, so the `items.has` de-dupe below dropped
+        // all but the first from the picker entirely.
+        const selectionSymbol = resolvePairSelectionSymbol(
+          pair.pair,
+          base,
+          quote
+        );
 
         // Avoid duplicates when multiple exchanges share the same pair
         if (items.has(selectionSymbol)) {
@@ -200,7 +217,11 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
           color: 'var(--color-primary)',
         });
 
-        const normalizedPairKey = `${base}${quote}`;
+        // Key off the selection symbol, not `${base}${quote}`: for a suffixed
+        // pair the latter would collapse `BTCUSD_PERP` to `BTCUSD` and collide
+        // with the venue's plain `BTCUSD` contract. Lookups all run the stored
+        // pair through `normalizePairKey`, so this stays the matching key.
+        const normalizedPairKey = normalizePairKey(selectionSymbol);
         bySelectionSymbol[selectionSymbol] = pair;
         if (!(normalizedPairKey in byPair)) {
           byPair[normalizedPairKey] = pair;
@@ -343,19 +364,49 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
   // `profitCurrency = 'base'` clobbered the `'quote'` the futures branch set,
   // and `exchangeProviderRef` was never assigned so the outer guard never
   // tracked the provider (leaving `futures` stale after a reset).
+  //
+  // `futures`/`coinm` must NOT be latched on the provider either. They are
+  // purely derived from the exchange and never user-editable, and this effect
+  // is their only writer — so any path that re-applies form defaults WITHOUT
+  // changing the exchange strands them at their `false` default forever. The
+  // footer's "Reset to defaults" (`resetFormData()`) is exactly that path: it
+  // blanket-replaces formData, clearing `exchangeUUID` (so `provider` is
+  // momentarily undefined) before the exchange selector re-seeds the SAME
+  // account — leaving a futures form silently rendering as spot (no Order Size
+  // Reference / Margin & Leverage rows, but the spot-only Profit Currency
+  // row). Re-assert them from the provider whenever they drift instead.
   const exchangeProviderRef = useRef<string | null>(null);
+  const formFutures = useBotFormSelector('futures');
+  const formCoinm = useBotFormSelector('coinm');
 
   useEffect(() => {
     const provider = currentExchange?.provider;
     if (!provider || mode !== 'create') return;
-    if (exchangeProviderRef.current === provider) return;
-    exchangeProviderRef.current = provider;
     const futures = isFuturesExchange(provider);
     const coinm = isCoinmExchange(provider);
-    updateFormData('futures', futures);
-    updateFormData('coinm', coinm);
-    updateFormData('profitCurrency', coinm ? 'base' : 'quote');
-  }, [currentExchange?.provider, mode, updateFormData]);
+
+    // Derived-only flags: keep in sync with the exchange, always.
+    if (formFutures !== futures) {
+      updateFormData('futures', futures);
+    }
+    if (formCoinm !== coinm) {
+      updateFormData('coinm', coinm);
+    }
+
+    // `profitCurrency` IS user-editable, so it stays latched on the provider —
+    // only re-derive it when the exchange actually changes, never on a
+    // drift-correcting pass, or we'd clobber the user's choice.
+    if (exchangeProviderRef.current !== provider) {
+      exchangeProviderRef.current = provider;
+      updateFormData('profitCurrency', coinm ? 'base' : 'quote');
+    }
+  }, [
+    currentExchange?.provider,
+    mode,
+    formFutures,
+    formCoinm,
+    updateFormData,
+  ]);
 
   const contextValue = useMemo<BotFormQueryContextValue>(
     () => ({
