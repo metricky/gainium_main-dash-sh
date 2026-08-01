@@ -6,6 +6,7 @@ import { devtools, persist } from 'zustand/middleware';
 import { tidyLayout } from '../components/layout/TidyLayoutEngine';
 import {
   getWidgetMetadata,
+  isWidgetTypeAvailable,
   type WidgetType,
 } from '../components/widgets/dashboard';
 import {
@@ -15,7 +16,10 @@ import {
 } from '../components/widgets/DefaultWidgetSizes';
 import type { SavedLayout } from '../types/layout';
 import { getEnhancedScreenSize, getScreenSize } from '../utils/screenSize';
-import { useWidgetSettingsStore } from './widgetSettingsStore';
+import {
+  syncCustomSizesFromLayout,
+  useWidgetSettingsStore,
+} from './widgetSettingsStore';
 
 export interface WidgetTab {
   id: string;
@@ -245,11 +249,13 @@ export const useDashboardStore = create<DashboardState>()(
             const containerWidth = window.innerWidth - 64; // Account for sidebar and padding
             const breakpoint = getCurrentBreakpoint(containerWidth);
 
-            // Get default widgets for current breakpoint
+            // Get default widgets for current breakpoint. Skip types not
+            // registered in the current build (e.g. cloud-only widgets on
+            // sh) — same policy as createDashboardFromTemplate.
             const defaultWidgetConfigs = getDefaultLayoutWidgetsByWidth(
               containerWidth,
               'dashboard'
-            );
+            ).filter((widgetConfig) => isWidgetTypeAvailable(widgetConfig.type));
 
             // Create widgets with proper layout data
             const createDefaultWidgets = () => {
@@ -462,19 +468,22 @@ export const useDashboardStore = create<DashboardState>()(
             return;
           }
 
-          // Use the sophisticated TidyLayoutEngine for comprehensive layout optimization
-          const containerWidth =
-            typeof window !== 'undefined' ? window.innerWidth - 64 : undefined;
+          // Use the sophisticated TidyLayoutEngine for comprehensive layout
+          // optimization. It measures the real grid container itself, so the
+          // breakpoint it sizes for is the one the grid renders at.
           const tidyResult = tidyLayout(state.widgets, {
             gridCols: 12,
             enableHorizontalExpansion: true,
             enableVerticalCompaction: true,
             minRowGap: 0,
             registry: 'dashboard',
-            ...(containerWidth !== undefined && { containerWidth }), // Only include if defined
           });
 
           logger.info('Tidy layout optimization completed:', tidyResult.stats);
+
+          // Record the tidied sizes, otherwise the grid re-draws every widget
+          // at its breakpoint default and the packing falls apart.
+          syncCustomSizesFromLayout(tidyResult.widgets, tidyResult.breakpoint);
 
           // Apply the optimized layout
           set({
@@ -722,11 +731,12 @@ export const useDashboardStore = create<DashboardState>()(
           // Check if current layout needs adjustment based on screen size
           let needsAdjustment = false;
 
-          // Also check if we need to add/remove widgets based on the current breakpoint
+          // Also check if we need to add/remove widgets based on the current
+          // breakpoint. Skip types not registered in the current build.
           const defaultWidgetConfigs = getDefaultLayoutWidgetsByWidth(
             containerWidth,
             'dashboard'
-          );
+          ).filter((widgetConfig) => isWidgetTypeAvailable(widgetConfig.type));
 
           const currentWidgetTypes = new Set(state.widgets.map((w) => w.type));
           const expectedWidgetTypes = new Set(

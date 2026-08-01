@@ -11,41 +11,52 @@ import type {
   PeriodParams,
 } from '../types';
 
-// Coinbase supported resolutions
-const COINBASE_RESOLUTIONS = [
+// Hyperliquid supported resolutions — the intersection of Hyperliquid's
+// candleSnapshot intervals and our backend's `ExchangeIntervals` (no 6h/12h).
+const HYPERLIQUID_RESOLUTIONS = [
   '1',
+  '3',
   '5',
   '15',
   '30',
   '60',
   '120',
-  '360',
+  '240',
+  '480',
   '1D',
+  '1W',
 ] as const;
 
-// Coinbase resolution mapping
-const COINBASE_RESOLUTION_MAP: Record<string, string> = {
+const HYPERLIQUID_RESOLUTION_MAP: Record<string, string> = {
   '1': '1m',
+  '3': '3m',
   '5': '5m',
   '15': '15m',
   '30': '30m',
   '60': '1h',
   '120': '2h',
-  '360': '6h',
+  '240': '4h',
+  '480': '8h',
   '1D': '1d',
+  '1W': '1w',
 };
 
-// Coinbase configuration
+// Hyperliquid configuration. Before this handler existed the factory fell
+// back to `binanceHandler`, whose subscribe opened a BINANCE kline WebSocket
+// for the Hyperliquid symbol — and since e.g. BTCUSDC is a real Binance pair,
+// a Hyperliquid chart could silently tick with Binance prices. History goes
+// through our own `/candles` backend either way; live updates poll the same
+// backend (like Coinbase) so the data source is always Hyperliquid itself.
 const config: ExchangeConfig = {
-  name: 'coinbase',
-  displayName: 'Coinbase',
-  supportedResolutions: [...COINBASE_RESOLUTIONS],
-  resolutionMap: COINBASE_RESOLUTION_MAP,
-  maxLimit: 300,
-  // Coinbase doesn't have public WebSocket for klines, we'll use polling
+  name: 'hyperliquid',
+  displayName: 'Hyperliquid',
+  supportedResolutions: [...HYPERLIQUID_RESOLUTIONS],
+  resolutionMap: HYPERLIQUID_RESOLUTION_MAP,
+  maxLimit: 500,
+  // No public-WS kline subscription here — polling via our backend.
 };
 
-// Coinbase pagination logic (ascending order)
+// Ascending-order pagination (same shape as Coinbase).
 const paginationLogic: PaginationLogic = {
   shouldFetchMore: (
     bars: Bar[],
@@ -58,12 +69,7 @@ const paginationLogic: PaginationLogic = {
     const lastBarTime = bars[bars.length - 1].time;
     const requestedEndTime = periodParams.to * 1000;
 
-    // Coinbase returns data in ascending order, so check if we need more recent data
-    if (lastBarTime < requestedEndTime) {
-      return true;
-    }
-
-    return false;
+    return lastBarTime < requestedEndTime;
   },
 
   getNextParams: (
@@ -75,7 +81,6 @@ const paginationLogic: PaginationLogic = {
     const lastBarTime = bars[bars.length - 1].time;
     const requestedEndTime = currentParams.to * 1000;
 
-    // If we need more recent data
     if (lastBarTime < requestedEndTime) {
       return {
         ...currentParams,
@@ -87,22 +92,34 @@ const paginationLogic: PaginationLogic = {
   },
 };
 
-// Time interval mapping for polling
+// `symbolInfo.exchange` carries the upper-cased enum value (e.g.
+// "HYPERLIQUIDLINEAR", "PAPERHYPERLIQUID"); map it back to the real enum so
+// the poll hits the right market. Local instead of the factory's
+// `mapStringToExchange` to avoid a module cycle (factory imports handlers).
+const toExchangeParam = (symbolInfoExchange: string): ExchangeEnum => {
+  const normalized = symbolInfoExchange.toLowerCase();
+  return normalized.includes('linear')
+    ? ExchangeEnum.hyperliquidLinear
+    : ExchangeEnum.hyperliquid;
+};
+
 const timeIntervalMap: Record<string, number> = {
   '1m': 60 * 1000,
+  '3m': 3 * 60 * 1000,
   '5m': 5 * 60 * 1000,
   '15m': 15 * 60 * 1000,
   '30m': 30 * 60 * 1000,
   '1h': 60 * 60 * 1000,
   '2h': 2 * 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
+  '4h': 4 * 60 * 60 * 1000,
+  '8h': 8 * 60 * 60 * 1000,
   '1d': 24 * 60 * 60 * 1000,
+  '1w': 7 * 24 * 60 * 60 * 1000,
 };
 
-// Polling subscription management
 const pollingTimers: Record<string, NodeJS.Timeout> = {};
 
-// Subscribe using polling (since Coinbase doesn't have public WebSocket for klines)
+// Subscribe using polling against our own backend.
 const subscribe = async (
   symbolInfo: LibrarySymbolInfo,
   resolution: ResolutionString,
@@ -111,35 +128,25 @@ const subscribe = async (
 ): Promise<void> => {
   try {
     const interval = config.resolutionMap[resolution] || '1m';
-    const timerInterval = timeIntervalMap[interval] || 30000; // Default to 30 seconds
+    const lookbackMs = timeIntervalMap[interval] || 60 * 1000;
+    const exchange = toExchangeParam(symbolInfo.exchange);
 
-    // Clear any existing timer
     if (pollingTimers[listenerGuid]) {
       clearInterval(pollingTimers[listenerGuid]);
     }
 
-    // Set up polling timer
     pollingTimers[listenerGuid] = setInterval(async () => {
       try {
-        // Make a request to get the latest candles
         const url = new URL(`${import.meta.env.VITE_API_ENDPOINT}/candles`);
-        // Candles are public market data, so the poll deliberately keeps
-        // asking the real venue even for paper accounts (paperCoinbase and
-        // coinbase are conversion-identical anyway).
-        url.searchParams.set('exchange', ExchangeEnum.coinbase);
+        url.searchParams.set('exchange', exchange);
         // Same dashed-native conversion the `requestCandles` chokepoint
-        // applies — Coinbase product ids are dashed ("BTC-USD") and the raw
-        // concatenated name comes back "ProductID is invalid", so every 30s
-        // poll silently failed and the chart never live-updated.
+        // applies — the connector can't resolve the concatenated form.
         url.searchParams.set(
           'symbol',
-          toExchangeCandleSymbol(ExchangeEnum.coinbase, symbolInfo.name)
+          toExchangeCandleSymbol(exchange, symbolInfo.name)
         );
         url.searchParams.set('type', interval);
-        url.searchParams.set(
-          'startAt',
-          (Date.now() - timerInterval).toString()
-        );
+        url.searchParams.set('startAt', (Date.now() - lookbackMs).toString());
         url.searchParams.set('endAt', Date.now().toString());
         url.searchParams.set('limit', '1');
 
@@ -150,7 +157,7 @@ const subscribe = async (
 
         const result = await response.json();
         if (result.status === 'OK' && result.data && result.data.length > 0) {
-          const candle = result.data[result.data.length - 1]; // Get the latest candle
+          const candle = result.data[result.data.length - 1];
           const bar: Bar = {
             time: candle.time,
             open: parseFloat(candle.open),
@@ -162,15 +169,14 @@ const subscribe = async (
           onTick(bar);
         }
       } catch (error) {
-        console.error('Error polling Coinbase data:', error);
+        console.error('Error polling Hyperliquid data:', error);
       }
     }, 30000); // Poll every 30 seconds
   } catch (error) {
-    console.error('Error setting up Coinbase polling:', error);
+    console.error('Error setting up Hyperliquid polling:', error);
   }
 };
 
-// Unsubscribe from polling
 const unsubscribe = (listenerGuid: string): void => {
   const timer = pollingTimers[listenerGuid];
   if (timer) {
@@ -180,8 +186,8 @@ const unsubscribe = (listenerGuid: string): void => {
   }
 };
 
-// Export Coinbase exchange handler
-export const coinbaseHandler: ExchangeHandler = {
+// Export Hyperliquid exchange handler
+export const hyperliquidHandler: ExchangeHandler = {
   config,
   paginationLogic,
   subscribe,

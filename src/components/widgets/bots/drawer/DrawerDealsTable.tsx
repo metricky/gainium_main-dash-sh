@@ -727,8 +727,12 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   const onTradeSelect = useCallback(
     (trade: TransformedTrade, onlyChart = false) => {
       setSelectedChartDealId(trade.id);
-      if (onlyChart) {
-        onTradeChartSelect?.(trade);
+      // `onlyChart` plots the deal's entry/exit on the drawer chart instead of
+      // opening the deal details view. It's optional, so fall back to the
+      // details view when no chart consumer is wired up — otherwise the click
+      // would be a silent no-op.
+      if (onlyChart && onTradeChartSelect) {
+        onTradeChartSelect(trade);
       } else {
         _onTradeSelect?.(trade);
       }
@@ -1520,7 +1524,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     () => (props: { item: TransformedTrade; index: number }) => (
       <TradeCardWrapper
         {...props}
-        onTradeSelect={(t) => onTradeSelectRef.current(t, false)}
+        onTradeSelect={(t) => onTradeSelectRef.current(t, true)}
         privacyMode={privacyModeCardRef.current}
         handleOpenDetailDrawer={handleRowClickRef.current}
         filledOrders={completedOrdersRef.current}
@@ -2228,20 +2232,18 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'usage',
-        accessorFn: (row) => {
-          const usagePercent =
-            row.usage?.maxUsd && row.usage?.currentUsd
-              ? (row.usage.currentUsd / row.usage.maxUsd) * 100
-              : 0;
-          return usagePercent;
-        },
+        // `usage.currentUsd`/`maxUsd` are quote-side only (see
+        // transformDealToTrade), so this ring read 0% for SHORT spot and COIN-M
+        // deals, whose usage is tracked on the BASE side. Reuse the row's
+        // strategy-aware `outerGaugePercent` — the same value the card view and
+        // the OpenOrdersWidget usage column already render.
+        accessorFn: (row) => row.outerGaugePercent ?? row.usagePercentage ?? 0,
         header: 'Usage',
         cell: ({ row }) => {
           const trade = row.original;
-          const usagePercent =
-            trade.usage?.maxUsd && trade.usage?.currentUsd
-              ? Math.round((trade.usage.currentUsd / trade.usage.maxUsd) * 100)
-              : 0;
+          const usagePercent = Math.round(
+            trade.outerGaugePercent ?? trade.usagePercentage ?? 0
+          );
           return (
             <div
               className="flex justify-center cursor-pointer hover:opacity-80"
@@ -3039,8 +3041,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       selectedTab,
     ]
   );
+  // Clicking a row (or a card) plots the deal's entry/exit on the drawer
+  // chart. Opening the full deal details stays on the row's "View Details"
+  // menu entry, which calls `handleRowClick` with `onlyChart` unset.
   const onRowClick = useCallback(
-    (t: TransformedTrade) => handleRowClick(t, false),
+    (t: TransformedTrade) => handleRowClick(t, true),
     [handleRowClick]
   );
   const getRowIsSelected = useCallback(

@@ -7,6 +7,7 @@ import {
   CartesianGrid,
   ComposedChart,
   Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -19,14 +20,19 @@ import { useDcaBots } from '../../../../hooks/useDcaBots';
 import { useGridBots } from '../../../../hooks/useGridBots';
 import { useHedgeComboBots } from '../../../../hooks/useHedgeComboBots';
 import { useHedgeDcaBots } from '../../../../hooks/useHedgeDcaBots'; */
-import { BotTypesEnum, type DCABot } from '@/types';
-import {
-  useBotProfitChartData,
-  type BotProfitDataPoint,
-} from '../../../../hooks/useBotProfitChartData';
+import { BotTypesEnum, type BotStats, type DCABot } from '@/types';
+import { useBotProfitChartData } from '../../../../hooks/useBotProfitChartData';
 import { useLiveBotMetrics } from '../../../../hooks/useLiveBotMetrics';
-import { cn, formatCurrency } from '../../../../lib/utils';
+import { useShareContext } from '../../../../hooks/useShareContext';
+import { useSharedBot } from '../../../../hooks/useSharedBot';
+import { cn } from '../../../../lib/utils';
+import { formatPriceWithPrecision } from '../../../../utils/formatters';
+import { formatCurrency } from '../../../../utils/numberFormatter';
 import { useUIStore } from '../../../../stores/uiStore';
+import {
+  DealReturnsPanel,
+  type ScatterPoint,
+} from './DrawerPnLScatterChart';
 import { DrawerSection } from './DrawerSection';
 
 interface ChartDataPoint {
@@ -35,6 +41,59 @@ interface ChartDataPoint {
   realizedProfit?: number;
   buyAndHold?: number;
 }
+
+/** A stats object usable as the chart source: it must carry a real series. */
+const hasChart = (stats?: BotStats | null): stats is BotStats =>
+  Array.isArray(stats?.chart) && stats.chart.length > 1;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `value` is a decimal ROI fraction (main-app `dcaHelper.ts`:
+ * `perc = deal.profit.total / (usage * multiplier)`), NOT an amount — hence
+ * the ×100. Timestamps are used raw: the legacy scatter pre-shifted them by
+ * the local timezone offset and then formatted in local time as well, which
+ * double-counted the offset. Both panels now plot raw epoch ms, and they must
+ * agree or they sit shifted relative to each other.
+ */
+const buildDealReturnPoints = (
+  profitData: Array<{ value: number; time: number }>
+): ScatterPoint[] =>
+  profitData.map((d) => ({
+    x: d.time,
+    y: +(d.value * 100).toFixed(3),
+    formattedTime: new Date(d.time).toLocaleDateString(),
+  }));
+
+/**
+ * Range options for BOTH panels. Deliberately no "12M": the deal-returns
+ * series is pruned at 12 months, and the equity series is capped at **90 daily
+ * points** (main-app `core/src/bot/dcaHelper.ts`, `stats.chart.shift()`) — so
+ * a 12M option would be indistinguishable from ALL on every existing bot. If
+ * the backend cap is ever raised, add it here; nothing else needs to change.
+ *
+ * That 90-point cap is also why the upper panel can start mid-chart under ALL:
+ * its values are absolute (realized profit is seeded at the starting balance
+ * and accumulated for the bot's whole life), so a trimmed series simply begins
+ * at whatever P&L had accrued by then. The leading gap is the honest picture —
+ * the deal-returns panel below still shows the deals from that period.
+ */
+const RANGES = [
+  { key: '1M', label: '1M', days: 30 },
+  { key: '3M', label: '3M', days: 90 },
+  { key: 'ALL', label: 'ALL', days: null },
+] as const;
+
+type RangeKey = (typeof RANGES)[number]['key'];
+
+/**
+ * Both money helpers below prefix the currency symbol to the *signed* number,
+ * so a negative renders as "$-83.20". The realized-profit axis here spans
+ * negatives, so normalize to the conventional "-$83.20". This only moves the
+ * sign — the magnitude ladders stay owned by the shared formatters.
+ */
+const signedMoney = (value: number, format: (n: number) => string): string =>
+  `${value < 0 ? '-' : ''}${format(Math.abs(value))}`;
 
 export interface DrawerPerformanceChartProps {
   widgetId: string;
@@ -118,71 +177,92 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
     enabled: Boolean(actualBotId),
   });
 
-  // Determine bot type to map to BotTypesEnum for the profit chart API
+  // Determine bot type to map to BotTypesEnum for the by-id bot fetch
   const botType = botProp?.type || 'dca';
   const botTypeEnum =
     botType === 'combo'
       ? BotTypesEnum.combo
       : botType === 'grid'
         ? BotTypesEnum.grid
-        : BotTypesEnum.dca;
+        : botType === 'hedgeDca'
+          ? BotTypesEnum.hedgeDca
+          : botType === 'hedgeCombo'
+            ? BotTypesEnum.hedgeCombo
+            : BotTypesEnum.dca;
 
-  // Fetch profit chart data from dedicated API as fallback when stats.chart is empty
-  const { profitData: profitChartData } = useBotProfitChartData(
-    actualBotId ?? '',
-    botTypeEnum
-  );
+  // `stats.chart` is the ONLY series denominated in real currency, so it is the
+  // only thing this chart may plot. It normally rides on the bot object, but
+  // `dcaBotListFragment` strips `stats` from the DCA list payload
+  // (main-dash-sh 52dae4f, "slim dcaBotList payload") on the assumption that
+  // "the single-bot drawer path uses getDCABot" — which `useDrawerBot` only
+  // does for a bot that is MISSING from the list. An active DCA bot IS in the
+  // list, so it arrives with no `stats` at all; and nothing seeds
+  // `botStatsStore` until the socket pushes a `bot stats update` (next deal
+  // close), so `liveStats` is null on a fresh page load too. Fetch the bot by
+  // id in exactly that case — same authenticated `getDCABot` read
+  // `useDrawerBot` already uses, whose full fragment does carry `stats.chart`.
+  const { shareId } = useShareContext();
+  const listStats = (bot as DCABot)?.stats as BotStats | undefined;
+  const needsStatsFetch =
+    Boolean(actualBotId) && !hasChart(liveStats) && !hasChart(listStats);
+  const { bot: fetchedBot } = useSharedBot({
+    botId: actualBotId ?? '',
+    type: botTypeEnum,
+    shareId,
+    enabled: needsStatsFetch,
+  });
 
   // Chart visibility state - all enabled by default
   const [showEquity, setShowEquity] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
   const [showBuyAndHold, setShowBuyAndHold] = useState(true);
 
-  // Generate chart data - use same data source as card for consistency
-  // Falls back to profitChartData API when stats.chart is insufficient
+  // Default to ALL: the widest view is the one that answers "is this bot
+  // actually up?", and it is the only one that shows a drawdown older than the
+  // equity series' 90-day cap.
+  const [range, setRange] = useState<RangeKey>('ALL');
+
+  // Lower panel's series. Owned here, not by the panel, because the shared X
+  // domain is the union of both series and the range filter applies to both.
+  const { profitData, isLoading: dealsLoading } = useBotProfitChartData(
+    actualBotId ?? '',
+    botTypeEnum
+  );
+
+  // Generate chart data - use same data source as card for consistency.
+  // Every source here is a `stats.chart` series, i.e. real currency. There is
+  // deliberately NO fallback to `getBotProfitChartData`: that endpoint stores
+  // a per-deal ROI *decimal fraction* (main-app dcaHelper.ts,
+  // `value: perc = deal.profit.total / (usage * multiplier)`), not an amount,
+  // so plotting it as equity/realized profit rendered a 1% deal as "$0.01".
+  // That series is already shown correctly, as a percentage, by the sibling
+  // "Deal Returns" widget (DrawerPnLScatterChart) directly below this one.
   const chartData = useMemo(() => {
     // The backend seeds the chart's `realizedProfit` at the starting balance and
     // accumulates realized PnL on top of it, so the series shares the equity
     // scale (a legacy single-axis trick). Recover the *true* realized profit by
     // removing that starting-balance offset; equity and buyAndHold are genuine
     // portfolio values and stay absolute, each on the left axis.
-    const startBalanceUsd =
-      liveStats?.numerical?.general?.startBalance?.usd ??
-      (bot as DCABot)?.stats?.numerical?.general?.startBalance?.usd ??
-      0;
+    //
+    // Take the series and the offset from the SAME stats object. Pairing one
+    // source's chart with another's (or with a missing one, which defaults to
+    // 0) subtracts the wrong seed and plots the starting balance itself as
+    // "realized profit" — off by the whole account size.
+    const stats =
+      [liveStats, listStats, (fetchedBot as DCABot | undefined)?.stats].find(
+        hasChart
+      ) ?? undefined;
 
-    const { source: chartSource, realizedOffset } = (() => {
-      if (Array.isArray(liveStats?.chart) && liveStats.chart.length > 1) {
-        return { source: liveStats.chart, realizedOffset: startBalanceUsd };
-      }
-      if (
-        Array.isArray((bot as DCABot)?.stats?.chart) &&
-        (bot as DCABot)?.stats?.chart?.length &&
-        ((bot as DCABot).stats?.chart.length ?? 0) > 1
-      ) {
-        return {
-          source: (bot as DCABot)?.stats?.chart,
-          realizedOffset: startBalanceUsd,
-        };
-      }
-      if (Array.isArray(initialChartData) && initialChartData.length > 0) {
-        return { source: initialChartData, realizedOffset: startBalanceUsd };
-      }
-      // Fallback: profitChartData returns pure per-deal values (already
-      // un-offset), so the starting-balance subtraction does not apply here.
-      if (Array.isArray(profitChartData) && profitChartData.length > 0) {
-        return {
-          source: profitChartData.map((p: BotProfitDataPoint) => ({
-            time: p.time,
-            equity: p.value,
-            realizedProfit: p.value,
-            buyAndHold: 0,
-          })),
-          realizedOffset: 0,
-        };
-      }
-      return { source: [], realizedOffset: 0 };
-    })();
+    const chartSource =
+      stats?.chart ??
+      (Array.isArray(initialChartData) && initialChartData.length > 0
+        ? initialChartData
+        : []);
+    // `initialChartData` is itself built from the list bot's `stats.chart`
+    // (drawerWidgetConfig.buildPerformanceChartProps), so `listStats` is the
+    // matching offset for it.
+    const realizedOffset =
+      (stats ?? listStats)?.numerical?.general?.startBalance?.usd ?? 0;
 
     const sanitized = (chartSource ?? [])
       .filter(
@@ -217,7 +297,7 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
       .sort((a: { time: number }, b: { time: number }) => a.time - b.time);
 
     return sanitized;
-  }, [bot, initialChartData, liveStats, profitChartData]);
+  }, [listStats, initialChartData, liveStats, fetchedBot]);
 
   const isPositiveProfit = useMemo(() => {
     if (typeof liveStats?.numerical?.profit?.grossProfit === 'number') {
@@ -226,9 +306,50 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
     return (bot?.profit?.totalUsd || 0) >= 0;
   }, [liveStats, bot]);
 
-  const hasRealData = useMemo(() => {
-    return chartData.length > 0;
-  }, [chartData]);
+  const dealPoints = useMemo(
+    () => buildDealReturnPoints(profitData),
+    [profitData]
+  );
+
+  // Range filter, applied to both panels from one cutoff so they can never
+  // disagree about what "3M" means.
+  const cutoff = useMemo(() => {
+    const days = RANGES.find((r) => r.key === range)?.days ?? null;
+    return days === null ? null : Date.now() - days * DAY_MS;
+  }, [range]);
+
+  const visibleChartData = useMemo(
+    () => (cutoff === null ? chartData : chartData.filter((p) => p.time >= cutoff)),
+    [chartData, cutoff]
+  );
+  const visibleDealPoints = useMemo(
+    () => (cutoff === null ? dealPoints : dealPoints.filter((p) => p.x >= cutoff)),
+    [dealPoints, cutoff]
+  );
+
+  /**
+   * ONE domain for both panels — the union of what each has in range. The two
+   * series come from different stores with different retention (90 daily
+   * points on the bot doc vs. up to 500 closed deals in `botProfitChart`), so
+   * the union is normally wider than the equity series. That is intended: the
+   * performance panel simply draws nothing before its first point, and the gap
+   * is the honest picture of how far our daily history goes back.
+   */
+  const domain = useMemo<[number, number] | null>(() => {
+    const times = [
+      ...visibleChartData.map((p) => p.time),
+      ...visibleDealPoints.map((p) => p.x),
+    ];
+    if (!times.length) return null;
+    const min = Math.min(...times);
+    const max = Math.max(...times);
+    // A single point (or all points on one day) would give a zero-width
+    // domain, which recharts renders as an empty plot.
+    return min === max ? [min - DAY_MS, max + DAY_MS] : [min, max];
+  }, [visibleChartData, visibleDealPoints]);
+
+  const hasRealData = visibleChartData.length > 0;
+  const hasAnyData = hasRealData || visibleDealPoints.length > 0;
 
   // Chart series are now handled directly in JSX for better performance
 
@@ -281,14 +402,33 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
     <DrawerSection
       widgetId={widgetId}
       widgetType="drawer-performance-chart"
-      title="Performance Chart"
+      title="Performance"
       icon={TrendingUp}
       minSize={{ w: 6, h: 8 }}
       maxSize={{ w: 12, h: 16 }}
       hasOptions={false}
       headerActions={
-        hasRealData && (
-          <div className="flex flex-wrap items-center gap-xs rounded-lg bg-inner-container p-1">
+        hasAnyData && (
+          <div className="flex flex-wrap items-center gap-sm">
+            <div className="flex items-center gap-xs rounded-lg bg-inner-container p-1">
+              {RANGES.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setRange(key)}
+                  aria-pressed={range === key}
+                  className={cn(
+                    'inline-flex items-center justify-center rounded-md border border-transparent px-2.5 py-1.5 text-xs font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 min-h-0!',
+                    range === key
+                      ? 'bg-background text-foreground border-border shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]'
+                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-xs rounded-lg bg-inner-container p-1">
             {[
               {
                 key: 'equity',
@@ -332,22 +472,23 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                 {label}
               </button>
             ))}
+            </div>
           </div>
         )
       }
     >
       <div className="p-md">
-        {!hasRealData && (
+        {!hasAnyData && (
           <div className="mb-3 w-full rounded-md bg-muted/40 px-2 py-1 text-xs text-muted-foreground sm:w-auto sm:text-right">
             No data
           </div>
         )}
 
         <div className="h-48 w-full">
-          {hasRealData ? (
+          {hasRealData && domain ? (
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart
-                data={chartData}
+                data={visibleChartData}
                 margin={{ top: 1, right: 1, left: 1, bottom: 1 }}
               >
                 <defs>
@@ -401,12 +542,20 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                   vertical={false}
                   horizontal={true}
                 />
+                {/* Numeric time axis, NOT the old categorical `formattedTime`:
+                    a category axis spaces points evenly regardless of date, so
+                    it can neither align with the deal-returns panel below nor
+                    leave a gap where the daily series has no history. Ticks are
+                    hidden here — the lower panel carries the shared labels. */}
                 <XAxis
-                  dataKey="formattedTime"
-                  tick={{ fontSize: 8, fill: '#6b7280' }}
-                  tickLine={{ stroke: '#6b7280' }}
+                  type="number"
+                  dataKey="time"
+                  scale="time"
+                  domain={domain}
+                  tick={false}
+                  tickLine={false}
                   axisLine={{ stroke: '#6b7280' }}
-                  height={15}
+                  height={1}
                 />
                 <YAxis
                   yAxisId="equity"
@@ -415,9 +564,9 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                   tickLine={{ stroke: '#6b7280' }}
                   axisLine={{ stroke: '#6b7280' }}
                   tickFormatter={(value) =>
-                    privacyMode ? '***' : formatCurrency(value, 0)
+                    privacyMode ? '***' : signedMoney(value, formatCurrency)
                   }
-                  width={25}
+                  width={44}
                 />
                 <YAxis
                   yAxisId="profit"
@@ -434,25 +583,59 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                     stroke: isPositiveProfit ? colors.success : colors.destructive,
                   }}
                   tickFormatter={(value) =>
-                    privacyMode ? '***' : formatCurrency(value, 0)
+                    privacyMode ? '***' : signedMoney(value, formatCurrency)
                   }
-                  width={28}
+                  width={44}
                 />
                 <Tooltip
                   content={
                     <CustomTooltip
+                      labelFormatter={(value) =>
+                        new Date(value as number).toLocaleDateString()
+                      }
                       valueFormatter={
                         privacyMode
                           ? (value, name) => ['***', name] as const
                           : (value, name) =>
                               [
-                                formatCurrency(value as number, 2),
+                                signedMoney(
+                                  value as number,
+                                  formatPriceWithPrecision
+                                ),
                                 name,
                               ] as const
                       }
                     />
                   }
                 />
+                {/* Break-even marker for the realized-P&L axis. Without it a
+                    truncated window that opens deep in the red (see
+                    CHART_WINDOW_DAYS) reads as an uninterrupted climb, and a
+                    bot still recovering from a loss looks purely profitable.
+                    Tinted like the realized-profit series, not like the grid,
+                    so it reads against the RIGHT axis — on the left axis $0
+                    lands mid-equity and would look like a price level. */}
+                {showProfit && (
+                  <ReferenceLine
+                    yAxisId="profit"
+                    y={0}
+                    stroke={
+                      isPositiveProfit ? colors.success : colors.destructive
+                    }
+                    strokeDasharray="4 4"
+                    strokeOpacity={0.45}
+                    ifOverflow="extendDomain"
+                    label={{
+                      value: 'Break-even',
+                      position: 'insideBottomRight',
+                      fill: isPositiveProfit
+                        ? colors.success
+                        : colors.destructive,
+                      fillOpacity: 0.8,
+                      fontSize: 8,
+                    }}
+                  />
+                )}
                 {showEquity && (
                   <Area
                     yAxisId="equity"
@@ -506,6 +689,32 @@ export const DrawerPerformanceChart: React.FC<DrawerPerformanceChartProps> = ({
                 <TrendingUp className="w-6 h-6 mx-auto mb-1 opacity-50" />
                 <p className="text-xs">No performance data available</p>
               </div>
+            </div>
+          )}
+        </div>
+
+        {/* Lower panel: per-deal returns, same X domain as above. Kept as a
+            separate plot rather than a fourth series because it is a
+            percentage — folding it in would need a third Y axis. Stacked
+            panels give the alignment without the axis. */}
+        {/* Numeric spacing, not the `-md`/`-lg` design tokens: index.css only
+            hand-writes the all-sides and x/y token utilities, so single-side
+            `mt-lg`/`mb-sm` silently resolve to 0. */}
+        <div className="mt-6">
+          <div className="mb-3 text-xs font-medium text-muted-foreground">
+            Deal Returns
+          </div>
+          {domain ? (
+            <DealReturnsPanel
+              points={visibleDealPoints}
+              domain={domain}
+              isLoading={dealsLoading}
+            />
+          ) : (
+            <div className="flex h-32 items-center justify-center">
+              <p className="text-xs text-muted-foreground">
+                No deal return data available
+              </p>
             </div>
           )}
         </div>

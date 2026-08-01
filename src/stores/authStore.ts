@@ -8,6 +8,7 @@ import { pouchDBSync } from '@/lib/pouchdbSync';
 import { priceCache } from '@/lib/priceCache';
 import { queryClient } from '@/lib/queryClient';
 import { RealAuthService } from '@/lib/realAuthService';
+import { setSessionDeadHandler } from '@/lib/api/GraphQLClient';
 import { useUIStore } from '@/stores/uiStore';
 import { indexedDBStorage } from '@/lib/zustand-indexeddb-storage';
 
@@ -434,3 +435,25 @@ export const useAuthStore = create<AuthStore>()(
     }
   )
 );
+
+// Any query that comes back with the backend's "token rejected" message tears
+// the session down immediately, so an open tab lands on the login screen
+// instead of sitting on a shell whose every widget errors. Registered here
+// (rather than imported inside GraphQLClient) to keep the module graph acyclic.
+setSessionDeadHandler((rejectedToken) => {
+  const { isAuthenticated, tokens } = useAuthStore.getState();
+  if (!isAuthenticated && !tokens?.accessToken) return; // already signed out
+  // Only the CURRENT session's rejection may tear it down. Requests from a
+  // previous session can resolve long after a re-login (SPA login keeps
+  // in-flight fetches alive, and on a slow connection they straggle for tens
+  // of seconds); acting on those killed the fresh session — and logout()'s
+  // deleteToken then revoked its token server-side — trapping the user in a
+  // login loop.
+  if (rejectedToken !== tokens?.accessToken) {
+    logger.warn('Ignoring token rejection for a non-current session token', {
+      rejectedTokenTail: rejectedToken ? rejectedToken.slice(-8) : null,
+    });
+    return;
+  }
+  void useAuthStore.getState().logout();
+});

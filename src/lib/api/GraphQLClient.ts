@@ -128,6 +128,58 @@ export interface GraphQLResponse<T> {
   errors?: GraphQLError[];
 }
 
+/**
+ * Backend-authored messages that mean "this token is dead, for good".
+ *
+ * main-app answers a failed `jwt.verify` with HTTP **200** and an `errors`
+ * array (server/index.ts `authenticateJWT`), not a 401 — so nothing in the
+ * transport layer can tell this apart from an ordinary query error. Matching
+ * the message is the only signal available, and it is exactly what the legacy
+ * dashboard has always done (`main-dash/fetch/index.ts` `logOutReasons`).
+ *
+ * Keep this list to messages the *backend* emits on token rejection. Network
+ * failures, timeouts and 5xx must never land here — treating those as a dead
+ * session is what caused the boot session-wipe regression.
+ */
+export const SESSION_DEAD_REASONS = [
+  'Session is expired, please login again',
+  'User not found',
+] as const;
+
+export const isSessionDeadMessage = (message: string): boolean =>
+  SESSION_DEAD_REASONS.some((reason) => message.includes(reason));
+
+/**
+ * Public share pages render without a session on purpose — a rejected token
+ * there must not bounce the visitor to a login screen.
+ */
+const isPublicShareView = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const href = window.location.href;
+  return href.includes('share=') || href.includes('backtestShare=');
+};
+
+let onSessionDead: ((rejectedToken: string | null) => void) | null = null;
+
+/**
+ * Registered once by the auth store. Kept as a callback rather than a direct
+ * import so this module stays free of a GraphQLClient → authStore cycle.
+ *
+ * The handler receives the token the REJECTED request was sent with. SPA
+ * login doesn't reload the page, so requests fired under a previous (dead)
+ * session can still be in flight after the user re-authenticates — for tens
+ * of seconds on a slow connection. The handler must compare the rejected
+ * token against the CURRENT one and ignore stragglers; without that check a
+ * late rejection tears down the brand-new session (and `logout()` then
+ * revokes its token server-side via deleteToken), looping the user back to
+ * the login screen every time they sign in.
+ */
+export const setSessionDeadHandler = (
+  handler: (rejectedToken: string | null) => void
+): void => {
+  onSessionDead = handler;
+};
+
 const parseResponseBodyAsJson = (rawBody: string): unknown | null => {
   if (!rawBody.trim()) {
     return null;
@@ -437,9 +489,17 @@ export class GraphQLClient {
           errors: result.errors,
           query: query.substring(0, 200) + '...',
         });
-        throw new Error(
-          `GraphQL errors: ${result.errors.map((e) => e.message).join(', ')}`
-        );
+        const messages = result.errors.map((e) => e.message).join(', ');
+        // The backend explicitly rejected the token (expired, revoked, or
+        // signed with a retired secret). Tear the session down now rather
+        // than leaving the user on a shell that 401s every widget.
+        if (isSessionDeadMessage(messages) && !isPublicShareView()) {
+          logger.warn('Backend rejected the session token', {
+            rejectedTokenTail: this.token ? this.token.slice(-8) : null,
+          });
+          onSessionDead?.(this.token ?? null);
+        }
+        throw new Error(`GraphQL errors: ${messages}`);
       }
 
       if (!result.data) {

@@ -26,7 +26,10 @@ import {
   type DashboardTemplate,
 } from './dashboardTemplates';
 import { useShortcutStore } from './shortcutStore';
-import { useWidgetSettingsStore } from './widgetSettingsStore';
+import {
+  syncCustomSizesFromLayout,
+  useWidgetSettingsStore,
+} from './widgetSettingsStore';
 
 // Utility function to create URL-safe slugs from dashboard names
 export const createDashboardSlug = (name: string): string => {
@@ -79,6 +82,16 @@ interface MultiDashboardState {
   // Dashboard management
   dashboards: DashboardConfig[];
   currentDashboardId: string;
+  /** True once the IndexedDB rehydration has completed (or failed). Consumers
+   *  must treat `!_hasHydrated` as "unknown", NOT as "there are no dashboards":
+   *  this store persists to IndexedDB (async), so the initial in-memory state
+   *  (`dashboards: []`) is indistinguishable from a user who really has none.
+   *  Reading it as the latter made the widget-page bridge fall back to the
+   *  legacy single-dashboard store, which applied its default layout and
+   *  purged every real widget's persisted settings via
+   *  `cleanupOrphanedSettings` on each page load. */
+  _hasHydrated: boolean;
+  setHasHydrated: (state: boolean) => void;
 
   // Actions
   createDashboard: (name?: string, skipDefaultWidgets?: boolean) => string;
@@ -190,6 +203,9 @@ export const useMultiDashboardStore = create<MultiDashboardState>()(
           // Initial state
           dashboards: [],
           currentDashboardId: '',
+          _hasHydrated: false,
+
+          setHasHydrated: (state: boolean) => set({ _hasHydrated: state }),
 
           // Dashboard management actions
           createDashboard: (name, skipDefaultWidgets = false) => {
@@ -718,10 +734,14 @@ export const useMultiDashboardStore = create<MultiDashboardState>()(
               const containerWidth = window.innerWidth - 64; // Account for sidebar and padding
               const breakpoint = getCurrentBreakpoint(containerWidth);
 
-              // Get default widgets for current breakpoint
+              // Get default widgets for current breakpoint. Skip types not
+              // registered in the current build (e.g. cloud-only widgets on
+              // sh) — same policy as createDashboardFromTemplate.
               const defaultWidgetConfigs = getDefaultLayoutWidgetsByWidth(
                 containerWidth,
                 'dashboard'
+              ).filter((widgetConfig) =>
+                isWidgetTypeAvailable(widgetConfig.type)
               );
 
               // Create widgets with proper layout data
@@ -854,24 +874,25 @@ export const useMultiDashboardStore = create<MultiDashboardState>()(
               return;
             }
 
-            // Use the sophisticated TidyLayoutEngine for comprehensive layout optimization
-            const containerWidth =
-              typeof window !== 'undefined'
-                ? window.innerWidth - 64
-                : undefined;
+            // Use the sophisticated TidyLayoutEngine for comprehensive layout
+            // optimization. It measures the real grid container itself, so the
+            // breakpoint it sizes for is the one the grid renders at.
             const tidyResult = tidyLayout(currentDashboard.widgets, {
               gridCols: 12,
               enableHorizontalExpansion: true,
               enableVerticalCompaction: true,
               minRowGap: 0,
               registry: 'dashboard',
-              ...(containerWidth !== undefined && { containerWidth }), // Only include if defined
             });
 
             logger.info(
               'Tidy layout optimization completed:',
               tidyResult.stats
             );
+
+            // Record the tidied sizes, otherwise the grid re-draws every widget
+            // at its breakpoint default and the packing falls apart.
+            syncCustomSizesFromLayout(tidyResult.widgets, tidyResult.breakpoint);
 
             // Apply the optimized layout to the dashboard
             const newDashboards = state.dashboards.map((d) =>
@@ -1091,10 +1112,13 @@ export const useMultiDashboardStore = create<MultiDashboardState>()(
             // Check if current layout needs adjustment based on screen size
             let needsAdjustment = false;
 
-            // Also check if we need to add/remove widgets based on the current breakpoint
+            // Also check if we need to add/remove widgets based on the current
+            // breakpoint. Skip types not registered in the current build.
             const defaultWidgetConfigs = getDefaultLayoutWidgetsByWidth(
               containerWidth,
               'dashboard'
+            ).filter((widgetConfig) =>
+              isWidgetTypeAvailable(widgetConfig.type)
             );
 
             const currentWidgetTypes = new Set(
@@ -1708,6 +1732,14 @@ export const useMultiDashboardStore = create<MultiDashboardState>()(
             dashboards: state.dashboards,
             currentDashboardId: state.currentDashboardId,
           }),
+          onRehydrateStorage: () => (_state, error) => {
+            if (error) {
+              logger.error('[MultiDashboardStore] Rehydration error:', error);
+            }
+            // Flip regardless of error — consumers must stop waiting even if
+            // the IndexedDB read failed.
+            useMultiDashboardStore.getState().setHasHydrated(true);
+          },
         }
       ),
       { name: 'multi-dashboard-store' }

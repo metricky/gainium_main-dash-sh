@@ -14,6 +14,8 @@ import {
   type Symbols,
 } from '@/types';
 import type { BotFormData } from '@/types/bots';
+import { toExchangeCandleSymbol } from '@/utils/exchangeUtils';
+import { normalizePairKey } from '@/utils/pairs';
 
 export type BacktestInput = DCABacktestingResultShort & {
   symbol: string;
@@ -118,19 +120,38 @@ export function prepareBacktestInput(
     throw new Error('Current exchange is not defined');
   }
   const fullSymbols: Symbols[] = [];
+  // The server-side backtest resolves the pair against the `pairs` collection
+  // (case-sensitive `$in` on the exchange's native symbol), so the pair it
+  // receives has to be the exchange-native string. `pairMetadata[key].pair` IS
+  // that string — the connector's own form, including case the compact form
+  // key destroys (Kraken `AAPLx-USD` → key `AAPLXUSD`) and shapes no heuristic
+  // can rebuild (OKX-EU `BTC-USD_UM_XPERP`). Prefer it; fall back to the
+  // chart chokepoint's converter only when the metadata is missing. Same
+  // pattern as the bot create/update mappers.
+  // `pairMetadata` is keyed by `normalizePairKey(pair)`, not the raw pair
+  // string — a direct `s in formData.pairMetadata` lookup misses for any pair
+  // whose native symbol contains a separator character (e.g. X-Perp
+  // `AAVE-USD_UM_XPERP`), silently dropping it from the backtest.
+  const metaFor = (pair: string) =>
+    formData.pairMetadata[pair] ??
+    formData.pairMetadata[normalizePairKey(pair)];
+  const toNativePair = (pair: string): string =>
+    metaFor(pair)?.pair ??
+    toExchangeCandleSymbol(currentExchange.provider, pair);
   const symbols = [formData.pair]
     .flat()
     .map((s) => {
-      if (s in formData.pairMetadata) {
+      const meta = metaFor(s);
+      if (meta) {
         fullSymbols.push({
-          ...formData.pairMetadata[s],
+          ...meta,
           maxOrders: 200,
           exchange: currentExchange.provider,
         });
         return {
-          pair: s,
-          baseAsset: formData.pairMetadata[s].baseAsset.name,
-          quoteAsset: formData.pairMetadata[s].quoteAsset.name,
+          pair: toNativePair(s),
+          baseAsset: meta.baseAsset.name,
+          quoteAsset: meta.quoteAsset.name,
         };
       }
       return null;
@@ -163,7 +184,7 @@ export function prepareBacktestInput(
         ...commonData,
         settings: {
           ...formData.grid,
-          pair: pairList[0] ?? '',
+          pair: pairList[0] ? toNativePair(pairList[0]) : '',
           name: formData.name,
           // Legacy forces this true at backtest time; the form mapper
           // defaults it to false for edited/cloned bots (the stored
@@ -182,7 +203,7 @@ export function prepareBacktestInput(
         ...commonData,
         settings: {
           ...(isCombo ? formData.combo : formData.dca),
-          pair: pairList,
+          pair: pairList.map(toNativePair),
           name: formData.name,
         } as unknown as DCABotSettings,
         combo: isCombo,

@@ -5,6 +5,447 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.42.6] - 2026-08-01
+
+### Fixed
+
+- Backtest results now say when a run covered less than the period you selected. Exchanges cap how far back their candle history reaches — Kraken spot, for example, serves only its most recent 720 candles per timeframe, so a 210-day 1h backtest quietly tested 30 days. The results header now shows a "Partial history — X of Y days" warning, with the reason on hover, whenever the tested window starts later than the one requested.
+
+## [2.42.5] - 2026-08-01
+
+### Fixed
+
+- Opening the new-bot form from a staged configuration (e.g. "Copy to live", a curated preset, or a wizard hand-off) no longer shows "Something went wrong" when the staged trading pair was stored as a number instead of text. The pair is now read as text and the form loads normally.
+
+## [2.42.4] - 2026-08-01
+
+### Fixed
+
+- Opening the trading terminal on a specific deal type (e.g. a link ending in `?dealType=simple`) now selects that tab. The address was being rewritten back to `smart`, so you landed on the wrong tab, and the resulting tug-of-war between the address bar and the form could escalate into a "Maximum update depth exceeded" crash.
+
+## [2.42.3] - 2026-08-01
+
+### Changed
+
+- Loading candles for charts and backtests is much faster on Hyperliquid, Kraken futures and Bitget futures. Those venues serve far bigger pages than we were asking for, so every period was split into many more round-trips than necessary — a 7-month 15m Hyperliquid load took 103 requests and now takes 5. The candles loaded are identical; only the number of requests changes.
+
+## [2.42.2] - 2026-08-01
+
+### Fixed
+
+- Server-side backtests now run with the settings you picked. Choosing "Server Side" in the backtest dialog ignored the candle timeframe, period, fee and slippage you had just set and always tested the last 365 days at 1h with 0% slippage, and the date range it did compute never reached the backend at all. Client-side (in-browser) backtests were unaffected.
+
+## [2.42.1] - 2026-08-01
+
+### Fixed
+
+- Signing back in no longer immediately logs you out again on a slow connection. Requests still in flight from the previous session could resolve after re-login with the backend's "session expired" rejection, and the app treated that as the new session being dead — signing the user out and revoking the fresh session server-side, over and over. A rejection now only ends the session whose token was actually rejected.
+
+## [2.42.0] - 2026-08-01
+
+### Added
+
+- Exchanges and Portfolio pages show a "Replace key" chip on any exchange connection whose API key was still in place before 31 July, when unauthorised access to one of our servers was detected. Clicking it opens the edit dialog. Hyperliquid connections get the Web3-wallet wording instead of the create-a-new-key steps. The chip disappears once the key is replaced.
+
+### Fixed
+
+- Links in notifications are now clickable. A notification that cites a help page rendered its URL as plain text you had to select and copy.
+
+## [2.41.4] - 2026-07-31
+
+### Fixed
+
+- Exchange add/edit: a failed connection showed the raw API response as a wall of JSON that overflowed the error box. It now shows the sentence the server actually wrote, and long messages wrap.
+
+## [2.41.3] - 2026-07-31
+
+### Fixed
+
+- Signing out is now immediate when the backend rejects your session. Previously an invalidated session left the dashboard loaded but non-functional — every panel showed an error while the app still considered you logged in, and you had to clear site data by hand. The app now returns you to the login screen as soon as the server refuses the session. Sessions are still preserved through network drops and backend outages, so a temporary connection problem will not sign you out.
+
+## [2.41.2] - 2026-07-31
+
+### Fixed
+
+- Overview: when the trading-pairs or exchanges request failed or was slow, the dashboard kept re-issuing it in a self-sustaining loop instead of stopping after the normal retries. It now retries a bounded number of times and then surfaces the error — which also removes the render loop that could crash the page outright while that was happening.
+
+## [2.41.1] - 2026-07-31
+
+### Fixed
+
+- DCA bot form: switching a take-profit or stop-loss close condition no longer deletes that section's configured indicators and groups — your configuration is kept and comes back when you switch mode again. Switching take profit to Dynamic ATR/ADR no longer wipes the take-profit indicators when the stop loss happens to be on Indicators.
+- DCA bot form: the saved bot now carries only the indicators the active close condition actually uses (grouped indicators for Indicators, ungrouped ATR/ADR for Dynamic ATR/ADR, none for Percentage or webhook), so a leftover indicator can no longer be picked up as the dynamic take-profit distance. Groups left empty by that filter are dropped too.
+- DCA bot form: creating a bot no longer fails with an unexplained error after leaving an untouched seeded indicator behind — the raw form indicators are no longer sent alongside the mapped ones.
+- DCA bot form: Dynamic ATR/ADR now seeds its ATR even when the section still holds indicators from Indicators mode, and Create Bot is blocked with an explanatory error when a Dynamic ATR/ADR take profit or stop loss has no ATR/ADR indicator.
+
+## [2.41.0] - 2026-07-30
+
+### Added
+
+- OKX Europe X-Perp futures support: the EU origin (my.okx.com) now allows Spot & Futures / Linear Futures adds (Inverse auto-corrects to Linear — the EU venue has no coin-margined product), paper OKX accounts gain the origin selector, and OKX-EU paper funding uses USDC/EUR/USD lists (no USDT on the EU venue). Based on work contributed by community member discord2020 (forum topic 4925).
+
+### Fixed
+
+- X-Perp pairs no longer break the quick-backtest symbol resolution (pairMetadata lookups now use the normalized pair key; asset fallback uses the suffix-aware parser instead of a midpoint slice) — previously every USD-denominated backtest stat rendered as $0.00 (fix by discord2020).
+- `extractPairAssets` strips the X-Perp contract-family suffix so display/icon lookups get the real quote asset (`USD`, not `USD_UM_XPERP`).
+
+## [2.40.1] - 2026-07-30
+
+### Fixed
+
+- The Portfolio Value widget's "Coins" filter is usable again. Its "Add coins"
+  picker came up empty ("No items found") so no coin could be typed or selected,
+  because the chart's default all-coins/all-exchanges view fetches a lean series
+  without the per-asset breakdown the picker lists from. The picker now reads the
+  breakdown separately when it is opened.
+- The Portfolio Value coin picker and its filter chips now list every coin in the
+  loaded history, not only those held in the oldest snapshot of the range — a
+  coin acquired later was missing from the picker and its chart series would not
+  draw when selected.
+- Picking a coin while "All coins" is still selected now draws that coin's line
+  over the total, instead of leaving the chart unchanged.
+
+## [2.40.0] - 2026-07-30
+
+### Added
+
+- The bot page's price chart is now deal-aware. While a DCA or Combo bot has an
+  open deal on the charted pair, the chart draws that deal's real resting orders
+  and its projected next DCA levels — the same indication the deal drawer shows
+  — instead of the settings preview, which is projected from the current market
+  price and so never lined up with a running deal. The deal's own fills appear
+  as buy/sell markers alongside them.
+- An "Active deal orders" item in the chart's display menu switches back to the
+  settings preview, for tuning a bot's parameters while a deal is open. It only
+  appears when there is an open deal to show.
+
+### Changed
+
+- The chart's display menu now shows each option's current state as a checkbox
+  instead of an unlabelled "Toggle …" action, so it's clear what is on.
+
+### Fixed
+
+- Changing the chart's display menu left the old "Chart" button behind on the
+  toolbar, stacking up a duplicate per change. Removing the previous button
+  silently did nothing because the dropdown handle was never awaited, and two
+  overlapping attaches could each add one; the menu is now rebuilt in place.
+- Opening a bot page could crash it with "Maximum update depth exceeded". The
+  bot-deals hook re-ran a state-setting effect on every render whenever a caller
+  passed its filter inline, which every caller does.
+
+## [2.39.12] - 2026-07-30
+
+### Fixed
+
+- Projected DCA levels on the price chart were labelled "Smart order" for bots
+  whose DCA condition is an indicator. Those bots never rest a DCA order on the
+  exchange — each level is just the "Minimum % from last filled order"
+  threshold the indicator has to clear — so they now read "DCA (min. %)".
+  `dcaByMarket` levels read "DCA by market", matching the legacy dashboard.
+- Indicator-condition bots now show their projected DCA levels on the chart even
+  with Smart orders switched off. Smart orders have no effect for that condition,
+  so gating the indication on it hid it for no reason.
+- The next-DCA indication on an open deal's chart is now anchored on the deal's
+  last filled price, the same reference the bot uses when it evaluates the
+  minimum-%. It previously chained off the deal's initial price through its own
+  projected levels, which drew the next DCA closer than it could actually happen
+  once a level filled below its threshold. Levels the deal has already taken no
+  longer show up as pending.
+
+## [2.39.11] - 2026-07-30
+
+### Fixed
+
+- Advanced Bot Stats widget: the x-axis date labels on the Accumulated
+  Profit / Equity chart overlapped the `7D / 30D / 90D / 1Y / All` range
+  buttons underneath it. The chart box was sized at 100% of its section
+  while starting below the section's header, so it overflowed the section
+  and spilled onto the buttons.
+- Dashboard widgets lost their saved settings on every page load — the
+  Advanced Bot Stats bot selection (and its time-range choice) reset to
+  empty after a refresh. The multi-dashboard store rehydrates from
+  IndexedDB asynchronously, so before it finished the widget page treated
+  "not loaded yet" as "no dashboards", fell back to the legacy dashboard
+  store, and applied that store's default layout — whose orphaned-settings
+  cleanup deleted the persisted settings of the real widgets.
+
+## [2.39.10] - 2026-07-29
+
+### Fixed
+
+- The usage ring in a bot's Deals tab (table view) always read 0% for SHORT
+  spot and COIN-M deals, even when orders had filled. The column derived the
+  percentage from the quote-side usage figures, but those deals track usage on
+  the base asset, so the ring stayed empty while the card view showed the real
+  number. The table now uses the same strategy-aware usage percentage the card
+  view and the Deals page already display.
+
+## [2.39.9] - 2026-07-29
+
+### Fixed
+
+- Accumulated Profit showed a "Current Total" far below the real accumulated
+  profit, and the 7D/30D/90D/All buttons only redrew the timeline without
+  changing the period figures. The widget always asked the backend for daily
+  profit, which is capped at the last 30 days, so every stat was really a
+  30-day number: 90D and All padded the missing months with zeroes and reported
+  a "Period Start" of $0. The widget now requests the bucket size that covers
+  the selected range (daily, weekly, or monthly) and takes the headline total
+  from the all-time profit aggregate, so "Current Total" is the true cumulative
+  profit and "Period Start"/"Change" move with the selected range.
+- Accumulated Profit scaled its figures by hardcoded per-exchange percentages
+  left over from the widget's mock-data implementation.
+
+## [2.39.8] - 2026-07-29
+
+### Fixed
+
+- "Tidy up" on the dashboard left large empty areas instead of filling them.
+  A row whose next widget did not fit wrapped early and abandoned the remaining
+  columns, leftover space was only shared proportionally (so a row holding a
+  single widget kept its whole gap), and the widths the pass computed were
+  discarded at render time because they were never recorded as the widget's
+  size. Tidy up now looks ahead when filling a row, hands every unused column
+  back to that row's widgets up to their maximum size, and stores the result so
+  the grid draws it.
+- "Tidy up" sized widgets for the wrong breakpoint on narrow desktop windows.
+  It guessed the layout width from the window instead of measuring the grid, so
+  a page with a scrollbar could be arranged for one breakpoint and drawn at
+  another.
+
+## [2.39.7] - 2026-07-29
+
+### Removed
+
+- Dead "best day" / "worst day" computation in the DCA bot drawer's profit
+  metrics. The values were derived from backend stats but never rendered
+  anywhere. Grid bots keep their Best Day / Worst Day tiles, which are computed
+  separately in the frontend from the profit series.
+
+## [2.39.6] - 2026-07-29
+
+### Changed
+
+- Advanced Bot Stats: Net Result, Avg Daily Return, and Max Equity Drawdown
+  tiles use profit/loss colors; the Select Bots dialog is wider and long bot
+  names truncate so the selection checkmark stays visible.
+
+### Fixed
+
+- Tables with a totals row (e.g. Portfolio Balances) no longer show a gap with
+  clipped rows under the sticky totals row — the scroll container's bottom
+  padding pushed the sticky row 16px above the table edge.
+
+## [2.39.5] - 2026-07-29
+
+### Changed
+
+- Bot drawer: the Performance Chart and Deal Returns are now one **Performance**
+  widget with a shared time axis and a 1M / 3M / ALL range selector that drives
+  both panels. They previously had independent, self-scaled axes and different
+  history depths (90 daily points vs. up to 500 closed deals), so a losing deal
+  could sit plainly in the lower chart while being entirely off the left edge of
+  the upper one — which is how a bot still recovering from a drawdown came to
+  look purely profitable. Under ALL the upper panel simply starts where its
+  daily history begins, leaving the earlier deals visible below it.
+
+## [2.39.4] - 2026-07-29
+
+### Changed
+
+- Advanced Bot Stats: Profit chart is now green and Equity blue (previously
+  swapped), and the stat tiles no longer show emoji icons.
+
+## [2.39.3] - 2026-07-29
+
+### Fixed
+
+- Advanced Bot Stats: the Accumulated Profit / Equity chart now plots real USD
+  series for the selected bots — the widget's data fetch never worked (it
+  POSTed to a non-existent `/graphql` on the frontend origin), and the series
+  it asked for was a per-deal ROI fraction, not an amount. It now aggregates
+  each bot's `stats.chart` (the same real-currency series the bot drawer
+  uses), forward-filling across bots so differently-timed deals sum correctly.
+  Win Rate, Profit Factor, and Max Deal Duration tiles show real values
+  instead of "—".
+- News RSS widget loads again: of its three CORS relays, one service is dead,
+  one was down, and the third (rss2json) was fetched and then discarded by a
+  bug. rss2json responses are now parsed properly as a fallback, and the
+  widget's Refresh button forces a re-fetch instead of silently hitting cache.
+- Ready dashboard layouts (Trading Desk, Daily Briefing, Portfolio Deep Dive)
+  no longer create empty, unremovable widget cells: the Quick Actions,
+  Categories Analysis, and Exchange Distribution widget types were registered
+  but never wired into the grid renderer. Any widget type that has no
+  registered renderer now shows an explicit placeholder with a Remove button
+  instead of an invisible cell.
+
+## [2.39.2] - 2026-07-29
+
+### Changed
+
+- Bot Performance Chart: added a break-even line to the Realized Profit axis
+  and a note that the chart covers the last 90 days and that Realized Profit is
+  cumulative since the bot started. A bot older than 90 days opens the chart
+  mid-history, so a line that starts below break-even and climbs was being read
+  as pure profit with earlier losses missing.
+
+## [2.39.1] - 2026-07-29
+
+### Fixed
+
+- The bot form's "More backtest settings" dialog opened on a hardcoded 1 hour /
+  Auto instead of the candle timeframe and period picked in the quick-backtest
+  bar, and ran the backtest on those defaults — so the bar's BACKTEST button and
+  the dialog's START TEST produced different results from identical visible
+  settings. The dialog now opens on the bar's timeframe and period.
+- Selecting the "Auto" period in the backtest settings dialog no longer runs on
+  the dates left over from a previously selected period; Auto again derives the
+  window from the candle timeframe.
+
+## [2.39.0] - 2026-07-29
+
+### Fixed
+
+- Billing history showed every row as a green `+amount`, so subscription
+  purchases read as money coming in. Amounts are stored unsigned, so the sign
+  now comes from the backend's `direction` classification: top-ups are `+`,
+  purchases are `-`, and PayPal subscription renewals are neutral because they
+  are charged to PayPal directly and never move the Gainium balance.
+
+### Added
+
+- Billing history has a Details column showing the payment's provider
+  reference — the PayPal transaction id you can actually search for, the
+  Bitcart invoice id, plus processor fee, net and any crypto discount. Rows
+  that are internal wallet movements (plan-change credit, rewards conversion)
+  no longer show a meaningless internal uuid, and are labelled for what they
+  are instead of showing a raw source string like `bitcartcc`.
+
+## [2.38.26] - 2026-07-29
+
+### Changed
+
+- Bot view, Deals section: clicking a deal (card or table row) now plots that
+  deal's entry and exit on the chart instead of opening the deal details.
+  Details are still one click away from the deal's "View Details" menu entry.
+  On mobile and when the chart panel is collapsed — where there is no chart to
+  draw on — clicking a deal still opens its details.
+
+## [2.38.25] - 2026-07-28
+
+### Fixed
+
+- Tables no longer re-render each other. Every table shared a single
+  preferences subscription, so changing the rows-per-page, view mode, sorting,
+  search or column layout on one table re-rendered every other table on the
+  page. Pages that stack several tables (bot view, portfolio, trading) now
+  only redraw the table you actually touched. A table's own preference change
+  also no longer hands its toolbar and controls a fresh set of callbacks,
+  which was defeating their memoisation. Nothing changes about what is
+  persisted or restored.
+
+## [2.38.23] - 2026-07-28
+
+### Fixed
+
+- Paper top-up and the per-exchange balance refresh no longer hang for 30-40s:
+  both now ask the backend to re-fetch only the affected exchange (new
+  `updateBalance(uuid)` input; requires app-sh core >= 1.37.6, which also
+  removes the snapshot's cross-exchange no-op write storm). "Refresh all"
+  keeps the full refresh.
+
+## [2.38.24] - 2026-07-28
+
+### Fixed
+
+- Charts, backtests and market stats now request each exchange's **native**
+  pair symbol by default. Previously only a hand-maintained list of venues got
+  the dashed pair (`BTC-USDT`) and everything else was sent the concatenated
+  form; a venue missing from that list simply returned nothing, so the chart
+  or backtest came back blank with no error. The rule is inverted: the dashed
+  native pair is the default and only the venues that genuinely use the
+  concatenated or contract form (Binance, Bybit, Bitget, MEXC, KuCoin futures,
+  Binance COIN-M) are exempt. Newly added exchanges are now correct on day one
+  instead of after an outage. This also fixes KuCoin spot (`kucoinSpot` /
+  `kucoinAll`) and Kraken inverse futures pairs, which were never on the old
+  list. When a symbol cannot be converted, a console warning now says so
+  instead of failing silently.
+- Coinbase charts now live-update again: the 30-second refresh polled with the
+  concatenated pair, which Coinbase rejects as an invalid product id, so the
+  last candle never moved after the initial load.
+- KuCoin spot charts now live-tick: the websocket subscription asked for a
+  symbol the exchange doesn't publish, so bars only updated on reload.
+- OKX charts now live-tick with the RIGHT market's prices: the subscription
+  both used a symbol OKX doesn't publish and — for perpetual accounts —
+  resolved to the spot instrument; perp charts now subscribe to the `-SWAP`
+  instrument.
+- Server-side backtests on dashed-pair exchanges (Hyperliquid, Kraken, OKX,
+  Coinbase, KuCoin spot) now find their candles. The pair sent to the
+  backtester is taken from the exchange's own pair metadata (preserving
+  case-sensitive symbols like Kraken's tokenized stocks `AAPLx-USD` and
+  irregular ids like OKX's `BTC-USD_UM_XPERP`), falling back to the chart's
+  converter only when metadata is missing.
+- Pair splitting recognises the `USDH`, `USDE`, `USDS` and `USDG` quotes and
+  always matches the longest quote first.
+
+## [2.38.21] - 2026-07-28
+
+### Fixed
+
+- Accounts with no saved dashboards no longer log "Failed to initialize
+  default widgets" (twice, via StrictMode) on /dashboard: the small-screen
+  (sm/xs/xxs) default layouts still referenced the removed
+  `technical-indicator-heatmap` widget, and hitting it aborted default-widget
+  setup for the whole page. The dead entry is gone, and the default /
+  screen-adjusted layout builders now skip widget types not registered in the
+  current build (e.g. cloud-only widgets on self-hosted) — same policy as
+  dashboard templates — instead of failing outright.
+
+## [2.38.20] - 2026-07-28
+
+### Fixed
+
+- Hyperliquid candle requests from the bot form, backtests and market stats
+  now send the dashed pair (`BTC-USDC`) the exchange actually lists instead of
+  the concatenated internal form (`BTCUSDC`), which the backend could never
+  resolve — those flows showed no candles on Hyperliquid, and each attempt
+  burnt ~90s of retries server-side (bug #153). Saved-bot charts were
+  unaffected.
+- Hyperliquid charts now have their own data handler. They previously fell
+  back to the Binance chart handler, whose live-update stream subscribes to
+  Binance's WebSocket — a Hyperliquid chart could silently tick with Binance
+  prices for lookalike symbols. Live updates now poll Gainium's own candle
+  endpoint, and an unregistered exchange reaching the Binance fallback is
+  logged.
+
+## [2.38.19] - 2026-07-28
+
+### Fixed
+
+- Webhook payloads in the bot editor, the bot drawer and the webhook
+  configuration modal now carry the bot's real webhook UUID instead of its
+  internal database id. Copying a sample payload and firing it at
+  `/trade_signal` previously matched no bot, so the signal was silently
+  ignored — start/stop bot, open/close deal, add/reduce funds and change pairs
+  all did nothing. The legacy dashboard always sent the correct value.
+
+## [2.38.18] - 2026-07-28
+
+### Fixed
+
+- "Duplicate bot" in the bot editor's overflow menu now opens the pre-filled
+  create page instead of immediately saving a copy. The duplicate's trading
+  pair and exchange stay editable until you press Create — previously the copy
+  was created straight away and landed on its edit page, where the pair of a
+  single-pair bot can never be changed. Clone from the bot list already worked
+  this way; the editor menu was the last place that didn't.
+- The trading pair of an existing single-pair DCA, Combo or Grid bot is now
+  shown read-only, with a note explaining how to move the strategy to another
+  pair. It previously looked editable and reported "Bot updated successfully!",
+  but the pair silently reverted — the backend rejects pair changes on
+  non-multi bots. Multi-pair bots are unaffected and stay editable.
+
 ## [2.38.17] - 2026-07-27
 
 ### Fixed

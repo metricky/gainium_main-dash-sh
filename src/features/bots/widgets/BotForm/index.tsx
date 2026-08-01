@@ -77,7 +77,8 @@ import {
   type ExchangeMinimumBumpEvent,
 } from '@/hooks/bots/forms/useExchangeMinimumBump';
 import { useBacktestPersistence } from '@/hooks/useBacktestPersistence';
-import { useBotArchive, useBotClone } from '@/hooks/useBotMutations';
+import { extractPairAssets, normalizePairKey } from '@/utils/pairs';
+import { useBotArchive } from '@/hooks/useBotMutations';
 import { useBotTemplateShortcuts } from '@/hooks/useBotTemplatesSync';
 import { getLocalPrices } from '@/helper/price';
 import GridBacktestingEngine from '@/lib/backtester/gridWrapper';
@@ -140,7 +141,7 @@ import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
 import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-core';
 import { validateDcaFormData } from '@/utils/bots/dca/validation';
 import { validateGridFormData } from '@/utils/bots/grid/validation';
-import { buildBotEditRoute } from '@/utils/bots/navigation';
+import { buildBotCloneRoute, buildBotEditRoute } from '@/utils/bots/navigation';
 import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { COMBO_BOT_TYPE_ID } from '../../registry';
 import BacktestSettingsDialog, {
@@ -565,7 +566,6 @@ const BotForm: React.FC<BotFormProps> = ({
 
   const navigate = useNavigate();
   const archiveMutation = useBotArchive();
-  const cloneMutation = useBotClone();
 
   const [showImportExportDialog, setShowImportExportDialog] = useState(false);
   // Template creation/edit state moved to footer templates menu component
@@ -1241,9 +1241,23 @@ const BotForm: React.FC<BotFormProps> = ({
     isTerminal
   );
 
-  const onBacktestClick = useCallback(() => {
-    setShowBacktestDialog(true);
-  }, [setShowBacktestDialog]);
+  // Seed for the settings dialog. The footer's "More backtest settings"
+  // button hands over the period + timeframe its own bar is showing; without
+  // this the dialog opened on a hardcoded 1h/Auto and ran the backtest on
+  // those instead of on what the user had picked.
+  const [backtestDialogInitial, setBacktestDialogInitial] = useState<
+    Partial<BacktestConfig>
+  >({ mode: 'local', timeframe: ExchangeIntervals.oneH });
+
+  const onBacktestClick = useCallback(
+    (_formData?: BotFormData, cfg?: Partial<BacktestConfig>) => {
+      if (cfg) {
+        setBacktestDialogInitial((prev) => ({ ...prev, ...cfg }));
+      }
+      setShowBacktestDialog(true);
+    },
+    [setShowBacktestDialog]
+  );
 
   useEffect(() => {
     if (!isGridBot) {
@@ -2333,39 +2347,19 @@ const BotForm: React.FC<BotFormProps> = ({
     [botId, statusToggleMutation]
   );
 
-  const handleDuplicate = useCallback(async () => {
+  // Duplicating opens the pre-filled *create* page (the canonical clone route
+  // every other surface already uses — see `useBotActions.clone`). Creating the
+  // copy immediately instead would land on the edit page, where the pair and
+  // exchange of a saved bot can no longer be changed — which defeats the main
+  // reason to duplicate a bot. Nothing is persisted until the user hits Create.
+  const handleDuplicate = useCallback(() => {
     if (!botId) {
       toast.error('Bot ID missing. Unable to duplicate.');
       return;
     }
 
-    try {
-      const cloned = await cloneMutation.mutateAsync({
-        id: botId,
-        botData: botForOperations ?? undefined,
-        type: isGridBot
-          ? BotTypesEnum.grid
-          : isComboBot
-            ? BotTypesEnum.combo
-            : BotTypesEnum.dca,
-      });
-
-      if (cloned?._id) {
-        navigate(buildBotEditRoute(botExperience.id, cloned._id));
-      }
-    } catch (error) {
-      console.error('[BotForm] Failed to duplicate bot', error);
-      toast.error('Failed to duplicate bot.');
-    }
-  }, [
-    botExperience.id,
-    botId,
-    cloneMutation,
-    botForOperations,
-    navigate,
-    isGridBot,
-    isComboBot,
-  ]);
+    navigate(buildBotCloneRoute(botExperience.id, botId));
+  }, [botExperience.id, botId, navigate]);
 
   const handleBacktest = useCallback(() => {
     if (!botId) {
@@ -2528,7 +2522,6 @@ const BotForm: React.FC<BotFormProps> = ({
     setFundsDialogMode('reduce');
   }, []);
 
-  const duplicatePending = cloneMutation.isPending;
   const archivePending = archiveMutation.isPending;
 
   const isBotArchived =
@@ -2592,7 +2585,7 @@ const BotForm: React.FC<BotFormProps> = ({
             onSelect: () => {
               void handleDuplicate();
             },
-            disabled: duplicatePending || !botId,
+            disabled: !botId,
           },
           {
             label: 'Run backtest',
@@ -2645,7 +2638,6 @@ const BotForm: React.FC<BotFormProps> = ({
     botForOperations,
     botId,
     botShareEnabled,
-    duplicatePending,
     handleArchiveToggle,
     handleBacktest,
     handleDuplicate,
@@ -2845,8 +2837,17 @@ const BotForm: React.FC<BotFormProps> = ({
   const onRunBacktest = useCallback(
     async (cfg: BacktestConfig) => {
       if (cfg.mode === 'server') {
-        // Use the existing handler from useFormHandlers which runs the server mutation
-        await handleFormBacktest();
+        // Use the existing handler from useFormHandlers which runs the server
+        // mutation — and hand it what the dialog collected. Calling it bare
+        // dropped every field the user picked, so each server run silently
+        // tested the last 365 days at 1h with 0% slippage.
+        await handleFormBacktest({
+          timeframe: cfg.timeframe,
+          startDate: cfg.startDate,
+          endDate: cfg.endDate,
+          slippagePercent: cfg.slippagePercent,
+          userFee: cfg.userFee,
+        });
       } else {
         try {
           if (!currentExchange) {
@@ -2881,17 +2882,20 @@ const BotForm: React.FC<BotFormProps> = ({
               : [];
 
           const symbols: Symbols[] = resolvedPairs.map((p) => {
-            const normalized = p.replace(/-/g, '').toUpperCase();
+            // `pairMetadata`/`pairMetadata.byPair` are keyed via
+            // `normalizePairKey`, which strips `[\s/_-]` — not just `-`.
+            // A dash-only strip leaves `_UM_XPERP` intact for X-Perp pairs
+            // (`AAVE-USD_UM_XPERP`), so the lookup always missed for them.
+            const normalized = normalizePairKey(p);
             const meta =
               (formData.pairMetadata ?? {})[normalized] ||
               pairMetadata?.byPair?.[normalized] ||
               null;
-            const base =
-              meta?.baseAsset?.name ??
-              normalized.slice(0, Math.floor(normalized.length / 2));
-            const quote =
-              meta?.quoteAsset?.name ??
-              normalized.slice(Math.floor(normalized.length / 2));
+            // Fall back to the suffix-aware parser, not a midpoint slice of
+            // the (possibly still contract-suffixed) normalized string.
+            const fallback = extractPairAssets(p);
+            const base = meta?.baseAsset?.name ?? fallback.baseAsset;
+            const quote = meta?.quoteAsset?.name ?? fallback.quoteAsset;
             return {
               pair: p,
               baseAsset: {
@@ -3055,6 +3059,10 @@ const BotForm: React.FC<BotFormProps> = ({
                     baseAsset: persistenceSymbol.baseAsset?.name ?? '',
                     quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
                     exchange: currentExchange.provider,
+                    // Mirror the persisted shape: the results header reads the
+                    // REQUESTED window off `config` (a saved run always has it)
+                    // to flag a run the venue's candle-history ceiling cut short.
+                    config: { firstDataTime, lastDataTime },
                   } as unknown as GRIDBacktestingResultHistory;
                   setBacktestResult({
                     result: gridHistory,
@@ -3256,6 +3264,13 @@ const BotForm: React.FC<BotFormProps> = ({
                     exchange: currentExchange.provider,
                     baseAsset: persistenceSymbol.baseAsset?.name ?? '',
                     quoteAsset: persistenceSymbol.quoteAsset?.name ?? '',
+                    // The window the user asked for. A saved result carries it
+                    // as `config.firstDataTime/lastDataTime`; this fresh one
+                    // doesn't, so the results header can only tell the user the
+                    // run was cut short (venue history ceiling / late listing)
+                    // if we hand it over here.
+                    requestedFrom: firstDataTime,
+                    requestedTo: lastDataTime,
                   };
                   const dcaVm = buildBacktestViewModel(
                     typedResult,
@@ -3795,7 +3810,7 @@ const BotForm: React.FC<BotFormProps> = ({
       />
       <BacktestSettingsDialog
         open={showBacktestDialog}
-        initialData={{ mode: 'local', timeframe: ExchangeIntervals.oneH }}
+        initialData={backtestDialogInitial}
         onClose={() => setShowBacktestDialog(false)}
         formData={formData}
         backtestProgress={backtestProgress}
@@ -4213,7 +4228,7 @@ const BotForm: React.FC<BotFormProps> = ({
       />
       <BacktestSettingsDialog
         open={showBacktestDialog}
-        initialData={{ mode: 'local', timeframe: ExchangeIntervals.oneH }}
+        initialData={backtestDialogInitial}
         onClose={() => setShowBacktestDialog(false)}
         formData={formData}
         backtestProgress={backtestProgress}

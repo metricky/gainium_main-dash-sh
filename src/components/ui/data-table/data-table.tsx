@@ -2772,6 +2772,40 @@ function DataTableComponent<TData, TValue>(
    * 5. Does ToolbarButtonRow receive updated selectedRows?
    * 6. Is getRowId provided and returning stable IDs?
    */
+  // Build the effective column order:
+  // 1. Selection column always first.
+  // 2. Left-pinned columns next (in their pin-list order).
+  // 3. Unpinned columns in their persisted/default order, with any new
+  //    columns (added to the ColumnDef list since the order was persisted)
+  //    appended so react-table doesn't fall back to rendering them after
+  //    our right-pins.
+  // 4. Right-pinned columns at the end (in their pin-list order).
+  // Without step 4, persisted column orders predating a pin can leave the
+  // pinned column rendered mid-table.
+  // Memoised rather than inlined as an IIFE in the `state` block below: it
+  // allocated three Sets and a fresh array on EVERY render, and the new array
+  // identity busted react-table's internal column-order memos (visible leaf
+  // columns, header groups) each time — so unrelated renders rebuilt the whole
+  // column model.
+  const effectiveColumnOrder = useMemo(() => {
+    const leftPins = effectivePinnedColumns.left;
+    const rightPins = effectivePinnedColumns.right;
+    const pinnedSet = new Set([...leftPins, ...rightPins, '_selection']);
+    const persistedSet = new Set(columnOrder);
+    const persistedMiddle = columnOrder.filter((id) => !pinnedSet.has(id));
+    const newColumns = defaultColumnOrder.filter(
+      (id) => id && !persistedSet.has(id) && !pinnedSet.has(id)
+    );
+    const head = selectionColumn ? ['_selection'] : [];
+    return [
+      ...head,
+      ...leftPins,
+      ...persistedMiddle,
+      ...newColumns,
+      ...rightPins,
+    ];
+  }, [effectivePinnedColumns, columnOrder, defaultColumnOrder, selectionColumn]);
+
   const table = useReactTable({
     data,
     columns: enhancedColumns,
@@ -2780,36 +2814,7 @@ function DataTableComponent<TData, TValue>(
       columnFilters,
       columnVisibility,
       globalFilter,
-      // Build the effective column order:
-      // 1. Selection column always first.
-      // 2. Left-pinned columns next (in their pin-list order).
-      // 3. Unpinned columns in their persisted/default order, with any new
-      //    columns (added to the ColumnDef list since the order was persisted)
-      //    appended so react-table doesn't fall back to rendering them after
-      //    our right-pins.
-      // 4. Right-pinned columns at the end (in their pin-list order).
-      // Without step 4, persisted column orders predating a pin can leave the
-      // pinned column rendered mid-table.
-      columnOrder: (() => {
-        const leftPins = effectivePinnedColumns.left;
-        const rightPins = effectivePinnedColumns.right;
-        const pinnedSet = new Set([...leftPins, ...rightPins, '_selection']);
-        const persistedSet = new Set(columnOrder);
-        const persistedMiddle = columnOrder.filter(
-          (id) => !pinnedSet.has(id)
-        );
-        const newColumns = defaultColumnOrder.filter(
-          (id) => id && !persistedSet.has(id) && !pinnedSet.has(id)
-        );
-        const head = selectionColumn ? ['_selection'] : [];
-        return [
-          ...head,
-          ...leftPins,
-          ...persistedMiddle,
-          ...newColumns,
-          ...rightPins,
-        ];
-      })(),
+      columnOrder: effectiveColumnOrder,
       pagination,
       grouping,
       expanded,
@@ -2871,6 +2876,20 @@ function DataTableComponent<TData, TValue>(
     autoResetExpanded: false,
     debugTable: false,
   });
+
+  // Whether DataTableFooter will render a sticky totals row (same check it
+  // makes internally) — drives the scroll container's bottom padding.
+  const hasTotalsFooter = table
+    .getFooterGroups()
+    .some((footerGroup) =>
+      footerGroup.headers.some((header) =>
+        Boolean(
+          (header.column.columnDef.meta as { enableTotalsRow?: boolean })
+            ?.enableTotalsRow
+        )
+      )
+    );
+
 
   // Clamp pageIndex to a valid range whenever data length or pageSize changes
   useEffect(() => {
@@ -3818,7 +3837,13 @@ function DataTableComponent<TData, TValue>(
           <div
             ref={scrollContainerRef}
             className={clsx(
-              'overflow-auto w-full h-full custom-scrollbar pb-4',
+              'overflow-auto w-full h-full custom-scrollbar',
+              // Sticky elements pin to the scrollport's PADDING edge, so
+              // bottom padding here would float the sticky totals row 16px
+              // above the container bottom with clipped rows showing in the
+              // gap. Keep the breathing room only when there is no totals
+              // row.
+              hasTotalsFooter ? 'pb-0' : 'pb-4',
               canScrollLeft ? 'pl-6' : 'pl-0',
               canScrollRight ? 'pr-6' : 'pr-0'
             )}

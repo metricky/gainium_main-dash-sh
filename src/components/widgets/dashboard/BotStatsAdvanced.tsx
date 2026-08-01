@@ -16,9 +16,22 @@ import { useChartColors } from '../../../hooks/useChartColors';
 import { useComboBots } from '../../../hooks/useComboBots';
 import { useDcaBots } from '../../../hooks/useDcaBots';
 import { useWidgetSettings } from '../../../hooks/useWidgetSettings';
+import {
+  GraphQLClient,
+  getGraphQLConfig,
+  LONG_READ_TIMEOUT_MS,
+  type ReturnResult,
+} from '../../../lib/api';
 import { botQueries } from '../../../lib/api/GraphQLQueries-bot-queries';
 import { logger } from '../../../lib/loggerInstance';
-import { BotTypesEnum, type DCABot } from '../../../types';
+import { useAuthStore } from '../../../stores/authStore';
+import { useUIStore } from '../../../stores/uiStore';
+import {
+  BotTypesEnum,
+  type BotStats,
+  type ComboBot,
+  type DCABot,
+} from '../../../types';
 import { getBotTypeConfig } from '../../../utils/botUtils';
 import { useWidgetDisplayName } from '../../../utils/widgetUtils';
 import CustomTooltip from '../../charts/CustomTooltip';
@@ -32,6 +45,65 @@ import { getWidgetMetadata } from './index';
 // Extended filter item for bot type support
 interface BotFilterItem extends FilterItem {
   botType?: BotTypesEnum;
+}
+
+/**
+ * One selected bot's chart + stat aggregates, extracted from the full
+ * by-id bot payload. The bot LIST fragments deliberately strip `stats`
+ * (slim payloads), so the USD chart series and win/loss counters are only
+ * available via `getDCABot`/`getComboBot` — the same path the bot drawer
+ * uses.
+ */
+interface SelectedBotStats {
+  botId: string;
+  /**
+   * Sorted series in epoch ms. `profit` is `stats.chart.realizedProfit`
+   * minus the `startBalance` seed the backend bakes into that series (see
+   * DrawerPerformanceChart for the full story); `equity` is absolute USD.
+   */
+  series: Array<{ time: number; profit: number; equity: number }>;
+  winDeals: number;
+  lossDeals: number;
+  grossProfitUsd: number;
+  grossLossUsd: number;
+  maxDealDurationMs: number;
+}
+
+const normalizeTimeMs = (t: number): number => (t < 1e11 ? t * 1000 : t);
+
+function extractSelectedBotStats(
+  botId: string,
+  bot: (DCABot | ComboBot) | null
+): SelectedBotStats | null {
+  const stats = bot?.stats as BotStats | undefined;
+  if (!stats) return null;
+
+  const startBalanceUsd = stats.numerical?.general?.startBalance?.usd ?? 0;
+  const series = (Array.isArray(stats.chart) ? stats.chart : [])
+    .filter((p) => typeof p?.time !== 'undefined')
+    .map((p) => ({
+      time: normalizeTimeMs(
+        typeof p.time === 'number' ? p.time : new Date(p.time).getTime()
+      ),
+      profit:
+        (typeof p.realizedProfit === 'number' ? p.realizedProfit : 0) -
+        startBalanceUsd,
+      equity: typeof p.equity === 'number' ? p.equity : 0,
+    }))
+    .filter((p) => Number.isFinite(p.time))
+    // The backend builds stats.chart via filter/push churn, so points can
+    // arrive unsorted — sort or the area chart zigzags.
+    .sort((a, b) => a.time - b.time);
+
+  return {
+    botId,
+    series,
+    winDeals: stats.numerical?.deals?.profit ?? 0,
+    lossDeals: stats.numerical?.deals?.loss ?? 0,
+    grossProfitUsd: stats.numerical?.profit?.grossProfit?.usd ?? 0,
+    grossLossUsd: stats.numerical?.loss?.grossLoss?.usd ?? 0,
+    maxDealDurationMs: stats.duration?.general?.maxDealDuration ?? 0,
+  };
 }
 
 // Bot Selection Dialog Component - moved outside to prevent recreation on every render
@@ -56,7 +128,7 @@ const BotSelectionDialog: React.FC<{
       onClick={onClose}
     >
       <div
-        className="bg-card border border-border rounded-lg p-md w-80 max-h-96 overflow-hidden flex flex-col"
+        className="bg-card border border-border rounded-lg p-md w-full max-w-lg mx-4 max-h-[70vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -91,7 +163,7 @@ const BotSelectionDialog: React.FC<{
           {filteredItems.map((item) => (
             <div
               key={item.id}
-              className="flex items-center justify-between p-sm rounded hover:bg-muted/50 cursor-pointer"
+              className="flex items-center justify-between gap-sm p-sm rounded hover:bg-muted/50 cursor-pointer"
               onClick={() => {
                 logger.info('[BotSelectionDialog] Clicked on bot', {
                   id: item.id,
@@ -100,14 +172,14 @@ const BotSelectionDialog: React.FC<{
                 onItemToggle(item.id);
               }}
             >
-              <div className="flex items-center gap-sm">
+              <div className="flex items-center gap-sm flex-1 min-w-0">
                 <BotTypeChip
                   botType={item.botType || BotTypesEnum.dca}
                   iconOnly={true}
                   size="sm"
                 />
-                <div>
-                  <div className="text-foreground font-medium text-sm">
+                <div className="min-w-0">
+                  <div className="text-foreground font-medium text-sm truncate">
                     {item.name}
                   </div>
                   {item.subtitle && (
@@ -118,7 +190,7 @@ const BotSelectionDialog: React.FC<{
                 </div>
               </div>
               {selectedItems.includes(item.id) && (
-                <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center">
+                <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
                   <svg
                     className="w-3 h-3 text-primary-foreground"
                     fill="currentColor"
@@ -269,9 +341,9 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
     return bots;
   }, [allBots, dcaIdSet, comboIdSet]);
 
-  // State for storing fetched chart data
-  const [botChartData, setBotChartData] = useState<
-    Map<string, Array<{ value: number; time: number }>>
+  // Per-bot stats fetched by id (chart series + win/loss aggregates)
+  const [botStatsData, setBotStatsData] = useState<
+    Map<string, SelectedBotStats>
   >(new Map());
   const [isChartDataLoading, setIsChartDataLoading] = useState(false);
 
@@ -281,21 +353,24 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
 
   // Create a stable key for selected bots to prevent infinite re-renders
   const selectedBotsKey = useMemo(() => {
-    return selectedBots.sort().join(',');
+    return selectedBots.slice().sort().join(',');
   }, [selectedBots]);
 
-  // Fetch chart data when selected bots change
+  // Fetch full bot payloads (with `stats`) when selected bots change
   useEffect(() => {
     if (selectedBots.length === 0) {
-      setBotChartData(new Map());
+      setBotStatsData(new Map());
       setIsChartDataLoading(false);
       fetchingRef.current = false;
       lastFetchedKey.current = '';
       return;
     }
 
-    // Only fetch if we have bot data loaded
-    if (!allBots || allBots.length === 0) {
+    // Wait for the bot lists so each selection's type (DCA vs Combo) is
+    // known. `isLoading` is in the deps, so the effect re-runs when the
+    // lists land — with only the key as dependency a page load with a
+    // persisted selection never fetched at all.
+    if (isLoading) {
       return;
     }
 
@@ -306,246 +381,169 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
 
     fetchingRef.current = true;
     lastFetchedKey.current = selectedBotsKey;
-
-    // Build bot types lookup fresh each time
-    const botsToFetch = selectedBots.map((botId) => {
-      const bot = allBots.find((b) => b._id === botId);
-      let botType: BotTypesEnum = BotTypesEnum.dca;
-
-      if (bot) {
-        // First check if bot is in comboIdSet (from useComboBots hook)
-        if (comboIdSet.has(botId)) {
-          botType = BotTypesEnum.combo;
-        }
-        // Also check the bot's settings.type field
-        else if (bot.settings?.type) {
-          const settingsType = bot.settings.type.toLowerCase();
-          if (settingsType === 'combo') {
-            botType = BotTypesEnum.combo;
-          } else if (settingsType === 'dca' || settingsType === 'terminal') {
-            botType = BotTypesEnum.dca;
-          } else if (settingsType === 'grid') {
-            botType = BotTypesEnum.grid;
-          } else if (settingsType === 'hedgecombo') {
-            botType = BotTypesEnum.hedgeCombo;
-          } else if (settingsType === 'hedgedca') {
-            botType = BotTypesEnum.hedgeDca;
-          } else {
-            botType = BotTypesEnum.dca; // Default to DCA
-          }
-        }
-
-        logger.debug(
-          `[BotStatsAdvanced] Bot ${botId} type determined as: ${botType}`,
-          {
-            inComboIdSet: comboIdSet.has(botId),
-            settingsType: bot.settings?.type,
-            finalType: botType,
-          }
-        );
-      }
-
-      return { id: botId, type: botType };
-    });
-
-    logger.info('[BotStatsAdvanced] Fetching chart data for bots', {
-      botsToFetch,
-    });
     setIsChartDataLoading(true);
 
-    // Fetch all bot data in parallel
-    const fetchPromises = botsToFetch.map(async (bot) => {
-      try {
-        const { query, variables } = botQueries.getBotProfitChartData({
-          id: bot.id,
-          type: bot.type,
-        });
+    // Authenticated client — same construction as useGraphQL's queryFn.
+    // (The old implementation POSTed to the frontend origin's `/graphql`
+    // with cookie auth; that path doesn't exist, so the chart never got
+    // data.)
+    const { tokens } = useAuthStore.getState();
+    const { isLiveTrading } = useUIStore.getState();
+    const config = getGraphQLConfig(tokens, isLiveTrading);
+    const client = new GraphQLClient(
+      import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000',
+      config.token,
+      config.paperContext
+    );
 
-        logger.debug(
-          `[BotStatsAdvanced] Fetching chart data for bot ${bot.id}:`,
-          {
-            botId: bot.id,
-            botType: bot.type,
-            query: query.substring(0, 200), // Log first 200 chars of query
-            variables,
-          }
-        );
-
-        const response = await fetch('/graphql', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: JSON.stringify({
-            query,
-            variables,
-          }),
-        });
-
-        const result = await response.json();
-
-        logger.debug(`[BotStatsAdvanced] API response for bot ${bot.id}:`, {
-          status: response.status,
-          hasData: !!result.data,
-          hasGetBotProfitChartData: !!result.data?.getBotProfitChartData,
-          responseStatus: result.data?.getBotProfitChartData?.status,
-          dataLength: result.data?.getBotProfitChartData?.data?.length,
-          errors: result.errors,
-        });
-
-        const chartDataResponse = result.data?.getBotProfitChartData;
-
-        if (
-          chartDataResponse?.status === 'OK' &&
-          Array.isArray(chartDataResponse.data)
-        ) {
-          logger.info(
-            `[BotStatsAdvanced] Successfully fetched ${chartDataResponse.data.length} data points for bot ${bot.id}`
-          );
-          return { botId: bot.id, data: chartDataResponse.data };
-        }
-
-        logger.warn(`[BotStatsAdvanced] No chart data for bot ${bot.id}`, {
-          responseStatus: chartDataResponse?.status,
-          reason: chartDataResponse?.reason,
-          dataType: typeof chartDataResponse?.data,
-          isArray: Array.isArray(chartDataResponse?.data),
-        });
-        return { botId: bot.id, data: [] };
-      } catch (error) {
-        logger.error(
-          `[BotStatsAdvanced] Error fetching chart data for bot ${bot.id}:`,
-          error
-        );
-        return { botId: bot.id, data: [] };
-      }
+    const botsToFetch = selectedBots.map((botId) => {
+      const bot = allBots.find((b) => b._id === botId);
+      const settingsType = bot?.settings?.type?.toLowerCase();
+      const isCombo = comboIdSet.has(botId) || settingsType === 'combo';
+      return { id: botId, isCombo };
     });
 
-    Promise.all(fetchPromises)
-      .then((results) => {
-        const newData = new Map();
-        results.forEach((result) => {
-          newData.set(result.botId, result.data);
-        });
-        setBotChartData(newData);
-        setIsChartDataLoading(false);
-        fetchingRef.current = false;
+    logger.info('[BotStatsAdvanced] Fetching bot stats', { botsToFetch });
 
-        logger.info('[BotStatsAdvanced] Real chart data fetched:', {
-          selectedBots: botsToFetch,
-          results: results.map((r) => ({
-            botId: r.botId,
-            dataPoints: r.data.length,
-            sample: r.data[0],
-          })),
-        });
+    Promise.all(
+      botsToFetch.map(async ({ id, isCombo }) => {
+        try {
+          const builder = isCombo
+            ? botQueries.getComboBot
+            : botQueries.getDCABot;
+          const resultKey = isCombo ? 'getComboBot' : 'getDCABot';
+          const { query, variables } = builder({ id });
+          const result = await client.request<
+            Record<string, ReturnResult<DCABot | ComboBot>>
+          >(query, variables, { timeoutMs: LONG_READ_TIMEOUT_MS });
+          const resp = result?.[resultKey];
+          const fullBot =
+            resp?.status === 'OK'
+              ? ((resp.data ?? null) as (DCABot | ComboBot) | null)
+              : null;
+          if (!fullBot) {
+            logger.warn(`[BotStatsAdvanced] No bot payload for ${id}`, {
+              status: resp?.status,
+              reason: resp?.reason,
+            });
+          }
+          return extractSelectedBotStats(id, fullBot);
+        } catch (error) {
+          logger.error(
+            `[BotStatsAdvanced] Error fetching stats for bot ${id}:`,
+            error
+          );
+          return null;
+        }
       })
-      .catch((error) => {
-        logger.error('[BotStatsAdvanced] Error fetching chart data:', error);
-        setIsChartDataLoading(false);
-        fetchingRef.current = false;
+    ).then((results) => {
+      const next = new Map<string, SelectedBotStats>();
+      results.forEach((r) => {
+        if (r) next.set(r.botId, r);
       });
-    // Only depend on the stable key that changes when bot IDs actually change
-    // We read allBots and comboIdSet but don't list them as dependencies to avoid infinite loops
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBotsKey]);
+      setBotStatsData(next);
+      setIsChartDataLoading(false);
+      fetchingRef.current = false;
 
-  // Generate aggregated chart data for Equity using REAL data from getBotProfitChartData
-  const equitySeries = useMemo(() => {
-    // Skip if no bots selected or still loading
+      logger.info('[BotStatsAdvanced] Bot stats fetched', {
+        bots: [...next.values()].map((r) => ({
+          botId: r.botId,
+          points: r.series.length,
+        })),
+      });
+    });
+    // We read allBots and comboIdSet but don't list them as dependencies to avoid refetch churn
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBotsKey, isLoading]);
+
+  // Merge per-bot series onto the union of their timestamps, forward-filling
+  // each bot's last value so bots with different deal times still sum
+  // correctly. A bot contributes 0 profit (and 0 equity) before its first
+  // point. Summing only exact-matching timestamps — what the previous
+  // implementation did — drops every bot but one from nearly every point.
+  const aggregatedSeries = useMemo(() => {
     if (selectedBots.length === 0 || isChartDataLoading) {
       return [];
     }
 
-    // Collect all chart points from REAL API data stored in botChartData state
-    const allChartPoints: Array<{ time: number; value: number }> = [];
+    const seriesList = selectedBots
+      .map((id) => botStatsData.get(id)?.series ?? [])
+      .filter((s) => s.length > 0);
+    if (seriesList.length === 0) return [];
 
-    botChartData.forEach((data) => {
-      if (data && data.length > 0) {
-        data.forEach((point) => {
-          if (point?.time && typeof point.value === 'number') {
-            allChartPoints.push({
-              time: point.time,
-              value: point.value,
-            });
-          }
-        });
-      }
+    const allTimes = Array.from(
+      new Set(seriesList.flat().map((p) => p.time))
+    ).sort((a, b) => a - b);
+    const cursor = seriesList.map(() => 0);
+    const lastValue = seriesList.map(() => ({ profit: 0, equity: 0 }));
+
+    return allTimes.map((time) => {
+      let profit = 0;
+      let equity = 0;
+      seriesList.forEach((s, i) => {
+        while (cursor[i] < s.length && s[cursor[i]].time <= time) {
+          lastValue[i] = s[cursor[i]];
+          cursor[i]++;
+        }
+        profit += lastValue[i].profit;
+        equity += lastValue[i].equity;
+      });
+      return { time, profit, equity };
     });
+  }, [selectedBots, botStatsData, isChartDataLoading]);
 
-    // If no real chart data is available, return empty array
-    if (allChartPoints.length === 0) {
-      return [];
-    }
+  // Apply the time filter, downsample, and shape points for the chart
+  const chartSeries = useMemo(() => {
+    if (aggregatedSeries.length === 0) return [];
 
-    // Group by timestamp and sum values for multiple bots
-    const valueByTime = new Map<number, number>();
-
-    allChartPoints.forEach((point) => {
-      const existingValue = valueByTime.get(point.time) || 0;
-      valueByTime.set(point.time, existingValue + point.value);
-    });
-
-    // Convert to array and sort by time
-    const sortedPoints = Array.from(valueByTime.entries())
-      .map(([time, totalValue]) => ({
-        time,
-        value: totalValue,
-      }))
-      .sort((a, b) => a.time - b.time);
-
-    // Apply time filter if needed
+    const dayMs = 24 * 60 * 60 * 1000;
     const timeFilterMap: Record<string, number> = {
-      '7D': 7 * 24 * 60 * 60, // 7 days in seconds
-      '30D': 30 * 24 * 60 * 60, // 30 days in seconds
-      '90D': 90 * 24 * 60 * 60, // 90 days in seconds
-      '1Y': 365 * 24 * 60 * 60, // 1 year in seconds
-      All: Number.MAX_SAFE_INTEGER, // No filter
+      '7D': 7 * dayMs,
+      '30D': 30 * dayMs,
+      '90D': 90 * dayMs,
+      '1Y': 365 * dayMs,
+      All: Number.MAX_SAFE_INTEGER,
     };
+    const filterMs = timeFilterMap[timeFilter] || timeFilterMap['30D'];
+    const cutoff = Date.now() - filterMs;
+    const inWindow = aggregatedSeries.filter((p) => p.time >= cutoff);
 
-    const filterSeconds = timeFilterMap[timeFilter] || timeFilterMap['30D'];
-    const cutoffTime = Date.now() / 1000 - filterSeconds; // Convert to seconds
+    // Long-lived bots can accumulate thousands of points; thin evenly but
+    // always keep the last point (the current value).
+    const MAX_POINTS = 500;
+    const step = Math.ceil(inWindow.length / MAX_POINTS);
+    const sampled =
+      step > 1
+        ? inWindow.filter(
+            (_, i) => i % step === 0 || i === inWindow.length - 1
+          )
+        : inWindow;
 
-    const filteredPoints = sortedPoints.filter((point) => {
-      // Handle both seconds and milliseconds timestamps
-      const pointTimeInSeconds =
-        point.time < 10000000000 ? point.time : point.time / 1000;
-      return pointTimeInSeconds >= cutoffTime;
-    });
-
-    // Convert to the format expected by the chart
-    const chartPoints = filteredPoints.map((point) => ({
-      date: new Date(
-        point.time < 10000000000 ? point.time * 1000 : point.time
-      ).toISOString(),
-      value: point.value,
-      label: new Date(
-        point.time < 10000000000 ? point.time * 1000 : point.time
-      ).toLocaleDateString('en-US', {
+    return sampled.map((point) => ({
+      date: new Date(point.time).toISOString(),
+      profit: point.profit,
+      equity: point.equity,
+      label: new Date(point.time).toLocaleDateString('en-US', {
         month: 'short',
         day: 'numeric',
       }),
-      fullDate: new Date(
-        point.time < 10000000000 ? point.time * 1000 : point.time
-      ).toLocaleDateString('en-US', {
+      fullDate: new Date(point.time).toLocaleDateString('en-US', {
         weekday: 'short',
         month: 'long',
         day: 'numeric',
         year: 'numeric',
       }),
     }));
+  }, [aggregatedSeries, timeFilter]);
 
-    return chartPoints;
-  }, [selectedBots, botChartData, isChartDataLoading, timeFilter]);
-
-  // Generate aggregated chart data for Accumulated Profit - SAME as equity for now
-  // The API returns profit data, so we use it directly
-  const profitSeries = useMemo(() => {
-    // For now, profit series is the same as equity series since the API returns profit data
-    // In the future, we might want to calculate cumulative profit differently
-    return equitySeries;
-  }, [equitySeries]);
+  const profitSeries = useMemo(
+    () => chartSeries.map((p) => ({ ...p, value: p.profit })),
+    [chartSeries]
+  );
+  const equitySeries = useMemo(
+    () => chartSeries.map((p) => ({ ...p, value: p.equity })),
+    [chartSeries]
+  );
 
   // Helper: compute allocated capital per bot from available fields
   const getAllocatedCapital = (bot: DCABot): number => {
@@ -632,6 +630,26 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
       maxDrawdownPercent = maxDd * 100;
     }
 
+    // Win rate / profit factor / max deal duration from the per-bot stats
+    // blocks fetched by id
+    let winDeals = 0;
+    let lossDeals = 0;
+    let grossProfitUsd = 0;
+    let grossLossUsd = 0;
+    let maxDealDurationMs = 0;
+    selectedBots.forEach((id) => {
+      const s = botStatsData.get(id);
+      if (!s) return;
+      winDeals += s.winDeals;
+      lossDeals += s.lossDeals;
+      grossProfitUsd += s.grossProfitUsd;
+      grossLossUsd += Math.abs(s.grossLossUsd);
+      if (s.maxDealDurationMs > maxDealDurationMs) {
+        maxDealDurationMs = s.maxDealDurationMs;
+      }
+    });
+    const closedDeals = winDeals + lossDeals;
+
     return {
       totalTrades,
       netResultPercent,
@@ -639,12 +657,15 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
       realizedProfitUsd: totalRealizedProfit,
       allocatedCapitalUsd: totalAllocatedCapital,
       maxEquityDrawdownPercent: maxDrawdownPercent,
-      // Not available from API without per-deal data
-      winRatePercent: null as number | null,
-      profitFactor: null as number | null,
-      maxDealDurationMinutes: null as number | null,
+      winRatePercent:
+        closedDeals > 0 ? (winDeals / closedDeals) * 100 : null,
+      profitFactor: grossLossUsd > 0 ? grossProfitUsd / grossLossUsd : null,
+      maxDealDurationMinutes:
+        maxDealDurationMs > 0
+          ? Math.round(maxDealDurationMs / (60 * 1000))
+          : null,
     };
-  }, [allBots, selectedBots, equitySeries]);
+  }, [allBots, selectedBots, botStatsData, equitySeries]);
 
   // Format duration from minutes to readable format
   const formatDuration = (minutes: number) => {
@@ -670,6 +691,12 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
         ? `${(-Math.abs(performanceStats.maxEquityDrawdownPercent)).toFixed(2)}%`
         : '—';
 
+    // Profit/loss coloring by sign; zero / unavailable stays neutral
+    const toneBySign = (
+      v: number | null
+    ): 'success' | 'destructive' | 'neutral' =>
+      v == null || v === 0 ? 'neutral' : v > 0 ? 'success' : 'destructive';
+
     return [
       {
         label: 'Total Trades',
@@ -681,12 +708,14 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
         label: 'Net Result',
         value: 0,
         textValue: nr,
+        tone: toneBySign(performanceStats.netResultPercent),
         showSign: false,
       },
       {
         label: 'Avg Daily Return',
         value: 0,
         textValue: adr,
+        tone: toneBySign(performanceStats.avgDailyReturnPercent),
         showSign: false,
       },
       {
@@ -698,6 +727,11 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
         label: 'Max Equity Drawdown',
         value: 0,
         textValue: mdd,
+        tone:
+          performanceStats.maxEquityDrawdownPercent != null &&
+          performanceStats.maxEquityDrawdownPercent !== 0
+            ? ('destructive' as const)
+            : ('neutral' as const),
         showSign: false,
       },
       {
@@ -712,7 +746,6 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
           performanceStats.maxDealDurationMinutes != null
             ? formatDuration(performanceStats.maxDealDurationMinutes)
             : '—',
-        icon: '⏱️',
         showSign: false,
       },
       {
@@ -722,7 +755,6 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
           performanceStats.winRatePercent != null
             ? `${performanceStats.winRatePercent.toFixed(1)}%`
             : '—',
-        icon: '🎯',
         showSign: false,
       },
       {
@@ -732,7 +764,6 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
           performanceStats.profitFactor != null
             ? performanceStats.profitFactor.toFixed(2)
             : '—',
-        icon: '📊',
         showSign: false,
       },
     ];
@@ -862,9 +893,14 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
             {/* Stats Section - always shown when bots are selected */}
             <WidgetStats stats={createStatsData()} className="mb-6" />
 
-            {/* Chart with Tabs (shown only if data exists) */}
-            <div className="flex-1 mb-6 min-h-[200px]">
-              <div className="flex items-center justify-between mb-3">
+            {/* Chart with Tabs (shown only if data exists).
+                Lay the header and the chart out as a flex column: the chart box
+                used to be `h-full` (= 100% of this section) while starting
+                BELOW the header, so it overflowed the section by the header's
+                height and the x-axis date labels landed on top of the
+                time-filter buttons underneath. */}
+            <div className="flex-1 mb-6 min-h-[200px] flex flex-col">
+              <div className="flex items-center justify-between mb-3 shrink-0">
                 <h4 className="text-muted-foreground text-sm font-medium">
                   {chartTab === 'profit' ? 'Accumulated Profit' : 'Equity'} (
                   {selectedBots.length} Selected)
@@ -881,7 +917,7 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
                   </TabsList>
                 </Tabs>
               </div>
-              <div className="w-full h-full">
+              <div className="w-full flex-1 min-h-0">
                 {activeSeries.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart
@@ -900,8 +936,8 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
                             offset="5%"
                             stopColor={
                               chartTab === 'profit'
-                                ? colors.info
-                                : colors.success
+                                ? colors.success
+                                : colors.info
                             }
                             stopOpacity={0.3}
                           />
@@ -909,8 +945,8 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
                             offset="95%"
                             stopColor={
                               chartTab === 'profit'
-                                ? colors.info
-                                : colors.success
+                                ? colors.success
+                                : colors.info
                             }
                             stopOpacity={0}
                           />
@@ -945,7 +981,9 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
                           className: 'text-muted-foreground',
                         }}
                         tickFormatter={(value) =>
-                          `$${(value / 1000).toFixed(1)}k`
+                          Math.abs(value) >= 1000
+                            ? `$${(value / 1000).toFixed(1)}k`
+                            : `$${value.toFixed(Math.abs(value) < 10 ? 2 : 0)}`
                         }
                         width={50}
                       />
@@ -955,7 +993,7 @@ export const BotStatsAdvanced: React.FC<BotStatsAdvancedProps> = ({
                         type="monotone"
                         dataKey="value"
                         stroke={
-                          chartTab === 'profit' ? colors.info : colors.success
+                          chartTab === 'profit' ? colors.success : colors.info
                         }
                         strokeWidth={2}
                         fill="url(#equityGradient)"
