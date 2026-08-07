@@ -44,6 +44,13 @@ import type {
   IndicatorParamPrimitive,
   IndicatorParamsState,
 } from '@/types/indicators/indicatorParams';
+import { sanitizeIndicatorParams } from '@/utils/indicators/indicatorConfigUtils';
+import {
+  resolveFieldKey,
+  resolveFieldLabel,
+  shouldDisableField,
+  shouldHideField,
+} from '@/utils/indicators/indicatorFieldGating';
 
 interface IndicatorConfigurationModalProps {
   open: boolean;
@@ -92,68 +99,6 @@ const normalizeParams = (
   return normalized as IndicatorParamsState;
 };
 
-// Legacy STOCH bands bind a DIFFERENT param key depending on another field
-// (stochRange). Resolve the effective storage key + default from `keyWhen`.
-// First match wins; falls back to the static `key` / `defaultValue`.
-const resolveFieldKey = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): {
-  key: IndicatorFieldDefinition['key'];
-  defaultValue: IndicatorFieldDefinition['defaultValue'];
-} => {
-  if (field.keyWhen && params) {
-    const match = field.keyWhen.find(
-      (entry) => params[entry.field] === entry.equals
-    );
-    if (match) {
-      return { key: match.key, defaultValue: match.defaultValue };
-    }
-  }
-  return { key: field.key, defaultValue: field.defaultValue };
-};
-
-const shouldHideField = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): boolean => {
-  if (!params) {
-    return false;
-  }
-  if (!field.hiddenWhen) {
-    return false;
-  }
-  // Legacy gated on truthiness, so an UNSET gating field is treated as falsy.
-  // That only matches an `equals: false` directive (legacy `parent && (child)`
-  // hides the child when the parent is falsy/undefined). For `equals: true` or
-  // a concrete enum value, an undefined param must NOT match — legacy
-  // `!parent && (field)` / `param === value` keeps the field visible when the
-  // gate is unset. Mirrors InlineIndicatorConfig.
-  return field.hiddenWhen.some(({ field: key, equals }) =>
-    equals === false
-      ? typeof params[key] === 'undefined' || params[key] === false
-      : params[key] === equals
-  );
-};
-
-const shouldDisableField = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): boolean => {
-  if (field.disabled) {
-    return true;
-  }
-  if (!params) {
-    return false;
-  }
-  if (!field.disabledWhen) {
-    return false;
-  }
-  return field.disabledWhen.some(
-    ({ field: key, equals }) => params[key] === equals
-  );
-};
-
 const getFieldLabel = (
   definition: IndicatorDefinition,
   key: string
@@ -196,7 +141,19 @@ export const IndicatorConfigurationModal: React.FC<
       action,
       section
     );
-    setParamsState({ ...defaults, ...(initialParams ?? {}) });
+    // Drop nullish entries before they land on top of the defaults. A bot
+    // loaded from the API sends an explicit `null` for every field the GraphQL
+    // selection asks for that its document never stored, and a plain spread
+    // lets that `null` overwrite a perfectly good default — so reopening a
+    // saved indicator re-blanks exactly the fields the defaults are here to
+    // fill, and `hiddenWhen` can no longer match (MAR's "Comparison MA length"
+    // stayed on screen while Reference read its default "Current price").
+    // `sanitizeIndicatorParams` is the existing helper for "keep only params
+    // that carry a real value" — the same one the save path uses.
+    setParamsState({
+      ...defaults,
+      ...(initialParams ? sanitizeIndicatorParams(initialParams) : {}),
+    });
     setErrors([]);
   }, [definition, initialParams, open, action, section]);
 
@@ -271,7 +228,7 @@ export const IndicatorConfigurationModal: React.FC<
       <div className="flex items-start justify-between gap-sm">
         <div className="flex items-center gap-1">
           <Label htmlFor={field.key} className="text-sm font-medium">
-            {field.label}
+            {resolveFieldLabel(definition, field, paramsState)}
           </Label>
           {field.tooltip ? (
             <Tooltip
@@ -375,7 +332,7 @@ export const IndicatorConfigurationModal: React.FC<
             <div>
               <div className="flex items-center gap-1">
                 <Label htmlFor={field.key} className="text-sm font-medium">
-                  {field.label}
+                  {resolveFieldLabel(definition, field, paramsState)}
                 </Label>
                 {field.tooltip ? (
                   <Tooltip
@@ -551,7 +508,7 @@ export const IndicatorConfigurationModal: React.FC<
               </ScrollArea>
 
               <DialogFooter className="gap-sm border-t border-border/60 px-6 pt-4 pb-6">
-                <div className="flex w-full flex-col-reverse gap-sm sm:flex-row sm:justify-end sm:gap-xs">
+                <div className="flex w-full flex-col-reverse gap-sm sm:flex-row sm:justify-end">
                   <Button
                     type="button"
                     variant="outline"

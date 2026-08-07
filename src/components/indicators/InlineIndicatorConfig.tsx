@@ -24,6 +24,13 @@ import type {
 } from '@/types/indicators/indicatorParams';
 import { filterIntervalOptionsByExchange } from '@/types/indicators/indicatorLogic';
 import {
+  resolveFieldKey,
+  resolveFieldLabel,
+  shouldDisableField,
+  shouldHideField,
+  withFieldDefaults,
+} from '@/utils/indicators/indicatorFieldGating';
+import {
   timeIntervalMap,
   type ExchangeEnum,
   type ExchangeIntervals,
@@ -65,97 +72,6 @@ const inferNumericVarType = (
   return 'int';
 };
 
-// Legacy STOCH bands bind a DIFFERENT param key depending on another field
-// (stochRange). Resolve the effective storage key + default from `keyWhen`.
-// First match wins; falls back to the static `key` / `defaultValue`.
-const resolveFieldKey = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): {
-  key: IndicatorFieldDefinition['key'];
-  defaultValue: IndicatorFieldDefinition['defaultValue'];
-} => {
-  if (field.keyWhen && params) {
-    const match = field.keyWhen.find(
-      (entry) => params[entry.field] === entry.equals
-    );
-    if (match) {
-      return { key: match.key, defaultValue: match.defaultValue };
-    }
-  }
-  return { key: field.key, defaultValue: field.defaultValue };
-};
-
-// `hiddenWhen`/`disabledWhen` gate on values the user may never have touched.
-// An unset param still RENDERS as its `defaultValue` (see `renderField`), so
-// gating on the raw params object keeps a field visible even though the UI
-// already shows the value that should hide it — e.g. MAR's "Comparison MA
-// length" stayed visible while Reference showed its default "Current price".
-// The modal dodges this by seeding defaults into its own state
-// (IndicatorConfigurationModal.tsx:199); the inline editor is handed the stored
-// params verbatim, so fill the gaps here before gating.
-const withFieldDefaults = (
-  definition: IndicatorDefinition,
-  params: IndicatorParamsState | null
-): IndicatorParamsState | null => {
-  if (!params) {
-    return null;
-  }
-  const filled = { ...params } as Record<string, IndicatorParamPrimitive>;
-  for (const field of [
-    ...definition.fields,
-    ...(definition.advancedFields ?? []),
-  ]) {
-    const { key, defaultValue } = resolveFieldKey(field, params);
-    if (filled[key as string] === undefined && defaultValue !== undefined) {
-      filled[key as string] = defaultValue as IndicatorParamPrimitive;
-    }
-  }
-  return filled as IndicatorParamsState;
-};
-
-const shouldHideField = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): boolean => {
-  if (!params) {
-    return false;
-  }
-  if (!field.hiddenWhen) {
-    return false;
-  }
-  // Legacy gated on truthiness, so an UNSET gating field is treated as falsy.
-  // That only matches an `equals: false` directive (legacy `parent && (child)`
-  // hides the child when the parent is falsy/undefined). For `equals: true` or
-  // a concrete enum value, an undefined param must NOT match — legacy
-  // `!parent && (field)` / `param === value` keeps the field visible when the
-  // gate is unset. Mirrors IndicatorConfigurationModal.
-  return field.hiddenWhen.some(({ field: key, equals }) =>
-    equals === false
-      ? typeof params[key] === 'undefined' || params[key] === false
-      : params[key] === equals
-  );
-};
-
-// Mirror of the modal's shouldDisableField: a static `disabled` flag always
-// disables (legacy ADR interval), otherwise match a `disabledWhen` directive.
-const shouldDisableField = (
-  field: IndicatorFieldDefinition,
-  params: IndicatorParamsState | null
-): boolean => {
-  if (field.disabled) {
-    return true;
-  }
-  if (!params) {
-    return false;
-  }
-  if (!field.disabledWhen) {
-    return false;
-  }
-  return field.disabledWhen.some(
-    ({ field: key, equals }) => params[key] === equals
-  );
-};
 
 export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
   definition,
@@ -208,6 +124,10 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
       params
     );
     const value = params[storageKey] ?? effectiveDefault;
+    // Named after another field's selection when `labelFrom` says so (MAR's
+    // "EMA Length"); resolved off `effectiveParams` so it reads the same
+    // default the driving control displays.
+    const label = resolveFieldLabel(definition, field, effectiveParams);
 
     if (shouldHideField(field, effectiveParams)) {
       return null;
@@ -268,7 +188,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
         return (
           <div key={field.key} className="space-y-xs">
             <div className="flex items-center gap-1">
-              <Label htmlFor={field.key}>{field.label}</Label>
+              <Label htmlFor={field.key}>{label}</Label>
               {field.tooltip ? (
                 <Tooltip tooltip={field.tooltip} tooltipURL={field.tooltipURL} side="top">
                   <InfoIcon />
@@ -307,7 +227,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
           return (
             <div key={field.key} className="space-y-xs">
               <div className="flex items-center gap-1">
-                <Label htmlFor={field.key}>{field.label}</Label>
+                <Label htmlFor={field.key}>{label}</Label>
                 {field.tooltip ? (
                   <Tooltip tooltip={field.tooltip} tooltipURL={field.tooltipURL} side="top">
                     <InfoIcon />
@@ -352,7 +272,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
         return (
           <div key={field.key} className="space-y-xs">
             <div className="flex items-center gap-1">
-              <Label htmlFor={field.key}>{field.label}</Label>
+              <Label htmlFor={field.key}>{label}</Label>
               {field.tooltip ? (
                 <Tooltip tooltip={field.tooltip} tooltipURL={field.tooltipURL} side="top">
                   <InfoIcon />
@@ -366,7 +286,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
             >
               <SelectTrigger>
                 <SelectValue
-                  placeholder={`Select ${field.label.toLowerCase()}`}
+                  placeholder={`Select ${label.toLowerCase()}`}
                 />
               </SelectTrigger>
               <SelectContent>
@@ -399,7 +319,7 @@ export const InlineIndicatorConfig: React.FC<InlineIndicatorConfigProps> = ({
                 disabled={disabled}
                 onCheckedChange={(checked) => updateParam(field.key, checked)}
               />
-              <Label htmlFor={field.key}>{field.label}</Label>
+              <Label htmlFor={field.key}>{label}</Label>
               {field.tooltip ? (
                 <Tooltip tooltip={field.tooltip} tooltipURL={field.tooltipURL} side="top">
                   <InfoIcon />

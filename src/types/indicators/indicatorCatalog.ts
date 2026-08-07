@@ -555,6 +555,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'maCrossingLength',
+        // Legacy: `${maCrossName[maCrossingValue]} length`.
+        labelFrom: { field: 'maCrossingValue', suffix: 'length' },
         label: 'Comparison length',
         defaultValue: 20,
         min: 1,
@@ -565,6 +567,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeIntervalField({
         key: 'maCrossingInterval',
+        // Legacy: `${maCrossName[maCrossingValue]} interval`.
+        labelFrom: { field: 'maCrossingValue', suffix: 'interval' },
         label: 'Comparison interval',
         defaultValue: ExchangeIntervals.oneH,
         options: INTERVAL_OPTIONS,
@@ -1679,6 +1683,10 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'mar2length',
+        // Legacy: `${(mar2type ?? '').toUpperCase()} Length`. Only ever shown
+        // while mar2type is an MA — the `hiddenWhen` below removes it for
+        // "Current price", which has no length.
+        labelFrom: { field: 'mar2type', suffix: 'Length' },
         label: 'Comparison MA length',
         defaultValue: 20,
         min: 1,
@@ -1695,8 +1703,18 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'mar1length',
+        // Legacy: `${(mar1type ?? '').toUpperCase()} Length`.
+        labelFrom: { field: 'mar1type', suffix: 'Length' },
         label: 'Base MA length',
-        defaultValue: 10,
+        // 20, not 10 — the rest of the platform agrees on 20 and only this
+        // entry disagreed (an "indicator config parity" pass, b448534, moved
+        // it 20 -> 10 in passing): legacy's `indicatorConfigDefaults[mar]`,
+        // the public API's `botDefaults`, and the live engine's own fallback
+        // `+(_mar1length ?? 20)` in `dcaHelper`. While the value was only
+        // DRAWN that mismatch was a lie on screen; now that an untouched
+        // field is persisted, saving a MAR that never stored `mar1length`
+        // would have re-tuned the bot from a 20-period base MA to a 10.
+        defaultValue: 20,
         min: 1,
         max: 500,
         step: 1,
@@ -1716,8 +1734,15 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'indicatorValue',
         label: 'Value',
-        defaultValue: 80,
-        step: 1,
+        // MAR is a RATIO (MA2 / MA1), so it lives around 1.0 — the study's own
+        // band lines sit at 1.01 and 0.99 (utils/tradingView/customIndicators.js),
+        // and legacy defaults this to "0.99" (`indicatorConfigDefaults[mar]`).
+        // 80 with step 1 is an oscillator's threshold: no ratio ever crosses it,
+        // so the condition never fires. The sub-1 step also makes the field bind
+        // float variables instead of int (`inferNumericVarType`), which a ratio
+        // needs.
+        defaultValue: 0.99,
+        step: 0.01,
         allowVariables: true,
         hiddenWhen: [{ field: 'percentile', equals: true }],
       }),

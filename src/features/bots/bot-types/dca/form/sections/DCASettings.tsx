@@ -95,6 +95,7 @@ import {
     deriveSmartOrdersRange,
 } from '@/utils/bots/dca/smart-orders';
 import { sanitizeIndicatorParams } from '@/utils/indicators/indicatorConfigUtils';
+import { withFieldDefaults } from '@/utils/indicators/indicatorFieldGating';
 import {
     AlertTriangle,
     Crosshair,
@@ -1737,7 +1738,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
               </TabsList>
             }
           >
-            <div className="mt-sm grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
               <div className="rounded-md overflow-hidden min-h-80 sm:min-h-[420px]">
                 {!isComboBot && (
                   <TabsContent value="graph">
@@ -1758,7 +1759,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                 </TabsContent>
               </div>
 
-              <div className="pt-sm md:pt-0">
+              <div className="md:pt-0">
                 <StatsBoxes
                   boxes={[
                     {
@@ -2021,13 +2022,33 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
     type: IndicatorEnum
   ) => {
     const updatedIndicators: SettingsIndicators[] = (indicators || []).map(
-      (ind) =>
-        ind.uuid === indicator.uuid
-          ? {
-              ...ind,
-              type,
-            }
-          : ind
+      (ind) => {
+        if (ind.uuid !== indicator.uuid) {
+          return ind;
+        }
+        // Swapping only `type` left the new type's own fields absent: a DCA
+        // ladder row is born as RSI (see the `getIndicatorDefaultParams`
+        // fallback above), so switching it to MAR kept RSI's parameters and
+        // added none of MAR's — `mar1type`/`mar2type`/`mar2length` stayed
+        // unset. Unlike every other section, this path never goes through
+        // `buildIndicatorConfig`, so nothing seeded them.
+        //
+        // That is not only cosmetic: `indicatorLoader` sizes MAR's warm-up
+        // with `Math.max(mar1length, mar2length)` — NaN when the second is
+        // missing — and `MAR`'s constructor calls `ma2Type.toLowerCase()` on
+        // the raw argument, a TypeError rather than a fallback.
+        //
+        // `withFieldDefaults` is the helper the inline editor and the summary
+        // card already use to answer "what value does this field effectively
+        // have"; running it here persists that same answer, so what is saved
+        // matches what was on screen. It only FILLS gaps (`== null`), so every
+        // value already set on the row — interval, order size, the DCA step —
+        // survives untouched.
+        return (withFieldDefaults(getIndicatorDefinition(type), {
+          ...ind,
+          type,
+        } as IndicatorParamsState) ?? { ...ind, type }) as SettingsIndicators;
+      }
     );
     updateFormData('indicators', updatedIndicators);
   };
@@ -2194,7 +2215,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
             </TabsList>
           }
         >
-          <div className="mt-sm grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
             <div className="rounded-md overflow-hidden min-h-80 sm:min-h-[420px]">
               {!isComboBot && (
                 <TabsContent value="graph">
@@ -2217,7 +2238,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
               </TabsContent>
             </div>
 
-            <div className="pt-sm md:pt-0">
+            <div className="md:pt-0">
               <StatsBoxes
                 boxes={[
                   {
@@ -3337,7 +3358,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
             </TabsList>
           }
         >
-          <div className="mt-sm grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
+          <div className="grid grid-cols-1 md:grid-cols-[1fr,260px] gap-md items-start">
             <div className="rounded-md overflow-hidden min-h-80 sm:min-h-[420px]">
               {!isComboBot && (
                 <TabsContent value="graph">
@@ -3358,7 +3379,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
               </TabsContent>
             </div>
 
-            <div className="pt-sm md:pt-0">
+            <div className="md:pt-0">
               <StatsBoxes
                 boxes={[
                   {

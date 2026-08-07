@@ -1,9 +1,219 @@
 # Changelog
 
+## [2.42.33] - 2026-08-07
+
+### Fixed
+
+- Responsive spacing now actually applies. Layouts that were meant to breathe more on wider screens — and directional margins and padding throughout the app — were written against spacing classes the stylesheet never generated, so they quietly did nothing. The spacing scale now covers every direction and every breakpoint.
+- Light and dark styling now follows the theme you pick in the app rather than your operating system's appearance setting. If your device was set to dark while the app was set to light (or the reverse), some text and highlight colours were taken from the wrong theme.
+
+### Changed
+
+- Spacing tokens (`xs`/`sm`/`md`/`lg`/`xl`) keep tracking the Comfortable/Compact setting, and now do so across every spacing utility rather than a partial subset.
+
+## [2.42.32] - 2026-08-07
+
+### Fixed
+
+- An expired session now returns you to the login screen instead of leaving the app open on a page where every panel reads "Error Loading …". Sign-in was only ever checked once, when the tab was first opened, so a session that ran out — or one the app couldn't confirm because the connection dropped at that moment — stayed on screen until you reloaded by hand.
+
+## [2.42.31] - 2026-08-07
+
+### Fixed
+
+- Filters now work the same way in card view as in table view on every bot list. The Filters button was missing on the Hedge DCA and Hedge Combo pages, did nothing on the Grid and Combo pages, and was hidden entirely in card view on All Trades — all four now open the same "Add filter" bar, where you can stack conditions and save filter sets.
+- The filter bar now sits on the same surface as the cards and rows it filters, instead of a full-width strip with a hard bottom edge.
+- Column filters in table view no longer spill out of their column. The operator, the selected values and the clear button stay on one line and shrink to fit, so a narrow column shows a shortened value instead of a broken cell.
+
+### Fixed
+
+- A disabled Save button on the bot form now explains why it is disabled instead of giving no reason.
+
+## [2.42.28] - 2026-08-06
+
+### Fixed
+
+- The Trading Bots page no longer blanks to a bare error when a refresh fails — your bots stay on screen, and when there is genuinely nothing to show it explains why and offers a retry.
+
+## [2.42.27] - 2026-08-06
+
+### Added
+
+- Read whether a maintenance window blocks the dashboard or is only advisory.
+
+## [2.42.26] - 2026-08-06
+
+### Added
+
+- Ask the backend which bot types are restarting, alongside the maintenance check that already runs (cloud only).
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.42.25] - 2026-08-06
+
+### Fixed
+
+- Trading terminal: the "Avg Price" column and the deal card's "Avg Buy/Sell Price" now show the deal's real running average instead of staying frozen at the initial entry price. Adding funds to an existing trade updates the value straight away, and it no longer disagrees with the average shown for the same deal on the bot deals tables.
+
+## [2.42.24] - 2026-08-05
+
+### Fixed
+
+- Hyperliquid: connecting with "Free (approve builder fees)" no longer fails with an unexplained error. The builder-address lookup used a malformed URL, so the wallet was never asked to approve the builder fee and the connection was then refused for an approval the user was never prompted for. If the lookup does fail, setup now stops and says so instead of reporting success.
+
+## [2.42.23] - 2026-08-05
+
+### Added
+
+- Self-hosted admin: generate this installation's encryption key from the Admin page when one is not set yet. The key is shown once for the operator to save and written to the host `.env`; the page says what to run for the stack to pick it up. The card disappears once a key is configured.
+
+## [2.42.22] - 2026-08-04
+
+### Added
+
+- Self-hosted: a dismissible notice recommending the operator set an encryption key of their own, shown only while the installation is still using the one that ships with the build
+
+## [2.42.21] - 2026-08-04
+
+### Added
+
+- Bot builder: unsaved settings are kept locally and restored if you navigate away or reload, with a notice offering to start fresh
+- Bot builder: warn before leaving the page with unsaved changes
+
+### Fixed
+
+- Bot builder: upsell and help links no longer reload the whole app, which used to discard a half-configured bot
+
+## [2.42.20] - 2026-08-04
+
+### Fixed
+
+- Hedge and combo bots no longer reset "Minimum deviation" to 0. The bot's
+  stored value was never loaded, so the field always opened at 0 and — on
+  hedge bots, which save only the fields that changed — the number typed in
+  was silently dropped from the update, leaving it permanently at 0. Affects
+  Scaled DCA setups where the deviation matters most (e.g. ATR).
+
+## [2.42.19] - 2026-08-02
+
+### Fixed
+
+- Binance US bots no longer show a Value of $0.00. The dashboard never
+  requested Binance US prices, so those bots had no market data to value their
+  position against — the Value field showed the correct number for a moment
+  after a page refresh and then dropped to $0.00 once the other exchanges'
+  prices arrived, leaving the field stuck in its dimmed "Updating value with
+  latest prices…" state.
+- A bot whose exchange is missing from the price feed now falls back to the
+  Value the server already calculated instead of displaying $0.00.
+
+## [2.42.18] - 2026-08-02
+
+### Fixed
+
+- Bot form: saving a bot now stores every indicator setting the form was showing,
+  not only the ones the document already held. A parameter the user never touched
+  was drawn from the indicator's own default (a MAR row showed "EMA", "Current
+  price" and a comparison length of 20) but was absent from the saved bot, so
+  re-saving wrote the same gaps straight back and an affected bot could not be
+  repaired. Values that were actually set are never overwritten.
+- MAR: "Base MA length" defaults to 20 again, matching the value the trading
+  engine has always used for a bot that never set one. It had drifted to 10,
+  which showed the wrong number on screen and — now that an untouched setting
+  is saved — would have re-tuned the bot on its first save.
+
+## [2.42.17] - 2026-08-02
+
+### Fixed
+
+- Charts: a Moving Average Ratio (MAR) indicator with Percentile Ranking enabled no
+  longer forces its pane onto a 0-100 price scale. MAR is a ratio centered on 1.0, but
+  its percentile reference band was drawn at the fixed values 100 and 0 (correct only
+  for studies whose own domain is 0-100, like RSI or MFI), so the MAR line collapsed
+  into a sliver at the bottom of the pane and the axis showed `100.00000000`. The band
+  now follows the highest/lowest MAR value over the percentile lookback window, so the
+  pane scales to the ratio's own range.
+
+## [2.42.16] - 2026-08-02
+
+### Fixed
+
+- Bot create/edit forms (`/bot/new`, `/bot/edit`, `/combo/*`, `/grid/*`): the footer's
+  quick-backtest bar, its options menu, the "Capital required" chip, and the
+  Start/Stop control no longer rebuild on every render. Typing in the form or a live
+  price tick was handing the (memoized) footer button rows brand-new-but-identical
+  button and menu arrays, re-rendering them on every tick and tripping the render-loop
+  watchdog. The chip and the buttons still update immediately whenever what they show
+  actually changes.
+
+## [2.42.15] - 2026-08-02
+
+### Fixed
+
+- Page-visit tracking no longer restarts a visit when only the page title or the
+  trading mode changes. Pages whose title or mode settles after mount (bot and
+  rulebook detail pages, and the demo-exit flow on Add Exchange) were having a
+  single visit chopped into sub-second fragments that Recent Items then dropped.
+
+## [2.42.14] - 2026-08-02
+
+### Fixed
+
+- The Moving Average Ratio (MAR) indicator's "Value" threshold now defaults to 0.99 and steps by
+  0.01 instead of defaulting to 80 with a step of 1. MAR is a ratio between two moving averages, so
+  it sits around 1.0 — a threshold of 80 could never be crossed and the condition silently never
+  fired. The smaller step also lets the field be linked to a decimal global variable.
+
+## [2.42.13] - 2026-08-02
+
+### Fixed
+
+- The Moving Average Ratio (MAR) and Moving Averages (MA) indicators now name their candle-count
+  fields after the moving average currently selected — "EMA Length" instead of "Base MA length",
+  "WMA Length" instead of "Comparison MA length", and "EMA length"/"EMA interval" instead of
+  "Comparison length"/"Comparison interval". The label follows the type dropdown as you change it,
+  so a length no longer states a number of candles without saying which average it smooths.
+
+## [2.42.12] - 2026-08-02
+
+### Fixed
+
+- Changing an existing DCA indicator's type now carries the new indicator's own settings across. A DCA ladder row starts life as RSI, and switching it to another type swapped only the name — the new type's options were left blank, so a Moving Average Ratio (MAR) row kept RSI's numbers and had no Reference, "Relative to" or "Comparison MA length" of its own. Beyond showing the wrong fields, such a row reached the trading engine incomplete, with no warm-up length to calculate and no reference type to read.
+- The indicator summary card on a saved bot no longer lists settings the form itself hides. A MAR indicator with Reference "Current price" summarised as "Comparison MA length: 20" — a setting that does not apply — while the options that do apply were pushed off the card.
+
+## [2.42.11] - 2026-08-02
+
+### Fixed
+
+- A Moving Average Ratio (MAR) indicator whose Reference is "Current price" now draws on the bot chart. Its pane, legend and percentile bounds appeared, but the ratio and percentile lines were blank on every bar: the chart spelled the "current price" reference in capitals, which the chart study does not recognise as a price reference, so it had nothing to compare against. Since "Current price" is MAR's default Reference, most MAR indicators were in this state. Backtests and live bots were never affected — only the chart.
+
+## [2.42.10] - 2026-08-02
+
+### Fixed
+
+- Indicator settings on a saved bot no longer show fields that should be hidden. Any option the bot never explicitly stored came back from the server as "no value" instead of as absent, so the form stopped treating it as untouched and skipped its own default. The visible symptom was on Moving Average Ratio (MAR): with Reference left at "Current price", the "Comparison MA length" field stayed on screen even though that setting does not apply to it. This affected every indicator whose fields appear or hide based on another field, not just MAR.
+
+## [2.42.9] - 2026-08-02
+
+### Fixed
+
+- Self-hosted installs no longer make a failing market-data request on every page that shows a bot chart. The chart asked for figures only the hosted service can supply (reference price, market-cap rank, categories), so the request was rejected four times per page load and filled the browser console with errors, burying real ones. Those optional figures are now requested only where they exist; nothing else on the chart changes.
+- Opening a bot page no longer logs the ordinary "still loading" state as an error. The bot form reported a missing exchange and an empty pair list at error level on every visit, before that data had arrived, and then resolved a moment later.
+
+## [2.42.8] - 2026-08-02
+
+### Fixed
+
+- Editing a bot no longer resets "Close by timer" to 10 minutes. The edit form never read the saved timer amount and unit back from the bot, so it always opened showing the 10-minutes default — and saving any unrelated change (a budget increase, for example) wrote that default over the stored setting. Hedge bots were hit hardest, since both legs get saved together.
+
+## [2.42.7] - 2026-08-02
+
+### Fixed
+
+- Settings → API Keys and Settings → License Key now load on self-hosted installs. Both pages read from the same account request, which asked for a two-factor-authentication field that self-hosted builds don't provide — the server rejected the entire request, so every setting on it came back empty and the pages reported "No API keys found" and "No license key set" even though the values were stored. That field is now requested only where two-factor authentication exists.
 
 ## [2.42.6] - 2026-08-01
 

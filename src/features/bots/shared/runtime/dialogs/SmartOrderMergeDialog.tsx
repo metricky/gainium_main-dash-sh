@@ -219,8 +219,12 @@ export const SmartOrderMergeDialog: React.FC<SmartOrderMergeDialogProps> = ({
             {botName ? ` for ${botName}` : ''}. Select at least two orders to
             continue.
             {' '}
+            {/* New tab: reading a help article must never cost the user
+                whatever they have half-configured behind this dialog. */}
             <a
               href="/help/merge-deals"
+              target="_blank"
+              rel="noreferrer"
               className="text-primary underline hover:text-primary/80"
             >
               Learn more
@@ -327,7 +331,7 @@ export const SmartOrderMergeDialog: React.FC<SmartOrderMergeDialogProps> = ({
                             <p className="text-sm font-semibold text-foreground">
                               {deal.label ?? deal.pair}
                             </p>
-                            <div className="flex flex-wrap gap-x-sm gap-y-1 text-xs text-muted-foreground">
+                            <div className="flex flex-wrap gap-y-1 text-xs text-muted-foreground">
                               {deal.strategy ? (
                                 <span>{deal.strategy}</span>
                               ) : null}

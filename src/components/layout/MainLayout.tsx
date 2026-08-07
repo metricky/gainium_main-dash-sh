@@ -22,6 +22,7 @@ import DevToolsDrawer from '../dev/DevToolsDrawer';
 import { PromptPill } from '../onboarding/PromptPill';
 import { OnboardingSurvey } from '../survey/OnboardingSurvey';
 import { PWAStatus } from '../ui/PWAStatus';
+import { EncryptionKeyNotice } from './EncryptionKeyNotice';
 import HeaderWidgetsManager from './HeaderManager';
 import MobileBottomNav from './MobileBottomNav';
 import MobileSidebar from './MobileSidebar';
@@ -98,23 +99,53 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
   const endPageVisit = useUserSessionsStore((s) => s.endPageVisit);
   const tradingMode = useUIStore((s) => s.tradingMode);
 
-  // Track page visits
+  // `pageTitle` and `tradingMode` are the visit's PAYLOAD, not its identity —
+  // both can settle asynchronously after mount (a detail page resolves its
+  // name from a query; the demo-exit flow flips the trading mode several times
+  // on a single route). Keep them in refs so the visit-lifecycle effect below
+  // can read the current value without listing them as dependencies.
+  const pageTitleRef = useRef(pageTitle);
+  const tradingModeRef = useRef(tradingMode);
+  pageTitleRef.current = pageTitle;
+  tradingModeRef.current = tradingMode;
+
+  // Track page visits. Keyed on the PATH alone: with `pageTitle`/`tradingMode`
+  // in the dependency array, every title or mode change tore the visit down
+  // and restarted it — three start/endPageVisit invocations per change, two of
+  // them null-path no-ops. On the `/add-exchange` demo-exit flow the mode flips
+  // repeatedly on one route, so those re-fires stacked up into the
+  // invocation-storm the tripwire reports, and chopped the visit into
+  // sub-second fragments that the 1s floor then discarded.
   useEffect(() => {
     const category = getCategoryFromPath(location.pathname);
     // Use pageTitle as displayName if available, and pass trading context
     startPageVisit(
       location.pathname,
-      pageTitle,
+      pageTitleRef.current,
       category,
-      pageTitle,
-      tradingMode
+      pageTitleRef.current,
+      tradingModeRef.current
     );
 
     // End visit when component unmounts or location changes
     return () => {
       endPageVisit();
     };
-  }, [location.pathname, pageTitle, tradingMode, startPageVisit, endPageVisit]);
+  }, [location.pathname, startPageVisit, endPageVisit]);
+
+  // Detail pages (rulebooks, journal entries, help articles) resolve their
+  // title after mount, so re-announce it for the bot-metadata cache.
+  // `startPageVisit` is idempotent for the page already being tracked, so this
+  // only refreshes the cached display name — it never restarts the visit.
+  useEffect(() => {
+    startPageVisit(
+      location.pathname,
+      pageTitle,
+      getCategoryFromPath(location.pathname),
+      pageTitle,
+      tradingModeRef.current
+    );
+  }, [location.pathname, pageTitle, startPageVisit]);
 
   // Auto-hide navbar state and logic
   const [isNavbarVisible, setIsNavbarVisible] = useState(true);
@@ -296,6 +327,11 @@ const MainLayoutContent: React.FC<MainLayoutProps> = ({
                 column so it inherits the panel gutter + spacing. Sh renders
                 nothing (a self-hosted operator maintains their own box). */}
             <Slot name="layout.maintenanceBanner" />
+
+            {/* Self-hosted-only encryption-key recommendation. Renders
+                nothing on cloud (the query is not even sent) and nothing
+                once the operator has set a key or dismissed the notice. */}
+            <EncryptionKeyNotice />
 
             {/* Page content with mobile bottom navigation padding and standardized spacing */}
             <main
