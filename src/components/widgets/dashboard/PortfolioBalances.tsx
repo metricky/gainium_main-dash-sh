@@ -1,13 +1,12 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
-import { fetchWithTimeout } from '@/lib/fetchWithTimeout';
 import { GraphQlQuery } from '@/lib/api';
 import { StatusEnum, type Asset, type ScreenerCoinData } from '@/types';
+import { useTopScreenerCoins } from '@/hooks/useScreenerCoins';
 import { formatPriceWithPrecision } from '@/utils/formatters';
 import {
   buildScreenerSymbolMap,
   findBestScreenerMatch,
 } from '@/utils/portfolioScreenerMatching';
-import { useQuery } from '@tanstack/react-query';
 import { type ColumnDef } from '@tanstack/react-table';
 import { Plus } from 'lucide-react';
 import React, {
@@ -57,9 +56,17 @@ export interface PortfolioBalancesProps {
   menuActions?: WidgetMenuActions;
 }
 
-type BalanceRow = Asset & {
+// `usdValue` is *replaced*, not intersected: `Asset.usdValue` is
+// `string | null` (the venue publishes no rate), and intersecting that with
+// `string | number` collapses to `string` — which neither an `Asset` handed in
+// via `propData` nor the computed numeric valuation below can satisfy. Omit it
+// from the base and widen it here to cover both sources.
+type BalanceRow = Omit<Asset, 'usdValue'> & {
   total?: string | number;
-  usdValue?: string | number;
+  usdValue?: string | number | null;
+  // No price source could value this holding - neither the venue's own rate
+  // table nor the screener. Distinct from a genuine zero.
+  priceUnavailable?: boolean;
 };
 
 const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
@@ -84,11 +91,23 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     GraphQlQuery.getBalances(
       {
         shouldSumBalance: false,
+        includeUsdValues: true,
       },
-      // Use default fields to match main-dash/schema stability.
-      // (Overriding fields here can break if the backend doesn't support extensions.)
-      undefined
-    )
+      // `price`/`usdValue` are only returned when `includeUsdValues` is set, and
+      // both require main-app core >= 1.53.5. Selecting a field the schema lacks
+      // is a validation error that fails the whole query, so an older backend is
+      // served the previous document (see `fallbackQuery` below) and the widget
+      // degrades to screener pricing instead of showing no balances at all.
+      `asset
+  free
+  locked
+  exchange
+  exchangeUUID
+  exchangeName
+  price
+  usdValue`
+    ),
+    { fallbackQuery: GraphQlQuery.getBalances({ shouldSumBalance: false }) }
   );
 
   // Subscribe to the raw balances slice for real-time balance updates. The
@@ -121,7 +140,9 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
   }, []);
 
   const getRowTotals = useCallback(
-    (row: Asset) => {
+    // Takes the table's own row shape: every caller passes a `BalanceRow`, and
+    // a plain `Asset` still satisfies it.
+    (row: BalanceRow) => {
       const free = parseMaybeNumber(row.free);
       const locked = parseMaybeNumber(row.locked);
       const total =
@@ -137,6 +158,9 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
         total,
         usdValue,
         price,
+        priceUnavailable: Boolean(
+          (row as unknown as { priceUnavailable?: boolean }).priceUnavailable
+        ),
         freeUsd: free * price,
         lockedUsd: locked * price,
       };
@@ -144,30 +168,46 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     [parseMaybeNumber]
   );
 
-  // Screener data to derive current prices
-  const { data: screenerResp, isLoading: isLoadingScreener } = useQuery({
-    queryKey: ['screener', 'all'],
-    queryFn: async () => {
-      const apiEndpoint =
-        import.meta.env.VITE_API_ENDPOINT || 'https://api.gainium.io';
-      const resp = await fetchWithTimeout(`${apiEndpoint}/api/screener`, {
-        method: 'POST',
-        body: JSON.stringify({ page: 0, pageSize: 500 }),
-        headers: { 'Content-type': 'application/json' },
-      });
-      if (!resp.ok) throw new Error('Failed screener');
-      const json = await resp.json();
-      if (json.status === StatusEnum.notok) throw new Error(json.reason);
-      return {
-        status: StatusEnum.ok,
-        data: { result: json.data?.result || [] },
-      };
-    },
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 30 * 1000,
-  });
+  // Coin metadata (names, categories, market-cap rank). Prices come from
+  // the venue via `getBalances(includeUsdValues)`; this is only a fallback
+  // and a source of display metadata. See useScreenerCoins for why this no
+  // longer shares a query key — or a 30s poll — with the market treemap.
+  const { data: screenerResp, isLoading: isLoadingScreener } =
+    useTopScreenerCoins();
 
-  // Calculate balance data reactively based on live updates + GraphQL + screener prices
+  // Venue-published USD rates from getBalances(includeUsdValues), keyed by
+  // exchange + asset with an asset-level fallback for rows that have lost their
+  // exchange (live socket updates carry no rate of their own). This is the
+  // authoritative price: it is the exchange's own rate for the exact holding,
+  // so it survives a coin the screener carries under a different symbol after
+  // an upstream rebrand, or does not carry at all.
+  const venueRates = useMemo(() => {
+    const rates = new Map<string, number>();
+    if (!balancesData?.data || balancesData.status !== StatusEnum.ok) {
+      return rates;
+    }
+    for (const row of balancesData.data) {
+      const rate = parseMaybeNumber(row.price);
+      if (rate <= 0) continue;
+      const asset = String(row.asset ?? '').toUpperCase();
+      rates.set(`${row.exchangeUUID ?? ''}::${asset}`, rate);
+      if (!rates.has(asset)) rates.set(asset, rate);
+    }
+    return rates;
+  }, [balancesData, parseMaybeNumber]);
+
+  const venueRateFor = useCallback(
+    (exchangeUUID: string | undefined, asset: string) => {
+      const key = asset.toUpperCase();
+      return (
+        venueRates.get(`${exchangeUUID ?? ''}::${key}`) ?? venueRates.get(key)
+      );
+    },
+    [venueRates]
+  );
+
+  // Calculate balance data reactively based on live updates + GraphQL, priced
+  // off the venue's own rate with the screener kept only as a fallback.
   const data = useMemo((): BalanceRow[] => {
     // If prop data is provided, use it (for testing/fallback)
     if (propData) {
@@ -177,23 +217,33 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     const screener = (screenerResp?.data?.result || []) as ScreenerCoinData[];
     const screenerMap = buildScreenerSymbolMap(screener);
 
+    // One price ladder for both sources: the venue's rate for this exact
+    // holding, then the screener's symbol match, then whatever USD value the
+    // row already carried. Nothing left at the end of it means genuinely
+    // unpriceable, which the table must say rather than render as $0.00 -
+    // a confident claim that a real balance is worth nothing, and one that
+    // silently understates every total it feeds.
+    const priceRow = (
+      row: { asset: string; exchangeUUID?: string; usdValue?: unknown },
+      total: number
+    ): { usdValue: number; priceUnavailable: boolean } => {
+      const rate =
+        venueRateFor(row.exchangeUUID, String(row.asset)) ??
+        findBestScreenerMatch(String(row.asset).toUpperCase(), screenerMap)
+          ?.currentPrice;
+      if (rate && total > 0) {
+        return { usdValue: rate * total, priceUnavailable: false };
+      }
+      const carried = parseMaybeNumber(row.usdValue);
+      return { usdValue: carried, priceUnavailable: carried <= 0 && total > 0 };
+    };
+
     // Prefer live balance data when available
     if (liveBalances && liveBalances.length > 0) {
       return liveBalances.map((b) => {
-        const total = parseMaybeNumber(
-          (b as unknown as { total?: unknown }).total
-        );
-        const screenerCoin = findBestScreenerMatch(
-          b.asset.toUpperCase(),
-          screenerMap
-        );
-        const screenerPrice = screenerCoin?.currentPrice;
-        const usdValue =
-          screenerPrice && total > 0
-            ? screenerPrice * total
-            : parseMaybeNumber(
-                (b as unknown as { usdValue?: unknown }).usdValue
-              );
+        const total =
+          parseMaybeNumber((b as unknown as { total?: unknown }).total) ||
+          parseMaybeNumber(b.free) + parseMaybeNumber(b.locked);
 
         return {
           asset: b.asset,
@@ -207,7 +257,7 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
             (b as unknown as { exchangeName?: string }).exchangeName ?? ''
           ),
           total,
-          usdValue,
+          ...priceRow(b, total),
         };
       });
     }
@@ -218,28 +268,24 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
     }
 
     return (balancesData.data || []).map((row) => {
-      const total = parseMaybeNumber(
-        (row as unknown as { total?: unknown }).total
-      );
-      const screenerCoin = findBestScreenerMatch(
-        String(row.asset).toUpperCase(),
-        screenerMap
-      );
-      const screenerPrice = screenerCoin?.currentPrice;
-      const usdValue =
-        screenerPrice && total > 0
-          ? screenerPrice * total
-          : parseMaybeNumber(
-              (row as unknown as { usdValue?: unknown }).usdValue
-            );
+      const total =
+        parseMaybeNumber((row as unknown as { total?: unknown }).total) ||
+        parseMaybeNumber(row.free) + parseMaybeNumber(row.locked);
 
       return {
         ...row,
         total,
-        usdValue,
+        ...priceRow(row, total),
       } as BalanceRow;
     });
-  }, [balancesData, liveBalances, parseMaybeNumber, propData, screenerResp]);
+  }, [
+    balancesData,
+    liveBalances,
+    parseMaybeNumber,
+    propData,
+    screenerResp,
+    venueRateFor,
+  ]);
 
   // Use the generic widget settings hook with type safety
   const { usePersistedState } =
@@ -568,7 +614,7 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
         accessorFn: (row) => getRowTotals(row).usdValue,
         cell: ({ getValue, row }) => {
           const totalValue = getValue() as number;
-          const { total } = getRowTotals(row.original);
+          const { total, priceUnavailable } = getRowTotals(row.original);
           const token = row.original.asset;
           return (
             <div className="text-right">
@@ -576,7 +622,10 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
                 {formatTokenAmount(total)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {token} • {formatValueInCurrency(totalValue)}
+                {token} •{' '}
+                {priceUnavailable
+                  ? 'price unavailable'
+                  : formatValueInCurrency(totalValue)}
               </div>
             </div>
           );
@@ -594,14 +643,27 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
         id: 'price',
         header: 'CURRENT PRICE',
         accessorFn: (row) => getRowTotals(row).price,
-        cell: ({ getValue }) => {
+        cell: ({ getValue, row }) => {
           const price = getValue() as number;
-          const formattedPrice = formatPriceWithPrecision(price, '$');
+          const { priceUnavailable } = getRowTotals(row.original);
 
           return (
             <div className="text-right">
-              <div className="text-sm font-medium text-foreground">
-                {formattedPrice}
+              <div
+                className={
+                  priceUnavailable
+                    ? 'text-xs text-muted-foreground'
+                    : 'text-sm font-medium text-foreground'
+                }
+                title={
+                  priceUnavailable
+                    ? 'Neither the exchange nor the market screener publishes a USD rate for this asset, so its value cannot be calculated.'
+                    : undefined
+                }
+              >
+                {priceUnavailable
+                  ? 'price unavailable'
+                  : formatPriceWithPrecision(price, '$')}
               </div>
             </div>
           );

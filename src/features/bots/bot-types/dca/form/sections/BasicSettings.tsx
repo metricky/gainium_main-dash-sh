@@ -1,3 +1,4 @@
+import { Chip } from '@/components/ui/chip';
 import { Label } from '@/components/ui/label';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
 import { Switch } from '@/components/ui/switch';
@@ -159,6 +160,10 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
 
   const PAIRS_PREVIEW_LIMIT = 10;
   const [showAllLockedPairs, setShowAllLockedPairs] = useState(false);
+  const toggleShowAllLockedPairs = useCallback(
+    () => setShowAllLockedPairs((v) => !v),
+    []
+  );
 
   return (
     <>
@@ -196,6 +201,22 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
           trailing={
             isComboBot ? null : (
               <div className="flex items-center gap-xs">
+                {/* Multi-pair selections scroll out of view once the picker
+                    grows, so surface the running count next to the toggle. */}
+                {useMulti && pairs.length > 0 && (
+                  <Chip
+                    variant={limitReached ? 'warning' : 'primary'}
+                    chipStyle="soft"
+                    size="xs"
+                    title={
+                      limitReached
+                        ? `Pair limit reached (${pairs.length})`
+                        : `${pairs.length} pairs selected`
+                    }
+                  >
+                    {pairs.length} {pairs.length === 1 ? 'pair' : 'pairs'}
+                  </Chip>
+                )}
                 <Label
                   htmlFor="multi-pair-switch"
                   className="text-xs text-muted-foreground"
@@ -269,15 +290,28 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                       })}
                     </div>
                     {pairs.length > PAIRS_PREVIEW_LIMIT && (
-                      <button
-                        type="button"
-                        onClick={() => setShowAllLockedPairs((v) => !v)}
-                        className="text-xs text-muted-foreground underline transition-colors hover:text-foreground"
+                      // Display-only expander: it reveals pairs already on the
+                      // bot, it never edits the form. Deliberately NOT a
+                      // <button> — this block also renders inside the bot
+                      // drawer's read-only `<fieldset disabled>`, which
+                      // natively disables every descendant form control and
+                      // left the pairs past the preview limit unreachable.
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={toggleShowAllLockedPairs}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleShowAllLockedPairs();
+                          }
+                        }}
+                        className="inline-block cursor-pointer text-xs text-muted-foreground underline transition-colors hover:text-foreground"
                       >
                         {showAllLockedPairs
                           ? 'Show less'
                           : `+ Load all (${pairs.length - PAIRS_PREVIEW_LIMIT} more)`}
-                      </button>
+                      </span>
                     )}
                   </>
                 ) : (

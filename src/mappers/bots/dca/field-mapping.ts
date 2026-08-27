@@ -33,6 +33,7 @@ import {
   OrderTypeEnum,
   PairPrioritizationEnum,
   RiskSlTypeEnum,
+  RRSlTypeEnum,
   StartConditionEnum,
   StrategyEnum,
   TerminalDealTypeEnum,
@@ -1428,10 +1429,12 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
         fieldsSkipped.push('maxDealsPerHigherTimeframe');
       }
     } else {
-      fieldsSkipped.push(
-        'useMaxDealsPerHigherTimeframe',
-        'maxDealsPerHigherTimeframe'
-      );
+      // Must be emitted explicitly: mapFormDataToBackend spreads
+      // DCA_FORM_DEFAULTS (where this flag defaults to true) under the mapped
+      // fields, so omitting it here re-enables the limiter on every save.
+      dcaFields['useMaxDealsPerHigherTimeframe'] = false;
+      fieldsMapped.push('useMaxDealsPerHigherTimeframe');
+      fieldsSkipped.push('maxDealsPerHigherTimeframe');
     }
 
     return {
@@ -1485,6 +1488,12 @@ export const mapTpSlFields = (
   const fixedTpPrice = isComboBot
     ? formData.combo.fixedTpPrice
     : formData.dca.fixedTpPrice;
+  const _useFixedSLPrices = isComboBot
+    ? formData.combo.useFixedSLPrices
+    : formData.dca.useFixedSLPrices;
+  const fixedSlPrice = isComboBot
+    ? formData.combo.fixedSlPrice
+    : formData.dca.fixedSlPrice;
   const dealCloseCondition = isComboBot
     ? formData.combo.dealCloseCondition
     : formData.dca.dealCloseCondition;
@@ -1934,6 +1943,8 @@ export const mapTpSlFields = (
         | 'tpPerc'
         | 'useFixedTPPrices'
         | 'fixedTpPrice'
+        | 'useFixedSLPrices'
+        | 'fixedSlPrice'
         | 'dealCloseCondition'
         | 'closeByTimer'
         | 'closeByTimerValue'
@@ -2017,6 +2028,48 @@ export const mapTpSlFields = (
       fieldsSkipped.push('fixedTpPrice');
     } else {
       fieldsSkipped.push('fixedTpPrice');
+    }
+
+    // The stop-loss half of fixed prices, mirroring the take-profit block
+    // above. It had no mapping at all — neither field was even read from the
+    // form — so StopLossSettings could switch the SL to a fixed price and the
+    // payload still carried the defaults (`useFixedSLPrices: false`,
+    // `fixedSlPrice: ''`), silently discarding it.
+    fieldsProcessed.push('useFixedSLPrices');
+    const useFixedSLPrices = Boolean(_useFixedSLPrices);
+    tpSlFields['useFixedSLPrices'] = useFixedSLPrices;
+    fieldsMapped.push('useFixedSLPrices');
+
+    fieldsProcessed.push('fixedSlPrice');
+    const fixedSlPriceValue = sanitizeNumericField(
+      'fixedSlPrice',
+      fixedSlPrice,
+      {
+        allowNegative: false,
+        skipOnEmpty: !useFixedSLPrices,
+        min: 0,
+      }
+    );
+
+    if (fixedSlPriceValue !== undefined) {
+      if (useFixedSLPrices && Number(fixedSlPriceValue) === 0) {
+        warnings.push(
+          'Fixed SL price must be greater than 0 when price mode is enabled; disabling fixed SL mode.'
+        );
+        tpSlFields['useFixedSLPrices'] = false;
+        fieldsSkipped.push('fixedSlPrice');
+      } else {
+        tpSlFields['fixedSlPrice'] = fixedSlPriceValue;
+        fieldsMapped.push('fixedSlPrice');
+      }
+    } else if (useFixedSLPrices) {
+      warnings.push(
+        'useFixedSLPrices enabled but no valid fixedSlPrice provided; disabling fixed SL mode.'
+      );
+      tpSlFields['useFixedSLPrices'] = false;
+      fieldsSkipped.push('fixedSlPrice');
+    } else {
+      fieldsSkipped.push('fixedSlPrice');
     }
 
     // Deal close condition selection
@@ -2159,20 +2212,6 @@ export const mapTpSlFields = (
         fieldsMapped.push('closeDealType');
       }
 
-      fieldsProcessed.push('closeOrderType');
-      const allowedOrderTypes = new Set<string>(Object.values(OrderTypeEnum));
-      const orderType = closeOrderType ?? OrderTypeEnum.limit;
-      if (allowedOrderTypes.has(orderType)) {
-        tpSlFields['closeOrderType'] = orderType;
-        fieldsMapped.push('closeOrderType');
-      } else {
-        warnings.push(
-          `Unsupported closeOrderType "${closeOrderType}"; defaulting to limit`
-        );
-        tpSlFields['closeOrderType'] = OrderTypeEnum.limit;
-        fieldsMapped.push('closeOrderType');
-      }
-
       const closeIndicators = Array.isArray(indicators)
         ? indicators.filter(
             (i) =>
@@ -2220,20 +2259,6 @@ export const mapTpSlFields = (
         fieldsMapped.push('closeDealType');
       }
 
-      fieldsProcessed.push('closeOrderType');
-      const allowedOrderTypes = new Set<string>(Object.values(OrderTypeEnum));
-      const orderType = closeOrderType ?? OrderTypeEnum.limit;
-      if (allowedOrderTypes.has(orderType)) {
-        tpSlFields['closeOrderType'] = orderType;
-        fieldsMapped.push('closeOrderType');
-      } else {
-        warnings.push(
-          `Unsupported closeOrderType "${closeOrderType}"; defaulting to limit`
-        );
-        tpSlFields['closeOrderType'] = OrderTypeEnum.limit;
-        fieldsMapped.push('closeOrderType');
-      }
-
       fieldsProcessed.push('dynamicArLockValue');
       const dynamicArLockValue =
         typeof _dynamicArLockValue === 'boolean' ? _dynamicArLockValue : true;
@@ -2271,9 +2296,30 @@ export const mapTpSlFields = (
       fieldsSkipped.push(
         'stopDealLogic',
         'closeDealType',
-        'closeOrderType',
         'dynamicArLockValue'
       );
+    }
+
+    // Close order type is offered for every non-combo, non-hedge bot with no
+    // dependence on the close condition (TakeProfitSettings), so it has to be
+    // mapped unconditionally. It used to be written only inside the technical-
+    // indicator and dynamic-AR branches; on the default take-profit condition
+    // it fell into `fieldsSkipped`, and since the payload is built as
+    // `{ ...DCA_FORM_DEFAULTS, ...finalData }` a skipped field does not stay
+    // absent — it comes back as the factory default. So a user who chose MARKET
+    // had it silently rewritten to LIMIT on save.
+    fieldsProcessed.push('closeOrderType');
+    const allowedOrderTypes = new Set<string>(Object.values(OrderTypeEnum));
+    const orderType = closeOrderType ?? OrderTypeEnum.limit;
+    if (allowedOrderTypes.has(orderType)) {
+      tpSlFields['closeOrderType'] = orderType;
+      fieldsMapped.push('closeOrderType');
+    } else {
+      warnings.push(
+        `Unsupported closeOrderType "${closeOrderType}"; defaulting to limit`
+      );
+      tpSlFields['closeOrderType'] = OrderTypeEnum.limit;
+      fieldsMapped.push('closeOrderType');
     }
 
     fieldsProcessed.push('comboTpLimit');
@@ -2607,6 +2653,12 @@ export const mapRiskRewardFields = (
   const riskMaxPositionSize = isComboBot
     ? formData.combo.riskMaxPositionSize
     : formData.dca.riskMaxPositionSize;
+  const rrSlType = isComboBot
+    ? formData.combo.rrSlType
+    : formData.dca.rrSlType;
+  const rrSlFixedValue = isComboBot
+    ? formData.combo.rrSlFixedValue
+    : formData.dca.rrSlFixedValue;
   const indicators = isComboBot
     ? formData.combo.indicators
     : formData.dca.indicators;
@@ -2638,6 +2690,8 @@ export const mapRiskRewardFields = (
         | 'riskMinSl'
         | 'riskMinPositionSize'
         | 'riskMaxPositionSize'
+        | 'rrSlType'
+        | 'rrSlFixedValue'
       >
     > = {};
 
@@ -2661,6 +2715,35 @@ export const mapRiskRewardFields = (
     // Risk:Reward enabled flag
     riskRewardFields['useRiskReward'] = useRiskReward;
     fieldsMapped.push('useRiskReward');
+
+    // How the Risk:Reward stop loss is derived, and its value when fixed.
+    // RiskRewardSettings offers both (the selector at line ~814, the value via
+    // updateFormData) but neither had a mapping, so picking `fixed` was
+    // replaced by the default `indicator` on save — and the value with `2`.
+    // The rest of the risk family below was mapped correctly all along.
+    fieldsProcessed.push('rrSlType', 'rrSlFixedValue');
+    const normalizedRrSlType = Object.values(RRSlTypeEnum).includes(
+      rrSlType as RRSlTypeEnum
+    )
+      ? (rrSlType as RRSlTypeEnum)
+      : RRSlTypeEnum.indicator;
+    riskRewardFields['rrSlType'] = normalizedRrSlType;
+    fieldsMapped.push('rrSlType');
+
+    // `sanitizeNumericField` is local to mapTpSlFields, and the value is a
+    // signed string on the settings type, so validate it directly here.
+    const rrSlFixedRaw = `${rrSlFixedValue ?? ''}`.trim();
+    if (rrSlFixedRaw !== '' && Number.isFinite(Number(rrSlFixedRaw))) {
+      riskRewardFields['rrSlFixedValue'] = rrSlFixedRaw;
+      fieldsMapped.push('rrSlFixedValue');
+    } else {
+      if (normalizedRrSlType === RRSlTypeEnum.fixed) {
+        warnings.push(
+          `Risk:Reward SL type is "fixed" but rrSlFixedValue is not a number ("${rrSlFixedValue}"); leaving it unchanged.`
+        );
+      }
+      fieldsSkipped.push('rrSlFixedValue');
+    }
 
     // Risk type validation
     const normalizedRiskType = (() => {
@@ -2925,6 +3008,12 @@ export const mapBotControllerFields = (
     ? formData.combo.botActualStart
     : formData.dca.botActualStart;
   const botStart = isComboBot ? formData.combo.botStart : formData.dca.botStart;
+  const startBotLogic = isComboBot
+    ? formData.combo.startBotLogic
+    : formData.dca.startBotLogic;
+  const stopBotLogic = isComboBot
+    ? formData.combo.stopBotLogic
+    : formData.dca.stopBotLogic;
   const stopType = isComboBot ? formData.combo.stopType : formData.dca.stopType;
   const stopStatus = isComboBot
     ? formData.combo.stopStatus
@@ -3196,6 +3285,8 @@ export const mapBotControllerFields = (
         | 'useBotController'
         | 'botActualStart'
         | 'botStart'
+        | 'startBotLogic'
+        | 'stopBotLogic'
         | 'stopType'
         | 'stopStatus'
         | 'startBotPriceCondition'
@@ -3318,6 +3409,22 @@ export const mapBotControllerFields = (
     controllerFields['closeAfterXopen'] = _closeAfterXopen;
     fieldsMapped.push('useCloseAfterXopen', 'closeAfterXopen');
 
+    // AND/OR for the start-bot and stop-bot indicator lists. BotControllerSettings
+    // renders both selects whenever the controller is on, but neither field had
+    // any mapping — not even a read from the form — so switching either to OR
+    // was replaced by the default `and` on save. Mapped unconditionally here,
+    // like the closeAfterX group above: the controller being off is already
+    // handled by the early return at the top of this mapper.
+    const validLogic = new Set<string>(Object.values(IndicatorsLogicEnum));
+    fieldsProcessed.push('startBotLogic', 'stopBotLogic');
+    controllerFields['startBotLogic'] = validLogic.has(startBotLogic ?? '')
+      ? startBotLogic
+      : IndicatorsLogicEnum.and;
+    controllerFields['stopBotLogic'] = validLogic.has(stopBotLogic ?? '')
+      ? stopBotLogic
+      : IndicatorsLogicEnum.and;
+    fieldsMapped.push('startBotLogic', 'stopBotLogic');
+
     return {
       success: true,
       data: controllerFields,
@@ -3415,12 +3522,20 @@ export const mapExperimentalFields = (
       }
       addField('feeOrder', forcedOff ? false : feeOrder === true);
     } else {
-      skipField(
-        'feeOrder',
-        feeOrder === true
-          ? 'feeOrder is not supported for this bot configuration and was dropped from the payload.'
-          : undefined
-      );
+      // Not merely skipped: mapFormDataToBackend builds the payload as
+      // `{ ...DCA_FORM_DEFAULTS, ...mappedFields }` and feeOrder defaults to
+      // true there, so leaving the hole open made every save of a DCA bot (or
+      // of a combo bot on futures — both configurations hide the toggle) write
+      // `feeOrder: true` over whatever the bot actually had. That is not inert:
+      // the DCA engine places separate fee orders and adjusts its balance
+      // accounting off this flag. Echo what the form is holding — which is what
+      // the bot has stored — so an untouchable setting survives the save.
+      addField('feeOrder', feeOrder === true);
+      if (feeOrder === true) {
+        warnings.push(
+          'feeOrder is not editable for this bot configuration; the stored value was preserved.'
+        );
+      }
     }
 
     const autoRebalancingSupported = isComboBot && !isFutures;
@@ -3663,10 +3778,11 @@ export const mapStartFields = (formData: BotFormData): FieldMappingResult => {
         fieldsSkipped.push('maxDealsPerHigherTimeframe');
       }
     } else {
-      fieldsSkipped.push(
-        'useMaxDealsPerHigherTimeframe',
-        'maxDealsPerHigherTimeframe'
-      );
+      // Same reason as in mapDcaFields: the DCA_FORM_DEFAULTS spread would
+      // otherwise turn the limiter back on whenever the user disables it.
+      startFields['useMaxDealsPerHigherTimeframe'] = false;
+      fieldsMapped.push('useMaxDealsPerHigherTimeframe');
+      fieldsSkipped.push('maxDealsPerHigherTimeframe');
     }
 
     return {
@@ -4176,6 +4292,18 @@ export const mapFormDataToBackend = (
     { name: 'Indicator Groups', mapper: mapIndicatorGroupsFields },
   ];
 
+  /**
+   * The raw form entry for each indicator, by uuid, used to tell a mapper's
+   * real contribution apart from its passthrough. See the merge below.
+   */
+  const rawIndicatorJson = new Map(
+    (
+      (formData.type === BotTypesEnum.combo
+        ? formData.combo.indicators
+        : formData.dca.indicators) ?? []
+    ).map((i) => [i.uuid, JSON.stringify(i)])
+  );
+
   for (const { name, mapper } of mappers) {
     const result = mapper(formData, vars);
     allResults.push(result);
@@ -4183,14 +4311,50 @@ export const mapFormDataToBackend = (
     if (result.success && result.data) {
       const { indicators, ...rest } = result.data;
       Object.assign(finalData, rest);
-      finalData.indicators = [
-        ...new Map(
-          [...(finalData.indicators || []), ...(indicators || [])].map((i) => [
-            i.uuid,
-            i,
-          ])
-        ).values(),
-      ];
+
+      /**
+       * Merge each mapper's indicator contribution.
+       *
+       * Every per-role mapper emits the FULL indicator list: the entries for
+       * the role it owns, serialized and gap-filled, and every other role's
+       * entry passed straight through untouched (the `?? i` / `: indicator`
+       * at each of the four emit sites). Merging those with "last writer
+       * wins" therefore let one mapper's incidental RAW copy overwrite
+       * another's serialized one — so an indicator kept its gap-fill only
+       * when its role happened to be owned by the last mapper to run.
+       *
+       * A bot with indicators in two roles — start-by-indicator plus
+       * indicator-based closing, say, which is an ordinary setup — silently
+       * saved the earlier role's indicator stripped of every field the user
+       * had not touched. A MAR lost mar1type, mar1length, mar2type,
+       * mar2length, the percentile trio and the trendFilter quartet. That is
+       * not cosmetic: indicatorCatalog.ts records that a MAR saved without
+       * mar1length is re-tuned from a 20-period base MA to a 10, which is
+       * exactly why the gap-fill exists.
+       *
+       * So a mapper may only overwrite an entry it actually CHANGED. An entry
+       * byte-identical to the raw form entry is that mapper's passthrough and
+       * carries no information about the indicator — it must not displace a
+       * serialization some other mapper already produced. First writer still
+       * wins for a uuid nobody has claimed, which keeps the set of indicators
+       * in the payload exactly what it was before.
+       */
+      const merged = new Map(
+        (finalData.indicators ?? []).map((i) => [i.uuid, i])
+      );
+      for (const indicator of indicators ?? []) {
+        const existing = merged.get(indicator.uuid);
+        if (existing) {
+          const raw = rawIndicatorJson.get(indicator.uuid);
+          const isPassthrough =
+            raw !== undefined && JSON.stringify(indicator) === raw;
+          if (isPassthrough) {
+            continue;
+          }
+        }
+        merged.set(indicator.uuid, indicator);
+      }
+      finalData.indicators = [...merged.values()];
     }
 
     finalData.indicators = (finalData.indicators ?? []).map((i) => {
@@ -4235,10 +4399,30 @@ export const mapFormDataToBackend = (
     .flat()
     .map((p) => formData.pairMetadata[p]?.pair || p);
 
+  // The payload's fallback layer — what a field is worth when no mapper wrote
+  // it. This used to be DCA_FORM_DEFAULTS alone, which made an ordinary mapper
+  // gap into silent data loss: the field did not arrive ABSENT, it arrived as
+  // the FACTORY DEFAULT and overwrote whatever the user had. Six fields reached
+  // customers that way (useMaxDealsPerHigherTimeframe, feeOrder, closeOrderType,
+  // fixedSlPrice, the bot-controller AND/OR logics, rrSlType), each fixed by
+  // hand-writing "echo what the form is holding" into the one mapper that had
+  // the hole. This generalizes that fix: the fallback is the live form slice,
+  // which is both what the user is looking at and — for a field they never
+  // touched — what the inbound mapper read off the bot. So an unmapped field is
+  // now a no-op write instead of a reset.
+  //
+  // DCA_FORM_DEFAULTS stays UNDERNEATH the slice on purpose. It guarantees the
+  // payload's key set is exactly what it was before this change, even when a
+  // partially-built formData reaches the mapper (the hedge Quick form's leg
+  // seeds do exactly that). Only the VALUES of unmapped fields move.
+  const formSlice =
+    formData.type === BotTypesEnum.combo ? formData.combo : formData.dca;
+
   return {
     success: allErrors.length === 0,
     data: {
       ...DCA_FORM_DEFAULTS,
+      ...formSlice,
       pair: [formData.pair]
         .flat()
         .map((p) => formData.pairMetadata[p]?.pair || p),

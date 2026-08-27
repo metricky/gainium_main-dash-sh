@@ -1,4 +1,5 @@
 import { cardHoverVariants } from '@/lib/animations/variants';
+import { AXIS_INDEX_KEY, withAxisIndex } from '@/lib/charts/axisIndex';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
@@ -25,6 +26,7 @@ import {
   YAxis,
 } from 'recharts';
 import { useBotActions } from '../../hooks/useBotActions';
+import { useLongPressMenu } from '../../hooks/useLongPressMenu';
 import { useChartColors } from '../../hooks/useChartColors';
 import logger from '../../lib/loggerInstance';
 import { BotActionsModals } from './BotActionsModals';
@@ -182,11 +184,15 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
         .filter((p) => Number.isFinite(p.time) && Number.isFinite(p.equity))
         .sort((a, b) => (a.time as number) - (b.time as number));
 
-      return sanitized.map((p) => ({
-        time: p.time as number,
-        equity: p.equity as number,
-        formattedTime: new Date(p.time as number).toLocaleDateString(),
-      }));
+      // `formattedTime` is a day string, so an intraday equity series repeats
+      // it — key the axis on the row index instead (see `withAxisIndex`).
+      return withAxisIndex(
+        sanitized.map((p) => ({
+          time: p.time as number,
+          equity: p.equity as number,
+          formattedTime: new Date(p.time as number).toLocaleDateString(),
+        }))
+      );
     }
 
     /*  if (!botDeals || botDeals.length === 0) return [];
@@ -307,38 +313,34 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
     return `${biggestMatch[1]}${biggestMatch[2]}`;
   };
 
-  // Mobile-only: reveal action chip via long-press or swipe-left.
-  // On desktop the chip is hover/focus driven via group-hover classes.
+  // Mobile: a long press anywhere on the card opens the actions menu
+  // directly; a swipe-left reveals the action pill without opening it.
+  // On desktop the pill is hover/focus driven via group-hover classes.
   const cardRef = useRef<HTMLDivElement>(null);
   const [actionsRevealed, setActionsRevealed] = useState(false);
-  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
-  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const suppressClickRef = useRef(false);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  const cancelLongPress = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
+  const {
+    open: actionsMenuOpen,
+    setOpen: setActionsMenuOpen,
+    shouldSuppressClick,
+    suppressClickRef,
+    longPressHandlers,
+  } = useLongPressMenu({ onLongPress: () => setActionsRevealed(true) });
 
   const handleTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
-    touchStartRef.current = { x: t.clientX, y: t.clientY };
-    suppressClickRef.current = false;
-    cancelLongPress();
-    longPressTimerRef.current = setTimeout(() => {
-      setActionsRevealed(true);
-      suppressClickRef.current = true;
-    }, 450);
+    swipeStartRef.current = t ? { x: t.clientX, y: t.clientY } : null;
+    longPressHandlers.onTouchStart(e);
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (!touchStartRef.current) return;
+    longPressHandlers.onTouchMove(e);
+    if (!swipeStartRef.current) return;
     const t = e.touches[0];
-    const dx = t.clientX - touchStartRef.current.x;
-    const dy = t.clientY - touchStartRef.current.y;
-    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) cancelLongPress();
+    if (!t) return;
+    const dx = t.clientX - swipeStartRef.current.x;
+    const dy = t.clientY - swipeStartRef.current.y;
     if (dx < -30 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       setActionsRevealed(true);
       suppressClickRef.current = true;
@@ -346,12 +348,14 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
   };
 
   const handleTouchEnd = () => {
-    cancelLongPress();
-    touchStartRef.current = null;
+    swipeStartRef.current = null;
+    longPressHandlers.onTouchEnd();
   };
 
   useEffect(() => {
-    if (!actionsRevealed) return;
+    // Keep the pill up while its menu is open, otherwise a tap outside the
+    // card collapses it.
+    if (!actionsRevealed || actionsMenuOpen) return;
     const handler = (e: PointerEvent) => {
       if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
         setActionsRevealed(false);
@@ -359,15 +363,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
     };
     document.addEventListener('pointerdown', handler);
     return () => document.removeEventListener('pointerdown', handler);
-  }, [actionsRevealed]);
-
-  useEffect(() => () => cancelLongPress(), []);
+  }, [actionsRevealed, actionsMenuOpen]);
 
   const handleClick = () => {
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false;
-      return;
-    }
+    if (shouldSuppressClick()) return;
     if (onClick) {
       onClick(bot);
     }
@@ -451,6 +450,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
+        onContextMenu={longPressHandlers.onContextMenu}
       >
         {/* Inner container — surface contrast (bg-muted vs page bg) does the
             separation; no border per the design system.
@@ -474,7 +474,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   ? 'opacity-100 translate-x-0 pointer-events-auto'
                   : 'opacity-0 translate-x-3 pointer-events-none',
                 // Desktop: hover/focus on the card reveals (overrides mobile state above)
-                'sm:opacity-0 sm:translate-x-3 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-hover:translate-x-0 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-focus-within:translate-x-0'
+                'sm:opacity-0 sm:translate-x-3 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-hover:translate-x-0 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-focus-within:translate-x-0',
+                // An open menu pins the pill in place in every breakpoint.
+                actionsMenuOpen &&
+                  'opacity-100 translate-x-0 pointer-events-auto sm:opacity-100 sm:translate-x-0 sm:pointer-events-auto'
               )}
             >
               <button
@@ -488,7 +491,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
               >
                 <ExternalLink className="w-4 h-4 text-muted-foreground" />
               </button>
-              <DropdownMenu>
+              <DropdownMenu
+                open={actionsMenuOpen}
+                onOpenChange={setActionsMenuOpen}
+              >
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
@@ -503,7 +509,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                 </DropdownMenuTrigger>
                 <BotActionsMenuItems
                   align="end"
-                  className="w-56 z-50"
+                  className="w-56"
                   bot={{
                     id: bot.id,
                     name: bot.name,
@@ -674,15 +680,21 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                           />
                         </linearGradient>
                       </defs>
-                      <XAxis dataKey="formattedTime" hide />
+                      <XAxis dataKey={AXIS_INDEX_KEY} hide />
                       <YAxis domain={['auto', 'auto']} hide />
                       <Tooltip
-                        content={({ active, payload, label }) => {
+                        content={({ active, payload }) => {
                           if (active && payload && payload.length) {
                             return (
                               <div className="bg-popover rounded-lg shadow-lg p-2">
                                 <p className="text-xs text-muted-foreground">
-                                  {label}
+                                  {
+                                    (
+                                      payload[0]?.payload as
+                                        | { formattedTime?: string }
+                                        | undefined
+                                    )?.formattedTime
+                                  }
                                 </p>
                                 <p className="text-sm font-semibold">
                                   Bot Equity: $

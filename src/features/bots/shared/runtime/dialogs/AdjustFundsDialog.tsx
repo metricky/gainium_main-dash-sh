@@ -20,10 +20,22 @@ import {
 import { NumberInput } from '@/components/ui/number-input';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import getLatestPrices, { getLocalPrices } from '@/helper/price';
+import {
+  AMOUNT_MODE_ORDER,
+  MAX_PERCENT,
+  amountModeLabel,
+  fromAmountMode,
+  toAmountMode,
+  type AmountMode,
+} from './adjustFundsAmount';
 import {
   AddFundsTypeEnum,
+  ExchangeEnum,
   OrderSizeTypeEnum,
+  StatusEnum,
   type AddFundsSettings,
+  type Prices,
 } from '@/types';
 
 /* export type FundsScopeOptionValue = 'bot' | 'deal' | string; */
@@ -59,8 +71,22 @@ interface AdjustFundsDialogBaseProps {
   baseAsset?: string;
   /** Quote asset string shown in selectors */
   quoteAsset?: string;
+  /**
+   * Symbol and exchange of the deal being adjusted. Supplied together they let
+   * the dialog resolve a live market price and seed the limit-price box with
+   * it. Both are optional because the bulk mount adjusts a selection that can
+   * span several symbols, where no single price is meaningful.
+   */
+  symbol?: string;
+  exchange?: string;
   /** Optional balance snapshot for quick reference */
   balances?: FundsBalanceSnapshot[];
+  /**
+   * How many deals this adjustment will be applied to. Anything above 1
+   * switches the copy to the bulk wording, so it is explicit that the amount
+   * entered here is applied to EACH selected deal, not split between them.
+   */
+  targetCount?: number;
 }
 
 export type AdjustFundsDialogMode = 'add' | 'reduce';
@@ -73,19 +99,6 @@ export interface AdjustFundsDialogProps extends AdjustFundsDialogBaseProps {
   value: 'bot',
   label: 'This bot',
 }; */
-
-const ASSET_OPTION_ORDER: OrderSizeTypeEnum[] = [
-  OrderSizeTypeEnum.base,
-  OrderSizeTypeEnum.quote,
-];
-
-const ASSET_LABELS: Record<OrderSizeTypeEnum, string> = {
-  [OrderSizeTypeEnum.base]: 'Base asset',
-  [OrderSizeTypeEnum.quote]: 'Quote asset',
-  [OrderSizeTypeEnum.usd]: 'USD value',
-  [OrderSizeTypeEnum.percFree]: '% of available balance',
-  [OrderSizeTypeEnum.percTotal]: '% of total balance',
-};
 
 const ICONS: Record<
   AdjustFundsDialogMode,
@@ -109,6 +122,21 @@ const DESCRIPTIONS: Record<AdjustFundsDialogMode, string> = {
 const SECONDARY_ACTION_TEXT: Record<AdjustFundsDialogMode, string> = {
   add: 'Add funds',
   reduce: 'Reduce funds',
+};
+
+const BULK_DESCRIPTIONS: Record<AdjustFundsDialogMode, (count: number) => string> =
+  {
+    add: (count) =>
+      `Inject additional capital into each of the ${count} selected deals.`,
+    reduce: (count) =>
+      `Withdraw capital from each of the ${count} selected deals.`,
+  };
+
+const BULK_FOOTNOTES: Record<AdjustFundsDialogMode, (count: number) => string> = {
+  add: (count) =>
+    `The selected amount is appended to each of the ${count} deals — it is not split between them.`,
+  reduce: (count) =>
+    `The selected amount is withdrawn from each of the ${count} deals — it is not split between them.`,
 };
 
 const RESET_PAYLOAD = {
@@ -140,19 +168,48 @@ const normalizeNumberString = (value: string) => {
   return normalized;
 };
 
-const resolvedAssetLabel = (
-  asset: OrderSizeTypeEnum,
-  baseAsset?: string,
-  quoteAsset?: string
-) => {
-  switch (asset) {
-    case OrderSizeTypeEnum.base:
-      return baseAsset ? `Base (${baseAsset})` : ASSET_LABELS[asset];
-    case OrderSizeTypeEnum.quote:
-      return quoteAsset ? `Quote (${quoteAsset})` : ASSET_LABELS[asset];
-    default:
-      return ASSET_LABELS[asset];
-  }
+/**
+ * Live market price for one symbol, or null when the caller did not say which
+ * symbol this is for, or prices have not arrived yet.
+ *
+ * The dialog resolves this itself rather than taking a price prop: every mount
+ * has the symbol to hand, but only some already hold a price, and seeding a
+ * limit order from a stale one is worse than leaving the box empty.
+ */
+const useMarketPrice = (symbol?: string, exchange?: string) => {
+  const [price, setPrice] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!symbol) {
+      setPrice(null);
+      return;
+    }
+
+    // Prefer the exact venue, but fall back to the symbol on any venue: the
+    // feed labels some entries 'all', and a price from a sibling venue is a
+    // better starting point than none.
+    const pick = (prices: Prices) =>
+      (exchange
+        ? prices.find((p) => p.symbol === symbol && p.exchange === exchange)
+        : undefined) ?? prices.find((p) => p.symbol === symbol);
+
+    const cached = pick(getLocalPrices());
+    setPrice(cached ? cached.price : null);
+
+    const unsubscribe = getLatestPrices((result) => {
+      if (result.status !== StatusEnum.ok || !result.data) {
+        return;
+      }
+      const match = pick(result.data);
+      if (match) {
+        setPrice(match.price);
+      }
+    }, exchange === ExchangeEnum.binanceUS);
+
+    return () => unsubscribe();
+  }, [symbol, exchange]);
+
+  return price;
 };
 
 export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
@@ -166,8 +223,12 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   targetName,
   baseAsset,
   quoteAsset,
+  symbol,
+  exchange,
   balances,
+  targetCount = 1,
 }) => {
+  const isBulk = targetCount > 1;
   const [quantity, setQuantity] = React.useState<string>(RESET_PAYLOAD.qty);
   const [asset, setAsset] = React.useState<OrderSizeTypeEnum>(
     defaultSettings?.asset ?? RESET_PAYLOAD.asset
@@ -186,6 +247,17 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   ); */
   const [formError, setFormError] = React.useState<string | null>(null);
 
+  const amountMode = toAmountMode(asset, type);
+  const isPercent = type === AddFundsTypeEnum.perc;
+
+  const handleAmountModeChange = (mode: AmountMode) => {
+    const next = fromAmountMode(mode);
+    setAsset(next.asset);
+    setType(next.type);
+  };
+
+  const marketPrice = useMarketPrice(symbol, exchange);
+
   React.useEffect(() => {
     if (open) {
       setQuantity(defaultSettings?.qty ?? RESET_PAYLOAD.qty);
@@ -200,6 +272,24 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
     }
   }, [open, defaultSettings /* , scopeOptions */]);
 
+  // Seed the limit price once per opening. The box used to open empty, so the
+  // price had to be read off the chart and retyped every time. It is only ever
+  // written while the field is untouched, and never rewritten as the feed
+  // ticks — a limit price that moves under the user would be worse than the
+  // empty box it replaces.
+  const seededLimitRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!open) {
+      seededLimitRef.current = false;
+      return;
+    }
+    if (seededLimitRef.current || !useLimitPrice || limitPrice || !marketPrice) {
+      return;
+    }
+    seededLimitRef.current = true;
+    setLimitPrice(`${marketPrice}`);
+  }, [open, useLimitPrice, limitPrice, marketPrice]);
+
   const Icon = ICONS[mode];
 
   const handleConfirm = () => {
@@ -211,11 +301,14 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
       return;
     }
 
+    // Confirm and the live validator below used to disagree — 1000 here, 100
+    // there — so the ceiling the button enforced was not the one this branch
+    // checked. One constant now, checked identically in both places.
     if (
       type === AddFundsTypeEnum.perc &&
-      (numericQty <= 0 || numericQty > 1000)
+      (numericQty <= 0 || numericQty > MAX_PERCENT)
     ) {
-      setFormError('Percentage must be greater than 0.');
+      setFormError(`Enter a percentage between 0 and ${MAX_PERCENT}.`);
       return;
     }
 
@@ -250,9 +343,9 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
 
     if (
       type === AddFundsTypeEnum.perc &&
-      (numericQty <= 0 || numericQty > 100)
+      (numericQty <= 0 || numericQty > MAX_PERCENT)
     ) {
-      return 'Percentage must be greater than 0.';
+      return `Enter a percentage between 0 and ${MAX_PERCENT}.`;
     }
 
     if (useLimitPrice) {
@@ -274,9 +367,11 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
             {TITLES[mode]}
           </DialogTitle>
           <DialogDescription className="text-sm text-muted-foreground">
-            {targetName
-              ? `${DESCRIPTIONS[mode]} (${targetName}).`
-              : DESCRIPTIONS[mode]}
+            {isBulk
+              ? BULK_DESCRIPTIONS[mode](targetCount)
+              : targetName
+                ? `${DESCRIPTIONS[mode]} (${targetName}).`
+                : DESCRIPTIONS[mode]}
           </DialogDescription>
         </DialogHeader>
 
@@ -307,7 +402,9 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
           <div className="space-y-md">
             <div className="grid gap-md sm:grid-cols-[2fr_1fr] sm:items-end">
               <div className="space-y-xs">
-                <Label htmlFor="adjust-funds-amount">Quantity</Label>
+                <Label htmlFor="adjust-funds-amount">
+                  {isPercent ? 'Percentage' : 'Quantity'}
+                </Label>
                 <NumberInput
                   id="adjust-funds-amount"
                   value={quantity}
@@ -318,26 +415,27 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
                         : (value ?? '')
                     )
                   }
-                  placeholder="0.00"
+                  placeholder={isPercent ? '0' : '0.00'}
                   showControls={false}
+                  {...(isPercent ? { endAdornment: '%' } : {})}
                 />
               </div>
 
               <div className="space-y-xs">
-                <Label htmlFor="adjust-funds-asset">Asset</Label>
+                <Label htmlFor="adjust-funds-asset">Amount in</Label>
                 <Select
-                  value={asset}
+                  value={amountMode}
                   onValueChange={(value) =>
-                    setAsset(value as OrderSizeTypeEnum)
+                    handleAmountModeChange(value as AmountMode)
                   }
                 >
                   <SelectTrigger id="adjust-funds-asset">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {ASSET_OPTION_ORDER.map((option) => (
+                    {AMOUNT_MODE_ORDER.map((option) => (
                       <SelectItem key={option} value={option}>
-                        {resolvedAssetLabel(option, baseAsset, quoteAsset)}
+                        {amountModeLabel(option, baseAsset, quoteAsset)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -345,7 +443,11 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
               </div>
             </div>
 
-            <div className="grid gap-md sm:grid-cols-2 sm:items-end">
+            {/* Aligned to the top rather than the bottom: the limit column
+                grows a line taller when the market-price hint is showing, and
+                bottom alignment pushed its label out of line with "Order
+                type". */}
+            <div className="grid gap-md sm:grid-cols-2 sm:items-start">
               <div className="space-y-xs">
                 <Label htmlFor="adjust-funds-order-type">Order type</Label>
                 <Select
@@ -376,6 +478,15 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
                     }
                     inputMode="decimal"
                   />
+                  {marketPrice ? (
+                    <button
+                      type="button"
+                      onClick={() => setLimitPrice(`${marketPrice}`)}
+                      className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      Market: {marketPrice}
+                    </button>
+                  ) : null}
                 </div>
               ) : (
                 <div />
@@ -414,10 +525,21 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
 
             <div className="rounded-lg border border-dashed border-border/60 bg-muted/5 p-sm text-xs text-muted-foreground">
               <p>
-                {mode === 'add'
-                  ? 'The selected amount will be appended to the deal once confirmed.'
-                  : 'The selected amount will be withdrawn from the deal once confirmed.'}
+                {isBulk
+                  ? BULK_FOOTNOTES[mode](targetCount)
+                  : mode === 'add'
+                    ? 'The selected amount will be appended to the deal once confirmed.'
+                    : 'The selected amount will be withdrawn from the deal once confirmed.'}
               </p>
+              {isPercent ? (
+                <p className="mt-1">
+                  The percentage is taken from the position this deal currently
+                  holds — not from your exchange balance.
+                  {mode === 'reduce'
+                    ? ` Reducing by ${MAX_PERCENT}% closes the deal.`
+                    : ''}
+                </p>
+              ) : null}
             </div>
             {!!error && <div className="text-sm text-destructive">{error}</div>}
           </div>
@@ -447,7 +569,11 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
             disabled={isProcessing || !!error}
             className="w-full sm:w-auto"
           >
-            {isProcessing ? 'Processing…' : SECONDARY_ACTION_TEXT[mode]}
+            {isProcessing
+              ? 'Processing…'
+              : isBulk
+                ? `${SECONDARY_ACTION_TEXT[mode]} (${targetCount})`
+                : SECONDARY_ACTION_TEXT[mode]}
           </Button>
         </DialogFooter>
       </DialogContent>

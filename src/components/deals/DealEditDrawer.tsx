@@ -10,7 +10,13 @@ import {
   DetailDrawerHeader,
   DetailDrawerTrigger,
 } from '@/components/ui/detail-drawer';
-import { TradingTerminalUtilsProvider } from '@/context/TradingTerminalUtilsContext';
+import {
+  TradingTerminalUtilsContext,
+  TradingTerminalUtilsProvider,
+  useTradingTerminalUtils,
+} from '@/context/TradingTerminalUtilsContext';
+import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
+import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-core';
 import { useLiveUpdate } from '@/contexts/LiveUpdateContext';
 import {
   BotFormProvider,
@@ -52,6 +58,7 @@ import { cn } from '@/lib/utils';
 import { isActiveDeal } from '@/lib/utils/unrealizedPnL';
 import {
   BotTypesEnum,
+  DCAOrderTypeEnum,
   ExchangeEnum,
   type ComboBotSettings,
   type DCABotSettings,
@@ -92,9 +99,47 @@ interface DealEditDrawerProps {
   open: boolean;
   onClose: () => void;
   trade: DCADeals[] | null;
+  /**
+   * Bot type of the deal(s) being edited, supplied by the caller.
+   *
+   * Deals reach this drawer raw from `useDcaDeals` / `useBotSpecificDeals`,
+   * and the raw deal carries no comboness: `DCADeals.combo` is declared but
+   * no query selects it and nothing writes it, and the embedded `dcaBot`
+   * projection has only `settings`/`symbol`/`exchange` — no `type`. So the
+   * drawer cannot derive this itself; the caller (which knows the bot) has
+   * to tell it, exactly as legacy main-dash passes `combo` into
+   * `DcaDealEditDrawer`.
+   *
+   * Getting this wrong is not cosmetic: it selects the form slice
+   * (`formData.combo` vs `formData.dca`) AND the save mutation, and the two
+   * mutations read different Mongo collections (`comboDeal` vs `dcaDeal`),
+   * so a combo deal saved through the DCA mutation fails outright with
+   * "Deal not found".
+   */
+  botType?: BotTypesEnum;
   /** When true, renders form content directly without a DetailDrawer wrapper (for embedding inline in another drawer) */
   inline?: boolean;
+  /**
+   * Set when this form is mounted next to a chart that should track it (the
+   * bot drawer's Edit Deal view). Turns on the example-orders feed so the
+   * TP/SL lines follow what the user types, wires the chart-line drag handler
+   * back into the form, and lets the bullseye pickers resolve against the
+   * host's chart. Off everywhere else — most mounts have no chart, and the
+   * feed would clobber whatever the host page had plotted.
+   */
+  chartSync?: boolean;
 }
+
+/**
+ * Collapse any bot type onto the two slices this form actually has.
+ * Hedge legs follow their underlying engine — mirrors `transformDeal` in
+ * `types/dcaDeal.ts`, which treats `combo` and `hedgeCombo` alike. Grid and
+ * terminal deals are DCA-shaped, matching the previous default.
+ */
+const toDealFormBotType = (botType?: BotTypesEnum): BotTypesEnum =>
+  botType === BotTypesEnum.combo || botType === BotTypesEnum.hedgeCombo
+    ? BotTypesEnum.combo
+    : BotTypesEnum.dca;
 
 const mapFromDataToDealSettings = (
   formData: BotFormData,
@@ -150,6 +195,28 @@ const mapFromDataToDealSettings = (
     'coinm',
     'marginType',
     'leverage',
+    // This array is the only thing that decides what reaches the editDeal
+    // mutation, so a field the UI can change and this list omits is silently
+    // unsaveable — the drawer closes as if it had saved and the deal keeps its
+    // old value.
+    //
+    // `gridLevel` is here because DCASettings renders the combo "DCA grid
+    // levels" input under `isComboBot` with no deal-edit guard. That branch
+    // now fires: the drawer takes its bot type from the caller's `botType`
+    // prop, so `formData.type` is `combo` for a combo deal. (It never fired
+    // while the type was derived from `trade[0].combo` — a field nothing
+    // selects or writes.) The backend accepts it: `gridLevel: String` is
+    // declared on `comboDealSettingsInputSet`. Covered by
+    // tests-e2e/specs/deal-edit-gridlevel.e2e.test.ts.
+    //
+    // The input itself is now READ-ONLY in this drawer, matching legacy
+    // main-dash (`props.isDealEdit && combo` in DcaModeSettings.tsx), so in
+    // practice `gridLevel` never differs from the original and never ships.
+    // The same is true of `orderSize` and `step` above, which legacy gates on
+    // the same condition. All three stay listed on purpose: if a control is
+    // ever re-enabled for deal edit, dropping its key here would make it
+    // silently unsaveable — exactly the failure this array exists to prevent.
+    'gridLevel',
     'useFixedTPPrices',
     'useFixedSLPrices',
     'dcaCondition',
@@ -167,6 +234,29 @@ const mapFromDataToDealSettings = (
     'dcaVolumeRequiredChangeRef',
     'dcaVolumeMaxValue',
     'dcaVolumeRequiredChange',
+    // ── Declared on DCADealsSettings but DELIBERATELY absent from this list.
+    // Checked 2026-08-14; don't re-derive, and don't add them "for symmetry".
+    //
+    // `scaleDcaType` — DCASettings renders its control inside a
+    //   `{!isComboBot && !isDealEdit && …}` guard, so it is unreachable in
+    //   both `deal-edit` and `deal-mass-edit`.
+    //
+    // `useRiskReward`, `riskUseTpRatio` — written only by RiskRewardSettings,
+    //   which is mounted only by RiskRewardSettingsTab, which appears only in
+    //   the full bot-form tab registries (bot-types/{dca,combo}/form/tabs).
+    //   This drawer builds its own `visibleDescriptors` — a literal
+    //   `useMemo(…, [])` of exactly strategy / take-profit / stop-loss / dca,
+    //   with no branch on mode — so there is no Risk:Reward section in either
+    //   drawer mode. (`sectionToggleMap` still maps 'risk-reward' →
+    //   'useRiskReward'; that entry is dead, no descriptor has that id.)
+    //   Confirmed in the running app against a real open deal: the drawer
+    //   renders those four sections and no Risk:Reward anywhere.
+    //
+    //   Adding them would be a behaviour change, not a fix. `useRiskReward`
+    //   IS set per-deal (types/dcaDeal.ts reads `deal.settings.useRiskReward`
+    //   as `riskBased`), so on a risk-based deal whose bot has it off, the
+    //   diff below would find new ≠ original and start shipping
+    //   `useRiskReward` on every save of a control the user cannot see.
   ].filter((k) =>
     isMultiple ? k !== 'baseOrderSize' && k !== 'orderSize' : true
   ) as (keyof DCADealsSettings)[];
@@ -202,7 +292,7 @@ const mapFromDataToDealSettings = (
 };
 
 export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
-  ({ children, onClose, trade, inline = false }) => {
+  ({ children, onClose, trade, botType, inline = false, chartSync = false }) => {
     const {
       formData,
       isFieldLocked,
@@ -214,12 +304,107 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
       features,
       setFormData,
     } = useBotFormState();
+    // --- Chart sync (Edit Deal inside the bot drawer) ----------------------
+    //
+    // Three things have to line up for the chart to behave the way it does in
+    // the Trading Terminal:
+    //
+    //  1. The example-orders projection has to be anchored at the DEAL's
+    //     average (breakeven) price, not the market price. A deal's TP/SL are
+    //     percentages off its entry, so anchoring at market would draw the
+    //     lines somewhere the bot will never act.
+    //  2. Dragging a line has to write back to the form.
+    //  3. `feedChart` on the provider (above) lets the form push its settings
+    //     at all; without it the store is never recomputed and the lines are
+    //     frozen at whatever the host plotted.
+    const { setCoordinates: setDealPickCoordinates } =
+      useTradingTerminalUtils();
+    const dealChartStore = useExampleOrdersStore();
+    const dealSlice =
+      formData.type === BotTypesEnum.combo ? formData.combo : formData.dca;
+    const dealReferencePrice = useMemo(() => {
+      const override = Number(dealSlice?.avgPrice);
+      if (Number.isFinite(override) && override > 0) return override;
+      const computed = Number(trade?.[0]?.avgPrice);
+      return Number.isFinite(computed) && computed > 0 ? computed : 0;
+    }, [dealSlice?.avgPrice, trade]);
+
+    useEffect(() => {
+      if (!chartSync || dealReferencePrice <= 0) return;
+      dealChartStore.setContext({ inputLatestPrice: dealReferencePrice });
+    }, [chartSync, dealReferencePrice, dealChartStore]);
+
+    // Keep the drag handler behind a ref so the store gets ONE stable callback.
+    // multiTp / multiSl are fresh arrays every keystroke; handing the store a
+    // new function each time would re-fire the setContext effect and race the
+    // provider's own settings push. Same reasoning as BotForm's dragHandlerRef.
+    const dealDragRef = useRef<ExampleOrdersStoreContext['onDrag']>(undefined);
+    dealDragRef.current = (price, type, index) => {
+      if (!chartSync || !Number.isFinite(price) || price <= 0) return;
+
+      // A drag IS a chart pick — same event, different gesture. Both are
+      // handed to the section that owns the target, through the coordinate
+      // channel the bullseye already uses, so exactly one piece of code writes
+      // a chart-sourced price.
+      //
+      // Writing the % here instead (the obvious shortcut) is wrong and was the
+      // bug: TakeProfitSettings keeps `tpPerc` derived from `fixedTpPrice`
+      // whenever `useFixedTPPrices` is on, so a handler that set only the %
+      // got reverted by that effect on the very next render — the value
+      // flashed and snapped back. `handleTargetFixedChange` writes the price,
+      // the derived %, and the flag together, which is the only consistent
+      // state.
+      let pickerField: string | null = null;
+
+      if (type === DCAOrderTypeEnum.tp) {
+        const uuid =
+          typeof index === 'number' && dealSlice?.useMultiTp
+            ? dealSlice.multiTp?.[index]?.uuid
+            : 'single-target';
+        if (uuid) pickerField = `multiTp.${uuid}.fixed`;
+      } else if (type === DCAOrderTypeEnum.sl) {
+        const uuid =
+          typeof index === 'number' && dealSlice?.useMultiSl
+            ? dealSlice.multiSl?.[index]?.uuid
+            : 'single-sl-target';
+        if (uuid) pickerField = `multiSl.${uuid}.fixed`;
+      }
+
+      if (!pickerField) return;
+
+      // `time` only has to make each drop distinct — the consuming effect
+      // dedupes on `pickerField-time-price`, so dragging back to a price you
+      // already used would otherwise be swallowed.
+      setDealPickCoordinates({ time: Date.now(), price, pickerField });
+    };
+
+    useEffect(() => {
+      if (!chartSync) return;
+      dealChartStore.setContext({
+        onDrag: (price, type, index, meta) =>
+          dealDragRef.current?.(price, type, index, meta),
+      });
+    }, [chartSync, dealChartStore]);
+
+    // Must match the outer `DealEditDrawer`'s resolution exactly — that one
+    // seeds `BotFormProvider` (and therefore `formData.type`), this one picks
+    // the balances/mutation context. A disagreement would seed one slice and
+    // save the other.
+    const resolvedBotType = useMemo(
+      () =>
+        botType !== undefined
+          ? toDealFormBotType(botType)
+          : trade?.[0]?.combo
+            ? BotTypesEnum.combo
+            : BotTypesEnum.dca,
+      [botType, trade]
+    );
     const useBotFromMutationOptions: UseBotFormMutationsOptions = useMemo(
       () => ({
         mode: trade?.length === 1 ? 'deal-edit' : 'deal-mass-edit',
-        botType: trade?.[0]?.combo ? BotTypesEnum.combo : BotTypesEnum.dca,
+        botType: resolvedBotType,
       }),
-      [trade]
+      [trade, resolvedBotType]
     );
     const { getBalances } = useBotFormMutations(useBotFromMutationOptions);
     // Tracks which deal(s) the form is currently seeded from. The effect
@@ -323,7 +508,10 @@ export const DealEditDrawerInner: React.FC<DealEditDrawerProps> = React.memo(
     const toggleSectionCollapsed = useCallback((id: string) => {
       setCollapsedSections((prev) => ({ ...prev, [id]: !prev[id] }));
     }, []);
-    const isCombo = useMemo(() => !!trade?.[0]?.combo, [trade]);
+    const isCombo = useMemo(
+      () => resolvedBotType === BotTypesEnum.combo,
+      [resolvedBotType]
+    );
 
     const handleDrawerOpenChange = useCallback(
       (nextOpen: boolean) => {
@@ -978,9 +1166,15 @@ export const DealEditDrawer: React.FC<DealEditDrawerProps> = React.memo(
       () => import.meta.env['VITE_BOT_FORM_DEBUG'] === 'true',
       []
     );
+    // Keep in lockstep with `resolvedBotType` in DealEditDrawerInner.
     const botType = useMemo(
-      () => (props.trade?.[0]?.combo ? BotTypesEnum.combo : BotTypesEnum.dca),
-      [props.trade]
+      () =>
+        props.botType !== undefined
+          ? toDealFormBotType(props.botType)
+          : props.trade?.[0]?.combo
+            ? BotTypesEnum.combo
+            : BotTypesEnum.dca,
+      [props.botType, props.trade]
     );
     const resolvedExperience: BotExperienceDescriptor = useMemo(
       () => tryGetBotExperience(botType) ?? getBotExperience(BotTypesEnum.dca),
@@ -991,23 +1185,35 @@ export const DealEditDrawer: React.FC<DealEditDrawerProps> = React.memo(
       [resolvedExperience]
     );
     const defaultTab: BotFormTabId = useMemo(() => 'strategy', []);
+    const hasAncestorPicker = !!React.useContext(TradingTerminalUtilsContext);
     if (!props.trade || !props.open || props.trade.length === 0) {
       return null;
     }
+    // Reuse an ancestor's picker context when there is one. The bullseye only
+    // works if the FORM and the CHART read the same provider, and the chart
+    // lives outside this component (it's the bot drawer's left panel). Mounting
+    // our own provider unconditionally would give the form a second, isolated
+    // context and the picker would silently never fire. Standalone mounts (no
+    // ancestor, no chart) still get their own.
+    const PickerBoundary = hasAncestorPicker
+      ? React.Fragment
+      : TradingTerminalUtilsProvider;
+
     return (
-      <TradingTerminalUtilsProvider>
+      <PickerBoundary>
         <BotFormRegistryContext.Provider value={contextValue}>
           <BotFormProvider
             mode={mode}
             botType={botType}
             defaultTab={defaultTab}
+            feedChart={props.chartSync ?? false}
           >
             <BotFormQueryProvider mode={mode} debug={debugEnabled}>
               <DealEditDrawerInner {...props} />
             </BotFormQueryProvider>
           </BotFormProvider>
         </BotFormRegistryContext.Provider>
-      </TradingTerminalUtilsProvider>
+      </PickerBoundary>
     );
   }
 );

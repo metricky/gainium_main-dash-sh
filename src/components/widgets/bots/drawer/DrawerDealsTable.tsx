@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Usage: bot details drawer deals table (active/closed tabs) rendered via DrawerWidgetRenderer.
 // Not used by the Trading page or the Trading Terminal; those use OpenOrdersWidget.
+import { dealStartBlockedSummary } from '@/lib/utils/dealStartBlocked';
+import { Tooltip as HelpTooltip } from '@/components/ui/tooltip';
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { ColumnDef } from '@tanstack/react-table';
 import {
@@ -12,6 +14,7 @@ import {
     Handshake,
     MinusCircle,
     MoreHorizontal,
+    PauseCircle,
     Plus,
     PlusCircle,
     RotateCcw,
@@ -56,6 +59,11 @@ import {
 import { TradeCard } from '../../../trades/TradeCard';
 /* import { TradeDetailDrawer } from '../../../trades/TradeDetailDrawer'; */
 import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
+import {
+    canAdjustDealFunds,
+    type BulkAdjustFundsTarget,
+} from '@/components/deals/actions/bulkAdjustFundsTargets';
+import { useBulkAdjustFunds } from '@/components/deals/actions/useBulkAdjustFunds';
 import { useMergeSmartOrders } from '@/features/bots/widgets/BotForm/hooks/useMergeSmartOrders';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import {
@@ -565,6 +573,8 @@ const DealActionsMenu: React.FC<{
         onConfirm={handleAdjustFundsConfirm}
         baseAsset={baseSymbol}
         quoteAsset={quoteSymbol}
+        symbol={symbolString}
+        exchange={trade.exchange}
       />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -577,7 +587,7 @@ const DealActionsMenu: React.FC<{
             <MoreHorizontal className="w-4 h-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56 z-50">
+        <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onClick={() => handleOpenDetailDrawer(trade)}>
             <Eye className="w-4 h-4 mr-2" />
             View Details
@@ -1146,7 +1156,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     const botExchange = bot?.exchangeUUID;
     if (botExchange && bot?.settings?.pair) {
       for (const symbol of [bot.settings.pair].flat()) {
-        if (symbol) targets.add(`${botExchange} ${symbol}`);
+        if (symbol) targets.add(`${botExchange}\u001f${symbol}`);
       }
     }
     for (const deal of botDeals) {
@@ -1154,9 +1164,15 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         (deal as DCADeals | ComboDeal).exchangeUUID || botExchange;
       const dealSymbol = deal.symbol?.symbol;
       if (dealExchange && dealSymbol) {
-        targets.add(`${dealExchange} ${dealSymbol}`);
+        targets.add(`${dealExchange}\u001f${dealSymbol}`);
       }
     }
+    // Separator is U+001F (unit separator), not NUL: an exchange UUID and a
+    // symbol can never contain it, and unlike a literal NUL it keeps this file
+    // plain text. A NUL here made `grep` classify the whole file as binary and
+    // silently report no matches for every symbol in it, which is how two
+    // separate investigations concluded the `?editDealId=` deep link below was
+    // dead code.
     return Array.from(targets).sort().join('\n');
   }, [bot?.exchangeUUID, bot?.settings?.pair, botDeals]);
 
@@ -1168,7 +1184,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     // Rebuild the exchange -> symbols map from the stable key.
     const exchangeSymbolMap = new Map<string, Set<string>>();
     for (const entry of feeTargetsKey.split('\n')) {
-      const sep = entry.indexOf(' ');
+      const sep = entry.indexOf('\u001f');
       if (sep < 0) continue;
       const exchange = entry.slice(0, sep);
       const symbol = entry.slice(sep + 1);
@@ -1476,6 +1492,31 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     onTradeSelect,
     onAutoOpenHandled,
   ]);
+
+  // Bulk Add/Reduce Funds — same shared flow the Trading page, the Trading
+  // Terminal and the dashboard Open Orders widget use.
+  const {
+    open: openBulkAdjustFunds,
+    dialog: bulkAdjustFundsDialog,
+  } = useBulkAdjustFunds();
+  const toAdjustFundsTarget = useCallback(
+    (deal: TransformedTrade): BulkAdjustFundsTarget => ({
+      dealId: deal.id,
+      botId: deal.botId ?? botId,
+      status: deal.status,
+      // The row menu hides Add/Reduce Funds on combo bots; the drawer's deals
+      // carry no bot type of their own, so it comes from the bot.
+      type: isComboBot ? 'Combo' : deal.type,
+      baseAsset:
+        typeof deal.symbol === 'string' ? undefined : deal.symbol.baseAsset,
+      quoteAsset:
+        typeof deal.symbol === 'string' ? undefined : deal.symbol.quoteAsset,
+      symbol:
+        typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol,
+      exchange: deal.exchange,
+    }),
+    [botId, isComboBot]
+  );
 
   const adjustFundsMutation = useAdjustFunds();
   const handleAdjustFundsConfirm = useCallback(
@@ -1964,20 +2005,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           setJournalBulkDialogOpen(selectedDeals);
         },
         onAddFunds: (selectedDeals) => {
-          logger.info(`${LOG_PREFIX}: Bulk add funds`, {
-            count: selectedDeals.length,
-          });
-          toast.info(
-            `Add funds to ${selectedDeals.length} deal(s) (Coming soon)`
-          );
+          openBulkAdjustFunds('add', selectedDeals.map(toAdjustFundsTarget));
         },
         onReduceFunds: (selectedDeals) => {
-          logger.info(`${LOG_PREFIX}: Bulk reduce funds`, {
-            count: selectedDeals.length,
-          });
-          toast.info(
-            `Reduce funds from ${selectedDeals.length} deal(s) (Coming soon)`
-          );
+          openBulkAdjustFunds('reduce', selectedDeals.map(toAdjustFundsTarget));
         },
         onEdit: (selectedDeals) => {
           if (selectedDeals.length === 0) return;
@@ -2012,10 +2043,17 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           setCloseBulkDialogOpen(selectedDeals);
         },
         canMoveToTerminal: canMoveTradeToTerminal,
+        canAdjustFunds: (deal) => canAdjustDealFunds(toAdjustFundsTarget(deal)),
         getSymbol: (deal) =>
           typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol,
       }),
-    [activeDealsRaw, onEditDeal, canMoveTradeToTerminal]
+    [
+      activeDealsRaw,
+      onEditDeal,
+      canMoveTradeToTerminal,
+      openBulkAdjustFunds,
+      toAdjustFundsTarget,
+    ]
   );
 
   // Define columns for the DataTable
@@ -2031,7 +2069,27 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         header: 'Status',
         cell: ({ row }) => {
           const trade = row.original;
-          return <StatusChip status={trade.status} size="sm" dotOnly={true} />;
+          const chip = (
+            <StatusChip status={trade.status} size="sm" dotOnly={true} />
+          );
+          // A deal whose opening order the venue refused reads as an ordinary
+          // pending deal here - same chip, no orders, all-zero numbers. The dot
+          // alone cannot say that, so hang the reason off it: this table is
+          // where a user scans for the deal that "did nothing".
+          if (!trade.startBlocked?.reason) {
+            return chip;
+          }
+          return (
+            <HelpTooltip tooltip={dealStartBlockedSummary(trade.startBlocked)}>
+              <span
+                className="relative inline-flex items-center gap-0.5"
+                data-testid="deal-start-blocked-dot"
+              >
+                {chip}
+                <PauseCircle className="size-3 text-amber-500" />
+              </span>
+            </HelpTooltip>
+          );
         },
         enableSorting: true,
         enableColumnFilter: true,
@@ -3272,6 +3330,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         cancelText="Cancel"
         onConfirm={handleBulkJournalConfirm}
       />
+
+      {bulkAdjustFundsDialog}
 
       {/* Detail Drawer */}
       {/* {selectedDealForDrawer && (

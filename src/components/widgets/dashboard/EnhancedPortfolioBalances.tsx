@@ -1,5 +1,4 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
-import { fetchWithTimeout } from '@/lib/fetchWithTimeout';
 // import { useDcaBots } from '@/hooks/useDcaBots';
 // import { useComboBots } from '@/hooks/useComboBots';
 import { useTransformedExchangesFromContext } from '@/contexts/ExchangeDataContext';
@@ -9,6 +8,7 @@ import {
   type PortfolioQuery,
   type ScreenerCoinData,
 } from '@/types';
+import { useTopScreenerCoins } from '@/hooks/useScreenerCoins';
 import { formatPriceWithPrecision } from '@/utils/formatters';
 import {
   buildScreenerSymbolMap,
@@ -16,7 +16,6 @@ import {
 } from '@/utils/portfolioScreenerMatching';
 import { balanceAssetToPairBase } from '@/utils/pairs';
 import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
-import { useQuery } from '@tanstack/react-query';
 import { type ColumnDef } from '@tanstack/react-table';
 import { Info, Plus } from 'lucide-react';
 import React, {
@@ -169,30 +168,22 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
   // default crypto behavior, so nothing else is affected.
   const resolvePairAsset = useResolvePairAsset();
 
-  // Screener data (used to derive current prices and coin metadata)
-  const { data: screenerResp, isLoading: isLoadingScreener } = useQuery({
-    queryKey: ['screener', 'all'],
-    queryFn: async () => {
-      const apiEndpoint =
-        import.meta.env.VITE_API_ENDPOINT || 'https://api.gainium.io';
-      const resp = await fetchWithTimeout(`${apiEndpoint}/api/screener`, {
-        method: 'POST',
-        body: JSON.stringify({ page: 0, pageSize: 500 }),
-        headers: { 'Content-type': 'application/json' },
-      });
-      if (!resp.ok) throw new Error('Failed screener');
-      const json = await resp.json();
-      if (json.status === StatusEnum.notok) throw new Error(json.reason);
-      return {
-        status: StatusEnum.ok,
-        data: { result: json.data?.result || [] },
-      };
-    },
-    staleTime: 5 * 60 * 1000,
-    refetchInterval: 30 * 1000,
-  });
+  // Coin metadata (names, categories, market-cap rank). Prices come from
+  // the venue via `getBalances(includeUsdValues)`; this is only a fallback
+  // and a source of display metadata. See useScreenerCoins for why this no
+  // longer shares a query key — or a 30s poll — with the market treemap.
+  const { data: screenerResp, isLoading: isLoadingScreener } =
+    useTopScreenerCoins();
 
-  // Fetch raw balances to get accurate free/locked splits (prefer when available)
+  // Fetch raw balances to get accurate free/locked splits (prefer when
+  // available) and, with `includeUsdValues`, the venue's own USD rate for each
+  // holding - the authoritative price, and the only one that survives a coin
+  // the screener cannot match by symbol.
+  // `includeUsdValues`/`price`/`usdValue` require main-app core >= 1.53.5.
+  // Selecting a field the schema lacks is a validation error that fails the
+  // whole query, so an older backend is served the previous document instead
+  // and the widget falls back to screener pricing rather than rendering
+  // nothing at all.
   const { data: balancesResp } = useGraphQL<
     Array<{
       asset: string;
@@ -201,8 +192,24 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       exchange?: string;
       exchangeUUID?: string;
       exchangeName?: string;
+      price?: string | null;
+      usdValue?: string | null;
     }>
-  >('getBalances', GraphQlQuery.getBalances({ shouldSumBalance: false }));
+  >(
+    'getBalances',
+    GraphQlQuery.getBalances(
+      { shouldSumBalance: false, includeUsdValues: true },
+      `asset
+  free
+  locked
+  exchange
+  exchangeUUID
+  exchangeName
+  price
+  usdValue`
+    ),
+    { fallbackQuery: GraphQlQuery.getBalances({ shouldSumBalance: false }) }
+  );
 
   // Sync local widget exchange selections with the page-level portfolio context
   const selectedExchangeContext = useMemo(
@@ -341,6 +348,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
             exchange?: string;
             exchangeUUID?: string;
             exchangeName?: string;
+            // Venue-priced; `calculateEnhancedBalances` prefers these over the
+            // screener-derived `prices` list below.
+            price?: string | null;
+            usdValue?: string | null;
           }>)
         : undefined;
 
@@ -418,6 +429,15 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       return showSymbol ? `${currencyInfo.symbol}${formatted}` : formatted;
     },
     [selectedCurrency, getCurrencyInfo, privacyMode]
+  );
+
+  // A holding no price source could value must say so. Rendering it as $0.00
+  // is a confident claim that a real balance is worthless, and it silently
+  // understates every total it feeds.
+  const formatRowValue = useCallback(
+    (row: EnhancedBalanceData, value: number) =>
+      row.priceUnavailable ? 'price unavailable' : formatValueInCurrency(value),
+    [formatValueInCurrency]
   );
 
   // Handle bot legend popover
@@ -498,7 +518,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatValueInCurrency(freeUsd)}
+              {token} • {formatRowValue(row.original, freeUsd)}
             </div>
           </div>
         );
@@ -529,7 +549,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatValueInCurrency(usedUsd)}
+              {token} • {formatRowValue(row.original, usedUsd)}
             </div>
           </div>
         );
@@ -560,7 +580,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatValueInCurrency(totalUsd)}
+              {token} • {formatRowValue(row.original, totalUsd)}
             </div>
           </div>
         );
@@ -649,7 +669,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 )}
               </div>
               <div className="text-xs text-muted-foreground">
-                {formatValueInCurrency(requiredUsd)}
+                {formatRowValue(row.original, requiredUsd)}
               </div>
             </div>
           );
@@ -679,7 +699,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 {formatTokenAmount(amount)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {token} • {formatValueInCurrency(plannedUsd)}
+                {token} • {formatRowValue(row.original, plannedUsd)}
               </div>
             </div>
           );
@@ -714,7 +734,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 {formatTokenAmount(amount)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {token} • {formatValueInCurrency(freeAndOverUsd)}
+                {token} • {formatRowValue(row.original, freeAndOverUsd)}
               </div>
             </div>
           );
@@ -735,18 +755,28 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
     cols.push({
       accessorKey: 'currentPrice',
       header: 'CURRENT PRICE',
-      cell: ({ getValue }) => {
+      cell: ({ row, getValue }) => {
         const price = getValue() as number;
         const currencyInfo = getCurrencyInfo(selectedCurrency);
         const convertedPrice = price * currencyInfo.rate;
-        const formattedPrice = formatPriceWithPrecision(
-          convertedPrice,
-          currencyInfo.symbol
-        );
+        const formattedPrice = row.original.priceUnavailable
+          ? 'price unavailable'
+          : formatPriceWithPrecision(convertedPrice, currencyInfo.symbol);
 
         return (
           <div className="text-right">
-            <div className="text-sm font-medium text-foreground">
+            <div
+              className={
+                row.original.priceUnavailable
+                  ? 'text-xs text-muted-foreground'
+                  : 'text-sm font-medium text-foreground'
+              }
+              title={
+                row.original.priceUnavailable
+                  ? 'Neither the exchange nor the market screener publishes a USD rate for this asset, so its value cannot be calculated.'
+                  : undefined
+              }
+            >
               {formattedPrice}
             </div>
           </div>
@@ -804,6 +834,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
     showMarketCap,
     showBotUsage,
     formatValueInCurrency,
+    formatRowValue,
     botLegendPopover.isOpen,
     botLegendPopover.balance?.id,
     screenerMap,

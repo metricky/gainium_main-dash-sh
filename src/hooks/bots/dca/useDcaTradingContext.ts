@@ -4,9 +4,11 @@ import getLatestPrices, { getLocalPrices } from '@/helper/price';
 //import { usePriceStream } from '@/hooks/usePriceStream';
 import type { TradingPair } from '@/hooks/useTradingPairs';
 import { useBalanceStore } from '@/stores/live/balanceStore';
+import { useExchangesStore } from '@/stores/exchangesStore';
 import type { BotFormData } from '@/types/bots/form';
 import type { DcaBot } from '@/types/dcaBot';
 import {
+  MAX_DCA_ORDER_STEP_PERCENT,
   resolveDcaRanges,
   type DcaDerivedRanges,
   type RangeBounds,
@@ -24,6 +26,7 @@ import {
 import { findUSDRate } from '@/lib/utils/unrealizedPnL';
 import {
   MAX_DCA_ORDERS,
+  MAX_RESTING_EXCHANGE_ORDERS,
   MAX_DCA_STEP_SCALE,
   MAX_DCA_VOLUME_SCALE,
   MIN_DCA_ORDERS,
@@ -128,9 +131,12 @@ const DEFAULT_ORDERS_RANGE = buildDefaultRange({
   max: MAX_DCA_ORDERS,
 });
 
+// Only used when `resolveStepRange` couldn't produce a finite bound. It must
+// not be tighter than the real ceiling, or it would silently re-impose the flat
+// cap that `resolveStepCeiling` exists to replace.
 const DEFAULT_STEP_RANGE = buildDefaultRange({
   min: 0.1,
-  max: 10,
+  max: MAX_DCA_ORDER_STEP_PERCENT,
 });
 
 const DEFAULT_STEP_SCALE_RANGE = buildDefaultRange({
@@ -145,7 +151,7 @@ const DEFAULT_VOLUME_SCALE_RANGE = buildDefaultRange({
 
 const DEFAULT_SMART_ORDERS_RANGE = buildDefaultRange({
   min: MIN_DCA_ORDERS,
-  max: MAX_DCA_ORDERS,
+  max: MAX_RESTING_EXCHANGE_ORDERS,
 });
 
 const ensureRangeBounds = (
@@ -334,10 +340,23 @@ export const useDcaTradingContext = (
     return asset || undefined;
   }, [activePair?.quoteAsset?.name, fallbackSymbol?.quoteAsset]);
 
+  // A futures leg that shares its key with a spot leg (OKX / Bybit unified
+  // accounts) is `linkedTo` that leg and the backend stores the shared
+  // balance pool only under the source uuid (the engine resolves the link
+  // when it checks funds; the legacy dashboard did too). Accept rows tagged
+  // with either uuid so a linked leg doesn't read "BAL 0" — e.g. a live
+  // balance push arrives tagged with the source leg.
+  const linkedSourceUUID = useExchangesStore(
+    (state) => state.exchanges[formData.exchangeUUID ?? '']?.linkedTo
+  );
   const balanceMap = React.useMemo(() => {
     const map = new Map<string, BalanceSnapshot>();
     balances
-      .filter((balance) => balance.exchangeUUID === formData.exchangeUUID)
+      .filter(
+        (balance) =>
+          balance.exchangeUUID === formData.exchangeUUID ||
+          (!!linkedSourceUUID && balance.exchangeUUID === linkedSourceUUID)
+      )
       .forEach((balance) => {
         if (!balance?.asset) {
           return;
@@ -365,7 +384,7 @@ export const useDcaTradingContext = (
         });
       });
     return map;
-  }, [balances, formData.exchangeUUID]);
+  }, [balances, formData.exchangeUUID, linkedSourceUUID]);
   const isDealEdit = useMemo(
     () => options?.mode === 'deal-edit' || options?.mode === 'deal-mass-edit',
     [options?.mode]

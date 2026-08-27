@@ -81,7 +81,27 @@ export const CLEAR_GLOBAL_VARIABLES = 'CLEAR_GLOBAL_VARIABLES';
 export const MIN_DCA_TP = 0.001;
 export const MIN_DCA_TP_NEW = 0.01;
 export const MIN_DCA_ORDERS = 1;
+/**
+ * Ceiling on a DCA/Combo ladder's *depth* — how many orders the plan describes.
+ * Mirrors the flat `ordersCount` max in main-app's v2 validator
+ * (`core/src/server/v2/validators/bots/config.ts`), which is the authority.
+ * Ladder depth on its own costs nothing on the exchange: with smart orders on,
+ * only `activeOrdersCount` levels ever rest there.
+ */
 export const MAX_DCA_ORDERS = 200;
+/**
+ * Ceiling on the orders a bot may have *resting on the exchange at any one
+ * moment*, summed across its concurrent deals. This is the real constraint —
+ * venues cap open orders per symbol (Binance's `MAX_NUM_ORDERS` filter, Bybit's
+ * 500 conditional/TP-SL/active ceiling, Kraken's `EOrder:Orders limit
+ * exceeded`), and blowing through it makes the bot fail to place orders rather
+ * than fail to save.
+ *
+ * Deliberately a separate constant from `MAX_DCA_ORDERS`: they happen to share
+ * a value today, but they constrain different things and should be free to
+ * diverge (ideally this one becomes per-symbol, read from `exchangeLimits`).
+ */
+export const MAX_RESTING_EXCHANGE_ORDERS = 200;
 export const MIN_DCA_ORDER_STEP = 0.001;
 export const MIN_COMBO_ORDER_STEP = 0.003;
 export const MAX_DCA_ORDER_STEP = Infinity;
@@ -2616,6 +2636,13 @@ export type Asset = {
   exchange?: string;
   exchangeName?: string;
   exchangeUUID?: string;
+  /**
+   * Venue-derived USD valuation, only present when the caller asked for it with
+   * `getBalances(input: { includeUsdValues: true })`. `null` means the venue
+   * publishes no USD rate for the asset - NOT that it is worth zero.
+   */
+  price?: string | null;
+  usdValue?: string | null;
 };
 
 export type Profit = {
@@ -3272,6 +3299,37 @@ export type DCADeals = {
   flags?: DCADealFlags[];
   closeTrigger?: DCACloseTriggerEnum;
   parentBotId?: string;
+  /** Why a created deal has never opened. See {@link DealStartBlock}. */
+  startBlocked?: DealStartBlock;
+};
+
+/**
+ * Why a deal that exists has never been opened: the venue refused its opening
+ * order, or one of our pre-send guards held it back on the venue's behalf.
+ *
+ * A deal is created before its base order reaches the exchange, so a refusal
+ * leaves it sitting with no orders. Present only while the deal is unstarted;
+ * cleared as soon as an opening order is accepted. Descriptive - the deal is
+ * NOT in an error state, and for a Binance Quantitative Rules cooldown it will
+ * open itself once the restriction lifts.
+ */
+export type DealStartBlock = {
+  /** User-facing reason the opening order was not accepted. */
+  reason?: string;
+  /** Bot-error subType the reason classified as, e.g. `Exchange rules`. */
+  subType?: string;
+  /** ms epoch of the first refusal in this run of refusals. */
+  since?: number;
+  /** ms epoch of the most recent refusal. */
+  lastAttempt?: number;
+  /** How many opening attempts have been refused since `since`. */
+  attempts?: number;
+  /** ms epoch the restriction is expected to lift, when the venue grades it. */
+  retryAfter?: number;
+  /** Restriction scope where the venue distinguishes one, e.g. `account`. */
+  scope?: string;
+  /** Restriction level where the venue grades one (Binance QR 1 | 2 | 3). */
+  level?: number;
 };
 
 export enum DCACloseTriggerEnum {
@@ -3564,10 +3622,6 @@ export enum WebhookActionEnum {
   addFunds = 'addFunds',
   reduceFunds = 'reduceFunds',
   changePairs = 'changePairs',
-  enterLong = 'enterLong',
-  enterShort = 'enterShort',
-  exitLong = 'exitLong',
-  exitShort = 'exitShort',
 }
 
 export enum PairsToSetMode {
@@ -4970,6 +5024,10 @@ export interface CoinListItem {
   // Canonical/curated-listing flag (HL spot only; missing elsewhere =>
   // canonical). Drives the picker's "Canonical only" toggle.
   isCanonical?: boolean;
+  // Why this candidate can't be picked in the current context (e.g. its quote
+  // asset doesn't match the bot's anchored quote). Present => the picker shows
+  // the row dimmed and inert with this as its tooltip, rather than hiding it.
+  disabledReason?: string;
   // Optional market-data enrichment (cloud only — populated from the
   // screener + curated-presets via the pairMarketData provider). All
   // optional so sh and coins-mode are unaffected.

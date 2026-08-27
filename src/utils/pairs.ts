@@ -64,6 +64,24 @@ export const isTokenizedStockPair = (pair: string): boolean =>
   /[A-Z]x(?:[-/]|USD|USDT|USDC|EUR|GBP|$)/.test(pair || '');
 
 /**
+ * Strip the builder-dex prefix from a base asset, leaving the clean underlying.
+ *
+ * Hyperliquid HIP-3 markets are minted by a builder dex whose id prefixes the
+ * base — `xyz:SP500`, `flx:NVDA`, `para:AVGO`. The prefix identifies the venue
+ * that listed the market, not the asset, so it is noise wherever the ASSET is
+ * what matters: icon lookup (`/images/index/SP500.svg`) and the short unit
+ * label next to an amount field. A colon only ever appears in these bases.
+ *
+ * Do NOT use this to build anything sent to an exchange or used as a pair key —
+ * the prefix is part of the market's identity there, and two dexes can list the
+ * same underlying.
+ */
+export const stripDexPrefix = (symbol: string): string => {
+  const s = symbol || '';
+  return s.includes(':') ? s.slice(s.indexOf(':') + 1) : s;
+};
+
+/**
  * Map an exchange **balance/ledger** asset code to its tradeable **pair base**
  * (`baseAsset.name` on the loaded trading pairs), so a holding can be looked up
  * via `useResolvePairAsset` for its asset class + display name. Mirrors the
@@ -193,12 +211,19 @@ export const extractPairAssets = (symbol: string) => {
   if (symbol.includes('-')) {
     const parts = symbol.split('-');
     // OKX X-Perp pairs carry a contract-family suffix after the quote asset
-    // (`BTC-USD_UM_XPERP`) — strip it here so display/icon lookups get the
-    // real quote (`USD`), not `USD_UM_XPERP`. The full literal string (with
+    // (`BTC-USD_UM_XPERP`) — strip it here so display/icon lookups get a real
+    // asset, not `USD_UM_XPERP`. The `USD` in the instId is OKX's unified-
+    // margin label; the pair is USDC-quoted (that's what the connector/pairs
+    // collection say and what EU accounts hold), so report USDC here too so
+    // this fallback agrees with pair metadata. The full literal string (with
     // suffix) is still what's sent to the exchange API; callers use `pair`
     // directly for that, not this reconstruction.
+    const isXperp = /_UM_XPERP$/i.test(symbol);
     const quotePart = (parts[1] || '').split('_')[0];
-    return { baseAsset: parts[0], quoteAsset: quotePart };
+    return {
+      baseAsset: parts[0],
+      quoteAsset: isXperp && quotePart.toUpperCase() === 'USD' ? 'USDC' : quotePart,
+    };
   }
 
   const upperSymbol = symbol.toUpperCase();

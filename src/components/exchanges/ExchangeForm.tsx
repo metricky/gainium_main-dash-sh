@@ -1,5 +1,6 @@
 import { paidExchanges } from '@/constants/subscription';
 import { useWeb3Wallet, type WalletProvider } from '@/hooks/useWeb3Wallet';
+import { useIsBetaUser } from '@/hooks/useIsBetaUser';
 import { track as analyticsTrack } from '@/lib/analytics';
 import { useEntitlements } from '@/lib/entitlements';
 import { Slot } from '@/lib/extensions';
@@ -47,7 +48,9 @@ import {
   getPaperSubAccountLabel,
   getPaperTradingAssets,
   getSubAccountTopUpAssets,
+  formatBound,
   isPaperExchange,
+  paperBalanceBounds,
   requiresPassphrase,
   supportsHostSelection,
   supportsKeyTypes,
@@ -444,6 +447,11 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
     return getExchangeConfig(formData.provider);
   }, [formData.provider]);
 
+  // OKX Europe X-Perp futures are in beta — only the 'Alpha' group can add
+  // EU futures; everyone else is auto-corrected to Spot (the backend
+  // enforces the same rule). Remove at GA.
+  const okxEuFuturesAllowed = useIsBetaUser();
+
   // Get paper trading assets for current exchange. Origin-aware: an OKX
   // account on the Europe origin funds from the `okxEu` lists (no USDT on
   // the EU venue).
@@ -785,16 +793,18 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
         }
 
         const balance = parseFloat(formData.stablecoinBalance);
+        const { min, max, asset } = paperBalanceBounds(
+          formData.coinToTopUp,
+          paperTradingAssets
+        );
         if (isNaN(balance)) {
           newErrors.stablecoinBalance = 'Balance must be a valid number';
         } else if (balance < 0) {
           newErrors.stablecoinBalance = 'Balance must be a positive number';
-        } else if (balance < 100) {
-          newErrors.stablecoinBalance =
-            'Minimum balance is $100 for meaningful testing';
-        } else if (balance > 1000000) {
-          newErrors.stablecoinBalance =
-            'Maximum balance is $1,000,000 for paper trading';
+        } else if (balance < min) {
+          newErrors.stablecoinBalance = `Minimum balance is ${formatBound(min)} ${asset} for meaningful testing`;
+        } else if (balance > max) {
+          newErrors.stablecoinBalance = `Maximum balance is ${formatBound(max)} ${asset} for paper trading`;
         }
       }
     }
@@ -1669,18 +1679,45 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                         };
                         // OKX Europe (my.okx.com) futures are the linear,
                         // USDC-settled X-Perps — supported on the okxLinear
-                        // rail. The EU venue has no coin-margined (inverse)
-                        // product, so only correct an Inverse selection to
-                        // Linear; Spot/Linear/All stay as picked (the backend
-                        // creates the spot + linear legs only for EU).
+                        // rail, currently in BETA (Alpha group only). For
+                        // beta users the EU venue simply has no coin-margined
+                        // (inverse) product, so an Inverse selection corrects
+                        // to Linear; Spot/Linear/All stay as picked. For
+                        // everyone else any futures-bearing selection
+                        // auto-corrects to Spot (the pre-beta behavior; the
+                        // backend enforces the same rule).
                         if (value === OKXSource.my) {
-                          if (formData.provider === ExchangeEnum.okxInverse) {
-                            updates.provider = ExchangeEnum.okxLinear;
-                          }
-                          if (
-                            formData.provider === ExchangeEnum.paperOkxInverse
-                          ) {
-                            updates.provider = ExchangeEnum.paperOkxLinear;
+                          if (okxEuFuturesAllowed) {
+                            if (
+                              formData.provider === ExchangeEnum.okxInverse
+                            ) {
+                              updates.provider = ExchangeEnum.okxLinear;
+                            }
+                            if (
+                              formData.provider ===
+                              ExchangeEnum.paperOkxInverse
+                            ) {
+                              updates.provider = ExchangeEnum.paperOkxLinear;
+                            }
+                          } else {
+                            if (
+                              [
+                                ExchangeEnum.okxAll,
+                                ExchangeEnum.okxLinear,
+                                ExchangeEnum.okxInverse,
+                              ].includes(formData.provider)
+                            ) {
+                              updates.provider = ExchangeEnum.okxSpot;
+                            }
+                            if (
+                              [
+                                ExchangeEnum.paperOkxAll,
+                                ExchangeEnum.paperOkxLinear,
+                                ExchangeEnum.paperOkxInverse,
+                              ].includes(formData.provider)
+                            ) {
+                              updates.provider = ExchangeEnum.paperOkxSpot;
+                            }
                           }
                         }
                         // Origin change swaps the funding-asset universe for a
@@ -1727,9 +1764,24 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                         <span>
                           OKX Europe offers a restricted product set. Through
                           Gainium you can trade <strong>USDC/EUR spot</strong>{' '}
-                          pairs and <strong>X-Perp futures</strong> on EU
-                          accounts — USDT pairs and coin-margined (inverse)
-                          contracts aren&apos;t available.
+                          pairs
+                          {okxEuFuturesAllowed ? (
+                            <>
+                              {' '}
+                              and <strong>X-Perp futures</strong>
+                            </>
+                          ) : (
+                            <>
+                              {' '}
+                              on EU accounts; <strong>
+                                X-Perp futures
+                              </strong>{' '}
+                              support is in beta and not yet generally
+                              available
+                            </>
+                          )}{' '}
+                          — USDT pairs and coin-margined (inverse) contracts
+                          aren&apos;t available.
                         </span>
                       </div>
                     )}

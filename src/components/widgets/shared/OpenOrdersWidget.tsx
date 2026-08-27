@@ -2,7 +2,9 @@
 // Usage: shared trades/deals table used by the Trading page Trades tab,
 // the Trading dashboard Open Orders widget wrapper, and the Trading Terminal panel.
 // Not used in the bot drawer (see DrawerDealsTable for drawer deals UI).
+import { dealStartBlockedSummary } from '@/lib/utils/dealStartBlocked';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
+import { Tooltip as HelpTooltip } from '@/components/ui/tooltip';
 import {
     AdjustFundsDialog,
     ChangeDcaLevelsDialog,
@@ -28,6 +30,11 @@ import {
 /* import { useGraphQL } from '@/hooks/useGraphQL';
 import { GraphQlQuery } from '@/lib/api'; */
 import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
+import {
+    canAdjustDealFunds,
+    type BulkAdjustFundsTarget,
+} from '@/components/deals/actions/bulkAdjustFundsTargets';
+import { useBulkAdjustFunds } from '@/components/deals/actions/useBulkAdjustFunds';
 import { DealEditDrawer } from '@/components/deals/DealEditDrawer';
 import { TradeDetailDrawer } from '@/components/trades/TradeDetailDrawer';
 import { useDcaDeals } from '@/hooks/useDcaDeals';
@@ -35,6 +42,7 @@ import { toast } from '@/lib/toast';
 import { formatTradingPair } from '@/lib/utils';
 import {
     calculateDealCost,
+    calculateDealNetPnl,
     calculateDealSize,
     calculateDealValue,
     calculatePnlPercentage,
@@ -51,6 +59,7 @@ import {
     DCADealStatusEnum,
     type AddFundsSettings,
     type DCADeals,
+    type DealStartBlock,
     type GetLatestPricesResult,
     type Prices,
 } from '@/types';
@@ -68,6 +77,7 @@ import {
     ExternalLink,
     MinusCircle,
     MoreHorizontal,
+    PauseCircle,
     PlusCircle,
     Receipt,
     RotateCcw,
@@ -387,6 +397,17 @@ const mapOpenTradeTypeToBotType = (
 
 const MOVE_TO_TERMINAL_WARNING =
   'After moving deals to terminal, the bot may immediately start new deals if slots are available (especially with ASAP start conditions). To avoid this, adjust max open deals or max deals per pair before confirming.';
+
+const toAdjustFundsTarget = (trade: OpenTrade): BulkAdjustFundsTarget => ({
+  dealId: trade.id,
+  botId: trade.botId,
+  status: trade.status,
+  type: trade.type,
+  baseAsset: trade.baseAsset,
+  quoteAsset: trade.quoteAsset,
+  symbol: trade.symbol,
+  exchange: trade.exchange,
+});
 
 const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   trade,
@@ -757,6 +778,8 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
         onConfirm={handleAdjustFundsConfirm}
         baseAsset={trade.baseAsset}
         quoteAsset={trade.quoteAsset}
+        symbol={trade.symbol}
+        exchange={trade.exchange}
       />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -769,7 +792,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
             <MoreHorizontal className="w-4 h-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56 z-50">
+        <DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onClick={handleAddToJournal}>
             <BookOpen className="w-4 h-4 mr-2" />
             Add to Journal
@@ -1231,6 +1254,23 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const [openDetailDrawerTrade, setOpenDetailDrawerTrade] = useState<
     DCADeals[] | null
   >(null);
+  // The raw deal we hand the edit drawer carries no bot type of its own (see
+  // the `botType` prop on DealEditDrawer), so capture it from the row being
+  // edited — the transformed row is the only place the deal's engine is known
+  // on this side. Without it the drawer defaults every deal to DCA and a
+  // combo save goes out as the DCA mutation, which reads a different
+  // collection and fails with "Deal not found".
+  const [editDrawerBotType, setEditDrawerBotType] = useState<
+    BotTypesEnum | undefined
+  >(undefined);
+  const openEditDrawerFor = useCallback((deal: DCADeals, tradeType: string) => {
+    setEditDrawerBotType(
+      mapOpenTradeTypeToBotType(tradeType, botTypeOverrideRef.current)
+    );
+    // Read through `botTypeOverrideRef` (not the prop) so this callback stays
+    // dependency-free and doesn't rebuild the column definitions each render.
+    setOpenDetailDrawerTrade([deal]);
+  }, []);
 
   // Read-only "Trade Details" drawer (separate from the editable
   // DealEditDrawer that openDetailDrawerTrade above feeds). Card body click
@@ -1244,6 +1284,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
 
   const handleCloseEditDrawer = useCallback(() => {
     setOpenDetailDrawerTrade(null);
+    setEditDrawerBotType(undefined);
   }, []);
   const showEditDrawer = useMemo(
     () => openDetailDrawerTrade !== null,
@@ -1294,13 +1335,13 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         activeDealsRaw.find((d) => d._id === dealId) ||
         allKnownDeals.find((d) => d._id === dealId);
       if (find) {
-        setOpenDetailDrawerTrade([find]);
+        openEditDrawerFor(find, trade.type);
         return;
       }
 
       openEditInBotDrawer(trade);
     },
-    [activeDealsRaw, allKnownDeals, openEditInBotDrawer]
+    [activeDealsRaw, allKnownDeals, openEditInBotDrawer, openEditDrawerFor]
   );
   handleEditRef.current = handleEdit;
   /*   const graphQueryKey = enableStatusToggle ? 'dcaDealList' : 'getDCADeals';
@@ -1472,7 +1513,13 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
               (Number(deal.initialBalances.base || 0) - currentBaseAmount) *
                 Number(currentMarketPrice)
           : undefined;
-      const realizedPnl = executionSummary?.realizedPnl ?? 0;
+      // Realized P&L comes from the backend's authoritative `deal.profit`, the
+      // same source `dcaDealToOpenTrade` / `comboDealToOpenTrade` use. Do NOT
+      // derive it from `executionSummary` (same trap as `avgPrice` below):
+      // `liveOrders` is filtered to OPEN statuses only, so the FILLED filter
+      // feeding `executions` can never match, the summary is always null, and
+      // `?? 0` silently overwrote every deal's real profit with 0.00.
+      const realizedPnl = Number(deal.profit?.totalUsd || 0);
       const usagePercentage = cost > 0 ? (value / cost) * 100 : 0;
 
       // Use createTime if available, otherwise generate realistic creation time
@@ -1549,10 +1596,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           },
         },
         profit: {
-          total: realizedPnl,
+          total: Number(deal.profit?.total || 0),
           totalUsd: realizedPnl,
-          pureBase: 0,
-          pureQuote: 0,
+          pureBase: Number(deal.profit?.pureBase || 0),
+          pureQuote: Number(deal.profit?.pureQuote || 0),
         },
         unrealizedProfit: unrealizedPnl,
         // The backend's `deal.avgPrice` is the authoritative running average and
@@ -1838,6 +1885,76 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const selectedStatusLabel =
     statusFilter === 'open' ? openOptionLabel : closedOptionLabel;
 
+  // The status <Select> is handed to DataTable as `firstToolbarActions` /
+  // `firstToolbarActionsCompact`. Both are deps of the `buttonConfigs` useMemo
+  // in ToolbarButtonRow, whose result is the `buttons` prop of the React.memo'd
+  // ResponsiveButtonRow — so inline JSX here produced a fresh element identity
+  // on EVERY render of this widget, rebuilt the button array and defeated that
+  // memo. On /bot?view=deals the deal stores are written once per socket event
+  // (`bot deal update` / `data update` arrive ~30x/s on an account with active
+  // deals), which is what RenderLoopTripwire reported as "ResponsiveButtonRow —
+  // 26 renders in 769ms". Memoised on the primitives the markup actually reads,
+  // so the element changes when the labels/counts change and not before.
+  // `setStatusFilter` is a stable useCallback over a zustand action
+  // (`useTableCustomState`), so it is safe as a dep. Same shape TopDeals
+  // already uses for its own toolbar slot (`metricSelectFull`/`Compact`).
+  const statusToggleFull = useMemo(
+    () =>
+      enableStatusToggle ? (
+        <Select
+          value={statusFilter}
+          onValueChange={(value) => setStatusFilter(value as 'open' | 'closed')}
+        >
+          <SelectTrigger className="h-9 w-40">
+            <SelectValue placeholder={selectedStatusLabel} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="open">{openOptionLabel}</SelectItem>
+            <SelectItem value="closed">{closedOptionLabel}</SelectItem>
+          </SelectContent>
+        </Select>
+      ) : undefined,
+    [
+      enableStatusToggle,
+      statusFilter,
+      setStatusFilter,
+      selectedStatusLabel,
+      openOptionLabel,
+      closedOptionLabel,
+    ]
+  );
+
+  const statusToggleCompact = useMemo(
+    () =>
+      enableStatusToggle ? (
+        <Select
+          value={statusFilter}
+          onValueChange={(value) => setStatusFilter(value as 'open' | 'closed')}
+        >
+          <SelectTrigger className="h-9 w-24">
+            <SelectValue
+              placeholder={
+                statusFilter === 'open' ? `${openCount}` : `${closedCount}`
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="open">{openOptionLabel}</SelectItem>
+            <SelectItem value="closed">{closedOptionLabel}</SelectItem>
+          </SelectContent>
+        </Select>
+      ) : undefined,
+    [
+      enableStatusToggle,
+      statusFilter,
+      setStatusFilter,
+      openCount,
+      closedCount,
+      openOptionLabel,
+      closedOptionLabel,
+    ]
+  );
+
   // Define default bulk actions if none provided
   const addToJournalBulk = useTradeJournalStore((state) => state.addTrade);
   const mergeSmartOrdersMutation = useMergeSmartOrders();
@@ -1846,6 +1963,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const [closeDialogOpen, setCloseDialogOpen] = useState<OpenTrade[]>([]);
   const [moveBulkDialogOpen, setMoveBulkDialogOpen] = useState<OpenTrade[]>([]);
   const moveDealToTerminalMutation = useMoveDealToTerminal();
+  const { open: openBulkAdjustFunds, dialog: bulkAdjustFundsDialog } =
+    useBulkAdjustFunds();
 
   const canMoveTradeToTerminal = useCallback((trade: OpenTrade): boolean => {
     return (
@@ -1989,19 +2108,12 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           }
         },
         onAddFunds: (selectedTrades) => {
-          logger.info(`${LOG_PREFIX}: Bulk add funds`, {
-            count: selectedTrades.length,
-          });
-          toast.info(
-            `Add funds to ${selectedTrades.length} trade(s) (Coming soon)`
-          );
+          openBulkAdjustFunds('add', selectedTrades.map(toAdjustFundsTarget));
         },
         onReduceFunds: (selectedTrades) => {
-          logger.info(`${LOG_PREFIX}: Bulk reduce funds`, {
-            count: selectedTrades.length,
-          });
-          toast.info(
-            `Reduce funds from ${selectedTrades.length} trade(s) (Coming soon)`
+          openBulkAdjustFunds(
+            'reduce',
+            selectedTrades.map(toAdjustFundsTarget)
           );
         },
         onEdit: (selectedTrades) => {
@@ -2042,6 +2154,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           setCloseDialogOpen(selectedTrades);
         },
         canMoveToTerminal: canMoveTradeToTerminal,
+        canAdjustFunds: (trade) => canAdjustDealFunds(toAdjustFundsTarget(trade)),
         getSymbol: (trade) => trade.symbol,
       }),
     // Depend on the stable `mutateAsync` method, not the react-query mutation
@@ -2054,6 +2167,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       addToJournalBulk,
       mergeSmartOrdersMutation.mutateAsync,
       canMoveTradeToTerminal,
+      openBulkAdjustFunds,
       handleEdit,
       allKnownDeals,
     ]
@@ -2260,9 +2374,30 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         accessorKey: 'status',
         header: 'Status',
         meta: { filterType: 'array' },
-        cell: ({ getValue }) => {
+        cell: ({ getValue, row }) => {
           const status = getValue() as string;
-          return <StatusChip status={status} size="xs" />;
+          const chip = <StatusChip status={status} size="xs" />;
+          // A deal the venue refused to open looks identical to one that is
+          // simply waiting: same status, no orders, all-zero numbers. This is
+          // the list a user scans when a signal produced nothing, so the reason
+          // has to be reachable from the row itself.
+          const startBlocked = (
+            row.original as { startBlocked?: DealStartBlock }
+          ).startBlocked;
+          if (!startBlocked?.reason) {
+            return chip;
+          }
+          return (
+            <HelpTooltip tooltip={dealStartBlockedSummary(startBlocked)}>
+              <span
+                className="relative inline-flex items-center gap-0.5"
+                data-testid="deal-start-blocked-dot"
+              >
+                {chip}
+                <PauseCircle className="size-3 text-amber-500" />
+              </span>
+            </HelpTooltip>
+          );
         },
       },
       {
@@ -2441,11 +2576,12 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       },
       {
         id: 'netPnl',
-        accessorFn: (row) => {
-          const unrealizedProfit = Number(row.unrealizedProfit || 0);
-          const realizedProfit = Number(row.profit?.totalUsd || 0);
-          return unrealizedProfit + realizedProfit;
-        },
+        accessorFn: (row) =>
+          calculateDealNetPnl({
+            active: row.active,
+            unrealizedProfit: row.unrealizedProfit,
+            realizedProfit: row.profit?.totalUsd,
+          }),
         header: 'Net P&L',
         meta: {
           filterType: 'number',
@@ -2470,9 +2606,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           if (row.original.active && pricesLoading) {
             return <Skeleton className="h-4 w-16" />;
           }
-          const unrealizedProfit = Number(row.original.unrealizedProfit || 0);
-          const realizedProfit = Number(row.original.profit?.totalUsd || 0);
-          const netPnl = unrealizedProfit + realizedProfit;
+          const netPnl = calculateDealNetPnl({
+            active: row.original.active,
+            unrealizedProfit: row.original.unrealizedProfit,
+            realizedProfit: row.original.profit?.totalUsd,
+          });
           const cost = Number(row.original.cost || 0);
           const percentage = calculatePnlPercentage(netPnl, cost);
           return (
@@ -2488,9 +2626,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       },
       {
         accessorFn: (row) => {
-          const unrealizedProfit = Number(row.unrealizedProfit || 0);
-          const realizedProfit = Number(row.profit?.totalUsd || 0);
-          const netPnl = unrealizedProfit + realizedProfit;
+          const netPnl = calculateDealNetPnl({
+            active: row.active,
+            unrealizedProfit: row.unrealizedProfit,
+            realizedProfit: row.profit?.totalUsd,
+          });
           const cost = Number(row.cost || 0);
           return calculatePnlPercentage(netPnl, cost);
         },
@@ -2501,9 +2641,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           if (row.original.active && pricesLoading) {
             return <Skeleton className="h-4 w-12" />;
           }
-          const unrealizedProfit = Number(row.original.unrealizedProfit || 0);
-          const realizedProfit = Number(row.original.profit?.totalUsd || 0);
-          const netPnl = unrealizedProfit + realizedProfit;
+          const netPnl = calculateDealNetPnl({
+            active: row.original.active,
+            unrealizedProfit: row.original.unrealizedProfit,
+            realizedProfit: row.original.profit?.totalUsd,
+          });
           const cost = Number(row.original.cost || 0);
           const percentage = calculatePnlPercentage(netPnl, cost);
           if (privacyMode) {
@@ -3029,7 +3171,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
                   activeDealsRaw.find((d) => d._id === dealId) ||
                   allKnownDeals.find((d) => d._id === dealId);
                 if (find) {
-                  setOpenDetailDrawerTrade([find]);
+                  openEditDrawerFor(find, t.type);
                   return;
                 }
 
@@ -3083,6 +3225,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     handleSaveNote,
     handleEdit,
     allKnownDeals,
+    openEditDrawerFor,
   ]);
 
   // Wrapper component to adapt props for TradeCard.
@@ -3338,6 +3481,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         open={showEditDrawer}
         onClose={handleCloseEditDrawer}
         trade={openDetailDrawerTrade}
+        botType={editDrawerBotType}
       >
         <div />
       </DealEditDrawer>
@@ -3371,48 +3515,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
             openDetailsRef.current(row);
           }
         }}
-        firstToolbarActions={
-          enableStatusToggle ? (
-            <Select
-              value={statusFilter}
-              onValueChange={(value) =>
-                setStatusFilter(value as 'open' | 'closed')
-              }
-            >
-              <SelectTrigger className="h-9 w-40">
-                <SelectValue placeholder={selectedStatusLabel} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="open">{openOptionLabel}</SelectItem>
-                <SelectItem value="closed">{closedOptionLabel}</SelectItem>
-              </SelectContent>
-            </Select>
-          ) : undefined
-        }
-        firstToolbarActionsCompact={
-          enableStatusToggle ? (
-            <Select
-              value={statusFilter}
-              onValueChange={(value) =>
-                setStatusFilter(value as 'open' | 'closed')
-              }
-            >
-              <SelectTrigger className="h-9 w-24">
-                <SelectValue
-                  placeholder={
-                    statusFilter === 'open'
-                      ? `${openCount}`
-                      : `${closedCount}`
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="open">{openOptionLabel}</SelectItem>
-                <SelectItem value="closed">{closedOptionLabel}</SelectItem>
-              </SelectContent>
-            </Select>
-          ) : undefined
-        }
+        firstToolbarActions={statusToggleFull}
+        firstToolbarActionsCompact={statusToggleCompact}
         enableGlobalFilter={true}
         enableColumnFilters={true}
         enableSorting={true}
@@ -3479,6 +3583,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         ignoreOptions={[CloseDCATypeEnum.leave]}
         mode="deal"
       />
+      {bulkAdjustFundsDialog}
       <ConfirmationDialog
         open={!!moveBulkDialogOpen.length}
         onOpenChange={() => setMoveBulkDialogOpen([])}

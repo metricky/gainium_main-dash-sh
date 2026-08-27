@@ -91,6 +91,11 @@ import {
 } from '@/types/indicators/indicatorLogic';
 import type { IndicatorParamsState } from '@/types/indicators/indicatorParams';
 import {
+    describeStepCeiling,
+    MAX_DCA_ORDER_STEP_PERCENT,
+    resolveStepSliderMax,
+} from '@/utils/bots/dca/ranges';
+import {
     buildSmartOrdersHelperMessage,
     deriveSmartOrdersRange,
 } from '@/utils/bots/dca/smart-orders';
@@ -115,7 +120,6 @@ import type { TerminalControlsToolkit } from '../hooks/useTerminalControls.types
 import { DcaOrderSizingControl } from './DcaOrderSizingControl';
 
 const MINIMUM_DEVIATION_MIN = 0;
-const MINIMUM_DEVIATION_MAX = 10;
 
 // Cloning a start-DCA indicator needs several distinct ids in one call, so the
 // `dca-indicator-${Date.now()}` scheme would collide. Same shape as the helper
@@ -125,11 +129,14 @@ const createDcaIndicatorId = () =>
     ? crypto.randomUUID()
     : `dca-indicator-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-const clampMinimumDeviation = (value: number) =>
-  Math.min(MINIMUM_DEVIATION_MAX, Math.max(MINIMUM_DEVIATION_MIN, value));
+// The guard is a FLOOR on ATR/ADR spacing, so it can never sensibly exceed the
+// widest step the ladder itself allows — it rides the same dynamic ceiling
+// rather than the flat 10% it used to carry.
+const clampMinimumDeviation = (value: number, max: number) =>
+  Math.min(max, Math.max(MINIMUM_DEVIATION_MIN, value));
 
-const formatMinimumDeviation = (value: number) =>
-  formatNumericInput(clampMinimumDeviation(value), 2);
+const formatMinimumDeviation = (value: number, max: number) =>
+  formatNumericInput(clampMinimumDeviation(value, max), 2);
 
 const normalizeCloseCondition = (
   value?: BotFormData['dca']['dealCloseCondition'] | string | null
@@ -285,7 +292,14 @@ const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
       combinedSmartOrdersRange
     );
 
-    if (!segments.includes(derivedMessage)) {
+    // The derived message opens with its own "From x to y", so an identical
+    // backend segment would render the range twice ("From 1 to 40 • From 1 to
+    // 40 (…)"). Compare on the prefix, not the whole string — the explanatory
+    // tail makes an exact-equality check never match.
+    if (!segments.some((segment) => derivedMessage.startsWith(segment))) {
+      segments.push(derivedMessage);
+    } else {
+      segments.length = 0;
       segments.push(derivedMessage);
     }
 
@@ -462,10 +476,8 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   );
   const isDealMassEdit = useMemo(() => mode === 'deal-mass-edit', [mode]);
   const { alerts } = useBotFormState();
-  const dealCloseCondition = useBotFormSelector('dealCloseCondition');
   const useTp = useBotFormSelector('useTp');
   const useMultiTp = useBotFormSelector('useMultiTp');
-  const orderSizeType = useBotFormSelector('orderSizeType');
   const scaleDcaType = useBotFormSelector('scaleDcaType');
   const step = useBotFormSelector('step');
   const stepScale = useBotFormSelector('stepScale');
@@ -475,18 +487,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   const gridLevel = useBotFormSelector('gridLevel');
   const comboActiveMinigrids = useBotFormSelector('comboActiveMinigrids');
   const comboSmartGridsCount = useBotFormSelector('comboSmartGridsCount');
-  const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
   const futures = useBotFormSelector('futures');
   const coinm = useBotFormSelector('coinm');
   const strategy = useBotFormSelector('strategy');
   const useActiveMinigrids = useBotFormSelector('useActiveMinigrids');
   const comboUseSmartGrids = useBotFormSelector('comboUseSmartGrids');
-  const showVolumeControls = canDisplayRequiredChange({
-    dealCloseCondition,
-    useTp,
-    useMultiTp,
-    orderSizeType,
-  });
   const useDca = useBotFormSelector('useDca');
   const indicators = useBotFormSelector('indicators');
   const { currentExchange } = useBotFormQuery();
@@ -543,10 +548,10 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   const stepRange = tradingContext.ranges.step;
   const stepRangeMin = stepRange.min;
   const stepRangeMax = stepRange.max;
-  const stepSliderMax =
-    typeof stepRangeMax === 'number' && Number.isFinite(stepRangeMax)
-      ? stepRangeMax
-      : stepRangeMin + 10;
+  const stepSliderMax = useMemo(
+    () => resolveStepSliderMax(stepRange, step),
+    [stepRange, step]
+  );
   const stepScaleRange = tradingContext.ranges.stepScale;
   const stepScaleRangeMin = stepScaleRange.min;
   const stepScaleRangeMax = stepScaleRange.max;
@@ -656,10 +661,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     [ordersRange]
   );
 
-  const stepHelperMessage = useMemo(
-    () => formatRange(stepRange, { unit: '%', precision: 2 }),
-    [stepRange]
-  );
+  const stepHelperMessage = useMemo(() => {
+    const base = formatRange(stepRange, { unit: '%', precision: 2 });
+    const reason = describeStepCeiling(stepRange);
+    return reason ? `${base}. ${reason}` : base;
+  }, [stepRange]);
 
   const stepScaleHelperMessage = useMemo(
     () => formatRange(stepScaleRange),
@@ -841,13 +847,30 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     [updateFormData]
   );
 
+  const minimumDeviationMax = useMemo(
+    () =>
+      typeof stepRangeMax === 'number' && Number.isFinite(stepRangeMax)
+        ? stepRangeMax
+        : MAX_DCA_ORDER_STEP_PERCENT,
+    [stepRangeMax]
+  );
+
+  const minimumDeviationSliderMax = useMemo(
+    () =>
+      resolveStepSliderMax(
+        { min: MINIMUM_DEVIATION_MIN, max: minimumDeviationMax },
+        minimumDeviation
+      ),
+    [minimumDeviationMax, minimumDeviation]
+  );
+
   const minimumDeviationNumeric = useMemo(() => {
     const parsed = Number.parseFloat(minimumDeviation ?? '');
     if (!Number.isFinite(parsed)) {
       return MINIMUM_DEVIATION_MIN;
     }
-    return clampMinimumDeviation(parsed);
-  }, [minimumDeviation]);
+    return clampMinimumDeviation(parsed, minimumDeviationMax);
+  }, [minimumDeviation, minimumDeviationMax]);
 
   const handleMinimumDeviationSliderChange = useCallback(
     (value: number) => {
@@ -857,9 +880,12 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
       if (!Number.isFinite(value)) {
         return;
       }
-      updateFormData('minimumDeviation', formatMinimumDeviation(value));
+      updateFormData(
+        'minimumDeviation',
+        formatMinimumDeviation(value, minimumDeviationMax)
+      );
     },
-    [isMinimumDeviationVarBound, updateFormData]
+    [isMinimumDeviationVarBound, minimumDeviationMax, updateFormData]
   );
 
   const handleMinimumDeviationInputChange = useCallback(
@@ -875,9 +901,12 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
       if (!Number.isFinite(numericValue)) {
         return;
       }
-      updateFormData('minimumDeviation', formatMinimumDeviation(numericValue));
+      updateFormData(
+        'minimumDeviation',
+        formatMinimumDeviation(numericValue, minimumDeviationMax)
+      );
     },
-    [isMinimumDeviationVarBound, updateFormData]
+    [isMinimumDeviationVarBound, minimumDeviationMax, updateFormData]
   );
 
   const applyMinimumDeviationVariable = useCallback(
@@ -889,9 +918,12 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
       if (!Number.isFinite(numericValue)) {
         return;
       }
-      updateFormData('minimumDeviation', formatMinimumDeviation(numericValue));
+      updateFormData(
+        'minimumDeviation',
+        formatMinimumDeviation(numericValue, minimumDeviationMax)
+      );
     },
-    [updateFormData]
+    [minimumDeviationMax, updateFormData]
   );
 
   const comboSpacing = useMemo(() => {
@@ -1028,12 +1060,6 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     },
     [isComboSmartGridsVarBound, totalOrdersCount, updateFormData]
   );
-
-  useEffect(() => {
-    if (!showVolumeControls && dcaVolumeBaseOn === DCAVolumeType.change) {
-      updateFormData('dcaVolumeBaseOn', 'scaled');
-    }
-  }, [showVolumeControls, dcaVolumeBaseOn, updateFormData]);
 
   const handleSliderChange = useCallback(
     (field: Fields, rawValue: number) => {
@@ -1205,7 +1231,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
         {showMinimumDeviationGuard ? (
           <SettingsRow
             name="Minimum deviation guard"
-            tooltip={`Prevents ATR/ADR-based scaling from stacking orders closer than ${MINIMUM_DEVIATION_MIN}%–${MINIMUM_DEVIATION_MAX}%.`}
+            tooltip={`Prevents ATR/ADR-based scaling from stacking orders closer than ${MINIMUM_DEVIATION_MIN}%–${minimumDeviationMax}%.`}
           >
             <div className="flex w-full flex-col gap-sm">
               <div className="px-2">
@@ -1213,7 +1239,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                   value={minimumDeviationNumeric}
                   onChange={handleMinimumDeviationSliderChange}
                   min={MINIMUM_DEVIATION_MIN}
-                  max={MINIMUM_DEVIATION_MAX}
+                  max={minimumDeviationSliderMax}
                   step={0.1}
                   className="w-full"
                   disabled={isMinimumDeviationVarBound}
@@ -1232,7 +1258,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                   value={minimumDeviation ?? ''}
                   onChange={handleMinimumDeviationInputChange}
                   min={MINIMUM_DEVIATION_MIN}
-                  max={MINIMUM_DEVIATION_MAX}
+                  max={minimumDeviationMax}
                   step={0.1}
                   precision={2}
                   className="w-full"
@@ -1354,7 +1380,13 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                         max={200}
                         step={1}
                         className="w-full"
-                        disabled={isGridLevelVarBound}
+                        // Read-only when editing a deal, matching legacy
+                        // main-dash: DcaModeSettings disables this input under
+                        // `props.isDealEdit && combo`. The minigrid is laid out
+                        // when the deal opens, so changing its level count
+                        // mid-deal has no coherent meaning for the orders
+                        // already placed.
+                        disabled={isGridLevelVarBound || isDealEdit}
                       />
                     </FieldVariableBinding>
                   </div>
@@ -1404,7 +1436,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                         step={0.1}
                         precision={2}
                         className="w-full"
-                        disabled={isStepVarBound}
+                        // Read-only while editing a deal, same rule and same
+                        // reason as the grid-level input above: legacy disables
+                        // both under `props.isDealEdit && combo`. This block is
+                        // combo-only, so `isDealEdit` alone is that condition.
+                        disabled={isStepVarBound || isDealEdit}
                         endAdornment={unitAdornment('%')}
                       />
                     </FieldVariableBinding>
@@ -1857,11 +1893,14 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
     useMultiTp,
     orderSizeType,
   });
-  useEffect(() => {
-    if (!showVolumeControls && dcaVolumeBaseOn === DCAVolumeType.change) {
-      updateFormData('dcaVolumeBaseOn', 'scaled');
-    }
-  }, [showVolumeControls, dcaVolumeBaseOn, updateFormData]);
+  // Legacy `showVolumeOption` (main-dash `DcaModeSettings.tsx`): a stored
+  // `dcaVolumeBaseOn: 'change'` only hides the per-level order size while the
+  // "Volume based on" control is reachable. When it is not, the setting is
+  // inert for the engine too, so the size the bot actually trades stays
+  // visible instead of being silently dropped from the card.
+  const showVolumeOption =
+    !showVolumeControls ||
+    (dcaVolumeBaseOn ?? DCAVolumeType.scale) === DCAVolumeType.scale;
 
   // When any custom order has a fixed price set, compute its step % relative to previous
   // orders so that both manual edits and picker selections keep step in sync.
@@ -2102,10 +2141,6 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
   const stepRange = tradingContext.ranges.step;
   const stepRangeMin = stepRange.min;
   const stepRangeMax = stepRange.max;
-  const stepSliderMax =
-    typeof stepRangeMax === 'number' && Number.isFinite(stepRangeMax)
-      ? stepRangeMax
-      : stepRangeMin + 10;
 
   const clampIndicatorStep = useCallback(
     (value: number): number => {
@@ -2122,10 +2157,11 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
     [stepRangeMax, stepRangeMin]
   );
 
-  const stepHelperMessage = useMemo(
-    () => formatRange(stepRange, { unit: '%', precision: 2 }),
-    [stepRange]
-  );
+  const stepHelperMessage = useMemo(() => {
+    const base = formatRange(stepRange, { unit: '%', precision: 2 });
+    const reason = describeStepCeiling(stepRange);
+    return reason ? `${base}. ${reason}` : base;
+  }, [stepRange]);
 
   const dcaIndicators = useMemo(
     () =>
@@ -2171,7 +2207,6 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                 onUpdateIndicatorParams={handleIndicatorParamsChange}
                 stepRangeMin={stepRangeMin}
                 stepRangeMax={stepRangeMax}
-                stepSliderMax={stepSliderMax}
                 stepHelperMessage={stepHelperMessage}
                 clampStep={clampIndicatorStep}
                 onRemove={removeIndicator}
@@ -2179,6 +2214,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                 onRefreshBalances={handleRefreshBalances}
                 updateFieldError={updateFieldError}
                 mode={mode}
+                showVolumeOption={showVolumeOption}
               />
             ))}
           </MasonryLayout>
@@ -2286,7 +2322,6 @@ interface CustomDcaOrderRowProps {
   currencyLabel: string;
   stepRangeMin: number;
   stepRangeMax: number | null;
-  stepSliderMax: number;
   stepHelperMessage: string;
   clampStep: (value: number) => number;
   onRemove: (id: string) => void;
@@ -2309,7 +2344,6 @@ const CustomDcaOrderRow = React.memo<CustomDcaOrderRowProps>(({
   tradingContext,
   stepRangeMin,
   stepRangeMax,
-  stepSliderMax,
   stepHelperMessage,
   clampStep,
   onRemove,
@@ -2343,6 +2377,14 @@ const CustomDcaOrderRow = React.memo<CustomDcaOrderRowProps>(({
       Number.isFinite(numericValue) ? numericValue : stepRangeMin
     );
   }, [clampStep, order.step, stepRangeMin]);
+
+  // Per row: the slider only widens past the comfortable range when THIS
+  // order's step needs the room, so a 40% level doesn't coarsen its siblings.
+  const stepSliderMax = useMemo(
+    () =>
+      resolveStepSliderMax({ min: stepRangeMin, max: stepRangeMax }, order.step),
+    [stepRangeMin, stepRangeMax, order.step]
+  );
 
   const stepError = errors[`dcaCustom.${order.uuid}.step`] ?? null;
 
@@ -2647,7 +2689,6 @@ interface TechnicalIndicatorCardProps {
   ) => void;
   stepRangeMin: number;
   stepRangeMax: number | null;
-  stepSliderMax: number;
   stepHelperMessage: string;
   clampStep: (value: number) => number;
   onRemove: (id: string) => void;
@@ -2658,6 +2699,18 @@ interface TechnicalIndicatorCardProps {
     message?: string | undefined
   ) => void;
   mode: BotFormMode;
+  /**
+   * Whether this DCA level's own order size is in play. Mirrors legacy
+   * `showVolumeOption` (main-dash `components/DcaModeSettings.tsx`,
+   * `DCATechnicalIndicators`): the per-level size is hidden only when the
+   * "Volume based on" control is actually reachable AND set to `change`.
+   * A stored `dcaVolumeBaseOn: 'change'` on a bot that cannot use it (e.g.
+   * one that closes on indicators rather than a fixed TP) is inert — the
+   * engine ignores it under the same condition (`useVolumeChange` in
+   * main-app `core/src/bot/dcaHelper.ts`) and trades the per-level size —
+   * so that size must still be shown.
+   */
+  showVolumeOption: boolean;
 }
 
 const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
@@ -2673,18 +2726,17 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
   onUpdateIndicatorParams,
   stepRangeMin,
   stepRangeMax,
-  stepSliderMax,
   stepHelperMessage,
   clampStep,
   onRemove,
   canTriggerBalanceRefresh,
   onRefreshBalances,
   mode,
+  showVolumeOption,
   //updateFieldError,
 }) => {
   const orderSizeReference = formData.orderSizeReference || 'notional';
   const futures = useBotFormSelector('futures');
-  const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
   const { currentExchange } = useBotFormQuery();
   const minPercError =
     errors[`dcaIndicators.${indicator.uuid}.minPercFromLast`] ?? null;
@@ -2698,6 +2750,17 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
     }
     return clampStep(numericValue);
   }, [clampStep, indicator.minPercFromLast, stepRangeMin]);
+
+  // Per indicator level: widen the slider only as far as this level's own value
+  // needs, so one deep level doesn't make the shallow ones undraggable.
+  const stepSliderMax = useMemo(
+    () =>
+      resolveStepSliderMax(
+        { min: stepRangeMin, max: stepRangeMax },
+        indicator.minPercFromLast
+      ),
+    [stepRangeMin, stepRangeMax, indicator.minPercFromLast]
+  );
 
   const minPercVariablePath = useMemo(
     () =>
@@ -2907,7 +2970,7 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
         <p className="text-xs text-muted-foreground">{stepHelperMessage}</p>
       </div>
 
-      {(dcaVolumeBaseOn ?? DCAVolumeType.scale) === DCAVolumeType.scale && (
+      {showVolumeOption && (
         <div className="space-y-sm rounded-md border border-border/60 bg-card p-md">
           {futures && (
             <div className="space-y-xs">
@@ -2976,28 +3039,16 @@ const CustomDCA: React.FC<DCASectionProps> = ({
 }) => {
   const isComboBot = useMemo(() => formData.type === 'combo', [formData.type]);
   const { coordinates, setCoordinates } = useTradingTerminalUtils();
-  const dealCloseCondition = useBotFormSelector('dealCloseCondition');
   const useTp = useBotFormSelector('useTp');
   const useMultiTp = useBotFormSelector('useMultiTp');
   const orderSizeType = useBotFormSelector('orderSizeType');
-  const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
   const dcaCustom = useBotFormSelector('dcaCustom');
   const strategy = useBotFormSelector('strategy');
   const futures = useBotFormSelector('futures');
   const coinm = useBotFormSelector('coinm');
-  const showVolumeControls = canDisplayRequiredChange({
-    dealCloseCondition,
-    useTp,
-    useMultiTp,
-    orderSizeType,
-  });
   const stepRange = tradingContext.ranges.step;
   const stepRangeMin = stepRange.min;
   const stepRangeMax = stepRange.max;
-  const stepSliderMax =
-    typeof stepRangeMax === 'number' && Number.isFinite(stepRangeMax)
-      ? stepRangeMax
-      : stepRangeMin + 10;
 
   const clampCustomStep = useCallback(
     (value: number): number => {
@@ -3014,16 +3065,11 @@ const CustomDCA: React.FC<DCASectionProps> = ({
     [stepRangeMax, stepRangeMin]
   );
 
-  const stepHelperMessage = useMemo(
-    () => formatRange(stepRange, { unit: '%', precision: 2 }),
-    [stepRange]
-  );
-
-  useEffect(() => {
-    if (!showVolumeControls && dcaVolumeBaseOn === DCAVolumeType.change) {
-      updateFormData('dcaVolumeBaseOn', 'scaled');
-    }
-  }, [showVolumeControls, dcaVolumeBaseOn, updateFormData]);
+  const stepHelperMessage = useMemo(() => {
+    const base = formatRange(stepRange, { unit: '%', precision: 2 });
+    const reason = describeStepCeiling(stepRange);
+    return reason ? `${base}. ${reason}` : base;
+  }, [stepRange]);
 
   // Track last processed coordinates to prevent duplicate processing
   const lastProcessedCoordinatesRef = useRef<string | null>(null);
@@ -3303,7 +3349,6 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                 currencyLabel={currencyLabel}
                 stepRangeMin={stepRangeMin}
                 stepRangeMax={stepRangeMax}
-                stepSliderMax={stepSliderMax}
                 stepHelperMessage={stepHelperMessage}
                 clampStep={clampCustomStep}
                 onRemove={removeCustomOrder}

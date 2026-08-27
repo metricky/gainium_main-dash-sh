@@ -1,4 +1,5 @@
 /* eslint-disable spacing/no-hardcoded-font-size */
+import { axisIndexProps, withAxisIndex } from '@/lib/charts/axisIndex';
 import {
     AdjustFundsDialog,
     ChangeDcaLevelsDialog,
@@ -13,6 +14,7 @@ import {
     useRestoreDeal,
 } from '@/hooks/useDealActions';
 import { useDealOrders } from '@/hooks/useDealOrders';
+import { useLongPressMenu } from '@/hooks/useLongPressMenu';
 import { useDealPriceHistory } from '@/hooks/useDealPriceHistory';
 import logger from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
@@ -76,6 +78,7 @@ import {
     DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Tooltip as HelpTooltip } from '../ui/tooltip';
+import { DealStartBlockedNotice } from '../deals/DealStartBlockedNotice';
 import CoinPair from '../widgets/shared/CoinPair';
 import { TradeDetailDrawer } from './TradeDetailDrawer';
 
@@ -399,6 +402,27 @@ const EnhancedCard = React.memo(
         toast.error('Failed to add deal to journal');
       }
     };
+    // Mobile: a long press anywhere on the card opens the actions menu
+    // directly — the floating ⋮ pill is a small target on touch.
+    const {
+      open: actionsMenuOpen,
+      setOpen: setActionsMenuOpen,
+      shouldSuppressClick,
+      longPressHandlers,
+    } = useLongPressMenu();
+
+    // The card's own onClick lives on the parent <Card>; swallow the click
+    // the browser synthesises after a long press before it bubbles there.
+    const handleCardContentClick = useCallback(
+      (e: React.MouseEvent) => {
+        if (shouldSuppressClick()) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      },
+      [shouldSuppressClick]
+    );
+
     // Hook for theme colors
     const colors = useChartColors();
 
@@ -528,7 +552,11 @@ const EnhancedCard = React.memo(
       let si = 0;
       let cost = 0;
       let qty = 0;
-      return priceData.map((p) => {
+      // `time` is a display label ("14:30" intraday, "Aug 24" otherwise) and
+      // repeats across days/years, so the axis is keyed on the row index
+      // instead — see `withAxisIndex`.
+      return withAxisIndex(
+        priceData.map((p) => {
         let buyFilledHere = false;
         while (fi < fills.length && fills[fi].ts <= p.ts) {
           cost += fills[fi].price * fills[fi].qty;
@@ -547,13 +575,14 @@ const EnhancedCard = React.memo(
         // One marker per candle per side (i.e. per level-per-bar already, since a
         // candle carries a single price): drawing every candle's fill is the
         // accurate representation and never drops a bar.
-        return {
-          ...p,
-          tp,
-          fillMarker: buyFilledHere ? p.price : null,
-          sellMarker: sellFilledHere ? p.price : null,
-        };
-      });
+          return {
+            ...p,
+            tp,
+            fillMarker: buyFilledHere ? p.price : null,
+            sellMarker: sellFilledHere ? p.price : null,
+          };
+        })
+      );
     }, [priceData, orders, topLine, trade.entryPrice, trade.avgPrice]);
 
     // Y-axis domain. Zoom from the TOP anchor (entry / TP / evolving TP / candle
@@ -677,15 +706,27 @@ const EnhancedCard = React.memo(
       : trade.unrealizedProfit || 0;
     const pnlBoxRoi = isClosedDeal ? realizedRoi : unrealizedRoi;
     const pnlBoxLabel = isClosedDeal ? 'Realized' : 'Unrealized';
-    const baseSymbol = useMemo(
-      () => (typeof trade.symbol === 'string' ? '' : trade.symbol.baseAsset),
-      [trade.symbol]
-    );
-
-    const quoteSymbol = useMemo(
-      () => (typeof trade.symbol === 'string' ? '' : trade.symbol.quoteAsset),
-      [trade.symbol]
-    );
+    // A deal's symbol reaches this card either as the full object or as a bare
+    // exchange string, depending on which list built it — the card view on the
+    // Deals page passes the string. Returning '' for that case left the
+    // Add/Reduce funds picker showing a generic "Base asset" / "Quote asset",
+    // which is how a user comes to mix the two up and reduce by a base amount
+    // they meant as quote. Split the string instead, and fall back to no label
+    // rather than a guessed one: an unnamed asset is recoverable, a wrongly
+    // named one is not.
+    const { baseSymbol, quoteSymbol } = useMemo(() => {
+      if (typeof trade.symbol !== 'string') {
+        return {
+          baseSymbol: trade.symbol.baseAsset,
+          quoteSymbol: trade.symbol.quoteAsset,
+        };
+      }
+      const parsed = extractPairAssets(trade.symbol);
+      return {
+        baseSymbol: parsed.baseAsset || '',
+        quoteSymbol: parsed.quoteAsset || '',
+      };
+    }, [trade.symbol]);
 
     const symbolString = useMemo(
       () =>
@@ -932,6 +973,8 @@ const EnhancedCard = React.memo(
           onConfirm={handleAdjustFundsConfirm}
           baseAsset={baseSymbol}
           quoteAsset={quoteSymbol}
+          symbol={symbolString}
+          exchange={trade.exchange}
         />
         <ConfirmationDialog
           open={cancelDialogOpen}
@@ -993,14 +1036,22 @@ const EnhancedCard = React.memo(
               : null
           }
         />
-        <CardContent className="p-md relative" style={{ isolation: 'isolate' }}>
+        <CardContent
+          className="p-md relative"
+          style={{ isolation: 'isolate' }}
+          onClickCapture={handleCardContentClick}
+          {...longPressHandlers}
+        >
           {/* Floating actions — hover-reveal on desktop, always visible on
               mobile (matches BotCard / WidgetWrapper pattern) */}
           <div
             className={cn(
               'absolute right-2 top-2 flex items-center gap-1 rounded-md border border-border/60 bg-muted/95 px-1 py-0.5 shadow-sm backdrop-blur-sm transition-all duration-200 ease-out z-10',
               'opacity-100 translate-x-0 pointer-events-auto',
-              'sm:pointer-events-none sm:opacity-0 sm:translate-x-3 sm:group-hover/card:pointer-events-auto sm:group-hover/card:opacity-100 sm:group-hover/card:translate-x-0 sm:group-focus-within/card:pointer-events-auto sm:group-focus-within/card:opacity-100 sm:group-focus-within/card:translate-x-0'
+              'sm:pointer-events-none sm:opacity-0 sm:translate-x-3 sm:group-hover/card:pointer-events-auto sm:group-hover/card:opacity-100 sm:group-hover/card:translate-x-0 sm:group-focus-within/card:pointer-events-auto sm:group-focus-within/card:opacity-100 sm:group-focus-within/card:translate-x-0',
+              // An open menu pins the pill in place in every breakpoint.
+              actionsMenuOpen &&
+                'sm:pointer-events-auto sm:opacity-100 sm:translate-x-0'
             )}
           >
             {/* Terminal deals live in the terminal — they have no bot page
@@ -1023,7 +1074,10 @@ const EnhancedCard = React.memo(
                   <ExternalLink className="w-4 h-4 text-muted-foreground" />
                 </button>
               )}
-            <DropdownMenu>
+            <DropdownMenu
+              open={actionsMenuOpen}
+              onOpenChange={setActionsMenuOpen}
+            >
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
@@ -1036,7 +1090,7 @@ const EnhancedCard = React.memo(
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
-                className="w-56 z-50"
+                className="w-56"
                 onClick={(e) => e.stopPropagation()}
               >
                 <DropdownMenuItem onClick={viewDetails} disabled={terminal}>
@@ -1388,7 +1442,7 @@ const EnhancedCard = React.memo(
                             stroke: 'var(--color-muted-foreground)',
                             strokeDasharray: '3 3',
                           }}
-                          content={({ active, payload, label }) => {
+                          content={({ active, payload }) => {
                             if (!active || !payload || payload.length === 0) {
                               return null;
                             }
@@ -1399,11 +1453,11 @@ const EnhancedCard = React.memo(
                               payload[0];
                             const price = Number(pricePoint?.value);
                             if (!Number.isFinite(price)) return null;
+                            // The axis is keyed on the row index, so read the
+                            // display time off the row rather than the label.
                             const when =
-                              (typeof label === 'string' && label) ||
                               (pricePoint?.payload as { time?: string })
-                                ?.time ||
-                              '';
+                                ?.time || '';
                             const pnl = isLongTrade
                               ? (price - avgEntry) * positionSize
                               : (avgEntry - price) * positionSize;
@@ -1451,7 +1505,7 @@ const EnhancedCard = React.memo(
                         />
 
                         <XAxis
-                          dataKey="time"
+                          {...axisIndexProps(chartData, (point) => point.time)}
                           axisLine={false}
                           tickLine={false}
                           tick={{
@@ -1928,37 +1982,47 @@ export const TradeCard: React.FC<TradeCardProps> = React.memo((props) => {
     [getBotTypeForChip, trade.type]
   );
   const cardContent = useMemo(
-    () =>
-      enableEnhancedView ? (
-        <EnhancedCard
-          {...props}
-          tradingPair={tradingPair}
-          symbolAssets={symbolAssets}
-          botTypeForChip={tradeType}
-          isLongTrade={isLongTrade}
-          avgPriceLabel={avgPriceLabel}
-          avgPriceDisplay={avgPriceDisplay}
-          initialPriceLabel={initialPriceLabel}
-          initialPriceDisplay={initialPriceDisplay}
-          currentPriceDisplay={currentPriceDisplay}
-          currentPrice={currentPrice}
+    () => (
+      <>
+        {/* Above the numbers, because when a deal has never opened the numbers
+            are all zero and the reason is the only thing worth reading. */}
+        <DealStartBlockedNotice
+          startBlocked={trade.startBlocked}
+          className="mb-2"
         />
-      ) : (
-        <div className="p-md">
-          <SimpleCard
+        {enableEnhancedView ? (
+          <EnhancedCard
             {...props}
             tradingPair={tradingPair}
             symbolAssets={symbolAssets}
             botTypeForChip={tradeType}
+            isLongTrade={isLongTrade}
             avgPriceLabel={avgPriceLabel}
             avgPriceDisplay={avgPriceDisplay}
             initialPriceLabel={initialPriceLabel}
             initialPriceDisplay={initialPriceDisplay}
             currentPriceDisplay={currentPriceDisplay}
+            currentPrice={currentPrice}
           />
-        </div>
-      ),
+        ) : (
+          <div className="p-md">
+            <SimpleCard
+              {...props}
+              tradingPair={tradingPair}
+              symbolAssets={symbolAssets}
+              botTypeForChip={tradeType}
+              avgPriceLabel={avgPriceLabel}
+              avgPriceDisplay={avgPriceDisplay}
+              initialPriceLabel={initialPriceLabel}
+              initialPriceDisplay={initialPriceDisplay}
+              currentPriceDisplay={currentPriceDisplay}
+            />
+          </div>
+        )}
+      </>
+    ),
     [
+      trade.startBlocked,
       enableEnhancedView,
       props,
       tradingPair,

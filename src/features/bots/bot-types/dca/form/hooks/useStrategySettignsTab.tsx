@@ -978,10 +978,22 @@ export const useStrategySettingsTab = ({
     activeDealsCount > 0 ||
     (isExistingBot && (useMulti || isComboBot));
 
+  // Profit currency stays editable while deals are open — V1 never gated it on
+  // active deals (main-dash `components/StrategySettings.tsx`), it just warned
+  // "Profit currency change will apply to new deals only"
+  // (main-dash `useSettingsComponent.ts`). The backend keeps each running
+  // deal's own `settings.profitCurrency`, so only new deals pick the change up.
   const profitCurrencyDisabled =
-    profitCurrencyLocked ||
-    activeDealsCount > 0 ||
-    (isExistingBot && isComboBot);
+    profitCurrencyLocked || (isExistingBot && isComboBot);
+
+  // Restores the V1 notice V2 dropped: the buttons work, but the change only
+  // reaches deals opened from now on.
+  const profitCurrencyNotice =
+    !profitCurrencyDisabled && activeDealsCount > 0
+      ? `This bot has ${activeDealsCount} active deal${
+          activeDealsCount === 1 ? '' : 's'
+        }. Changes apply to new deals; the profit currency of running deals stays as is.`
+      : null;
   const shouldShowDirectionControl = !isHedgeContext;
 
   const handleBaseOrderSizeChange = useCallback(
@@ -1186,8 +1198,8 @@ export const useStrategySettingsTab = ({
     [orderSizeType, maxAmount, maxTotal]
   );
 
-  // legacy `setPercent` (486-516): max(active side) * (1-fee) * num/100 -> base
-  // order size. Keep the intentional double `(1-fee)` quirk for parity.
+  // legacy `setPercent` (486-516): max(active side) * num/100 -> base order
+  // size.
   const setPercent = useCallback(
     (num: number) => () => {
       if (baseOrderLocked) {
@@ -1199,8 +1211,16 @@ export const useStrategySettingsTab = ({
       // of it gives the right base order size. (Legacy used the active side's
       // max then converted on the orderSizeType flip; our updateFormData does
       // not convert, so computing in base directly avoids storing a quote
-      // amount as base — the reported bug.) Keep legacy's double `(1-fee)`.
-      const useBalance = +maxAmount * (1 - baseOrderFee);
+      // amount as base — the reported bug.)
+      //
+      // Do NOT re-apply `(1 - fee)` here. `maxAmount` is already the
+      // fee-adjusted cap, and `updatePercent` divides by that same `maxAmount`
+      // to derive the highlight — so a second haircut made "100%" resolve to
+      // 99.925% of the stated Max amount and stranded dust the user had to
+      // sell by hand on the exchange (bug #494). Legacy V1
+      // (`main-dash/components/terminal/TerminalBotSettings.tsx:488`) has the
+      // same double haircut; it is a defect there too, not parity worth keeping.
+      const useBalance = +maxAmount;
       const use = math.convertFromExponential(
         math.round(useBalance * (num / 100), precisionBase, true),
         precisionBase
@@ -1215,7 +1235,6 @@ export const useStrategySettingsTab = ({
       baseOrderLocked,
       orderSizeType,
       maxAmount,
-      baseOrderFee,
       precisionBase,
       updateFormData,
     ]
@@ -1595,6 +1614,7 @@ export const useStrategySettingsTab = ({
     showBaseOrderSection,
     directionDisabled,
     profitCurrencyDisabled,
+    profitCurrencyNotice,
     riskReductionDisabledReason,
     riskReductionDisplayValue,
     riskReductionSliderValue,

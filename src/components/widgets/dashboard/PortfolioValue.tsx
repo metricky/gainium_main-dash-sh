@@ -14,6 +14,7 @@ import { useGraphQL } from '@/hooks/useGraphQL';
 import { useNowTick } from '@/hooks/useNowTick';
 import { currencies, getCurrencyInfo } from '@/utils/currencyUtils';
 import { GraphQlQuery } from '@/lib/api';
+import { axisIndexProps, withAxisIndex } from '@/lib/charts/axisIndex';
 import { logger } from '@/lib/loggerInstance';
 import { StatusEnum, type PortfolioQuery, type Snapshots } from '@/types';
 import React, {
@@ -787,6 +788,13 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
     }
     // For shorter periods like 3d, keep all points as it's a short timeframe
 
+    // `date` is a display label and repeats — on 12M every point is just
+    // "Aug"/"Jul"/…, and on the intraday filters every point of a day shares
+    // one "Aug 24" — so the axis needs a unique key or the tooltip resolves to
+    // the first row carrying the hovered label (a hover at $141k reported
+    // Aug 1 / $115k). See `withAxisIndex`.
+    finalChartData = withAxisIndex(finalChartData);
+
     // Calculate current value and change
     const currentValue =
       finalChartData.length > 0
@@ -1041,7 +1049,10 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
                   })}
                 </defs>
                 <XAxis
-                  dataKey="date"
+                  {...axisIndexProps(
+                    portfolioData.chartData,
+                    (point) => point.date
+                  )}
                   axisLine={false}
                   tickLine={false}
                   tick={{

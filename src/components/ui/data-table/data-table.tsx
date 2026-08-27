@@ -82,7 +82,7 @@ import {
 } from './filter-logic';
 import { QuickFilterBar } from './QuickFilterBar';
 import { QuickFilters, type QuickFilterConfig } from './QuickFilters';
-import { deserialize, serialize } from './urlSync';
+import { deserializeFilters, deserializeSorting, serialize } from './urlSync';
 
 import { useContainerWidth } from '@/hooks/useContainerWidth';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -233,6 +233,33 @@ export interface BulkAction<TData> {
   /** Optional function to determine if this action should be shown based on selected rows */
   shouldShow?: (selectedRows: TData[]) => boolean;
 }
+
+/**
+ * Shape guards for table state restored from the URL. The URL is user-editable
+ * and can also carry params written by an older build, so anything read out of
+ * it is validated before it replaces the persisted preferences — applying a
+ * half-parsed value is how filters got wiped on every reload.
+ */
+const isColumnFiltersState = (parsed: unknown): parsed is ColumnFiltersState =>
+  Array.isArray(parsed) &&
+  parsed.length > 0 &&
+  parsed.every(
+    (entry) =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as { id?: unknown }).id === 'string' &&
+      'value' in (entry as object)
+  );
+
+const isSortingState = (parsed: unknown): parsed is SortingState =>
+  Array.isArray(parsed) &&
+  parsed.length > 0 &&
+  parsed.every(
+    (entry) =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as { id?: unknown }).id === 'string'
+  );
 
 // Fuzzy filter function
 const fuzzyFilter = (
@@ -2363,16 +2390,22 @@ function DataTableComponent<TData, TValue>(
       const globalStr = params.get(globalParamKey);
 
       if (filtersStr) {
-        const parsed = deserialize<ColumnFiltersState>(filtersStr);
-        if (Array.isArray(parsed)) {
+        // Parse with the filter-specific reader, not the sniffing `deserialize`:
+        // a filters param that doesn't look like filters would otherwise fall
+        // through to the sorting reader, which accepts ANY token and returns
+        // `[{ id, desc }]`. That passed the Array.isArray check below and was
+        // written back as the column filters — i.e. every reload silently
+        // cleared the table's filters.
+        const parsed = deserializeFilters<ColumnFiltersState>(filtersStr);
+        if (isColumnFiltersState(parsed)) {
           setColumnFilters(parsed);
           setShowColumnFilters(true);
         }
       }
 
       if (sortStr) {
-        const parsed = deserialize<SortingState>(sortStr);
-        if (Array.isArray(parsed)) {
+        const parsed = deserializeSorting<SortingState>(sortStr);
+        if (isSortingState(parsed)) {
           setSorting(parsed);
         }
       }
@@ -2809,6 +2842,24 @@ function DataTableComponent<TData, TValue>(
     ];
   }, [effectivePinnedColumns, columnOrder, defaultColumnOrder, selectionColumn]);
 
+  // `showPagination={false}` hides the footer — and with it every control that
+  // could reach page 2 — but the pagination row model still slices to
+  // `pageSize` (10 by default). The tail of the data was therefore rendered
+  // nowhere and there was no affordance saying so: the bot form's DCA overview
+  // listed 10 orders of a 33-order ladder while the graph next to it and the
+  // Coverage / Total Funds tiles were computed from all of them.
+  // Without a footer there is no page to turn, so the page IS the whole table.
+  // (`pages/Exchanges.tsx` already worked around this per-call-site with
+  // `initialPageSize={9999}`; that only helps tables the user has never
+  // rendered, because a persisted preference wins over the initial size.)
+  const effectivePagination = useMemo(
+    () =>
+      showPagination
+        ? pagination
+        : { pageIndex: 0, pageSize: Math.max(data.length, 1) },
+    [showPagination, pagination, data.length]
+  );
+
   const table = useReactTable({
     data,
     columns: enhancedColumns,
@@ -2818,7 +2869,7 @@ function DataTableComponent<TData, TValue>(
       columnVisibility,
       globalFilter,
       columnOrder: effectiveColumnOrder,
-      pagination,
+      pagination: effectivePagination,
       grouping,
       expanded,
       rowSelection, // CRITICAL: Must be in state for bulk actions

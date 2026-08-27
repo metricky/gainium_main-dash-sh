@@ -232,19 +232,33 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
     [orderSizeValue, updateOrderSize]
   );
 
+  // How many decimals the amount field accepts. `dcaOrderGuard` already
+  // carries them per order-size reference (`createOrderGuard`: quote ->
+  // the pair's price precision, base -> the exchange's base step, usd ->
+  // 2), and the Strategy tab's Base Order Size input reads its `precision`
+  // from that very guard. Hardcoding 2 here rounded every BTC/ETH-quoted
+  // amount to 0 as it was typed — on Bybit ETH/BTC the exchange minimum
+  // is 0.000065 BTC, so no valid order size survived the field, and the
+  // 25/50/75% buttons filled in "0" too.
+  // The constants stay as a FLOOR so a coarse pair can never make the field
+  // less precise than the guard alone would allow.
+  // When the guard carries NO decimals there is nothing to floor, so leave
+  // `precision` undefined and let `BalanceInput`'s own 8-dp default apply —
+  // the same thing the Strategy tab's Base Order Size does (it spreads
+  // `precision` only when `baseOrderGuard.decimals` is a number). Falling
+  // back to the constants there re-created the original bug wherever the
+  // guard is decimals-less: the read-only bot drawer stubs `pairMetadata`
+  // empty and makes no network requests, so `createOrderGuard` yields
+  // `{label, unit}` only, and a saved 0.00011 BTC amount rendered as "0"
+  // while Base Order Size on the same panel showed 0.00011.
+  const guardPrecision = formData.dcaOrderGuard?.decimals;
   const precision = useMemo(() => {
-    switch (orderSizeType) {
-      case 'base':
-        return 6;
-      case 'usd':
-        return 2;
-      case 'percFree':
-      case 'percTotal':
-        return 2;
-      default:
-        return 2;
+    if (typeof guardPrecision !== 'number' || !Number.isFinite(guardPrecision)) {
+      return undefined;
     }
-  }, [orderSizeType]);
+    const floor = orderSizeType === 'base' ? 6 : 2;
+    return Math.min(8, Math.max(floor, guardPrecision));
+  }, [guardPrecision, orderSizeType]);
   const isDealEdit = useMemo(
     () => mode === 'deal-edit' || mode === 'deal-mass-edit',
     [mode]
@@ -423,7 +437,13 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
             currency={isPercentageMode ? '%' : currencyLabel}
             balanceCurrency={balanceCurrency}
             balanceAmount={balanceAmount}
-            disabled={isVarBound}
+            // Read-only when editing a COMBO deal, matching legacy main-dash
+            // (`disabled || !useDca || (isDealEdit && combo)` on the order-size
+            // input in DcaModeSettings.tsx). A combo deal's order size is what
+            // funds its already-placed minigrid; a plain DCA deal's is not, and
+            // legacy leaves that one editable — so this is deliberately gated
+            // on combo rather than on deal-edit alone.
+            disabled={isVarBound || (isDealEdit && isComboBot)}
             showRefreshButton={shouldShowRefresh}
             coinIcon={coinIconElement}
             unitLabel={isPercentageMode ? '%' : coinIconSymbol}

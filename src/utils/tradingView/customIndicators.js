@@ -151,6 +151,31 @@ const percentileFillAreas = [
 const percentileLow = 0;
 const percentileHigh = 100;
 
+// The two percentile fills anchor to `plot_percentile_top` / `plot_percentile_bottom`.
+// For a study whose own domain IS 0-100 (RSI, MFI, UO, ADX) the literal constants
+// above are the right reference bounds. For any other study they are not, and the
+// damage takes two forms:
+//   - autoscale: plotting 0 and 100 alongside e.g. a ~1e-4 momentum series drags
+//     the pane's range out to 0…100 and squashes the study into a flat line — the
+//     ETH-renders-fine / PUMP-renders-flat split in bug #537 (and #264 for MAR).
+//     Williams %R is the extreme case: its domain is -100…0, so an anchor at +100
+//     doubles the pane height on every symbol and the study can never use more
+//     than half of it.
+//   - mis-anchored fill: the fills are meant to shade the study's whole range,
+//     split at the percentile line. Anchored at 0/100 on an unbounded study (CCI
+//     routinely runs to ±400) they shade an arbitrary slice instead, and the
+//     study line is drawn outside its own band on ~65% of bars.
+// So for MOM, MACD, AO, BBW, BBPB, KCPB, VO, MAR, WR and CCI, anchor the band to
+// the extremes the study itself actually printed over the lookback window; it then
+// always contains the study and can never expand the pane beyond the study's range.
+const percentileBand = (usePercentile, data, lookback, r, context) =>
+  usePercentile
+    ? [
+        r.Std.highest(data, lookback, context),
+        r.Std.lowest(data, lookback, context),
+      ]
+    : [r.Std.na(), r.Std.na()];
+
 const stochCalc = (i, s, n, r, context) => {
   const o = r.Std.close(context);
   const a = r.Std.high(context);
@@ -1134,8 +1159,13 @@ export const BBW = (r) => ({
       return [
         bbw,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          bbwVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -1416,8 +1446,13 @@ export const MACD = (r) => ({
         p,
         this.f_1(macd),
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          macdVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -4032,8 +4067,13 @@ export const VO = (r) => ({
       return [
         vo,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          voVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -4205,8 +4245,13 @@ export const CCI = (r) => ({
           u,
           a,
           percentile,
-          usePercentile ? percentileHigh : r.Std.na(),
-          usePercentile ? percentileLow : r.Std.na(),
+          ...percentileBand(
+            usePercentile,
+            p,
+            percentileLookback,
+            r,
+            this._context
+          ),
         ]
       );
     };
@@ -4364,8 +4409,13 @@ export const AO = (r) => ({
         c,
         this.f_1(d),
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          aoVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -4494,8 +4544,13 @@ export const WR = (r) => ({
       return [
         wr,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          wrVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -4785,8 +4840,13 @@ export const MOM = (r) => ({
       return [
         mom,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          momVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -5618,25 +5678,18 @@ export const MAR = (r) => ({
       const percentile = usePercentile
         ? percentileRank(marVar, percentileLookback, percentilePercentage, r)
         : r.Std.na();
-      // percentileHigh/percentileLow are the literal constants 100 and 0 —
-      // correct reference bounds for studies whose own domain IS 0-100 (RSI,
-      // MFI, ...), but MAR is an unbounded ratio centered on 1.0. Plotting
-      // 100/0 next to a ~1.0 line (the percentile fills anchor to them) forces
-      // this pane's price scale to span 0-100 and squashes the MAR line into a
-      // sliver at the bottom. Anchor the band to the highest/lowest MAR value
-      // actually seen over the lookback window so it stays in the ratio's own
-      // range.
-      const percentileBandHigh = usePercentile
-        ? r.Std.highest(marVar, percentileLookback, this._context)
-        : r.Std.na();
-      const percentileBandLow = usePercentile
-        ? r.Std.lowest(marVar, percentileLookback, this._context)
-        : r.Std.na();
+      // MAR is an unbounded ratio centered on 1.0, so the 0/100 constants are
+      // the wrong band anchors here — see `percentileBand` (bugs #264, #537).
       return [
         mar,
         percentile,
-        percentileBandHigh,
-        percentileBandLow,
+        ...percentileBand(
+          usePercentile,
+          marVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
         useTrendFilter && trend !== 0 && trend !== r.Std.na() ? 1 : r.Std.na(),
       ];
     };
@@ -5806,8 +5859,13 @@ export const BBPB = (r) => ({
       return [
         bbpb,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          bbpbVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },
@@ -10392,8 +10450,13 @@ export const KCPB = (r) => ({
       return [
         kcpb,
         percentile,
-        usePercentile ? percentileHigh : r.Std.na(),
-        usePercentile ? percentileLow : r.Std.na(),
+        ...percentileBand(
+          usePercentile,
+          kcpbVar,
+          percentileLookback,
+          r,
+          this._context
+        ),
       ];
     };
   },

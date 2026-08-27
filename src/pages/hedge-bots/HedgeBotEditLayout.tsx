@@ -64,6 +64,7 @@ import {
   computeInvestmentFromDca,
   distributeInvestmentToDca,
 } from '@/features/bots/widgets/BotForm/components/quickSetupPresets';
+import { resolveOrderSizeDecimals } from '@/features/bots/shared/utils/order-guard';
 import {
   HEDGE_QUICK_PRESETS,
   getHedgeLegDcaState,
@@ -93,6 +94,7 @@ import {
 import { toast } from '@/lib/toast';
 import { mapBotSettingsToFormData } from '@/mappers/bots/dca/map-bot-settings-to-form-data';
 import { mapFormDataToPayload } from '@/mappers/bots/dca/map-form-data-to-payload';
+import { stripUndeclaredUpdateFields } from '@/mappers/bots/dca/update-payload-denylist';
 import { useAuthStore } from '@/stores/authStore';
 import {
   useBotTemplatesStore,
@@ -105,7 +107,6 @@ import { useUIStore } from '@/stores/uiStore';
 import {
   BotTypesEnum,
   ExchangeIntervals,
-  OrderSizeTypeEnum,
   StrategyEnum,
   type ComboBot,
   type DCABot,
@@ -885,33 +886,15 @@ export const HedgeBotEditLayout: React.FC = () => {
         const stripPerLeg = (
           payload: Record<string, unknown>,
           legSettings: Record<string, unknown> | undefined | null
-        ): Record<string, unknown> => {
-          const next = { ...payload };
-          // Always-strip: form/import-only fields no change-input accepts.
-          delete next['useMulti'];
-          delete next['type'];
-          delete next['useLimitPrice'];
-          delete next['terminalDealType'];
-          delete next['useExperimental'];
-          delete next['importFrom'];
-          // Strip pair on non-multi legs (default for hedge bots).
-          if (!(legSettings && legSettings['useMulti'])) {
-            delete next['pair'];
-          }
-          if (botType === BotTypesEnum.hedgeDca) {
-            // Strip combo-only fields when the leg goes through
-            // changeDCABot. Matches the dca branch of useFormHandlers.
-            delete next['gridLevel'];
-            delete next['baseStep'];
-            delete next['baseGridLevels'];
-            delete next['useActiveMinigrids'];
-            delete next['comboActiveMinigrids'];
-            delete next['feeOrder'];
-            delete next['comboSlLimit'];
-            delete next['comboTpLimit'];
-          }
-          return next;
-        };
+        ): Record<string, unknown> =>
+          stripUndeclaredUpdateFields(payload, {
+            // A hedgeDca leg is delegated to changeDCABot, a hedgeCombo leg to
+            // changeComboBot, so each leg strips exactly what the standalone
+            // flow for that bot type strips.
+            botType: botType === BotTypesEnum.hedgeDca ? 'dca' : 'combo',
+            // Strip pair on non-multi legs (the default for hedge bots).
+            stripPair: !(legSettings && legSettings['useMulti']),
+          });
 
         const longSettingsRaw = longBot.settings as unknown as
           | Record<string, unknown>
@@ -959,9 +942,18 @@ export const HedgeBotEditLayout: React.FC = () => {
         throw new Error(payload?.reason || 'Mutation returned NOTOK');
       }
 
-      toast.success(
-        mode === 'create' ? 'Hedge bot created' : 'Hedge bot updated'
-      );
+      // Both hedge legs delegate to changeDCABot / changeComboBot, which apply
+      // a settings save to NEW deals only — running deals keep their settings
+      // and their resting orders. Same notice as the standalone bot form.
+      // Forum #5044.
+      if (mode === 'create') {
+        toast.success('Hedge bot created');
+      } else {
+        toast.success(
+          'Hedge bot updated. Settings apply to new deals only — deals already running keep their current settings and orders. To change a running deal, use the menu on that deal.',
+          { duration: 8000 }
+        );
+      }
 
       // After create, navigate to the new bot's edit page. After edit,
       // refetch the hedge bot so each leg's `initialBot` reference
@@ -1511,11 +1503,22 @@ export const HedgeBotEditLayout: React.FC = () => {
       // redistributing it over the preset's new orders ladder (mirrors the
       // standalone Quick form's preset applier). Also keep the leg's base/quote
       // unit, which the preset defaults would otherwise reset.
-      const preserveSizing = (dca: BotFormData['dca']) => {
+      const preserveSizing = (
+        dca: BotFormData['dca'],
+        legForm: Partial<BotFormData> | undefined
+      ) => {
         if (!presetDca) return {};
         const total = computeInvestmentFromDca(dca);
-        const precision =
-          dca.orderSizeType === OrderSizeTypeEnum.base ? 8 : 2;
+        // Derive from the leg pair's real order-size scale; the old base?8:2
+        // ternary rounded quote-denominated sizes to 2dp, zeroing sub-0.01
+        // sizes on BTC-/ETH-quoted pairs (bug #467).
+        const legPair = Array.isArray(legForm?.pair)
+          ? legForm.pair[0]
+          : legForm?.pair;
+        const precision = resolveOrderSizeDecimals(
+          dca.orderSizeType,
+          legPair ? legForm?.pairPrecisionMap?.[legPair] : undefined
+        );
         const merged = { ...dca, ...presetDca } as BotFormData['dca'];
         const { baseOrderSize, orderSize } = distributeInvestmentToDca(
           total,
@@ -1548,7 +1551,10 @@ export const HedgeBotEditLayout: React.FC = () => {
           dca: {
             ...baseDca,
             ...(presetDca ?? {}),
-            ...preserveSizing(baseDca),
+            ...preserveSizing(
+              baseDca,
+              longLive ?? (existing as Partial<BotFormData>)
+            ),
             strategy: StrategyEnum.long,
           },
         } as Partial<BotFormData>;
@@ -1567,7 +1573,10 @@ export const HedgeBotEditLayout: React.FC = () => {
           dca: {
             ...baseDca,
             ...(presetDca ?? {}),
-            ...preserveSizing(baseDca),
+            ...preserveSizing(
+              baseDca,
+              shortLive ?? (existing as Partial<BotFormData>)
+            ),
             strategy: StrategyEnum.short,
           },
         } as Partial<BotFormData>;

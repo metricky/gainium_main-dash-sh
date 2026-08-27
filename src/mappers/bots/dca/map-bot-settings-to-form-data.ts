@@ -25,9 +25,11 @@ import {
   OrderTypeEnum,
   PairPrioritizationEnum,
   RiskSlTypeEnum,
+  RRSlTypeEnum,
   ScaleDcaTypeEnum,
   StartConditionEnum,
   StrategyEnum,
+  TerminalDealTypeEnum,
   VolumeValueEnum,
   type BotSettings,
   type BotStatus,
@@ -543,8 +545,17 @@ export const mapBotSettingsToFormData = (
     } as const;
   };
 
-  const { seconds: enterMarketTimeoutSeconds } =
-    resolveEnterMarketTimeoutSeconds();
+  // `enabled` used to be computed here and then dropped on the floor: the
+  // destructure took only `seconds`, and nothing else assigned
+  // `useLimitTimeout`, so it always fell through to the form default (false).
+  // The Enter Market Timeout toggle therefore read back OFF on every load while
+  // its seconds field still showed the saved value — and because the save
+  // payload falls back to the live form slice, the next unrelated save wrote
+  // that false back and genuinely disabled the feature.
+  const {
+    seconds: enterMarketTimeoutSeconds,
+    enabled: enterMarketTimeoutEnabled,
+  } = resolveEnterMarketTimeoutSeconds();
 
   const normalizeOrderSizeSelection = (
     value: unknown
@@ -739,6 +750,7 @@ export const mapBotSettingsToFormData = (
     useLimitPrice: getBoolean('useLimitPrice', false),
     notUseLimitReposition: getBoolean('notUseLimitReposition', false),
     limitTimeout: enterMarketTimeoutSeconds,
+    useLimitTimeout: enterMarketTimeoutEnabled,
     useRiskReduction: riskReductionEnabled,
     riskReductionValue,
     useReinvest: reinvestEnabled,
@@ -797,6 +809,12 @@ export const mapBotSettingsToFormData = (
     tpPerc: getString('tpPerc') || '0',
     useFixedTPPrices: getBoolean('useFixedTPPrices', false),
     fixedTpPrice: getString('fixedTpPrice', ''),
+    // The stop-loss twin of the two above. 2.43.19 taught the forward mapper to
+    // write these — the take-profit half had always worked and the stop-loss
+    // half was never sent — but the read back was missed in the same way, so a
+    // fixed stop-loss price saved correctly and then showed empty on reload.
+    useFixedSLPrices: getBoolean('useFixedSLPrices', false),
+    fixedSlPrice: getString('fixedSlPrice', ''),
     comboTpLimit: getBoolean('comboTpLimit', true),
     comboTpBase: (() => {
       const rawValue = getString('comboTpBase', ComboTpBase.full);
@@ -873,6 +891,15 @@ export const mapBotSettingsToFormData = (
     riskMaxSl: getString('riskMaxSl', '-100'),
     riskMinPositionSize: getString('riskMinPositionSize', '0'),
     riskMaxPositionSize: getString('riskMaxPositionSize', '-1'),
+    // The reverse half of the 2.43.19 fix. That release taught the forward
+    // mapper to write these two, but nothing here ever read them back, so the
+    // value saved correctly and then showed as the default on the next load —
+    // the same "it didn't stick" symptom, one direction over.
+    rrSlType: getValue<RRSlTypeEnum>('rrSlType', RRSlTypeEnum.indicator),
+    rrSlFixedValue: getString('rrSlFixedValue', '2'),
+    // No control writes this, which is exactly why it must be read: without it
+    // a stored `true` is reset on every save of an unrelated field.
+    ignoreStartDeals: getBoolean('ignoreStartDeals', false),
     multiTp: normalizedMultiTpTargets,
     multiSl: normalizedMultiSlTargets,
     useMultiTp: resolvedUseMultipleTpTargets,
@@ -961,6 +988,13 @@ export const mapBotSettingsToFormData = (
     botStart: getValue<BotStartTypeEnum>('botStart', BotStartTypeEnum.manual),
     stopType: getValue<CloseDCATypeEnum>('stopType', CloseDCATypeEnum.leave),
     stopStatus: getValue<BotStatus>('stopStatus', 'closed'),
+    // mapBasicFields writes this into every payload; without the matching read
+    // a terminal deal saved as `simple` reopened as `smart`, which changes
+    // which TP/SL controls the form offers.
+    terminalDealType: getValue<TerminalDealTypeEnum>(
+      'terminalDealType',
+      TerminalDealTypeEnum.smart
+    ),
     startBotPriceCondition: getValue<IndicatorStartConditionEnum>(
       'startBotPriceCondition',
       IndicatorStartConditionEnum.gt
