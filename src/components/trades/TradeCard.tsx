@@ -1346,6 +1346,12 @@ const EnhancedCard = React.memo(
                 <TrailingBadge
                   mode={trade.trailingMode}
                   level={trade.trailingLevel}
+                  levelUnit={
+                    (trade.type === 'Combo' || trade.type === 'Hedge Combo') &&
+                    trade.trailingMode === 'ttp'
+                      ? 'percent'
+                      : 'price'
+                  }
                   quoteAsset={symbolAssets.quoteAsset}
                 />
               </div>
@@ -1873,6 +1879,12 @@ const SimpleCard = React.memo(
                 <TrailingBadge
                   mode={trade.trailingMode}
                   level={trade.trailingLevel}
+                  levelUnit={
+                    (trade.type === 'Combo' || trade.type === 'Hedge Combo') &&
+                    trade.trailingMode === 'ttp'
+                      ? 'percent'
+                      : 'price'
+                  }
                   quoteAsset={symbolAssets.quoteAsset}
                 />
               </div>

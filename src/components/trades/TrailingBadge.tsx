@@ -7,8 +7,9 @@ import { Tooltip } from '../ui/tooltip';
 export interface TrailingBadgeProps {
   /** `deal.trailingMode` — the engine's armed-trailing latch. */
   mode?: string | undefined;
-  /** `deal.trailingLevel` — the price the trailing exit will fire at. */
+  /** `deal.trailingLevel` — a price, or Combo TTP's deal-profit percentage. */
   level?: number | undefined;
+  levelUnit?: 'price' | 'percent';
   /** Quote asset, appended to the price in the tooltip. */
   quoteAsset?: string | undefined;
   className?: string;
@@ -18,26 +19,28 @@ export interface TrailingBadgeProps {
  * "Trailing" marker for a deal, shown under the status dot in the deals table
  * and on the deal card.
  *
- * Renders only when the bot engine has actually ARMED a trailing exit — both
- * `trailingMode` and a non-zero `trailingLevel`. Those two fields are the only
- * thing `getDealStopLossPrice` will exit on, so anything looser (a deal merely
- * *configured* for trailing, or one whose `bestPrice` has passed the trailing-TP
- * activation price) would tell the user the deal is protected when it is not.
+ * Reads the persisted armed state rather than inferring it from configuration.
+ * DCA levels are positive prices; our Combo TTP levels are signed percentages
+ * of deal usage, so zero and negative levels are valid there.
  */
 export const TrailingBadge: React.FC<TrailingBadgeProps> = ({
   mode,
   level,
+  levelUnit = 'price',
   quoteAsset,
   className,
 }) => {
-  if (!mode || !level || level <= 0) return null;
+  if (!mode || typeof level !== 'number' || !Number.isFinite(level)) return null;
+  if (levelUnit === 'price' && level <= 0) return null;
 
   const isSl = mode === TrailingModeEnum.tsl;
   const label = isSl ? 'Trailing SL' : 'Trailing TP';
   const price = `${formatNumber(level)}${quoteAsset ? ` ${quoteAsset}` : ''}`;
-  const tooltip = isSl
-    ? `Trailing stop loss is active — the deal closes if price falls to ${price}. The level follows the best price reached.`
-    : `Trailing take profit is active — the deal closes if price falls to ${price}. The level follows the best price reached.`;
+  const tooltip = levelUnit === 'percent'
+    ? `Trailing take profit is active — the deal closes when its profit falls back to ${formatNumber(level)}%. The level follows the highest deal-profit percentage reached.`
+    : isSl
+      ? `Trailing stop loss is active — the deal closes if price falls to ${price}. The level follows the best price reached.`
+      : `Trailing take profit is active — the deal closes if price falls to ${price}. The level follows the best price reached.`;
 
   return (
     <Tooltip tooltip={tooltip}>

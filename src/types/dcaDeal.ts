@@ -173,9 +173,9 @@ export type TransformedTrade = {
   closeTime?: string;
   trailingMode?: string;
   /**
-   * Price the armed trailing exit will fire at (`deal.trailingLevel`). 0 /
-   * absent means the engine has NOT armed trailing — it is the companion of
-   * `trailingMode`, and both must be truthy before a deal is really trailing.
+   * Persisted trailing level: a price for DCA, a signed deal-profit percentage
+   * for our Combo TTP. Combo levels may be zero or negative; `trailingMode`
+   * identifies the armed state.
    */
   trailingLevel?: number;
   exitPrice?: number;

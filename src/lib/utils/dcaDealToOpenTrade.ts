@@ -202,6 +202,7 @@ export function dcaDealToOpenTrade(deal: DCADeals) {
       ? new Date(deal.closeTime).toISOString()
       : undefined,
     trailingMode: deal.trailingMode,
+    trailingLevel: deal.trailingLevel,
     // Per-order auto-compounding breakdown (orig size + amount compounding
     // added), surfaced in the deal detail drawer. Undefined when the bot
     // isn't compounding.

@@ -2264,7 +2264,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           // Trailing is invisible otherwise: the dot only says open/closed, and
           // an armed trailing exit replaces the deal's TP/SL entirely, so
           // without this the user cannot tell a deal is riding its best price.
-          if (!trade.trailingMode || !trade.trailingLevel) {
+          if (!trade.trailingMode || trade.trailingLevel === undefined) {
             return chip;
           }
           return (
@@ -2273,6 +2273,12 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               <TrailingBadge
                 mode={trade.trailingMode}
                 level={trade.trailingLevel}
+                levelUnit={
+                  (trade.type === 'Combo' || trade.type === 'Hedge Combo') &&
+                  trade.trailingMode === 'ttp'
+                    ? 'percent'
+                    : 'price'
+                }
                 quoteAsset={
                   typeof trade.symbol === 'string'
                     ? undefined

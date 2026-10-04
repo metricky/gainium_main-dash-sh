@@ -229,6 +229,7 @@ export interface DCADeal {
     sell?: number;
   };
   trailingMode?: string;
+  trailingLevel?: number;
 }
 
 // Interface for GraphQL response data structure
@@ -343,6 +344,7 @@ export interface OpenTrade {
   updateTime?: string;
   closeTime?: string;
   trailingMode?: string;
+  trailingLevel?: number;
   compoundBreakdown?: CompoundBreakdownEntry[];
 }
 
@@ -1765,6 +1767,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           ? new Date(deal.closeTime).toISOString()
           : undefined,
         trailingMode: deal.trailingMode,
+        trailingLevel: deal.trailingLevel,
         compoundBreakdown: computeCompoundBreakdown(deal.sizes),
       };
     },

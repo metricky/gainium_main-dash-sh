@@ -213,13 +213,16 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
     )?.taker ?? 0;
   const dealExitLines = useMemo(
     () =>
-      buildDealExitLines(
-        rawDeal,
-        (chartBot as { settings?: DCABotSettings } | null)?.settings,
-        takerFee,
-        pendingOrders.map((o) => +o.price)
-      ),
-    [rawDeal, chartBot, takerFee, pendingOrders]
+      // Combo exits use whole-deal P&L, not DCA's entry-price formulas.
+      isCombo
+        ? []
+        : buildDealExitLines(
+            rawDeal,
+            (chartBot as { settings?: DCABotSettings } | null)?.settings,
+            takerFee,
+            pendingOrders.map((o) => +o.price)
+          ),
+    [isCombo, rawDeal, chartBot, takerFee, pendingOrders]
   );
 
   // Position + leverage behind the estimated liquidation line on the chart.

@@ -1192,7 +1192,11 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
     // shows a trailing deal with nothing but its breakeven line.
     const dealExitLines = useMemo(
       () =>
-        isGrid
+        // Combo exits use whole-deal P&L, not DCA's entry-price formulas.
+        isGrid ||
+        type === BotTypesEnum.combo ||
+        type === BotTypesEnum.hedgeCombo ||
+        hedge?.isCombo
           ? []
           : buildDealExitLines(
               chartRawDeal,
@@ -1200,7 +1204,15 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
               chartDealTakerFee,
               chartDealOrders.pending.map((o) => +o.price)
             ),
-      [isGrid, chartRawDeal, bot?.settings, chartDealTakerFee, chartDealOrders.pending]
+      [
+        isGrid,
+        type,
+        hedge?.isCombo,
+        chartRawDeal,
+        bot?.settings,
+        chartDealTakerFee,
+        chartDealOrders.pending,
+      ]
     );
 
     const chartOrders = useMemo(
