@@ -16,7 +16,8 @@ export type NotificationType =
   | 'serverSideBacktest'
   | 'dca80Percent'
   | 'dca100Percent'
-  | 'priceOutOfRange';
+  | 'priceOutOfRange'
+  | 'safetyOrderFilled';
 
 export interface NotificationChannels {
   telegram: boolean;
@@ -108,6 +109,7 @@ const DEFAULT_SETTINGS: NotificationSettings = {
   dca80Percent: { telegram: false, email: false, inApp: false },
   dca100Percent: { telegram: false, email: false, inApp: false },
   priceOutOfRange: { telegram: false, email: false, inApp: false },
+  safetyOrderFilled: { telegram: false, email: false, inApp: false },
 };
 
 export const useNotificationsSettingsStore =
@@ -205,6 +207,29 @@ export const useNotificationsSettingsStore =
             settings: state.settings,
             soundSettings: state.soundSettings,
           }),
+          /**
+           * Rehydration replaces state wholesale by default, so a notification
+           * type added after a user's settings were first written would be
+           * absent from the rehydrated object — and every consumer that maps
+           * `NOTIFICATION_TYPES_ORDER` and reads `settings[type].inApp` would
+           * throw on it, taking the whole Settings page down for exactly the
+           * users who have been here before.
+           *
+           * Merging per key means a new type arrives with its default and an
+           * existing one keeps whatever the user chose.
+           */
+          merge: (persisted, current) => {
+            const saved = (persisted ?? {}) as Partial<NotificationsSettingsState>;
+            return {
+              ...current,
+              ...saved,
+              settings: { ...DEFAULT_SETTINGS, ...(saved.settings ?? {}) },
+              soundSettings: {
+                ...DEFAULT_SOUND_SETTINGS,
+                ...(saved.soundSettings ?? {}),
+              },
+            };
+          },
         }
       ),
       {
@@ -229,6 +254,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<NotificationType, string> = {
   dca80Percent: '80% DCA',
   dca100Percent: '100% DCA (alert for deals that have DCA activated)',
   priceOutOfRange: 'Price Out of Range',
+  safetyOrderFilled: 'Safety Order Filled',
 };
 
 // Ordered list of notification types for display
@@ -241,6 +267,7 @@ export const NOTIFICATION_TYPES_ORDER: NotificationType[] = [
   'dealPartiallyClosedWithPnL',
   'buyOrderFilled',
   'sellOrderFilled',
+  'safetyOrderFilled',
   'gridCloseTrigger',
   'botControllerWebhooksEvents',
   'serverSideBacktest',

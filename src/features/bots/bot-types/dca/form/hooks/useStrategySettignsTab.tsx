@@ -1,9 +1,9 @@
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
 import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
 import {
+  useBotFormContext,
   useBotFormFieldLock,
   useBotFormSelector,
-  useBotFormState,
   type Fields,
 } from '@/features/bots';
 import {
@@ -41,6 +41,10 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { type StrategySettingsProps } from '../sections';
 import { useBalanceRefreshControl } from './useBalanceRefreshControl';
+import {
+  poolCoversQuote,
+  usePooledMarginUsd,
+} from '@/hooks/bots/dca/usePooledMarginUsd';
 
 /**
  * Decimals kept when showing a base amount that was DERIVED from the quote
@@ -129,7 +133,7 @@ export const useStrategySettingsTab = ({
   onUpdateBalances,
 }: StrategySettingsProps) => {
   const { exchanges } = useBotFormQuery();
-  const { setErrors: setFormErrors, mode } = useBotFormState();
+  const { setErrors: setFormErrors, mode } = useBotFormContext();
   const isFieldLocked = useBotFormFieldLock();
   // The hedge edit page mounts each leg's strategy settings inside an
   // outer HedgeBotFormProvider; when present, the leg's direction is
@@ -1014,6 +1018,42 @@ export const useStrategySettingsTab = ({
 
   // --- Dual Amount/Total derivations (legacy `amount`/`total`, lines 298-355) -
   const effectivePrice = latestPrice ?? 0;
+
+  // Pooled collateral (Bitget Unified `multi_assets`, OKX Multi-currency
+  // margin, Kraken flex): the account margins a contract from any coin it
+  // holds, so the per-coin wallet understates what an order can use. COIN-M
+  // counts the pool converted to the base coin at the current price; a USD- or
+  // USDC-quoted linear contract counts it as quote. The pool replaces the
+  // funding balance only when larger; `null` keeps every figure as before.
+  const { pooledUsd: pooledMarginUsd } = usePooledMarginUsd(
+    resolvedExchangeUuid,
+    !!futures &&
+      !isPaperTrading &&
+      (!!coinm || poolCoversQuote(resolvedQuoteAsset))
+  );
+  const fundingBalances = useMemo(() => {
+    if (pooledMarginUsd === null) {
+      return aggregatedBalances;
+    }
+    if (!coinm) {
+      if (pooledMarginUsd <= aggregatedBalances.quote.free) {
+        return aggregatedBalances;
+      }
+      return {
+        ...aggregatedBalances,
+        quote: { ...aggregatedBalances.quote, free: pooledMarginUsd },
+      };
+    }
+    const pooledBase =
+      effectivePrice > 0 ? pooledMarginUsd / effectivePrice : 0;
+    if (pooledBase <= aggregatedBalances.base.free) {
+      return aggregatedBalances;
+    }
+    return {
+      ...aggregatedBalances,
+      base: { ...aggregatedBalances.base, free: pooledBase },
+    };
+  }, [aggregatedBalances, pooledMarginUsd, effectivePrice, coinm]);
   const minAmount = useMemo(
     () => (coinm ? (quoteMinAmount ?? 1) : 1),
     [coinm, quoteMinAmount]
@@ -1118,8 +1158,8 @@ export const useStrategySettingsTab = ({
   const maxAmount = useMemo(
     () =>
       computeMaxAmount({
-        baseFree: aggregatedBalances.base.free,
-        quoteFree: aggregatedBalances.quote.free,
+        baseFree: fundingBalances.base.free,
+        quoteFree: fundingBalances.quote.free,
         price: effectivePrice,
         fee: baseOrderFee,
         ...(strategy ? { strategy } : {}),
@@ -1133,8 +1173,8 @@ export const useStrategySettingsTab = ({
         precisionQuote,
       }),
     [
-      aggregatedBalances.base.free,
-      aggregatedBalances.quote.free,
+      fundingBalances.base.free,
+      fundingBalances.quote.free,
       effectivePrice,
       baseOrderFee,
       strategy,
@@ -1151,8 +1191,8 @@ export const useStrategySettingsTab = ({
   const maxTotal = useMemo(
     () =>
       computeMaxTotal({
-        baseFree: aggregatedBalances.base.free,
-        quoteFree: aggregatedBalances.quote.free,
+        baseFree: fundingBalances.base.free,
+        quoteFree: fundingBalances.quote.free,
         price: effectivePrice,
         fee: baseOrderFee,
         ...(strategy ? { strategy } : {}),
@@ -1166,8 +1206,8 @@ export const useStrategySettingsTab = ({
         precisionQuote,
       }),
     [
-      aggregatedBalances.base.free,
-      aggregatedBalances.quote.free,
+      fundingBalances.base.free,
+      fundingBalances.quote.free,
       effectivePrice,
       baseOrderFee,
       strategy,
@@ -1474,7 +1514,7 @@ export const useStrategySettingsTab = ({
       resolveBaseOrderContext({
         currencyReference: orderSizeType,
         strategy: strategy,
-        aggregatedBalances,
+        aggregatedBalances: fundingBalances,
         futures: !!futures,
         coinm: !!coinm,
         ...(terminalDealType ? { terminalDealType } : {}),
@@ -1485,7 +1525,7 @@ export const useStrategySettingsTab = ({
     [
       orderSizeType,
       strategy,
-      aggregatedBalances,
+      fundingBalances,
       futures,
       coinm,
       terminalDealType,
@@ -1523,8 +1563,10 @@ export const useStrategySettingsTab = ({
       return result;
     }
 
-    // Show informational minimum order message only (not an error)
-    if (guardMin !== null) {
+    // Show informational minimum order message only (not an error). A zero
+    // floor (the percentage guard, or a pair with no exchange minimum) says
+    // nothing, so it is not shown as "Minimum order: 0 %".
+    if (guardMin !== null && guardMin > 0) {
       const displayMinimum = convertNotionalToDisplay(guardMin);
       const formattedMinimum = formatDisplay(displayMinimum);
       const unitSuffix = guardUnit ? ` ${guardUnit}` : '';
@@ -1597,6 +1639,8 @@ export const useStrategySettingsTab = ({
     amountUsdEquivalent,
     maxAmount,
     maxTotal,
+    // USD pool on a pooled-collateral COIN-M connection, else null.
+    pooledMarginUsd,
     // Decimals for whichever of the Amount/Total pair is currently DERIVED.
     // The canonical field formats with its own order guard; the derived one
     // can't — the guard describes the other unit, so a BTC amount shown at the

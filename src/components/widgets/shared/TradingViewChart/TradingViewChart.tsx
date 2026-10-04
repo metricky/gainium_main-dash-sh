@@ -387,8 +387,7 @@ const TradingViewChartComponent = forwardRef<
     if (!coreChartRef.current?.isReady()) return;
 
     if (!showOrders) {
-      coreChartRef.current.clearAllOrderLines();
-      orderLineIdsRef.current.clear();
+      coreChartRef.current.updateOrderLines([]);
       currentStateRef.current.orders = [];
       logger.info('Order overlay hidden');
       return;
@@ -416,9 +415,6 @@ const TradingViewChartComponent = forwardRef<
       return;
     }
 
-    coreChartRef.current.clearAllOrderLines();
-    orderLineIdsRef.current.clear();
-
     // Sort grey/smart orders first (lower z-index) matching main-dash:
     // grey lines render first so active BUY/SELL lines appear on top.
     const isGreyOrder = (o: ChartOrderLine) =>
@@ -433,17 +429,10 @@ const TradingViewChartComponent = forwardRef<
       return aGrey ? -1 : 1;
     });
 
-    sorted.forEach((order) => {
-      const lineId = coreChartRef.current?.addOrderLine(order);
-      if (lineId) {
-        const orderId = `order_${order.price}_${order.side}`;
-        orderLineIdsRef.current.set(orderId, lineId);
-      }
-    });
-    // Always store the full incoming orders so the next comparison is
-    // against what we were ASKED to render, not what succeeded.
-    // Lines are now registered before configuration (in createOrderLine),
-    // so they can always be cleaned up.
+    // The core keeps this set and (re)draws it whenever the chart can take
+    // it — including after a pair / resolution / layout load — so recording it
+    // as applied here is accurate.
+    coreChartRef.current.updateOrderLines(sorted);
     currentStateRef.current.orders = [...newOrders];
   }, [orders, showOrders]);
 
@@ -564,42 +553,13 @@ const TradingViewChartComponent = forwardRef<
     // });
   }, [showTransactions, transactions]);
 
-  // Wrap onLayoutChange to reapply all overlays after a layout is loaded/changed.
-  // Loading a saved layout clears all programmatic shapes (transactions, orders, etc.)
+  // Loading a saved layout wipes every programmatic shape; the core redraws
+  // its overlays itself once the layout's data has loaded.
   const handleLayoutChange = useCallback(
     (layout: { id: string; name?: string | null } | null) => {
-      logger.info('[TradingViewChart] Layout changed, reapplying overlays', {
-        layoutId: layout?.id,
-        layoutName: layout?.name,
-      });
-
-      // Clear current state so reapply functions don't skip due to "no change" detection
-      currentStateRef.current.transactions = [];
-      currentStateRef.current.orders = [];
-      currentStateRef.current.orderDrawings = [];
-      currentStateRef.current.pastEntries = [];
-      currentStateRef.current.avgPrices = [];
-
-      // Reapply all overlays after a short delay to let the layout finish rendering
-      setTimeout(() => {
-        reapplyTransactions();
-        reapplyOrders();
-        reapplyOrderDrawings();
-        reapplyPastEntries();
-        reapplyAvgPriceLines();
-      }, 300);
-
-      // Forward to external handler
       onLayoutChange?.(layout);
     },
-    [
-      onLayoutChange,
-      reapplyTransactions,
-      reapplyOrders,
-      reapplyOrderDrawings,
-      reapplyPastEntries,
-      reapplyAvgPriceLines,
-    ]
+    [onLayoutChange]
   );
 
   // Expose high-level methods through ref
@@ -707,7 +667,8 @@ const TradingViewChartComponent = forwardRef<
     });
     coreChartRef.current.updateSymbol(newSymbol);
     currentStateRef.current.symbol = newSymbol;
-    // Changing symbol can clear drawings; reapply overlays
+    // Hand the core the new bot's overlays. It holds them until the new pair
+    // has loaded, then draws them.
     reapplyOrders();
     reapplyTransactions();
     reapplyOrderDrawings();
@@ -924,6 +885,32 @@ const TradingViewChartComponent = forwardRef<
     return 'BTCUSDT@BINANCE';
   }, [symbol]);
 
+  // A symbol that arrives before the chart is ready rebuilds the widget
+  // rather than waiting to be applied. TradingView takes a symbol change only
+  // after `onChartReady`, and that waits until the INITIAL symbol's history
+  // fills the view — every page of it, including pages from before the pair
+  // listed, which the archive can take tens of seconds to answer empty. A page
+  // that mounts the chart before it knows its pair (the terminal restoring an
+  // unsaved bot) therefore sat on "Loading chart…" for a default pair nobody
+  // asked for, and switched only once that finished. Once the chart is ready,
+  // symbol changes go through `setSymbol` as before.
+  const [widgetGeneration, setWidgetGeneration] = useState(0);
+  const widgetSymbolRef = useRef(safeInitialSymbol);
+  useEffect(() => {
+    if (isChartReady) return;
+    const normalize = (s: string): string => s.replace(/:/g, '_').toLowerCase();
+    if (normalize(safeInitialSymbol) === normalize(widgetSymbolRef.current)) {
+      return;
+    }
+    logger.info('Symbol changed before chart ready — rebuilding widget', {
+      from: widgetSymbolRef.current,
+      to: safeInitialSymbol,
+      widgetId: widgetId || 'unknown',
+    });
+    widgetSymbolRef.current = safeInitialSymbol;
+    setWidgetGeneration((g) => g + 1);
+  }, [safeInitialSymbol, isChartReady, widgetId]);
+
   const onSymbolChange = useCallback(
     (fullSymbol: string) => {
       // A custom datafeed is self-contained; don't write the shared live
@@ -975,6 +962,7 @@ const TradingViewChartComponent = forwardRef<
 
   return (
     <TradingViewWidgetRenderer
+      key={widgetGeneration}
       ref={coreChartRef}
       initialSymbol={safeInitialSymbol}
       initialInterval={interval}

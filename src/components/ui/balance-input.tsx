@@ -92,6 +92,14 @@ export interface BalanceInputProps {
    * and every positive size wrongly trips the error (forum #4921 / bug #94).
    */
   disableBalanceValidation?: boolean;
+  /**
+   * Force the balance skeleton on while the caller is still fetching. The
+   * built-in spinner tracks the shared balance store, which is only hydrated
+   * for callers that populate it; a caller holding the figure locally has no
+   * way to say "not known yet" and would otherwise be forced to render a 0
+   * that reads as a real, empty balance.
+   */
+  isBalanceLoading?: boolean;
 }
 
 export const BalanceInput: React.FC<BalanceInputProps> = ({
@@ -127,6 +135,7 @@ export const BalanceInput: React.FC<BalanceInputProps> = ({
   navId,
   readOnly,
   disableBalanceValidation = false,
+  isBalanceLoading: isBalanceLoadingProp = false,
 }) => {
   const [inputValue, setInputValue] = useState<string>(
     value?.toString() || '0'
@@ -173,7 +182,8 @@ export const BalanceInput: React.FC<BalanceInputProps> = ({
   }, [unitLabel, measureAdornment]);
 
   // Subscribe to balance store loading state using the selector
-  const isBalanceLoading = useBalanceStore((state) => state.loading);
+  const isBalanceLoadingStore = useBalanceStore((state) => state.loading);
+  const isBalanceLoading = isBalanceLoadingStore || isBalanceLoadingProp;
   const [showSpinner, setShowSpinner] = useState(false);
   const [manualSpinner, setManualSpinner] = useState(false);
 
@@ -354,12 +364,18 @@ export const BalanceInput: React.FC<BalanceInputProps> = ({
 
   // Check if amount exceeds available balance
   const exceedsBalance = useMemo(() => {
-    if (readOnly || disableBalanceValidation) {
+    if (readOnly || disableBalanceValidation || isBalanceLoadingProp) {
       return false;
     }
     const numValue = parseFloat(inputValue);
     return !isNaN(numValue) && numValue > availableBalance;
-  }, [inputValue, availableBalance, readOnly, disableBalanceValidation]);
+  }, [
+    inputValue,
+    availableBalance,
+    readOnly,
+    disableBalanceValidation,
+    isBalanceLoadingProp,
+  ]);
 
   // Register component error with form context (if within a bot form)
   useComponentError(
@@ -369,16 +385,23 @@ export const BalanceInput: React.FC<BalanceInputProps> = ({
     { navId }
   );
 
-  // Handle input focus. `isEditing` is only engaged in commit-on-blur mode:
-  // it freezes the prop->draft sync so an in-flight edit isn't clobbered by a
-  // derived value arriving mid-typing. In commit-on-change mode the sync must
-  // keep running (guards clamp the value as you type).
+  // Handle input focus. `isEditing` freezes the prop->draft sync for as long
+  // as the field has focus, in BOTH commit modes.
+  //
+  // It used to be engaged only in commit-on-blur mode, on the reasoning that a
+  // commit-on-change consumer needs the sync running so its guards can clamp
+  // the value as you type. But what comes back from a consumer is not always
+  // the number it was handed: a field whose value is *derived* (Quick setup's
+  // Investment is recomputed from the per-order sizes it was distributed into)
+  // answers a keystroke with a different figure, and writing that over the
+  // text that keystroke was part of means the next character lands on a value
+  // the user never typed — so the field can never be typed into at all.
+  // Clamping still lands; it lands when the edit ends rather than inside it,
+  // which is what a text input is expected to do.
   const handleInputFocus = useCallback(() => {
-    if (commitOn === 'blur') {
-      setIsEditing(true);
-    }
+    setIsEditing(true);
     onFocus?.();
-  }, [commitOn, onFocus]);
+  }, [onFocus]);
 
   // Handle input blur
   const handleInputBlur = useCallback(() => {
@@ -640,8 +663,12 @@ export const BalanceInput: React.FC<BalanceInputProps> = ({
         )}
       </div>
 
-      {/* Secondary row for stacked layout */}
-      {isStackedLayout && (
+      {/* Secondary row for stacked layout. Gated on there actually being a
+          dropdown to put in it: `renderCurrencyDropdown` returns null when no
+          currency options were passed, which left a bordered, padded, empty
+          row sitting between the field and the percentage buttons — read as a
+          gap someone forgot to close. */}
+      {isStackedLayout && showCurrencyDropdown && (
         <div className="flex w-full flex-wrap items-stretch gap-3 border-t border-border/60 pt-3">
           {renderCurrencyDropdown('stacked')}
           {/* Balance now lives inside input endAdornment for stacked layout as well */}

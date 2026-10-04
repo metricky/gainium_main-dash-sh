@@ -1,22 +1,25 @@
-import { findUSDRate } from '@/lib/utils/unrealizedPnL';
+import {
+  computeDealUnrealizedPnlFromPrices,
+  serverDealUnrealizedPnl,
+} from '@/lib/utils/dealUnrealizedPnl';
 import {
   calculateDealCost,
   calculateDealSize,
   calculateDealValue,
+  dealWorkingMs,
   isLongStrategy,
 } from '@/lib/utils/tradingMetrics';
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
+import { formatDuration } from '@/utils/formatters';
 import {
   computeCompoundBreakdown,
   type CompoundBreakdownEntry,
 } from '@/lib/utils/compoundBreakdown';
 import {
   BotTypesEnum,
-  ComboTpBase,
   DCADealStatusEnum,
   DCATypeEnum,
   ExchangeEnum,
-  StrategyEnum,
   type AllFees,
   type ComboDeals,
   type DCADeals,
@@ -25,6 +28,10 @@ import {
 } from '.';
 import type { DrawerBot } from './bots/drawer';
 import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
+import {
+  percentBasis,
+  type PercentBasis,
+} from '@/features/bots/shared/runtime/dialogs/adjustFundsAmount';
 
 export type TradeChartPoint = {
   time: string;
@@ -92,6 +99,14 @@ export type TransformedTrade = {
       }
     | undefined;
   unrealizedProfit?: number | undefined;
+  /**
+   * What a percentage add/reduce resolves to for this deal, in base units.
+   * Derived here because this is the only place that already holds every input
+   * the engine reads (`lastPrice`, futures/coinm, leverage + margin type, and
+   * both balance snapshots); the deal shapes downstream carry none of them.
+   * Undefined when the deal has no usable position yet.
+   */
+  percentBasis?: PercentBasis | undefined;
   avgPrice?: number | undefined;
   levels: {
     complete: number;
@@ -106,6 +121,14 @@ export type TransformedTrade = {
   notes?: string;
   pair?: string;
   dealType?: string;
+  /**
+   * Derivatives deal. Explicit because `dealType` does NOT mean the same thing
+   * in both trade transforms — here it is the bot type ('DCA', 'Combo', 'Hedge
+   * DCA'), while `dcaDealToOpenTrade` sets it to 'FUTURES' / 'SPOT'. Anything
+   * reading market type off that field is right on one path and wrong on the
+   * other.
+   */
+  futures?: boolean;
   side?: 'BUY' | 'SELL';
   orders?: number;
   entryPrice?: number;
@@ -149,6 +172,12 @@ export type TransformedTrade = {
   updateTime?: string;
   closeTime?: string;
   trailingMode?: string;
+  /**
+   * Price the armed trailing exit will fire at (`deal.trailingLevel`). 0 /
+   * absent means the engine has NOT armed trailing — it is the companion of
+   * `trailingMode`, and both must be truthy before a deal is really trailing.
+   */
+  trailingLevel?: number;
   exitPrice?: number;
   compoundBreakdown?: CompoundBreakdownEntry[] | undefined;
   /**
@@ -156,6 +185,60 @@ export type TransformedTrade = {
    * order. Absent on every normal deal.
    */
   startBlocked?: DealStartBlock;
+};
+
+/**
+ * `percentBasis` for a raw deal record, deriving the futures/coinm/leverage
+ * inputs the same way the trade transform does.
+ *
+ * Exported because the Trading page builds its own flattened deal rows rather
+ * than going through `transformDealToTrade`, and both must hand the Add/Reduce
+ * funds dialog the same number — a preview that disagrees between the bot
+ * drawer and the trades table would be worse than no preview at all.
+ */
+export const percentBasisFromDeal = (deal: {
+  strategy?: string | undefined;
+  avgPrice?: number | undefined;
+  lastPrice?: number | undefined;
+  exchange?: ExchangeEnum | string | undefined;
+  usage?: { current?: { base?: number; quote?: number } } | undefined;
+  currentBalances?: { base?: number } | undefined;
+  initialBalances?: { base?: number } | undefined;
+  settings?:
+    | {
+        futures?: boolean | undefined;
+        coinm?: boolean | undefined;
+        leverage?: number | undefined;
+        marginType?: string | undefined;
+      }
+    | undefined;
+}): PercentBasis | null => {
+  const futures =
+    `${deal.settings?.futures}` !== 'null' && deal.settings?.futures !== undefined
+      ? !!deal.settings.futures
+      : isFuturesExchange((deal.exchange as ExchangeEnum) ?? ExchangeEnum.binance);
+  const coinm =
+    `${deal.settings?.coinm}` !== 'null' && deal.settings?.coinm !== undefined
+      ? !!deal.settings.coinm
+      : isCoinmExchange((deal.exchange as ExchangeEnum) ?? ExchangeEnum.binance);
+  const long = isLongStrategy(deal.strategy ?? '');
+
+  return percentBasis({
+    usageCurrentBase: deal.usage?.current?.base || 0,
+    usageCurrentQuote: deal.usage?.current?.quote || 0,
+    avgPrice: deal.avgPrice || 0,
+    lastPrice: deal.lastPrice || 0,
+    // The position still on the books — the same expression the take-profit
+    // block uses.
+    remainingBase: long
+      ? deal.currentBalances?.base || 0
+      : (deal.initialBalances?.base || 0) - (deal.currentBalances?.base || 0),
+    long,
+    futures,
+    coinm,
+    leverage: deal.settings?.leverage,
+    marginType: deal.settings?.marginType,
+  });
 };
 
 export const transformDealToTrade = (
@@ -226,18 +309,11 @@ export const transformDealToTrade = (
   // Determine botId from deal or component prop
   const resolvedBotId = deal.botId;
 
-  // Calculate working time
-  const now = Date.now();
-  const created = deal.createTime ? new Date(deal.createTime).getTime() : now;
-  const workingMs = now - created;
-  const workingDays = Math.floor(workingMs / (1000 * 60 * 60 * 24));
-  const workingHours = Math.floor(
-    (workingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
-  );
-  const workingTime =
-    workingDays > 0
-      ? `${workingDays}days ${workingHours}h`
-      : `${workingHours}h`;
+  // Calculate working time. A closed/canceled deal stops at its close rather
+  // than counting on to now — see `dealWorkingMs` (V1 parity, bug #567).
+  // Formatted through the shared `formatDuration` so a deal that ran under an
+  // hour reports its minutes instead of flooring to "0h" (bug #567).
+  const workingTime = formatDuration(dealWorkingMs(deal));
 
   // Legacy parity (main-dash `isActiveDeal`, utils/deals.ts): unrealized P&L
   // only exists while a deal is live. Closed/canceled deals must not report it
@@ -249,152 +325,22 @@ export const transformDealToTrade = (
     deal.status === DCADealStatusEnum.error ||
     deal.status === DCADealStatusEnum.start;
 
-  let unrealizedPnL =
-    useLiveStats && isActiveDeal ? deal.stats.unrealizedProfit : undefined;
-
-  if (!useLiveStats) {
-    const long = deal.strategy === StrategyEnum.long;
-    const price = latestPrices.find(
-      (p) => p.symbol === deal.symbol.symbol && p.exchange === deal.exchange
-    )?.price;
-
-    // Legacy parity: the deal-table unrealized-P&L formula always converts
-    // via the QUOTE asset, for spot, USD-M, AND COIN-M alike (see main-dash
-    // terminal/utils.ts and hedge/new.tsx, which call findUSDRate(quoteAsset)
-    // unconditionally). For COIN-M the formula's own `* price` term performs
-    // the coin→USD conversion, so the rate must stay quote-based (= 1 for
-    // USD-settled pairs). Using the base asset here double-converted COIN-M
-    // legs by ~the coin price, inflating unrealized P&L by orders of magnitude.
-    const usdRate = findUSDRate(
-      deal.symbol.quoteAsset,
-      latestPrices,
-      deal.exchange
-    );
-    unrealizedPnL =
-      deal.strategy && price && usdRate && isActiveDeal
-        ? (long
-            ? deal.currentBalances.base * price +
-              deal.currentBalances.quote -
-              deal.initialBalances.quote
-            : deal.currentBalances.quote -
-              (deal.initialBalances.base - deal.currentBalances.base) * price) *
-          usdRate
-        : undefined;
-    const fee = allFees.find(
-      (f) => f.exchange === deal.exchangeUUID && f.symbol === deal.symbol.symbol
-    )?.fee;
-    const { comboTpBase } = deal.settings;
-    const comboBasedOn =
-      !comboTpBase || comboTpBase === ComboTpBase.full
-        ? ComboTpBase.full
-        : ComboTpBase.filled;
-    const usageBase =
-      comboBasedOn === ComboTpBase.full
-        ? deal.usage.max.base
-        : deal.usage.current.base;
-    const usageQuote =
-      comboBasedOn === ComboTpBase.full
-        ? deal.usage.max.quote
-        : deal.usage.current.quote;
-    const reduceFundsBase = (deal.reduceFunds ?? []).reduce(
-      (acc, r) => acc + r.qty,
-      0
-    );
-    const reduceFundsQuote = (deal.reduceFunds ?? []).reduce(
-      (acc, r) => acc + r.qty * r.price,
-      0
-    );
-    const usage =
-      usdRate && price
-        ? futures
-          ? coinm
-            ? (combo ? usageBase : deal.usage.current.base + reduceFundsBase) *
-              price *
-              usdRate
-            : (combo
-                ? usageQuote
-                : deal.usage.current.quote + reduceFundsQuote) * usdRate
-          : long
-            ? (combo
-                ? usageQuote
-                : deal.usage.current.quote + reduceFundsQuote) * usdRate
-            : (combo ? usageBase : deal.usage.current.base + reduceFundsBase) *
-              price *
-              usdRate
-        : undefined;
-    const feeAmount = fee !== undefined ? (usage ?? 0) * fee * 2 : undefined;
-
-    // A breakeven deal has an unrealized P&L of exactly 0 (e.g. right after
-    // entry, or while the market is closed and the live price is frozen at the
-    // avg entry price — common for Kraken tokenized "xStocks"). The old
-    // `unrealizedPnL &&` truthy-check treated that legitimate 0 as "no value"
-    // and returned undefined, which the table renders as "Price unavailable".
-    // Guard on `!== undefined` so a real 0 survives.
-    unrealizedPnL =
-      unrealizedPnL !== undefined && feeAmount !== undefined
-        ? unrealizedPnL - feeAmount
-        : undefined;
-    if (
-      combo &&
-      isActiveDeal &&
-      price !== undefined &&
-      fee !== undefined &&
-      usdRate !== undefined
-    ) {
-      const profitBase =
-        (futures && coinm) ||
-        (!futures && deal?.settings.profitCurrency === 'base');
-      const qty = long
-        ? deal.currentBalances.base
-        : deal.initialBalances.base - deal.currentBalances.base;
-      let quote =
-        (long
-          ? deal.initialBalances.quote - deal.currentBalances.quote
-          : deal.currentBalances.quote) +
-        (profitBase ? 0 : deal.profit.total * (long ? 1 : -1));
-      const quoteTp = qty * price;
-      let base =
-        quote / price + (profitBase ? deal.profit.total * (long ? 1 : -1) : 0);
-      let commission = profitBase ? qty * fee : qty * price * fee;
-      let total =
-        (deal.profit.total +
-          (profitBase ? qty - base : quoteTp - quote) * (long ? 1 : -1) -
-          commission) *
-        usdRate *
-        (profitBase ? price : 1);
-      if (
-        typeof deal.profit.pureBase !== 'undefined' &&
-        typeof deal.profit.pureQuote !== 'undefined' &&
-        typeof deal.feePaid !== 'undefined' &&
-        `${deal.feePaid}` !== 'null' &&
-        `${deal.profit.pureBase}` !== 'null' &&
-        `${deal.profit.pureQuote}` !== 'null' &&
-        deal.currentBalances.quote >= 0 &&
-        deal.currentBalances.base >= 0
-      ) {
-        quote = long
-          ? deal.initialBalances.quote - deal.currentBalances.quote
-          : deal.currentBalances.quote;
-        base = quote / price;
-        commission = profitBase
-          ? deal.feePaid
-            ? (deal.feePaid.base ?? 0) +
-              (deal.feePaid.quote ?? 0) / deal.avgPrice
-            : 0
-          : deal.feePaid
-            ? (deal.feePaid.base ?? 0) * deal.avgPrice +
-              (deal.feePaid.quote ?? 0)
-            : 0;
-        total =
-          (+(profitBase ? qty - base : quoteTp - quote) * (long ? 1 : -1) -
-            commission) *
-          usdRate *
-          (profitBase ? price : 1);
-      }
-
-      unrealizedPnL = total;
-    }
-  }
+  // One fee-inclusive definition for every surface (lib/utils/
+  // dealUnrealizedPnl.ts, mirrored by the server's stats worker). Without a
+  // price snapshot the server's stored value is shown; with one, the live
+  // value (undefined when the deal's price, USD rate or fee cannot be
+  // resolved — callers decide whether to fall back to the server value).
+  const serverPnl = serverDealUnrealizedPnl(deal);
+  const livePnl = useLiveStats
+    ? undefined
+    : computeDealUnrealizedPnlFromPrices(deal, latestPrices, allFees, {
+        combo,
+      });
+  const unrealizedPnL = isActiveDeal
+    ? useLiveStats
+      ? serverPnl?.unrealizedUsd
+      : livePnl?.unrealizedUsd
+    : undefined;
 
   return {
     id: deal._id,
@@ -435,6 +381,11 @@ export const transformDealToTrade = (
     },
     ...(deal.funding && { funding: deal.funding }),
     avgPrice: deal.avgPrice || 0,
+    futures: !!futures,
+    ...(() => {
+      const basis = percentBasisFromDeal(deal);
+      return basis ? { percentBasis: basis } : {};
+    })(),
     levels,
     riskBased: deal.settings?.useRiskReward,
     created: createTime,
@@ -529,6 +480,7 @@ export const transformDealToTrade = (
       ? new Date(deal.closeTime as number).toISOString()
       : undefined,
     trailingMode: deal.trailingMode,
+    trailingLevel: deal.trailingLevel,
     takeProfitConfig: (deal as DCADeals).settings
       ? tpSLConfig((deal as DCADeals).settings, 'tp', combo)
       : '-',

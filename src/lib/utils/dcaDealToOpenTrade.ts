@@ -11,14 +11,24 @@ import { computeCompoundBreakdown } from '@/lib/utils/compoundBreakdown';
 import {
   calculateDealCost,
   calculateDealSize,
+  dealWorkingMs,
   isLongStrategy,
 } from '@/lib/utils/tradingMetrics';
 import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
+import { extractPairAssets } from '@/utils/pairs';
+import { formatDuration } from '@/utils/formatters';
 import { ExchangeEnum, type DCADeals } from '@/types';
+import { percentBasisFromDeal } from '@/types/dcaDeal';
 
 export function dcaDealToOpenTrade(deal: DCADeals) {
   const symbol = deal.symbol?.symbol || 'Unknown';
-  const baseSymbol = symbol.replace(deal.symbol?.quoteAsset || '', '');
+  // Not `symbol.replace(quoteAsset, '')`: that strips only the quote substring
+  // and leaves the venue's separator behind, so a hyphen-native symbol became a
+  // pair no one uses (`GAIB-USD` -> `GAIB-` -> `GAIB-/USD`). The API already
+  // reports the base asset; `extractPairAssets` is the shared fallback the
+  // Symbol cell itself renders through.
+  const baseSymbol =
+    deal.symbol?.baseAsset || extractPairAssets(symbol).baseAsset || symbol;
   const quoteSymbol = deal.symbol?.quoteAsset || 'USD';
   const pair = `${baseSymbol}/${quoteSymbol}`;
   // Cost/size must be strategy-aware: usage is tracked on the QUOTE side for
@@ -54,13 +64,16 @@ export function dcaDealToOpenTrade(deal: DCADeals) {
   };
   const cost = calculateDealCost(metricsInput);
   const createdTime = deal.createTime ? new Date(deal.createTime) : new Date();
-  const workingMs = Date.now() - createdTime.getTime();
-  const workingDays = Math.floor(workingMs / (1000 * 60 * 60 * 24));
-  const workingHours = Math.floor(
-    (workingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
-  );
-  const workingTime =
-    workingDays > 0 ? `${workingDays}D ${workingHours}H` : `${workingHours}H`;
+  // Closed/canceled deals stop at their close instead of counting on to now —
+  // see `dealWorkingMs` (V1 parity, bug #567).
+  //
+  // Format through the shared `formatDuration` rather than flooring to hours
+  // here: a deal that ran under an hour floors to 0 and used to render "0H",
+  // claiming it never ran at all (bug #567 — 63 of the reporter's 288 closed
+  // deals). `formatDuration` falls through to minutes and seconds, matching
+  // V1's `friendlyTime` granularity and the Stats tab, which already reports
+  // these same deal durations through this helper.
+  const workingTime = formatDuration(dealWorkingMs(deal));
 
   // Closed/canceled deals have no unrealized P&L. The server keeps a stale
   // `stats.unrealizedProfit` on closed deals, so gate on active status
@@ -116,11 +129,21 @@ export function dcaDealToOpenTrade(deal: DCADeals) {
     ...(deal.funding && { funding: deal.funding }),
     unrealizedProfit,
     avgPrice: deal.avgPrice || 0,
+    // The Add/Reduce funds dialog needs this to resolve a percentage and to
+    // cap a reduce at the position. `transformDealToTrade` has always
+    // attached it; this transform — which is what the trades list and the
+    // Hedge DCA deals tab actually feed the widget with — never did, so the
+    // "% of position" preview silently resolved to nothing on those rows.
+    ...(() => {
+      const basis = percentBasisFromDeal(deal);
+      return basis ? { percentBasis: basis } : {};
+    })(),
     levels: deal.levels || { complete: 0, all: 0 },
     created: +createdTime,
     notes: deal.note || '',
     pair,
     dealType: deal.settings?.futures ? 'FUTURES' : 'SPOT',
+    futures: !!deal.settings?.futures,
     side: (deal.strategy === 'SHORT' ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
     orders: deal.levels?.complete || 0,
     entryPrice: deal.initialPrice || deal.avgPrice || 0,
@@ -167,8 +190,11 @@ export function dcaDealToOpenTrade(deal: DCADeals) {
     transactionsSell: deal.transactions?.sell ?? 0,
     transactionsTotal:
       (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
+    // ISO string, same reason as closeTime below: the Update Time column
+    // re-parses this value (to render it and to sort on it) and a locale
+    // string gets misparsed by new Date(), swapping day/month.
     updateTime: deal.updateTime
-      ? new Date(deal.updateTime).toLocaleString()
+      ? new Date(deal.updateTime).toISOString()
       : undefined,
     // ISO string so the Close Time column re-parses it unambiguously;
     // a locale string gets misparsed by new Date() and swaps day/month.

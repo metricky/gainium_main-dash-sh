@@ -1,4 +1,5 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { GraphQlQuery } from '@/lib/api';
 import { logger } from '@/lib/loggerInstance';
 import { useAuthStore } from '@/stores/authStore';
@@ -30,6 +31,12 @@ export interface RealOrderData {
   botType: string;
   terminal: boolean;
 }
+
+/** The "BASE/QUOTE" pair an order row's Symbol cell renders. */
+const latestOrderPair = (order: RealOrderData): string =>
+  order.baseAsset && order.quoteAsset
+    ? `${order.baseAsset}/${order.quoteAsset}`
+    : order.baseAsset || order.quoteAsset || '';
 
 export interface LatestOrdersProps {
   widgetId: string;
@@ -124,6 +131,9 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
   }, [ordersResponse]);
 
   // Memoize columns to prevent infinite renders
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the daily-profit surfaces use — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   const columns = useMemo<ColumnDef<RealOrderData>[]>(
     () => [
       {
@@ -144,8 +154,20 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        // `getLatestOrders` returns no `symbol` field, so the accessor is
+        // always undefined; filter on the base/quote pair the cell renders.
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => latestOrderPair(row as RealOrderData),
+          getFilterValue: (row: unknown) => {
+            const order = row as RealOrderData;
+            return [
+              latestOrderPair(order),
+              order.baseAsset,
+              order.quoteAsset,
+            ].filter(Boolean);
+          },
+        },
       },
       {
         accessorKey: 'side',
@@ -155,8 +177,10 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
           return <BuySellChip side={side} size="sm" showIcon={true} />;
         },
         enableSorting: true,
-        filterFn: 'equals',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => (row as RealOrderData).side || '',
+        },
       },
       {
         accessorKey: 'origQty',
@@ -208,8 +232,12 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
         cell: ({ getValue }) => {
           const timestamp = getValue() as number;
           const date = new Date(timestamp);
-          const dateString = date.toLocaleDateString();
-          const timeString = date.toLocaleTimeString();
+          const dateString = date.toLocaleDateString(undefined, {
+            timeZone: accountTimeZone,
+          });
+          const timeString = date.toLocaleTimeString(undefined, {
+            timeZone: accountTimeZone,
+          });
           return (
             <div className="text-sm text-muted-foreground whitespace-nowrap">
               <div>{dateString}</div>
@@ -245,7 +273,6 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
         meta: { filterType: 'string' },
       },
       {
@@ -256,11 +283,14 @@ const LatestOrders: React.FC<LatestOrdersProps> = ({
           return <BotTypeChip botType={botType} size="sm" chipStyle="soft" />;
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) =>
+            (row as RealOrderData).botType || '',
+        },
       },
     ],
-    []
+    [accountTimeZone]
   );
 
   // Use all orders - pagination will handle the display

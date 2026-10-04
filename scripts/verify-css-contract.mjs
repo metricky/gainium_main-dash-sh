@@ -82,7 +82,12 @@ const BUILTIN_GUARD = [
 ];
 
 /** Variant forms — dead for years while the utilities were hand-written. */
-const VARIANT_PROBES = ['md:p-md', 'sm:gap-xs', 'lg:space-y-xl', 'hover:mb-lg'];
+const VARIANT_PROBES = ['md:p-md', 'sm:gap-xs', 'lg:space-y-xl', 'hover:mb-lg',
+                        'can-hover:sm:opacity-0',
+                        // `no-hover:sm:*` is what shows the widget controls at
+                        // rest on a tablet. If it stops compiling the controls
+                        // silently go back to being invisible until touched.
+                        'no-hover:sm:flex'];
 
 const probeClasses = [
   ...Object.keys(FAMILIES).flatMap((f) => TOKENS.map((t) => `${f}-${t}`)),
@@ -100,6 +105,50 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const selectorRe = (cls, tail) =>
   new RegExp(esc(selectorText(cls)) + (tail ?? ''));
 
+/**
+ * The at-rule context each declaration of `rule` sits under, one chain per
+ * group of declarations.
+ *
+ * Tailwind v4 does not always wrap a variant's at-rule AROUND the utility
+ * rule. For a `@custom-variant` (and for the built-in breakpoints) it emits
+ * the at-rules NESTED INSIDE it instead:
+ *
+ *   .can-hover\:sm\:opacity-0 {
+ *     @media (hover: hover) { @media (width >= 40rem) { opacity: 0%; } }
+ *   }
+ *
+ * so an ancestor-only walk sees nothing but `@layer utilities` and cannot
+ * tell a hover-gated rule from an ungated one. Look in both directions, and
+ * report every path that reaches a declaration — a variant that gates only
+ * some of its declarations is still broken.
+ */
+const atRuleChainsFor = (rule) => {
+  const ancestors = [];
+  for (let p = rule.parent; p && p.type === 'atrule'; p = p.parent) {
+    ancestors.unshift(`@${p.name} ${p.params}`);
+  }
+  const chains = [];
+  const visit = (node, chain) => {
+    let hasDecl = false;
+    let hasNested = false;
+    for (const child of node.nodes ?? []) {
+      if (child.type === 'decl') {
+        hasDecl = true;
+      } else if (child.type === 'atrule') {
+        hasNested = true;
+        visit(child, [...chain, `@${child.name} ${child.params}`]);
+      } else if (child.type === 'rule') {
+        hasNested = true;
+        visit(child, chain);
+      }
+    }
+    // Declarations here, or an empty rule that produces nothing at all.
+    if (hasDecl || !hasNested) chains.push(chain);
+  };
+  visit(rule, ancestors);
+  return chains;
+};
+
 const failures = [];
 const fail = (msg) => failures.push(msg);
 
@@ -112,6 +161,7 @@ const run = async () => {
   fs.writeFileSync(probeFile, `<div class="${probeClasses.join(' ')}"></div>`);
 
   let css;
+  let root;
   try {
     const injected = source.replace(
       /@import\s+['"]tailwindcss['"];/,
@@ -119,6 +169,7 @@ const run = async () => {
     );
     const res = await postcss([tailwind()]).process(injected, { from: CSS });
     css = res.css;
+    root = res.root;
   } finally {
     fs.rmSync(probeFile, { force: true });
   }
@@ -183,6 +234,52 @@ const run = async () => {
     fail(`\`dark:\` does not key off [data-theme]: ${darkRule}`);
   }
 
+  // 4b. `can-hover:` must compile to a hover-capability media query. Widget
+  //     chrome is hidden with `can-hover:sm:opacity-0` and revealed with
+  //     `group-hover` (which Tailwind v4 already wraps in `hover: hover`).
+  //     If this variant stops resolving, the hide rule either vanishes —
+  //     leaving the controls permanently on screen — or silently degrades to
+  //     a plain `sm:` rule, which is the tablet defect from bug #695.
+  const canHoverTarget = selectorText('can-hover:sm:opacity-0');
+  let canHoverChains = null;
+  root.walkRules((r) => {
+    if (canHoverChains || !r.selector.includes(canHoverTarget)) return;
+    canHoverChains = atRuleChainsFor(r).map((c) => c.join(' > ') || '(none)');
+  });
+  if (canHoverChains === null) {
+    fail('can-hover:sm:opacity-0 is not generated — restore the ' +
+         "`@custom-variant can-hover (@media (hover: hover))` declaration.");
+  } else {
+    const ungated = canHoverChains.filter((c) => !/hover\s*:\s*hover/.test(c));
+    if (ungated.length) {
+      fail(`can-hover: does not compile to a hover media query (declarations ` +
+           `sit under ${ungated.map((c) => `"${c}"`).join(', ')}). ` +
+           'Hover-revealed widget chrome would then be hidden on touch ' +
+           'devices that can never reveal it.');
+    }
+  }
+
+  // 4c. `no-hover:` is the reveal half of the same pair — it is what puts the
+  //     widget controls on screen at rest on a tablet. If it degrades to an
+  //     ungated rule the controls appear on desktop too, permanently.
+  const noHoverTarget = selectorText('no-hover:sm:flex');
+  let noHoverChains = null;
+  root.walkRules((r) => {
+    if (noHoverChains || !r.selector.includes(noHoverTarget)) return;
+    noHoverChains = atRuleChainsFor(r).map((c) => c.join(' > ') || '(none)');
+  });
+  if (noHoverChains === null) {
+    fail('no-hover:sm:flex is not generated — restore the ' +
+         "`@custom-variant no-hover (@media (hover: none))` declaration.");
+  } else {
+    const ungated = noHoverChains.filter((c) => !/hover\s*:\s*none/.test(c));
+    if (ungated.length) {
+      fail(`no-hover: does not compile to a hover media query (declarations ` +
+           `sit under ${ungated.map((c) => `"${c}"`).join(', ')}). ` +
+           'The tablet-only widget controls would then show on desktop too.');
+    }
+  }
+
   // 5. The spacing scale must not hijack the container scale.
   for (const cls of CONTAINER_GUARD) {
     const body = ruleFor(cls);
@@ -229,7 +326,7 @@ const run = async () => {
     VARIANT_PROBES.length +
     CONTAINER_GUARD.length +
     BUILTIN_GUARD.length +
-    11;
+    12;
 
   if (failures.length) {
     console.error(`\n✗ CSS contract violated (${failures.length} problem(s)):\n`);

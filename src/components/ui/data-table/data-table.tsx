@@ -16,7 +16,7 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { rankItem } from '@tanstack/match-sorter-utils';
+import { rankItem, rankings } from '@tanstack/match-sorter-utils';
 import {
   createTable,
   flexRender,
@@ -41,6 +41,7 @@ import {
 import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
 import {
+  ArrowUpDown,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -64,6 +65,7 @@ import {
   Search,
   SquareCheck,
   X,
+  Zap,
 } from 'lucide-react';
 import React, {
   useCallback,
@@ -73,6 +75,7 @@ import React, {
   useState,
 } from 'react';
 import { DataTableFooter } from './data-table-footer';
+import { singleFilters } from '../../../lib/botList/serverFilters';
 import { downloadCsv } from './exportCsv';
 import { ColumnFilter } from './filter-components';
 import {
@@ -84,8 +87,10 @@ import { QuickFilterBar } from './QuickFilterBar';
 import { QuickFilters, type QuickFilterConfig } from './QuickFilters';
 import { deserializeFilters, deserializeSorting, serialize } from './urlSync';
 
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { useContainerWidth } from '@/hooks/useContainerWidth';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useRenderLoopTripwire } from '@/hooks/useRenderLoopTripwire';
 import { useTablePreferences } from '../../../stores/tablePreferencesStore';
 import { Badge } from '../badge';
 import { Button } from '../button';
@@ -114,6 +119,35 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../select';
+import { Tooltip } from '../tooltip';
+
+/**
+ * Column-level documentation, read off `columnDef.meta`.
+ *
+ * `description` explains how the column's number is derived (which fields it
+ * sums, what the percentage divides by). It replaces the native sort hint on
+ * the header cell and renders in the app tooltip instead, so the two never
+ * fight over the same hover.
+ *
+ * `descriptionUrl` optionally links a help-center article, rendered as a pill
+ * inside the tooltip (see `Tooltip`'s `tooltipURL`).
+ */
+import {
+  SERVER_FILTER_UNAVAILABLE_TOOLTIP,
+  SERVER_SORT_UNAVAILABLE_TOOLTIP,
+  type DataTableServerSide,
+} from './serverSide';
+
+export interface ColumnDescriptionMeta {
+  description?: string;
+  descriptionUrl?: string;
+}
+
+const getColumnDescription = (
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  columnDef: any
+): ColumnDescriptionMeta =>
+  (columnDef?.meta as ColumnDescriptionMeta | undefined) ?? {};
 
 /**
  * Overflow metadata for toolbar action buttons.
@@ -261,14 +295,53 @@ const isSortingState = (parsed: unknown): parsed is SortingState =>
       typeof (entry as { id?: unknown }).id === 'string'
   );
 
-// Fuzzy filter function
+// Table ids that have already taken their state from the URL in THIS document.
+//
+// `filters_<tableId>` / `sort_<tableId>` describe an INBOUND link — someone
+// opened or reloaded the page with them — and they are authoritative for that
+// document load only. Inside a document the persisted table preferences are the
+// source of truth, and the params are a debounced `history.replaceState` MIRROR
+// of them: a change made within 250ms of leaving the page never reaches the URL
+// at all. Re-reading that mirror on every component mount (tab switch, route
+// change and back, live-data skeleton flip) therefore wrote an older snapshot
+// of the filters back over the saved ones — permanently, since the reader
+// persists what it read. Module scope, not a ref: it must outlive the
+// component but die with the document, which is exactly what "a real reload
+// still restores the link's filters" needs.
+const urlSyncedTableIds = new Set<string>();
+
+/**
+ * Overlay the filters a link carries onto the ones already saved for the table.
+ *
+ * A link only ever mentions the columns it filters on, so a column it omits
+ * must keep whatever the user had saved for it rather than being deleted.
+ */
+const mergeUrlFilters = (
+  fromUrl: ColumnFiltersState,
+  saved: ColumnFiltersState
+): ColumnFiltersState => {
+  const overridden = new Set(fromUrl.map((f) => f.id));
+  return [...fromUrl, ...saved.filter((f) => !overridden.has(f.id))];
+};
+
+// Global search filter.
+//
+// `rankItem` defaults to `rankings.MATCHES`, which passes any value containing
+// the typed characters in order but NOT consecutively — so "sui" matched
+// SUSHI/USDC and "near" matched the Take Profit Config text
+// "Type: Percentage\nTarget: 1%" on every deal. Because TanStack global-filters
+// every filterable column regardless of visibility, that hit hidden columns too
+// and returned nearly the whole table. Require the typed text to appear
+// consecutively (`CONTAINS`), which is what a search box is expected to do.
 const fuzzyFilter = (
   row: { getValue: (columnId: string) => unknown },
   columnId: string,
   value: string,
   addMeta: (meta: { itemRank: { passed: boolean } }) => void
 ) => {
-  const itemRank = rankItem(row.getValue(columnId), value);
+  const itemRank = rankItem(row.getValue(columnId), value, {
+    threshold: rankings.CONTAINS,
+  });
   addMeta({ itemRank });
   return itemRank.passed;
 };
@@ -287,6 +360,7 @@ interface DraggableColumnHeaderProps {
   maxColumnWidth?: number;
   enableColumnResizing?: boolean;
   enableColumnFilters?: boolean;
+  enableColumnVisibility?: boolean;
   onToggleFilters?: () => void;
   stickyPosition?: React.CSSProperties;
 }
@@ -303,6 +377,7 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
   maxColumnWidth,
   enableColumnResizing = true,
   enableColumnFilters = true,
+  enableColumnVisibility = true,
   onToggleFilters,
   stickyPosition = {},
 }) => {
@@ -324,6 +399,10 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
   const thRef = useRef<HTMLTableCellElement>(null);
 
   const showControls = isHovered || controlsVisible;
+
+  const { description, descriptionUrl } = getColumnDescription(
+    header.column.columnDef
+  );
 
   // Click-outside listener to dismiss controls on mobile
   useEffect(() => {
@@ -465,9 +544,13 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
       {...attributes}
       onClick={handleHeaderClick}
       title={
-        header.column.getCanSort()
-          ? 'Click to sort, Shift+Click for multi-column sort'
-          : undefined
+        // A column that documents itself shows the app tooltip instead; two
+        // tooltips on one hover target read as a bug.
+        description
+          ? undefined
+          : header.column.getCanSort()
+            ? 'Click to sort, Shift+Click for multi-column sort'
+            : undefined
       }
     >
       <div className="relative flex items-center w-full h-6 px-2">
@@ -519,7 +602,43 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
 
         {/* Title: centered, full width, truncated with ellipsis */}
         <div className="flex-1 min-w-0 text-center overflow-hidden whitespace-nowrap text-ellipsis">
-          {children}
+          {description ? (
+            <Tooltip
+              tooltip={description}
+              {...(descriptionUrl ? { tooltipURL: descriptionUrl } : {})}
+              side="bottom"
+              delay={250}
+              triggerClassName="max-w-full align-middle cursor-help"
+              className="normal-case tracking-normal font-normal"
+            >
+              {children}
+            </Tooltip>
+          ) : (
+            children
+          )}
+          {/* Server mode: this column cannot be sorted on the server */}
+          {(header.column.columnDef.meta as { serverSortBlocked?: string })
+            ?.serverSortBlocked && (
+            <span
+              className="inline-flex ml-0.5 align-middle absolute right-9 top-1/2 -translate-y-1/2 z-10 normal-case tracking-normal font-normal"
+              onClick={(e) => e.stopPropagation()}
+              data-testid="server-sort-blocked"
+            >
+              <Tooltip
+                tooltip={
+                  (header.column.columnDef.meta as { serverSortBlocked?: string })
+                    .serverSortBlocked
+                }
+                side="bottom"
+                delay={150}
+              >
+                <ArrowUpDown
+                  className="h-3 w-3 text-muted-foreground/40 cursor-not-allowed"
+                  aria-label="Sorting unavailable"
+                />
+              </Tooltip>
+            </span>
+          )}
           {/* Sort indicator */}
           {header.column.getCanSort() && (
             <span className="inline-flex ml-0.5 align-middle absolute right-9 top-1/2 -translate-y-1/2 z-10">
@@ -678,17 +797,25 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
                 </>
               )}
 
-              {/* Hide column option */}
-              <DropdownMenuItem
-                onClick={(e) => {
-                  e.stopPropagation();
-                  header.column.toggleVisibility(false);
-                }}
-                className="text-xs"
-              >
-                <EyeOff className="h-3 w-3 mr-2" />
-                Hide column
-              </DropdownMenuItem>
+              {/* Hide column option.
+                  Gated on the same flag as the toolbar's Columns dropdown,
+                  which is the only place a hidden column can be brought back
+                  (and which holds Reset Table). Offering Hide on a table that
+                  opts out of column visibility made the choice unrecoverable:
+                  the hidden state is persisted per table, so it survived
+                  reloads with no UI able to undo it. */}
+              {enableColumnVisibility && (
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    header.column.toggleVisibility(false);
+                  }}
+                  className="text-xs"
+                >
+                  <EyeOff className="h-3 w-3 mr-2" />
+                  Hide column
+                </DropdownMenuItem>
+              )}
 
               {/* Group by column option */}
               {header.column.getCanGroup() && (
@@ -1004,6 +1131,15 @@ interface DataTableProps<TData, TValue> {
    * as complete.
    */
   serverTotalRows?: number;
+  /**
+   * Server-side mode: `data` is ONE page from the server. Paging, sorting,
+   * search and column filters are not applied client-side; every change is
+   * reported through `onQueryChange` and the caller fetches that page.
+   * Columns sort only when their `meta.serverSortField` names a server field
+   * (filters: `meta.serverFilterField`); others show a greyed sort icon
+   * with `unsupportedSortReason` as the tooltip. Only one sort key is used.
+   */
+  serverSide?: DataTableServerSide;
   // Row interaction props
   onRowClick?: (row: TData) => void;
   getRowIsSelected?: (row: TData) => boolean;
@@ -1429,7 +1565,7 @@ function ToolbarButtonRow<TData>({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-[150px] max-h-[400px] overflow-y-auto"
+              className="w-auto min-w-[150px] max-w-[min(24rem,calc(100vw-2rem))] max-h-[400px] overflow-y-auto"
             >
               {tableRef.current
                 .getAllColumns()
@@ -1476,7 +1612,7 @@ function ToolbarButtonRow<TData>({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-[150px] max-h-[400px] overflow-y-auto"
+              className="w-auto min-w-[150px] max-w-[min(24rem,calc(100vw-2rem))] max-h-[400px] overflow-y-auto"
             >
               {tableRef.current
                 .getAllColumns()
@@ -1851,6 +1987,48 @@ const DEFAULT_COLUMN_WIDTH = 192;
 const DEFAULT_MIN_COLUMN_WIDTH = 80;
 const COMPACT_ACTIONS_COLUMN_WIDTH = 56;
 
+/**
+ * Re-insert the columns the user currently has HIDDEN into a reordered list of
+ * the visible ones, so a drag persists a complete column order.
+ *
+ * Each hidden column is anchored to the visible column it used to sit behind
+ * (or to the head of the table) and comes back in that same slot, even if the
+ * anchor itself was the column that moved.
+ *
+ * @param previousOrder every leaf column id, visible and hidden, in the order
+ *   the table currently holds them.
+ * @param newVisibleOrder the visible column ids after the drop.
+ */
+const mergeHiddenColumnOrder = (
+  previousOrder: string[],
+  newVisibleOrder: string[]
+): string[] => {
+  const visible = new Set(newVisibleOrder);
+  // anchor id ('' = before every visible column) -> the hidden ids that
+  // followed it, in their previous order.
+  const hiddenAfter = new Map<string, string[]>();
+  let anchor = '';
+  for (const id of previousOrder) {
+    if (visible.has(id)) {
+      anchor = id;
+      continue;
+    }
+    const trailing = hiddenAfter.get(anchor);
+    if (trailing) trailing.push(id);
+    else hiddenAfter.set(anchor, [id]);
+  }
+
+  if (hiddenAfter.size === 0) return newVisibleOrder;
+
+  const merged = [...(hiddenAfter.get('') ?? [])];
+  for (const id of newVisibleOrder) {
+    merged.push(id);
+    const trailing = hiddenAfter.get(id);
+    if (trailing) merged.push(...trailing);
+  }
+  return merged;
+};
+
 const RowCard = <TData,>({
   row,
   index,
@@ -1920,7 +2098,23 @@ const RowCard = <TData,>({
 function DataTableComponent<TData, TValue>(
   props: DataTableProps<TData, TValue>
 ) {
+  // Render-loop tripwire (additive, non-fatal). This component is the innermost
+  // app frame of the React #185 crashes reported as Claus #161 / #258 / #457 /
+  // #528 — always on a different page, which is why fixing one call site never
+  // ended the class. Qualifying the label by `tableId` means the report names
+  // the offending table, not just "a DataTable somewhere".
+  // Kill via localStorage['gainium:tripwire']='off'.
+  useRenderLoopTripwire(
+    `DataTable:${props.tableId ?? 'unknown'}`,
+    props as unknown as Record<string, unknown>
+  );
+
   const isMobile = useMediaQuery('(max-width: 767px)');
+  // The zone a `filterType: 'date'` column's DAY is measured in. Resolved here
+  // rather than inside filter-logic so that module stays free of app state, and
+  // so changing the Settings timezone rebuilds the filter fns (it is a dep of
+  // `enhancedColumns`) instead of leaving the table filtering on the old day.
+  const accountTimeZone = useAccountTimeZone();
   const {
     tableId,
     columns: initialColumns,
@@ -1961,6 +2155,7 @@ function DataTableComponent<TData, TValue>(
     exportFilename,
     getExportData,
     serverTotalRows,
+    serverSide,
     // Row interaction props
     onRowClick,
     getRowIsSelected,
@@ -2030,6 +2225,7 @@ function DataTableComponent<TData, TValue>(
       exportFilename: props.exportFilename ?? 'data-export',
       getExportData: props.getExportData,
       serverTotalRows: props.serverTotalRows,
+      serverSide: props.serverSide,
       onRowClick: props.onRowClick,
       getRowIsSelected: props.getRowIsSelected,
       finalToolbarActions: props.finalToolbarActions,
@@ -2114,7 +2310,7 @@ function DataTableComponent<TData, TValue>(
   // Get persisted preferences from Zustand store
   const {
     columnOrder,
-    columnVisibility,
+    columnVisibility: persistedColumnVisibility,
     columnWidths,
     pinnedColumns,
     pagination,
@@ -2140,6 +2336,17 @@ function DataTableComponent<TData, TValue>(
     defaultView,
     pinnedColumnsArg
   );
+
+  // A table that doesn't manage column visibility offers no way to bring a
+  // hidden column back — no Columns dropdown, and Reset Table lives inside it.
+  // Its columns are therefore whatever the call site declared, and a
+  // `columnVisibility` persisted for it (by an older build, which offered Hide
+  // in the header menu regardless) must not be applied, or the column stays
+  // gone forever. Ignored rather than deleted: the same key also holds the
+  // widths/sorting/filters this table does use.
+  const columnVisibility = enableColumnVisibility
+    ? persistedColumnVisibility
+    : stableDefaultColumnVisibility;
 
   // On mobile, never pin any columns regardless of persisted preferences
   const effectivePinnedColumns = useMemo(
@@ -2167,7 +2374,10 @@ function DataTableComponent<TData, TValue>(
     [externalOnSortingChange, sorting, setPersistedSorting]
   );
 
-  // Column filters state - use persisted state
+  // Column filters state - use persisted state. In server mode EVERY filter
+  // stays (state, URL, saved preferences, chips): one the server cannot apply
+  // is marked "not applied" and left out of the query by the caller, never
+  // dropped (see serverSide.filterStatus).
   const columnFilters = useMemo(
     () => persistedColumnFilters,
     [persistedColumnFilters]
@@ -2380,10 +2590,15 @@ function DataTableComponent<TData, TValue>(
 
   // serialize and deserialize now imported from ./urlSync
 
-  // Initialize filters and sorting from URL on mount
+  // Initialize filters and sorting from the URL on the mount that the link
+  // arrived with — the first one for this tableId in this document. Later
+  // mounts keep the persisted preferences; see `urlSyncedTableIds`.
   useEffect(() => {
     if (!enableUrlSync) return;
     try {
+      if (urlSyncedTableIds.has(tableId)) return;
+      urlSyncedTableIds.add(tableId);
+
       const params = new URLSearchParams(window.location.search);
       const filtersStr = params.get(filtersParamKey);
       const sortStr = params.get(sortingParamKey);
@@ -2398,7 +2613,7 @@ function DataTableComponent<TData, TValue>(
         // cleared the table's filters.
         const parsed = deserializeFilters<ColumnFiltersState>(filtersStr);
         if (isColumnFiltersState(parsed)) {
-          setColumnFilters(parsed);
+          setColumnFilters((prev) => mergeUrlFilters(parsed, prev));
           setShowColumnFilters(true);
         }
       }
@@ -2663,16 +2878,55 @@ function DataTableComponent<TData, TValue>(
    */
   const enhancedColumns = useMemo(() => {
     // Add custom filter function to columns that don't have their own filterFn
-    const baseColumns = columns.map((column) => ({
-      ...column,
-      // Preserve custom filterFn if defined, otherwise use createEnhancedColumnFilter
-      // which picks up meta.getFilterValue for multi-field matching
-      filterFn:
-        column.filterFn ??
-        createEnhancedColumnFilter(
-          column.meta as Record<string, unknown> | undefined
-        ),
-    }));
+    const baseColumns = columns.map((column) => {
+      // The column filter UI ALWAYS writes a FilterState object
+      // (`{ operator, value }` — see filter-components.tsx handleValueChange).
+      // Every one of TanStack's BUILT-IN filterFns instead expects a primitive
+      // filter value, so a column naming one by string (`'includesString'`,
+      // `'equals'`, …) stringifies that object to "[object Object]" and
+      // silently matches nothing — the whole column's filter is dead (#693).
+      //
+      // Only a hand-written FUNCTION understands the operator shape — a
+      // `filterFn` given as a string can only ever name a built-in (TanStack
+      // types it as exactly that union). So any string is dropped in favour of
+      // createEnhancedColumnFilter, which honours `meta.filterType` and
+      // `meta.getFilterValue` (multi-field matching). This makes the broken
+      // combination unreachable from the operator UI rather than relying on
+      // every call site to remember.
+      const declared = column.filterFn;
+      const meta = column.meta as
+        | { serverSortField?: string; serverFilterField?: string }
+        | undefined;
+      // Server mode: a column the server cannot sort/filter by must not
+      // pretend to — its header shows a greyed icon explaining why.
+      const serverOverrides = serverSide
+        ? {
+            ...(meta?.serverSortField || column.enableSorting === false
+              ? {}
+              : {
+                  enableSorting: false,
+                  meta: {
+                    ...(column.meta as object | undefined),
+                    serverSortBlocked:
+                      serverSide.unsupportedSortReason ??
+                      SERVER_SORT_UNAVAILABLE_TOOLTIP,
+                  },
+                }),
+          }
+        : {};
+
+      return {
+        ...column,
+        ...serverOverrides,
+        filterFn:
+          typeof declared === 'function'
+            ? declared
+            : createEnhancedColumnFilter(
+                column.meta as Record<string, unknown> | undefined,
+                accountTimeZone
+              ),
+      };
+    });
 
     // Prepend selection column if bulk actions are enabled
     // Selection column is always first, regardless of column order or pinning
@@ -2681,7 +2935,7 @@ function DataTableComponent<TData, TValue>(
     }
 
     return baseColumns;
-  }, [columns, selectionColumn]);
+  }, [columns, selectionColumn, accountTimeZone, serverSide]);
 
   /**
    * CRITICAL: Clear row selection when data changes
@@ -2924,7 +3178,26 @@ function DataTableComponent<TData, TValue>(
     enableSorting,
     enableColumnFilters,
     enableGlobalFilter,
-    enableGrouping,
+    enableGrouping: enableGrouping && !serverSide,
+    // Server mode: `data` is already the requested page, sorted and filtered.
+    // Client mode sets the same keys explicitly: useReactTable merges each
+    // render's options into the previous ones, so a table that LEAVES server
+    // mode would otherwise keep manual sorting/paging and stop sorting.
+    ...(serverSide
+      ? {
+          manualPagination: true,
+          manualSorting: true,
+          manualFiltering: true,
+          enableMultiSort: false,
+          rowCount: serverSide.rowCount,
+        }
+      : {
+          manualPagination: false,
+          manualSorting: false,
+          manualFiltering: false,
+          enableMultiSort: undefined,
+          rowCount: undefined,
+        }),
     // Prevent auto reset of pageIndex when data reference changes (we control it)
     autoResetPageIndex: false,
     autoResetExpanded: false,
@@ -2945,10 +3218,44 @@ function DataTableComponent<TData, TValue>(
     );
 
 
+  // Server mode: report the query (page, sort, search, filters) so the caller
+  // can fetch that page. A sort/search/filter change returns to page 1 — the
+  // old page index means nothing under a new ordering.
+  const serverQueryKey = serverSide
+    ? JSON.stringify([sorting, columnFilters, globalFilter ?? ''])
+    : '';
+  const lastServerQueryKeyRef = useRef(serverQueryKey);
+  const onServerQueryChange = serverSide?.onQueryChange;
+  useEffect(() => {
+    if (!onServerQueryChange) return;
+    if (lastServerQueryKeyRef.current !== serverQueryKey) {
+      lastServerQueryKeyRef.current = serverQueryKey;
+      if (pagination.pageIndex !== 0) {
+        setPagination({ ...pagination, pageIndex: 0 });
+        return; // the pagination change re-runs this effect with page 0
+      }
+    }
+    onServerQueryChange({
+      pageIndex: pagination.pageIndex,
+      pageSize: pagination.pageSize,
+      sorting,
+      columnFilters,
+      globalFilter: globalFilter ?? '',
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    onServerQueryChange,
+    serverQueryKey,
+    pagination.pageIndex,
+    pagination.pageSize,
+  ]);
+
   // Clamp pageIndex to a valid range whenever data length or pageSize changes
   useEffect(() => {
     try {
-      const totalRows = table.getFilteredRowModel().rows.length;
+      const totalRows = serverSide
+        ? serverSide.rowCount
+        : table.getFilteredRowModel().rows.length;
       const pageSize = pagination.pageSize;
       const lastPageIndex = Math.max(0, Math.ceil(totalRows / pageSize) - 1);
       if (pagination.pageIndex > lastPageIndex) {
@@ -2958,7 +3265,7 @@ function DataTableComponent<TData, TValue>(
       // no-op
     }
     // We specifically depend on data, pagination, and table row model
-  }, [data, pagination, setPagination, table]);
+  }, [data, pagination, setPagination, table, serverSide]);
 
   /**
    * CRITICAL: Selected rows calculation for bulk actions
@@ -3033,14 +3340,6 @@ function DataTableComponent<TData, TValue>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowSelection, tableId]);
 
-  // Compute the visual column order from the table's header groups
-  // This ensures SortableContext items match the actual rendered order
-  const visualColumnOrder = useMemo(() => {
-    const headerGroups = table.getHeaderGroups();
-    if (headerGroups.length === 0) return columnOrder;
-    return headerGroups[0].headers.map((h) => h.column.id);
-  }, [table, columnOrder]);
-
   // Handle column drag end
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
@@ -3053,6 +3352,21 @@ function DataTableComponent<TData, TValue>(
       if (active && over && active.id !== over.id) {
         const activeId = active.id as string;
         const overId = over.id as string;
+
+        // Read the rendered header order LIVE, at drop time.
+        // This used to be a `useMemo` keyed on `[table, columnOrder]`, which
+        // could never see a visibility change: `useReactTable` builds the
+        // `table` object once (`useState`) so its identity never changes, and
+        // enabling a column from the Columns menu writes `columnVisibility`,
+        // not `columnOrder`. The memo therefore still described the pre-toggle
+        // table, the just-enabled column resolved to `indexOf(...) === -1`,
+        // and the drop below was silently discarded until the page was
+        // remounted (bug #655).
+        const headerGroups = table.getHeaderGroups();
+        const visualColumnOrder =
+          headerGroups.length === 0
+            ? effectiveColumnOrder
+            : headerGroups[0].headers.map((h) => h.column.id);
 
         // Don't allow dragging pinned columns (the source column)
         if (
@@ -3093,11 +3407,21 @@ function DataTableComponent<TData, TValue>(
             oldIndex,
             newIndex
           );
-          setColumnOrder(newVisualOrder);
+          // Header groups hold only the VISIBLE columns, so persisting the
+          // dragged order verbatim dropped every hidden column out of
+          // `columnOrder`; `effectiveColumnOrder` then treats them as new and
+          // re-appends them, so re-enabling one landed it at the far right
+          // instead of where the user left it. Put them back first.
+          setColumnOrder(
+            mergeHiddenColumnOrder(
+              table.getAllLeafColumns().map((col) => col.id),
+              newVisualOrder
+            )
+          );
         }
       }
     },
-    [visualColumnOrder, setColumnOrder, effectivePinnedColumns]
+    [table, effectiveColumnOrder, setColumnOrder, effectivePinnedColumns]
   );
 
   // Handle column drag start to prevent propagation
@@ -3621,8 +3945,8 @@ function DataTableComponent<TData, TValue>(
     [tableState?.pagination]
   );
   const totalRows = useMemo(
-    () => tableFilter.rows.length,
-    [tableFilter?.rows.length]
+    () => (serverSide ? serverSide.rowCount : tableFilter.rows.length),
+    [tableFilter?.rows.length, serverSide]
   );
   const paginationStart = useMemo(
     () => pageIndex * pageSize + 1,
@@ -3847,6 +4171,7 @@ function DataTableComponent<TData, TValue>(
           table={table}
           columns={table.getAllColumns()}
           storageKey={quickFilterBarStorageKey}
+          filterStatus={serverSide?.filterStatus}
           onResetFilters={() => {
             table.resetColumnFilters();
             onQuickFiltersClearAll?.();
@@ -3856,6 +4181,20 @@ function DataTableComponent<TData, TValue>(
 
       {/* Content between toolbar and data */}
       {betweenToolbarAndContent}
+
+      {/* Server mode: a thin inline bar while the next page/sort is fetched.
+          The current rows stay on screen (never blanked). */}
+      {serverSide && (
+        <div
+          className="relative h-0.5 w-full overflow-hidden"
+          aria-hidden={!serverSide.isFetching}
+          data-testid="server-fetch-bar"
+        >
+          {serverSide.isFetching && (
+            <div className="absolute inset-y-0 left-0 w-1/3 animate-pulse rounded-full bg-primary/60" />
+          )}
+        </div>
+      )}
 
       {/* Table or Card View */}
       {isTableView ? (
@@ -3987,6 +4326,7 @@ function DataTableComponent<TData, TValue>(
                               onTogglePin={toggleColumnPin}
                               onAutoResize={autoResizeSingleColumn}
                               enableColumnFilters={enableColumnFilters}
+                              enableColumnVisibility={enableColumnVisibility}
                               onToggleFilters={handleToggleColumnFilters}
                               stickyPosition={calculateStickyPosition(
                                 columnId,
@@ -4081,6 +4421,24 @@ function DataTableComponent<TData, TValue>(
                               {header.column.getCanFilter() ? (
                                 <ColumnFilter column={header.column} />
                               ) : null}
+                              {serverSide?.filterStatus &&
+                                singleFilters(header.column.getFilterValue()).some(
+                                  (f) =>
+                                    serverSide.filterStatus?.(columnId, f) !==
+                                    'applied'
+                                ) && (
+                                  <Tooltip
+                                    tooltip={SERVER_FILTER_UNAVAILABLE_TOOLTIP}
+                                    side="bottom"
+                                    delay={150}
+                                  >
+                                    <Zap
+                                      className="ml-1 h-3 w-3 shrink-0 text-muted-foreground"
+                                      aria-label="Filter not applied"
+                                      data-testid="filter-not-applied"
+                                    />
+                                  </Tooltip>
+                                )}
                             </div>
                           </th>
                         );
@@ -4373,6 +4731,9 @@ function DataTableComponent<TData, TValue>(
                   pinnedColumns={effectivePinnedColumns}
                   getColumnWidth={getColumnWidth}
                   calculateStickyPosition={calculateStickyPosition}
+                  serverMode={!!serverSide}
+                  serverTotals={serverSide?.totals ?? null}
+                  serverRowCount={serverSide?.rowCount}
                 />
               </table>
             </DndContext>

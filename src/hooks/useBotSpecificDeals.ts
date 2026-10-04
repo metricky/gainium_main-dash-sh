@@ -2,6 +2,7 @@ import { useDealStore, type DealType, type DealWithType } from '@/stores/live';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDealResyncStore } from '@/stores/live/dealResync';
 import {
   GraphQLClient,
   getGraphQLConfig,
@@ -58,14 +59,35 @@ export interface UseBotSpecificDealsResult {
   error: Error | null;
   refetch: () => Promise<unknown>;
   /** Imperatively fetch EVERY page of this bot's deals for the requested
-   *  status (not capped by the display auto-loader's `maxPages`). Used by the
-   *  deals table's export so large bots don't silently export a subset. */
+   *  status (not capped by the display auto-loader's `DISPLAY_MAX_PAGES`).
+   *  Used by the deals table's export so large bots don't silently export a
+   *  subset. */
   fetchAllDeals: () => Promise<DCADeals[]>;
 }
 
 /** Hard ceiling for the export fetch loop: 200 pages × pageSize 100 = 20k
  *  deals — far above any real bot, purely a runaway-loop backstop. */
 const FETCH_ALL_MAX_PAGES = 200;
+
+/**
+ * Runaway backstop for the on-screen auto-loader. `getBotDeals` clamps
+ * `pageSize` to 100 server-side (`main-app core/src/bot/index.ts`), so this is
+ * 5,000 deals.
+ *
+ * This used to be 5 — i.e. exactly 500 deals — which is a number real accounts
+ * cross: the reporter of bug #698 has a bot with 1000 closed deals and could
+ * only ever see the newest 500 of them in this tab. It is a backstop now, not
+ * a display budget: the loop below stops on a short page or once it holds the
+ * server's own `total`, and only falls back to this ceiling if neither happens.
+ *
+ * It is deliberately lower than `FETCH_ALL_MAX_PAGES`. The export loop runs
+ * once on demand; this one is re-walked in full every 30s by the re-snapshot
+ * effect below, at ~300 KB per page, so its ceiling is a recurring transfer
+ * cost. Past it we log and keep what we have — the table already discloses the
+ * shortfall (it renders "N of <server total>") and the CSV export still
+ * reaches every deal.
+ */
+const DISPLAY_MAX_PAGES = 50;
 
 // The status group this hook actually requests from the backend. NOTE: it puts
 // `error` in the CLOSED group, which differs from dealStatusFilter.ts's
@@ -84,7 +106,6 @@ export function useBotSpecificDeals(
   // Auto-loading pagination state
   const [currentPageLoading, setCurrentPageLoading] = useState(0);
   const [loadedPages, setLoadedPages] = useState<Set<number>>(new Set([0]));
-  const maxPages = 5;
 
   // Snapshot of the last completed fetch for the current (botId, status).
   // The shared deal store is the source of live updates, but it is also
@@ -208,7 +229,7 @@ export function useBotSpecificDeals(
       // Check if we should load more pages (only if query is not loading to ensure sequential loading)
       const shouldContinueLoading =
         !queryResult.isLoading && // Wait for current query to finish
-        currentPageLoading < maxPages - 1 && // Haven't reached max pages
+        currentPageLoading < DISPLAY_MAX_PAGES - 1 && // Haven't hit the backstop
         apiDeals.length === pageSize && // Current page is full
         (currentPageLoading + 1) * pageSize < total; // More data available
 
@@ -233,6 +254,17 @@ export function useBotSpecificDeals(
         // skipped a page whose response has not landed yet — committing here
         // is what let reconcileDeals' absence-delete prune real deals. Stay
         // put; the outstanding page re-triggers this effect when it arrives.
+        if (
+          currentPageLoading >= DISPLAY_MAX_PAGES - 1 &&
+          accumulatedRef.current.size < total
+        ) {
+          // Stopped on the runaway backstop rather than on the data. Say so:
+          // the reconcile below stays `complete: false` and the table shows
+          // "N of <total>", but neither leaves a trace for support.
+          logger.warn(
+            `[useBotSpecificDeals] Stopped paginating at ${DISPLAY_MAX_PAGES} pages; collected ${accumulatedRef.current.size}/${total} ${filter.status} deals for bot ${filter.botId}. Some deals are not shown.`
+          );
+        }
         setIsLoadingComplete(true);
         setHasLoadedOnce(true);
       }
@@ -250,6 +282,10 @@ export function useBotSpecificDeals(
     currentPageLoading,
     loadedPages,
     filter.pageSize,
+    // Read only by the truncation warning. Both are primitive and stable for a
+    // given tab, so unlike `filter` they can't drive the render loop above.
+    filter.status,
+    filter.botId,
   ]);
 
   // Get total from API response (for pagination). Declared before the commit
@@ -283,7 +319,7 @@ export function useBotSpecificDeals(
               dealType,
               statuses: requestedStatusGroup(filter.status),
               botId: filter.botId,
-              // The display loader deliberately stops at `maxPages`, so on a
+              // The display loader stops at `DISPLAY_MAX_PAGES`, so on a
               // bot with more deals than that the snapshot is page-capped and
               // cannot vouch for the absence of anything beyond it. Merge, but
               // don't absence-delete — that is exactly what `complete: false`
@@ -363,24 +399,39 @@ export function useBotSpecificDeals(
   // which would only re-hit the *current* page and make reconcileDeals
   // absence-delete the other pages' deals on multi-page bots.
   const { refetch } = queryResult;
+  const resnapshot = useCallback(() => {
+    setLoadedPages(new Set([0]));
+    accumulatedRef.current = new Map();
+    setIntermediateDeals([]);
+    if (currentPageLoading !== 0) {
+      // Off page 0 (multi-page bot): resetting the page changes the query
+      // variables, which re-runs the sequential load from page 0 on its own.
+      setCurrentPageLoading(0);
+    } else {
+      // Already on page 0: variables are unchanged, so force a network
+      // refetch to obtain a fresh snapshot stamp that prunes closed deals.
+      void refetch();
+    }
+  }, [currentPageLoading, refetch]);
+  // Only the OPEN tab needs it: closed deals never leave the closed scope, so
+  // re-walking every closed page every 30 s (30 sequential requests for a bot
+  // with 3,000 closed deals, for as long as the drawer stays open) bought
+  // nothing. A closed tab refreshes on open, on filter change and on resync.
   useEffect(() => {
-    if (!filter.botId) return undefined;
-    const intervalId = setInterval(() => {
-      setLoadedPages(new Set([0]));
-      accumulatedRef.current = new Map();
-      setIntermediateDeals([]);
-      if (currentPageLoading !== 0) {
-        // Off page 0 (multi-page bot): resetting the page changes the query
-        // variables, which re-runs the sequential load from page 0 on its own.
-        setCurrentPageLoading(0);
-      } else {
-        // Already on page 0: variables are unchanged, so force a network
-        // refetch to obtain a fresh snapshot stamp that prunes closed deals.
-        void refetch();
-      }
-    }, 30_000);
+    if (!filter.botId || filter.status === 'closed') return undefined;
+    const intervalId = setInterval(resnapshot, 30_000);
     return () => clearInterval(intervalId);
-  }, [filter.botId, filter.status, filter.dealType, currentPageLoading, refetch]);
+  }, [filter.botId, filter.status, filter.dealType, resnapshot]);
+
+  // A resync request (socket reconnect, tab back after a while, a close
+  // answered "already closed") re-snapshots now rather than at the next tick.
+  const resyncNonce = useDealResyncStore((s) => s.nonce);
+  const handledResyncRef = useRef(resyncNonce);
+  useEffect(() => {
+    if (handledResyncRef.current === resyncNonce) return;
+    handledResyncRef.current = resyncNonce;
+    if (filter.botId) resnapshot();
+  }, [resyncNonce, filter.botId, resnapshot]);
 
   // Merge the live store with the last-fetched snapshot, deduped by id. The
   // store wins on conflict so active deals keep their live updates; the
@@ -459,8 +510,8 @@ export function useBotSpecificDeals(
   // Imperative full fetch for exports. Mirrors useGraphQL's client
   // construction (token / paper-context / share-mode) but loops through ALL
   // pages until the server-reported total is reached — the reactive display
-  // path above deliberately stops at `maxPages` to keep the store small, so
-  // it must never be the source for an "export all" operation.
+  // path above stops at the lower `DISPLAY_MAX_PAGES` backstop, so it must
+  // never be the source for an "export all" operation.
   const fetchAllDeals = useCallback(async (): Promise<DCADeals[]> => {
     const endpoint =
       import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';

@@ -142,7 +142,8 @@ export const handleSettingsUpdate = (
     if (field === 'dcaVolumeBaseOn' && value === DCAVolumeType.change) {
       updates.dca.tpPerc = '5';
       updates.dca.dcaVolumeRequiredChange = '5';
-      updates.dca.dcaVolumeMaxValue = `${+orderSize * 20}`;
+      // Rounded: 1.19 * 20 is 23.799999999999997 in floating point.
+      updates.dca.dcaVolumeMaxValue = `${+(+orderSize * 20).toFixed(8)}`;
       if (
         isNaN(+updates.dca.dcaVolumeMaxValue) ||
         !isFinite(+updates.dca.dcaVolumeMaxValue)
@@ -385,7 +386,13 @@ export const handleSettingsUpdate = (
         (i) => i.indicatorAction !== IndicatorAction.closeDeal
       );
     }
-    if (!isDcaTypeSwitch && nextDcaCondition !== DCAConditionEnum.custom) {
+    if (
+      !isDcaTypeSwitch &&
+      nextDcaCondition !== DCAConditionEnum.custom &&
+      // Already an empty list: keep that array. A fresh `[]` on every
+      // keystroke re-rendered every section that reads `dcaCustom`.
+      !(Array.isArray(settings.dcaCustom) && settings.dcaCustom.length === 0)
+    ) {
       updates.dca.dcaCustom = [];
     }
     if (

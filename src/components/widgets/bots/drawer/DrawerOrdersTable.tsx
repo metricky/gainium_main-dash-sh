@@ -26,6 +26,7 @@ import {
   formatOrderForDisplay,
   useBotOrders,
 } from '../../../../hooks/useBotOrders';
+import { getOrderExecutionTime } from '@/utils/orders/executionTime';
 /* import { useComboBots } from '../../../../hooks/useComboBots';
 import { useDcaBots } from '../../../../hooks/useDcaBots';
 import { useGridBots } from '../../../../hooks/useGridBots';
@@ -1168,7 +1169,8 @@ export const DrawerOrdersTable: React.FC<DrawerOrdersTableProps> = ({
         price: +o.price,
         side: o.side === 'BUY' ? BotOrderSideEnum.buy : BotOrderSideEnum.sell,
         id: o.clientOrderId,
-        time: o.updateTime || o.time,
+        // Execution time — see `getOrderExecutionTime`.
+        time: getOrderExecutionTime(o),
       })
     );
     exampleOrdersStore.setTransactions(mappedTransactions);

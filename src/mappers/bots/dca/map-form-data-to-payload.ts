@@ -197,6 +197,7 @@ const buildCreatePayload = (
   const {
     useExperimental: _useExperimental,
     avgPrice: _avgPrice,
+    tpSlTargetFilled: _tpSlTargetFilled,
     indicators: _rawIndicators,
     indicatorGroups: _rawIndicatorGroups,
     ...rest
@@ -331,16 +332,19 @@ const mergeCreatePayload = (
   ) as unknown as CreateDCABotPayload;
 
   //TODO: remove when backend will be updated
-  // avgPrice (deal-edit-only breakeven override) is re-introduced here via the
+  // avgPrice (deal-edit-only breakeven override) and tpSlTargetFilled
+  // (deal-edit-only filled multi-target uuids) are re-introduced here via the
   // DCA_FORM_DEFAULTS spread in mapFormDataToBackend; createDCABotInput has no
-  // such field, so strip it alongside useExperimental.
+  // such field, so strip them alongside useExperimental.
   const {
     useExperimental: _useExperimental,
     avgPrice: _avgPrice,
+    tpSlTargetFilled: _tpSlTargetFilled,
     ...rest
   } = apiSafeMerged as CreateDCABotPayload & {
     useExperimental?: boolean;
     avgPrice?: number;
+    tpSlTargetFilled?: string[];
   };
 
   return rest;
@@ -565,19 +569,30 @@ export const mapFormDataToPayload = (
   }
 
   //TODO: remove when backend will be updated
-  // avgPrice is a deal-edit-only breakeven override seeded into the form
-  // defaults; it rides the DCA_FORM_DEFAULTS spread into mappingResult.data but
-  // change{DCA,Combo}BotInput has no such field, so strip it (like the create
+  // avgPrice (breakeven override) and tpSlTargetFilled (filled multi-target
+  // uuids) are deal-edit-only fields seeded into the form defaults; they ride
+  // the DCA_FORM_DEFAULTS spread into mappingResult.data but
+  // change{DCA,Combo}BotInput has no such field, so strip them (like the create
   // path does) before building the update payload. useExperimental is stripped
   // alongside for the same reason.
   const {
     avgPrice: _avgPrice,
+    tpSlTargetFilled: _tpSlTargetFilled,
     useExperimental: _useExperimental,
     ...updatePayload
   } = (mappingResult.data ?? {}) as DCABotSettings & {
     avgPrice?: number;
+    tpSlTargetFilled?: string[];
     useExperimental?: boolean;
   };
+
+  // DCA-only settings (DECLARED_BY_DCA_ONLY) reach a combo form through the
+  // DCA_FORM_DEFAULTS spread; the combo inputs do not declare them.
+  if (isComboBot) {
+    delete updatePayload.allowRaiseToExchangeMin;
+    delete updatePayload.reduceToAvailableBalance;
+    delete updatePayload.reduceToAvailableMinSize;
+  }
 
   const sanitizedUpdatePayload = sanitizeSettingsForApi(
     sanitizeUpdateSettings(updatePayload)
@@ -650,6 +665,9 @@ export const mapFormDataToPayload = (
   if (createPayload) {
     if (isComboBot) {
       delete createPayload.importFrom;
+      delete createPayload.allowRaiseToExchangeMin;
+      delete createPayload.reduceToAvailableBalance;
+      delete createPayload.reduceToAvailableMinSize;
     }
     successResult.createPayload = createPayload;
   }

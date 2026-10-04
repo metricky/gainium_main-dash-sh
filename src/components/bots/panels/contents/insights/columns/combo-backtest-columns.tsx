@@ -9,6 +9,11 @@ import {
   Upload,
 } from 'lucide-react';
 
+import {
+  backtestBooleanFilterMeta,
+  backtestPairFilterMeta,
+  splitTimeToDays,
+} from './dca-backtest-columns';
 import type { BacktestColumnContext } from '@/components/bots/workbench/descriptors/types';
 import { Button } from '@/components/ui/button';
 import { ProfitLossPercChip, StrategyChip } from '@/components/ui/chip';
@@ -21,6 +26,7 @@ import {
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
 import { BacktestPermanentCheckbox } from '@/components/widgets/bots/backtest';
 import CoinPair from '@/components/widgets/shared/CoinPair';
+import { isStoredBacktest, NOT_STORED_SHARE_HINT } from '@/lib/shareLinks';
 import { BotTypesEnum, type DCABacktestingResultHistory } from '@/types';
 
 /**
@@ -52,6 +58,7 @@ export function buildComboBacktestColumns(
   const symbolColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'symbol',
     header: 'Pair',
+    meta: backtestPairFilterMeta,
     cell: ({ row }) => {
       const baseAsset = row.original.baseAsset;
       const quoteAsset = row.original.quoteAsset;
@@ -74,6 +81,7 @@ export function buildComboBacktestColumns(
   const serverSideColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'serverSide',
     header: 'Server Side',
+    meta: backtestBooleanFilterMeta('serverSide'),
     cell: ({ row }) => (
       <div className="text-sm">
         {row.original.serverSide === null
@@ -88,6 +96,7 @@ export function buildComboBacktestColumns(
   const savePermanentColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'savePermanent',
     header: 'Save Permanently',
+    meta: backtestBooleanFilterMeta('savePermanent'),
     cell: ({ row }) => (
       <BacktestPermanentCheckbox
         id={row.original._id ?? ''}
@@ -100,8 +109,9 @@ export function buildComboBacktestColumns(
   const nameColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'settings.name',
     header: 'Name',
+    meta: { filterType: 'string' },
     cell: ({ row }) => {
-      const hasLocalData = (row.original.deals?.length ?? 0) > 0;
+      const hasLocalData = !!row.original.hasLocalDetails;
       return (
         <div className="font-medium inline-flex items-center gap-1">
           <span>{row.original.settings?.name || ''}</span>
@@ -121,6 +131,7 @@ export function buildComboBacktestColumns(
   const startConditionColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'settings.startCondition',
     header: 'Start Condition',
+    meta: { filterType: 'array' },
     cell: ({ row }) => (
       <div className="text-sm">
         {row.original.settings?.startCondition || 'N/A'}
@@ -131,6 +142,11 @@ export function buildComboBacktestColumns(
   const strategyColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'settings.strategy',
     header: 'Strategy',
+    meta: {
+      filterType: 'array',
+      getFilterValue: (row: unknown) =>
+        (row as DCABacktestingResultHistory).settings?.strategy || 'LONG',
+    },
     cell: ({ row }) => {
       const strategy = row.original.settings?.strategy || 'LONG';
       return <StrategyChip strategy={strategy} size="sm" />;
@@ -140,6 +156,7 @@ export function buildComboBacktestColumns(
   const timeColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'time',
     header: 'Created Time',
+    meta: { filterType: 'date' },
     cell: ({ row }) => {
       const date = row.original.time
         ? new Date(row.original.time).toLocaleString()
@@ -151,6 +168,7 @@ export function buildComboBacktestColumns(
   const avgNetDailyPercColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.avgNetDailyPerc',
     header: 'Avg. Net Daily',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.financial?.avgNetDailyPerc || 0;
       return <ProfitLossPercChip value={value} size="sm" />;
@@ -160,6 +178,7 @@ export function buildComboBacktestColumns(
   const annualizedReturnColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.annualizedReturn',
     header: 'Annualized Return',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.financial?.annualizedReturn;
       if (value === null || value === undefined)
@@ -171,6 +190,15 @@ export function buildComboBacktestColumns(
   const maxDrawDownPercColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.maxDrawDownPerc',
     header: '% Max. Draw Down',
+    meta: {
+      filterType: 'number',
+      // The cell shows drawdown as a negative percent.
+      getNumericFilterValue: (row: unknown) => {
+        const { financial } = (row as DCABacktestingResultHistory);
+        const v = financial?.maxDrawDownPerc;
+        return v === null || v === undefined ? null : -Math.abs(v);
+      },
+    },
     cell: ({ row }) => {
       const value = row.original.financial?.maxDrawDownPerc || 0;
       // Drawdown is always shown as negative
@@ -181,6 +209,15 @@ export function buildComboBacktestColumns(
   const maxDrawDownEquityPercColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.maxDrawDownEquityPerc',
     header: '% Max. Equity Draw Down',
+    meta: {
+      filterType: 'number',
+      // The cell shows drawdown as a negative percent.
+      getNumericFilterValue: (row: unknown) => {
+        const { financial } = (row as DCABacktestingResultHistory);
+        const v = financial?.maxDrawDownEquityPerc;
+        return v === null || v === undefined ? null : -Math.abs(v);
+      },
+    },
     cell: ({ row }) => {
       const value = row.original.financial?.maxDrawDownEquityPerc;
       if (value === null || value === undefined)
@@ -193,6 +230,7 @@ export function buildComboBacktestColumns(
   const netProfitTotalPercColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.netProfitTotalPerc',
     header: '% Net Profit',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.financial?.netProfitTotalPerc || 0;
       return <ProfitLossPercChip value={value} size="sm" showSign={true} />;
@@ -202,6 +240,7 @@ export function buildComboBacktestColumns(
   const unrealizedPnLColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'financial.unrealizedPnL',
     header: 'Unrealized Profit',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.financial?.unrealizedPnL || 0;
       const isPositive = value >= 0;
@@ -219,6 +258,14 @@ export function buildComboBacktestColumns(
   const botWorkingTimeColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'duration.botWorkingTimeNumber',
     header: 'Bot Working Time',
+    meta: {
+      filterType: 'number',
+      filterUnit: 'days',
+      getNumericFilterValue: (row: unknown) =>
+        splitTimeToDays(
+          (row as DCABacktestingResultHistory).duration?.botWorkingTime
+        ),
+    },
     cell: ({ row }) => {
       const workingTime = row.original.duration?.botWorkingTime;
       if (!workingTime) return <div className="text-sm">N/A</div>;
@@ -236,6 +283,7 @@ export function buildComboBacktestColumns(
   const firstDataTimeColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'duration.firstDataTime',
     header: 'Start Date',
+    meta: { filterType: 'date' },
     cell: ({ row }) => {
       const date = row.original.duration?.firstDataTime
         ? new Date(row.original.duration.firstDataTime).toLocaleString()
@@ -247,6 +295,7 @@ export function buildComboBacktestColumns(
   const lastDataTimeColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'duration.lastDataTime',
     header: 'End Date',
+    meta: { filterType: 'date' },
     cell: ({ row }) => {
       const date = row.original.duration?.lastDataTime
         ? new Date(row.original.duration.lastDataTime).toLocaleString()
@@ -258,6 +307,7 @@ export function buildComboBacktestColumns(
   const periodNameColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'duration.periodName',
     header: 'Testing Period Name',
+    meta: { filterType: 'array' },
     cell: ({ row }) => (
       <div className="text-sm">{row.original.duration?.periodName || 'N/A'}</div>
     ),
@@ -266,6 +316,14 @@ export function buildComboBacktestColumns(
   const maxDealDurationColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'duration.maxDealDuration',
     header: 'Max Deal Duration',
+    meta: {
+      filterType: 'number',
+      filterUnit: 'days',
+      getNumericFilterValue: (row: unknown) =>
+        splitTimeToDays(
+          (row as DCABacktestingResultHistory).duration?.maxDealDuration
+        ),
+    },
     cell: ({ row }) => {
       const maxDuration = row.original.duration?.maxDealDuration;
       if (!maxDuration) return <div className="text-sm">N/A</div>;
@@ -283,6 +341,7 @@ export function buildComboBacktestColumns(
   const intervalColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'interval',
     header: 'Interval',
+    meta: { filterType: 'array' },
     cell: ({ row }) => (
       <div className="text-sm">{row.original.interval || 'N/A'}</div>
     ),
@@ -291,6 +350,7 @@ export function buildComboBacktestColumns(
   const actualPriceDeviationColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'numerical.actualPriceDeviation',
     header: 'Actual Price Deviation',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.numerical?.actualPriceDeviation;
       return (
@@ -302,6 +362,7 @@ export function buildComboBacktestColumns(
   const dealsColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'numerical.all',
     header: 'Deals',
+    meta: { filterType: 'number' },
     cell: ({ row }) => (
       <div className="text-sm font-medium">
         {row.original.numerical?.all || 0}
@@ -312,6 +373,7 @@ export function buildComboBacktestColumns(
   const avgDCATriggeredColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'numerical.avgDCATriggered',
     header: 'Avg DCA Orders Triggered',
+    meta: { filterType: 'number' },
     cell: ({ row }) => (
       <div className="text-sm">
         {row.original.numerical?.avgDCATriggered || 0}
@@ -322,6 +384,7 @@ export function buildComboBacktestColumns(
   const dealsPerDayColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'numerical.dealsPerDay',
     header: 'Deals Per Day',
+    meta: { filterType: 'number' },
     cell: ({ row }) => (
       <div className="text-sm">
         {row.original.numerical?.dealsPerDay?.toFixed(1) || '0.0'}
@@ -332,6 +395,7 @@ export function buildComboBacktestColumns(
   const avgRealUsageColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'usage.avgRealUsage',
     header: 'Avg Real Usage',
+    meta: { filterType: 'number' },
     cell: ({ row }) => (
       <div className="text-sm">
         {row.original.usage?.avgRealUsage?.toFixed(3) || '0.000'}
@@ -342,6 +406,7 @@ export function buildComboBacktestColumns(
   const buyAndHoldPercColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'ratios.buyAndHold.perc',
     header: 'Buy and Hold Return',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.ratios?.buyAndHold?.perc;
       if (value === null || value === undefined)
@@ -361,6 +426,12 @@ export function buildComboBacktestColumns(
   const profitFactorColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'ratios.profitFactor',
     header: 'Profit Factor',
+    meta: {
+      filterType: 'number',
+      // A missing profit factor renders as ∞ (no losing deals).
+      getNumericFilterValue: (row: unknown) =>
+        (row as DCABacktestingResultHistory).ratios?.profitFactor ?? Infinity,
+    },
     cell: ({ row }) => {
       const value = row.original.ratios?.profitFactor;
       if (value === null || value === undefined)
@@ -372,6 +443,7 @@ export function buildComboBacktestColumns(
   const sharpeColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'ratios.sharpe',
     header: 'Sharpe Ratio',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.ratios?.sharpe;
       if (value === null || value === undefined)
@@ -383,6 +455,7 @@ export function buildComboBacktestColumns(
   const sortinoColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'ratios.sortino',
     header: 'Sortino Ratio',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.ratios?.sortino;
       if (value === null || value === undefined)
@@ -394,6 +467,7 @@ export function buildComboBacktestColumns(
   const cwrColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'ratios.cwr',
     header: 'CWR',
+    meta: { filterType: 'number' },
     cell: ({ row }) => {
       const value = row.original.ratios?.cwr;
       if (value === null || value === undefined)
@@ -405,6 +479,7 @@ export function buildComboBacktestColumns(
   const noteColumn: ColumnDef<DCABacktestingResultHistory> = {
     accessorKey: 'note',
     header: 'Notes',
+    meta: { filterType: 'string' },
     size: 200,
     cell: ({ row }) => {
       const backtestId = row.original._id ?? '';
@@ -426,7 +501,9 @@ export function buildComboBacktestColumns(
       const backtest = row.original;
       // Only locally-stored backtests (full payload hydrated in IndexedDB,
       // same signal as the Database icon on the Name column) can be exported.
-      const canExport = (backtest.deals?.length ?? 0) > 0;
+      const canExport = !!backtest.hasLocalDetails;
+      // A row kept only in this browser has no server copy to share.
+      const stored = isStoredBacktest(backtest);
       return (
         <div className="flex items-center justify-end">
           <DropdownMenu>
@@ -436,9 +513,19 @@ export function buildComboBacktestColumns(
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onShare(backtest)}>
+              <DropdownMenuItem
+                disabled={!stored}
+                onClick={() => onShare(backtest)}
+              >
                 <Share2 className="mr-2 h-4 w-4" />
-                Share
+                {stored ? (
+                  'Share'
+                ) : (
+                  <span className="flex flex-col">
+                    <span>Share</span>
+                    <span className="text-xs">{NOT_STORED_SHARE_HINT}</span>
+                  </span>
+                )}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onLoadIntoForm(backtest)}>
                 <Upload className="mr-2 h-4 w-4" />

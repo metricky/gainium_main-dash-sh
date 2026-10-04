@@ -3,18 +3,20 @@ import {
   ResponsiveCurrencyValue,
   type FontStep,
 } from '@/components/ui/ResponsiveCurrencyValue';
+import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import { useTransformedExchangesFromContext } from '@/contexts/ExchangeDataContext';
-import { useComboBots } from '@/hooks/useComboBots';
-import { useDcaBots } from '@/hooks/useDcaBots';
 import { useGraphQL } from '@/hooks/useGraphQL';
-import { useGridBots } from '@/hooks/useGridBots';
-import { GraphQlQuery } from '@/lib/api';
+import { useLegacyDashboardStats } from '@/hooks/useDashboardStatsBatch';
+import {
+  usePositionTotals,
+  type PositionTotalsScope,
+} from '@/hooks/usePositionTotals';
+import { NotCalculated } from '@/components/ui/large-account';
+import { GraphQlQuery, type ReturnResult } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
-  BotTypesEnum,
   StatusEnum,
-  type BotStatus,
   type PortfolioQuery,
   type ProfitQuery,
 } from '@/types';
@@ -84,6 +86,14 @@ function toTzDateKey(date: Date, timezone: string): string {
   }).format(date);
 }
 
+const POSITION_TOTALS_SCOPES: {
+  positions: PositionTotalsScope[];
+  pnl: PositionTotalsScope[];
+} = {
+  positions: ['dca', 'terminal', 'combo', 'grid', 'hedgeDca', 'hedgeCombo'],
+  pnl: ['dca', 'terminal', 'combo', 'hedgeCombo'],
+};
+
 export const HeroBalance: React.FC = () => {
   const privacyMode = useUIStore((s) => s.privacyMode);
   const { exchanges } = useTransformedExchangesFromContext();
@@ -92,8 +102,16 @@ export const HeroBalance: React.FC = () => {
   // call and makes getProfitByUser return NOTOK. Sanitize to a valid zone.
   const userTimezone = useAuthStore((s) => getValidTimezone(s.user?.timezone));
 
-  // Portfolio snapshots — same query the rest of the dashboard uses, so cache hits.
-  const portfolioQuery = useMemo(() => GraphQlQuery.getPortfolioByUser(), []);
+  // Portfolio snapshots — only the last two days: the card shows the latest
+  // total, its change against the previous snapshot and the latest asset
+  // split. It used to pull the default 30-day history (with every asset of
+  // every snapshot) for that. `from` floored to the UTC day keeps the cache
+  // key stable.
+  const portfolioQuery = useMemo(() => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const from = Math.floor(Date.now() / dayMs) * dayMs - 2 * dayMs;
+    return GraphQlQuery.getPortfolioByUser({ from });
+  }, []);
   const { data: portfolioData, isLoading: portfolioLoading } =
     useGraphQL<PortfolioQuery>('getPortfolioByUser', portfolioQuery);
 
@@ -112,112 +130,30 @@ export const HeroBalance: React.FC = () => {
     dailyProfitQuery
   );
 
-  // Bots — for the "In positions" $ amount (only the bot list exposes
-  // `usage.current.quote` per bot).
-  const activeFilter = useMemo(
-    () => ({
-      status: ['open', 'range', 'monitoring'] as BotStatus[],
-    }),
-    []
-  );
-  const { bots: dcaBots } = useDcaBots(activeFilter);
-  const { bots: gridBots } = useGridBots(activeFilter);
-  const { bots: comboBots } = useComboBots(activeFilter);
+  // "In positions" and uPnL are summed on the server in USD. This used to
+  // add `usage.current.quote` over three full bot lists (a separate 5 MB
+  // fetch, truncated at 500 bots), treating USDT, BTC and USD amounts as if
+  // they were all dollars, with grid bots counted at their budget.
+  const positionTotals = usePositionTotals(POSITION_TOTALS_SCOPES);
 
-  // Match BotStatus's authoritative queries exactly (same cache keys + variables)
-  // so uPnL and Total Profit numbers agree across widgets.
-  const dealStatsQueries = useMemo(
-    () => ({
-      dca: GraphQlQuery.dealDashboardStats({
-        type: BotTypesEnum.dca,
-        terminal: false,
-      }),
-      // NOTE: no `grid` deal-stats query. Grid bots have no DCA-style deals,
-      // and the backend's dealDashboardStats resolver returns the *DCA*
-      // dataset for `type: grid`, so summing it double-counts every DCA deal
-      // (normal/inProfit + unrealizedProfit). The legacy dashboard (main-dash)
-      // never queries dealDashboardStats for grid — it only pulls grid bot
-      // counts + realized profit. Mirror that here. See gridAllProfit below
-      // for grid's (legitimate) realized profit contribution.
-      combo: GraphQlQuery.dealDashboardStats({
-        type: BotTypesEnum.combo,
-        terminal: false,
-      }),
-      hedge: GraphQlQuery.dealDashboardStats({
-        type: BotTypesEnum.hedgeCombo,
-        terminal: false,
-      }),
-      terminal: GraphQlQuery.dealDashboardStats({
-        type: BotTypesEnum.dca,
-        terminal: true,
-      }),
-    }),
-    []
-  );
-
-  const allTimeProfitQueries = useMemo(
-    () => ({
-      dca: GraphQlQuery.getProfitByUser(
-        { timeframe: 3, botType: BotTypesEnum.dca, terminal: false },
-        'quote'
-      ),
-      grid: GraphQlQuery.getProfitByUser(
-        { timeframe: 3, botType: BotTypesEnum.grid },
-        'quote'
-      ),
-      combo: GraphQlQuery.getProfitByUser(
-        { timeframe: 3, botType: BotTypesEnum.combo },
-        'quote'
-      ),
-      hedge: GraphQlQuery.getProfitByUser(
-        { timeframe: 3, botType: BotTypesEnum.hedgeCombo },
-        'quote'
-      ),
-      terminal: GraphQlQuery.getProfitByUser(
-        { timeframe: 3, botType: BotTypesEnum.dca, terminal: true },
-        'quote'
-      ),
-    }),
-    []
-  );
-
-  const { data: dcaDealStats } = useGraphQL<DealDashboardStatsApiResponse>(
-    'dcaDealDashboardStats',
-    dealStatsQueries.dca
-  );
-  const { data: comboDealStats } = useGraphQL<DealDashboardStatsApiResponse>(
-    'comboDealDashboardStats',
-    dealStatsQueries.combo
-  );
-  const { data: hedgeDealStats } = useGraphQL<DealDashboardStatsApiResponse>(
-    'hedgeDealDashboardStats',
-    dealStatsQueries.hedge
-  );
-  const { data: terminalDealStats } = useGraphQL<DealDashboardStatsApiResponse>(
-    'terminalDealDashboardStats',
-    dealStatsQueries.terminal
-  );
-
-  const { data: dcaAllProfit } = useGraphQL<ProfitApiResponse>(
-    'dcaProfitData',
-    allTimeProfitQueries.dca
-  );
-  const { data: gridAllProfit } = useGraphQL<ProfitApiResponse>(
-    'gridProfitData',
-    allTimeProfitQueries.grid
-  );
-  const { data: comboAllProfit } = useGraphQL<ProfitApiResponse>(
-    'comboProfitData',
-    allTimeProfitQueries.combo
-  );
-  const { data: hedgeAllProfit } = useGraphQL<ProfitApiResponse>(
-    'hedgeComboProfitData',
-    allTimeProfitQueries.hedge
-  );
-  const { data: terminalAllProfit } = useGraphQL<ProfitApiResponse>(
-    'terminalProfitData',
-    allTimeProfitQueries.terminal
-  );
+  // Deal stats and all-time profit per bot type: the same single batched
+  // request (and cache entry) the Status widget and usePositionTotals use.
+  const legacyStats = useLegacyDashboardStats();
+  const dcaDealStats = legacyStats.data?.dealDca as
+    | ReturnResult<DealDashboardStatsApiResponse>
+    | undefined;
+  const comboDealStats = legacyStats.data?.dealCombo as typeof dcaDealStats;
+  const hedgeDealStats = legacyStats.data?.dealHedge as typeof dcaDealStats;
+  const terminalDealStats = legacyStats.data
+    ?.dealTerminal as typeof dcaDealStats;
+  const dcaAllProfit = legacyStats.data?.profitDca as
+    | ReturnResult<ProfitApiResponse>
+    | undefined;
+  const gridAllProfit = legacyStats.data?.profitGrid as typeof dcaAllProfit;
+  const comboAllProfit = legacyStats.data?.profitCombo as typeof dcaAllProfit;
+  const hedgeAllProfit = legacyStats.data?.profitHedge as typeof dcaAllProfit;
+  const terminalAllProfit = legacyStats.data
+    ?.profitTerminal as typeof dcaAllProfit;
 
   const {
     totalValue,
@@ -317,24 +253,6 @@ export const HeroBalance: React.FC = () => {
     return row?.quote ?? 0;
   }, [dailyProfit, userTimezone]);
 
-  // Open trades + In positions $ come from the bot list (only place that
-  // exposes `usage.current.quote` per bot).
-  const positionsKpis = useMemo(() => {
-    let amountInPositions = 0;
-
-    dcaBots.forEach((bot) => {
-      amountInPositions += bot.usage?.current?.quote || 0;
-    });
-    comboBots.forEach((bot) => {
-      amountInPositions += bot.usage?.current?.quote || 0;
-    });
-    gridBots.forEach((bot) => {
-      amountInPositions += bot.settings?.budget || 0;
-    });
-
-    return { amountInPositions };
-  }, [dcaBots, gridBots, comboBots]);
-
   // uPnL + Open Trades + Total Profit aggregated from the same authoritative
   // server-side dashboard responses BotStatus uses.
   const aggregatedStats = useMemo(() => {
@@ -407,8 +325,10 @@ export const HeroBalance: React.FC = () => {
 
   const kpis = {
     openTrades: aggregatedStats.openTrades,
-    amountInPositions: positionsKpis.amountInPositions,
-    unrealizedPnl: aggregatedStats.unrealizedPnl,
+    amountInPositions: positionTotals.inPositionsUsd,
+    unrealizedPnl: positionTotals.unrealizedIsNet
+      ? (positionTotals.unrealizedUsd ?? aggregatedStats.unrealizedPnl)
+      : aggregatedStats.unrealizedPnl,
     totalProfit: aggregatedStats.totalProfit,
   };
 
@@ -625,19 +545,46 @@ export const HeroBalance: React.FC = () => {
           </span>
           {privacyMode ? (
             <span className="text-lg font-semibold">***</span>
-          ) : (
-            <ResponsiveCurrencyValue
-              value={kpis.amountInPositions}
-              showSign={false}
-              fontSteps={KPI_FONT_STEPS}
-              colorClassOverride="text-foreground"
-              align="left"
+          ) : kpis.amountInPositions === null ? (
+            <NotCalculated
+              compact
+              reason="Your server does not report the value of open positions yet. Update it to see this number."
             />
+          ) : kpis.amountInPositions === undefined ? (
+            <Skeleton className="h-6 w-20" />
+          ) : (
+            <span className="flex flex-col">
+              <ResponsiveCurrencyValue
+                value={kpis.amountInPositions}
+                showSign={false}
+                fontSteps={KPI_FONT_STEPS}
+                colorClassOverride="text-foreground"
+                align="left"
+              />
+              {positionTotals.inPositionsUnpriced > 0 && (
+                <Tooltip
+                  tooltip={`${positionTotals.inPositionsUnpriced.toLocaleString()} of ${positionTotals.inPositionsCount.toLocaleString()} positions could not be priced in USD and are not included.`}
+                  side="top"
+                  className="normal-case"
+                >
+                  <span className="text-[11px] text-muted-foreground">
+                    {positionTotals.inPositionsUnpriced.toLocaleString()} unpriced
+                  </span>
+                </Tooltip>
+              )}
+            </span>
           )}
         </div>
         <div className="flex flex-col gap-1 rounded-xl bg-muted/60 px-md py-sm">
-          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            uPnL
+          <span className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+            Unrealized PnL
+            <Tooltip
+              tooltip="Open profit or loss across every deal running right now, on all your bots."
+              side="top"
+              className="normal-case"
+            >
+              <InfoIcon />
+            </Tooltip>
           </span>
           {privacyMode ? (
             <span className="text-lg font-semibold">***</span>
@@ -652,8 +599,15 @@ export const HeroBalance: React.FC = () => {
           )}
         </div>
         <div className="flex flex-col gap-1 rounded-xl bg-muted/60 px-md py-sm">
-          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            Total profit
+          <span className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+            Realized PnL
+            <Tooltip
+              tooltip="Profit banked from closed deals across every bot type and the trading terminal. Deals still running are in Unrealized PnL."
+              side="top"
+              className="normal-case"
+            >
+              <InfoIcon />
+            </Tooltip>
           </span>
           {privacyMode ? (
             <span className="text-lg font-semibold">***</span>

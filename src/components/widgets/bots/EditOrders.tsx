@@ -1,4 +1,5 @@
 import { useOptionalGridPageContext } from '@/contexts/bots/grid/GridPageProvider';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { type ColumnDef } from '@tanstack/react-table';
 import { Loader2 } from 'lucide-react';
 import React from 'react';
@@ -8,6 +9,7 @@ import { useBotOrders, type BotOrder } from '../../../hooks/useBotOrders';
 import { BotTypesEnum } from '../../../types';
 import { DataTable } from '../../ui/data-table/data-table';
 import CoinPair from '../shared/CoinPair';
+import { SYMBOL_COLUMN_FILTER_META } from '../shared/symbolColumnFilterMeta';
 import { WidgetWrapper, type WidgetMenuActions } from '../WidgetWrapper';
 import { getBotWidgetMetadata } from './index';
 
@@ -88,6 +90,9 @@ const EditOrders: React.FC<EditOrdersProps> = ({
   const errorMessage = error?.message || 'Failed to load orders';
 
   // Memoize columns to prevent infinite renders
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the daily-profit surfaces use — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   const columns = React.useMemo<ColumnDef<BotOrder>[]>(
     () => [
       {
@@ -108,8 +113,7 @@ const EditOrders: React.FC<EditOrdersProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        meta: SYMBOL_COLUMN_FILTER_META,
       },
       {
         accessorKey: 'side',
@@ -119,8 +123,10 @@ const EditOrders: React.FC<EditOrdersProps> = ({
           return <BuySellChip side={side} size="sm" showIcon={true} />;
         },
         enableSorting: true,
-        filterFn: 'equals',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => (row as BotOrder).side || '',
+        },
       },
       {
         accessorKey: 'origQty',
@@ -213,8 +219,11 @@ const EditOrders: React.FC<EditOrdersProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        // Exact option match: picking FILLED must not also pick PARTIALLY_FILLED.
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => (row as BotOrder).status || '',
+        },
       },
       {
         accessorKey: 'type',
@@ -228,8 +237,10 @@ const EditOrders: React.FC<EditOrdersProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => (row as BotOrder).type || '',
+        },
       },
       {
         accessorKey: 'time',
@@ -246,11 +257,13 @@ const EditOrders: React.FC<EditOrdersProps> = ({
             timeString = date.toLocaleTimeString([], {
               hour: '2-digit',
               minute: '2-digit',
+              timeZone: accountTimeZone,
             });
           } else {
             timeString = date.toLocaleDateString([], {
               month: 'short',
               day: 'numeric',
+              timeZone: accountTimeZone,
             });
           }
 
@@ -265,7 +278,7 @@ const EditOrders: React.FC<EditOrdersProps> = ({
         meta: { filterType: 'date' },
       },
     ],
-    []
+    [accountTimeZone]
   );
 
   // Memoize data to prevent unnecessary re-renders

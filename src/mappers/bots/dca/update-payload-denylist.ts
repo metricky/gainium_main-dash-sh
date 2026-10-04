@@ -39,6 +39,10 @@ export const UNDECLARED_BY_ALL_INPUTS = [
   'terminalDealType',
   'useExperimental',
   'importFrom',
+  // Deal-edit only: which multi-target uuids already filled. Seeded by
+  // DealEditDrawer so the take-profit section can present spent targets as
+  // spent; no bot change-input declares it.
+  'tpSlTargetFilled',
 ] as const;
 
 /**
@@ -56,6 +60,17 @@ export const DECLARED_BY_COMBO_ONLY = [
   'feeOrder',
   'comboSlLimit',
   'comboTpLimit',
+] as const;
+
+/**
+ * DCA-only settings: declared by `changeDCABotInput` / `createDCABotInput` but
+ * NOT by the combo inputs. `COMBO_FORM_DEFAULTS` spreads `DCA_FORM_DEFAULTS`,
+ * so a combo form carries them anyway and a combo save has to drop them.
+ */
+export const DECLARED_BY_DCA_ONLY = [
+  'allowRaiseToExchangeMin',
+  'reduceToAvailableBalance',
+  'reduceToAvailableMinSize',
 ] as const;
 
 /**
@@ -98,6 +113,7 @@ export const denylistFor = (
 ): string[] => [
   ...UNDECLARED_BY_ALL_INPUTS,
   ...(botType === 'dca' ? DECLARED_BY_COMBO_ONLY : []),
+  ...(botType === 'combo' ? DECLARED_BY_DCA_ONLY : []),
   ...(botType === 'grid' ? UNDECLARED_GRID_FORM_FIELDS : []),
   ...(stripPair ? ['pair'] : []),
 ];

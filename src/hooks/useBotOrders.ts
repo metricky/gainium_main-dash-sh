@@ -1,4 +1,5 @@
 import { useOrderStore } from '@/stores/live';
+import { mergeOrderBuckets } from '@/stores/live/orderStore';
 import { useEffect, useMemo, useState } from 'react';
 import { botQueries } from '../lib/api/GraphQLQueries-bot-queries';
 import type { ReturnResult } from '../lib/api/types';
@@ -6,6 +7,7 @@ import { BotTypesEnum, type OrderData } from '../types';
 import { useGraphQL } from './useGraphQL';
 import { useShareContext } from './useShareContext';
 import { logger } from '../lib/loggerInstance';
+import { getOrderExecutionTime } from '../utils/orders/executionTime';
 
 export type BotOrder = OrderData; /* {
   clientOrderId: string;
@@ -69,12 +71,23 @@ export function useBotOrders(
   const maxPages = 2; // Maximum 2 pages for performance
 
   // 1. Read from Zustand store (instant, filtered by botId)
-  // Select the Record directly to avoid creating new array reference on every render
-  const ordersRecord = useOrderStore().getOrders(botId);
+  // Subscribe to THIS bot's two buckets only; merge them only when one of
+  // them changes (a bare useOrderStore() re-rendered every consumer — one per
+  // deal card — on any order event for any bot).
+  const newBucket = useOrderStore((state) => state.orders.new[botId]);
+  const filledBucket = useOrderStore((state) => state.orders.filled[botId]);
+  const ordersRecord = useMemo(
+    () => mergeOrderBuckets(newBucket, filledBucket),
+    [newBucket, filledBucket]
+  );
   const hasHydrated = useOrderStore((state) => state._hasHydrated);
 
   // Convert to array for specific botId (memoized by ordersRecord)
   const ordersFromStore = useMemo(() => {
+    // An empty id is a disabled lookup (e.g. a non-hedge bot's "other leg"),
+    // not a bucket: reading `orders[type]['']` handed whatever had been filed
+    // there to every bot page, whose chart then jumped to that pair.
+    if (!botId) return [];
     const orders = [...(ordersRecord || [])];
 
     // Filter by status if provided
@@ -85,7 +98,7 @@ export function useBotOrders(
     }
 
     return orders;
-  }, [ordersRecord, options.status]);
+  }, [botId, ordersRecord, options.status]);
 
   // Avoid firing the query when botId is missing/empty
   const hasValidId = useMemo(
@@ -121,6 +134,11 @@ export function useBotOrders(
       // Disable the query until we have a valid id to prevent backend cast errors
       enabled: hasValidId,
       shareId,
+      // Opt OUT of the global `placeholderData: (prev) => prev` default in
+      // lib/queryClient: when `botId` changes it replays the PREVIOUS bot's
+      // orders under the new key with a success status, and the effects below
+      // then commit them to the store as this bot's orders.
+      placeholderData: undefined,
     }
   );
 
@@ -340,6 +358,7 @@ export const formatOrderForDisplay = (order: BotOrder) => ({
   side: mapOrderSide(order.typeOrder, order.side), // Pass backend side for accurate mapping
   category: mapOrderCategory(order.typeOrder), // Add category field
   time: order.time || order.transactTime || order.updateTime,
+  executionTime: getOrderExecutionTime(order),
   updateTime: order.updateTime,
   symbol: order.symbol,
   baseAsset: order.baseAsset,

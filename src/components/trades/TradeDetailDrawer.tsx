@@ -1,5 +1,7 @@
 import { useDealOrders } from '@/hooks/useDealOrders';
 import { useDealSmartOrders } from '@/hooks/bots/dca/useDealSmartOrders';
+import { useUserFees } from '@/hooks/useUserFeesService';
+import { buildDealExitLines } from '@/utils/bots/dca/deal-exit-lines';
 import {
   dealCompletedOrdersToTransactions,
   dealPendingOrdersToChartLines,
@@ -13,6 +15,7 @@ import {
 } from '@/stores/live';
 import {
   BotTypesEnum,
+  type BotVars,
   type DCABotSettings,
   type DCAGrid,
 } from '@/types';
@@ -22,6 +25,7 @@ import { extractPairAssets } from '@/utils/pairs';
 import React, { useMemo } from 'react';
 import { formatTradingPair } from '../../lib/utils';
 import UnfoldingChartPanel from '../bots/panels/contents/chart/UnfoldingChartPanel';
+import { buildDealLiquidationContext } from '@/utils/bots/dca/liquidation';
 import {
   DetailDrawer,
   DetailDrawerBody,
@@ -168,6 +172,7 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
     [dcaBot, comboBot, gridBot]
   );
 
+  const { getCachedFee } = useUserFees();
   const { pendingOrders, completedOrders } = useMemo(
     () => splitDealOrders(dealOrders, trade.exchange),
     [dealOrders, trade.exchange]
@@ -189,6 +194,7 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
       ? {
           settings: (chartBot as { settings?: DCABotSettings }).settings,
           exchangeUUID: trade.exchangeUUID ?? rawDeal?.exchangeUUID,
+          vars: (chartBot as { vars?: BotVars | null }).vars,
         }
       : null,
     deal: rawDeal,
@@ -198,14 +204,45 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
     enabled: tradeBotType !== BotTypesEnum.grid,
   });
 
-  // Feed the price chart: real pending orders + projected grey smart levels.
-  // Grey lines render automatically (BotChart maps grey:true → color).
+  // The engine keeps trailing TP/SL and move SL entirely in the worker — none
+  // of them rest as exchange orders — so they have to be recomputed to appear.
+  const takerFee =
+    getCachedFee(
+      trade.exchangeUUID ?? rawDeal?.exchangeUUID ?? '',
+      rawDeal?.symbol?.symbol ?? ''
+    )?.taker ?? 0;
+  const dealExitLines = useMemo(
+    () =>
+      buildDealExitLines(
+        rawDeal,
+        (chartBot as { settings?: DCABotSettings } | null)?.settings,
+        takerFee,
+        pendingOrders.map((o) => +o.price)
+      ),
+    [rawDeal, chartBot, takerFee, pendingOrders]
+  );
+
+  // Position + leverage behind the estimated liquidation line on the chart.
+  // Null for spot deals, leverage <= 1, and deals with no position yet.
+  const liquidationContext = useMemo(
+    () =>
+      buildDealLiquidationContext(
+        (chartBot as { settings?: DCABotSettings } | null)?.settings,
+        rawDeal
+      ),
+    [chartBot, rawDeal]
+  );
+
+  // Feed the price chart: real pending orders + projected grey smart levels +
+  // the engine-managed exits. Grey lines render automatically (BotChart maps
+  // grey:true → color).
   const chartOrders = useMemo<DCAGrid[]>(
     () => [
       ...dealPendingOrdersToChartLines(pendingOrders, strategy),
       ...smartChartOrders,
+      ...dealExitLines,
     ],
-    [pendingOrders, smartChartOrders, strategy]
+    [pendingOrders, smartChartOrders, strategy, dealExitLines]
   );
 
   const chartTransactions = useMemo(
@@ -241,6 +278,7 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
                     // Lets the price chart resolve a symbol even when the
                     // parent bot isn't in the live store (terminal deals).
                     overrideExchange={trade.exchange}
+                    liquidationContext={liquidationContext}
                     enabled={true}
                     className="h-full"
                   />

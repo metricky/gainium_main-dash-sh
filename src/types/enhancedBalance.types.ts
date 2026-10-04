@@ -48,6 +48,12 @@ export interface EnhancedBalanceData {
    * zero, so the table can say so instead of rendering a confident $0.00.
    */
   priceUnavailable?: boolean;
+  /**
+   * ISO time of the backend's last write to the underlying balance row(s) —
+   * the oldest venue when summed; null when the backend did not send it.
+   * Drives the stale-balance marker (`utils/balanceStaleness.ts`).
+   */
+  updatedAt?: string | null;
 
   // Asset metadata
   categories?: string[];
@@ -184,6 +190,13 @@ export interface BalanceCalculationInput {
 
   // Optional raw balances (from getBalances) to improve free/used accuracy
   balances?: Asset[];
+
+  // Exchange selection to restrict the calculation to. Applied to `balances`
+  // BEFORE aggregation, because summing blanks a row's `exchangeUUID` (an
+  // aggregate spans venues and cannot name one) and a caller filtering the
+  // RESULT therefore drops every multi-venue token. `['ALL']` or omitted =
+  // no restriction.
+  selectedExchanges?: string[];
 
   // Coin metadata
   coins?: Array<{

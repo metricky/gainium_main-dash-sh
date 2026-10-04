@@ -5,6 +5,7 @@ import {
   type ReturnResult,
 } from '@/lib/api';
 import GraphQlQuery from '@/lib/api/GraphQLQueries';
+import { IS_CLOUD } from '@/config/mode';
 import { useAuthStore } from '@/stores/authStore';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -39,6 +40,8 @@ export interface UserSettingsData {
     otp_enabled: boolean;
   };
   allowedLoginMethods?: AllowedLoginMethods;
+  // Cloud-only. Absent (self-hosted / never set) means webhooks are enabled.
+  webhooksDisabled?: boolean;
   apiKeys?: Array<{
     _id: string;
     created: string;
@@ -277,6 +280,115 @@ export function useSetAllowedLoginMethods() {
     },
     onError: (error) => {
       logger.error('Failed to update allowed login methods', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    },
+  });
+}
+
+/** An active bot whose settings act only on webhook signals. */
+export interface WebhookDependentBot {
+  _id: string;
+  name?: string | null;
+  type: string;
+  paperContext?: boolean | null;
+  parentBotId?: string | null;
+  uses: Array<'openDeal' | 'closeDeal' | 'closeDealSl'>;
+}
+
+/**
+ * Whether the account-wide webhook switch is off (cloud-only; always false on
+ * self-hosted, which has no such switch). Shares the `user` key prefix, so
+ * `useSetWebhooksDisabled` refreshes it.
+ */
+export function useWebhooksDisabled(): boolean {
+  const { tokens } = useAuthStore();
+  const { data } = useQuery({
+    queryKey: ['user', 'webhooksDisabled'],
+    queryFn: async () => {
+      const endpoint =
+        import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+      const client = new GraphQLClient(endpoint, tokens?.accessToken);
+      const { query } = GraphQlQuery.webhooksDisabled();
+      const response = await client.request<{
+        user: ReturnResult<{ webhooksDisabled?: boolean | null }>;
+      }>(query, undefined, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
+      return response.user?.data?.webhooksDisabled === true;
+    },
+    enabled: IS_CLOUD && !!tokens?.accessToken,
+    staleTime: 60_000,
+  });
+  return data === true;
+}
+
+/** Loads the active bots that would lose their webhook triggers (cloud-only). */
+export function useLoadWebhookDependentBots() {
+  const { tokens } = useAuthStore();
+  return async (): Promise<WebhookDependentBot[]> => {
+    if (!tokens?.accessToken) {
+      throw new Error('No authentication token available');
+    }
+    const endpoint =
+      import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+    const client = new GraphQLClient(endpoint, tokens.accessToken);
+    const { query } = GraphQlQuery.webhookDependentBots();
+    const result = await client.request<{
+      webhookDependentBots: ReturnResult<WebhookDependentBot[]>;
+    }>(query, undefined, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
+    if (result.webhookDependentBots.status !== 'OK') {
+      throw new Error(
+        result.webhookDependentBots.reason ||
+          'Failed to load bots that use webhooks'
+      );
+    }
+    return result.webhookDependentBots.data ?? [];
+  };
+}
+
+/**
+ * Hook for the account-wide webhook actions switch (cloud-only). When
+ * disabled, every inbound `/trade_signal` action is refused for all bots.
+ */
+export function useSetWebhooksDisabled() {
+  const { tokens } = useAuthStore();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (disabled: boolean) => {
+      if (!tokens?.accessToken) {
+        throw new Error('No authentication token available');
+      }
+
+      const endpoint =
+        import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+      const client = new GraphQLClient(endpoint, tokens.accessToken);
+
+      const { query, variables } = GraphQlQuery.setWebhooksDisabled({
+        disabled,
+      });
+
+      const result = await client.request<{
+        setWebhooksDisabled: ReturnResult<boolean>;
+      }>(query, variables);
+
+      if (result.setWebhooksDisabled.status !== 'OK') {
+        throw new Error(
+          result.setWebhooksDisabled.reason ||
+            'Failed to update webhook actions'
+        );
+      }
+
+      return result.setWebhooksDisabled.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'user' ||
+          query.queryKey[0] === 'user-settings',
+      });
+    },
+    onError: (error) => {
+      logger.error('Failed to update webhook actions', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     },

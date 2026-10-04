@@ -52,12 +52,17 @@ import type { IndicatorConfig } from '@/types/indicators';
 import { INDICATOR_CATALOG } from '@/types/indicators/indicatorCatalog';
 import type { IndicatorParamsState } from '@/types/indicators/indicatorParams';
 import {
+  createChildIndicatorId,
   isCloseIndicatorOfSection,
   isCloseIndicatorUsedByCondition,
 } from '@/utils/indicators/indicatorConfigUtils';
 import { withFieldDefaults } from '@/utils/indicators/indicatorFieldGating';
 import { normalizeMultiTpTargets } from '@/utils/bots/dca/take-profit';
 import { enforceMultiTargetLimit } from '@/utils/bots/dca/take-profit-behaviours';
+import {
+  MAX_DCA_ORDER_STEP_PERCENT,
+  resolveDcaRanges,
+} from '@/utils/bots/dca/ranges';
 
 export interface FieldMappingResult {
   success: boolean;
@@ -244,11 +249,38 @@ const serializeIndicatorConfig = (
 
   const paramsRecord = normalizeIndicatorParamsRecord(filled);
 
+  // `params` is a legacy MIRROR of the row the form still writes alongside the
+  // top-level fields (BotControllerSettings' two add handlers, RiskRewardSettings
+  // and TakeProfitSettings' dynamic-AR editor all store
+  // `{ ...newIndicator, params: sanitizedParams }`). Nothing reads it back —
+  // display and the engine both use the top-level fields — and GraphQL's
+  // `input indicatorSettings` has no such field, so sending it fails the whole
+  // mutation with `Field "params" is not defined by type "indicatorSettings"`.
+  // `normalizeIndicatorParamsRecord` already drops it, but spreading `filled`
+  // first put it straight back, so the strip never took effect.
+  const { params: _legacyParams, ...withoutLegacyParams } = filled as
+    IndicatorConfig & { params?: unknown };
+
   const payload: IndicatorConfig = {
-    ...filled,
+    ...withoutLegacyParams,
     ...paramsRecord,
     ...overrides,
   };
+
+  // Same "fill the structural holes" contract as `withFieldDefaults` above,
+  // for the two ids that are NOT catalog fields. `buildIndicatorConfig` now
+  // mints them, but every indicator a user already saved from V2 predates
+  // that and carries neither — and this mapper feeds BOTH the save payload
+  // and the editor's local backtest, so backfilling here is what lets an
+  // EXISTING Moving Averages / Crossing Oscillator bot start crossing again
+  // instead of only newly-added ones. A row that has an id keeps it, so no
+  // bot's child series is ever re-addressed behind its back.
+  if (!payload.maUUID) {
+    payload.maUUID = createChildIndicatorId();
+  }
+  if (!payload.xoUUID) {
+    payload.xoUUID = createChildIndicatorId();
+  }
 
   return payload;
 };
@@ -772,6 +804,15 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
   const dcaByMarket = isComboBot
     ? formData.combo.dcaByMarket
     : formData.dca.dcaByMarket;
+  const allowRaiseToExchangeMin = isComboBot
+    ? false
+    : formData.dca.allowRaiseToExchangeMin;
+  const reduceToAvailableBalance = isComboBot
+    ? false
+    : formData.dca.reduceToAvailableBalance;
+  const reduceToAvailableMinSize = isComboBot
+    ? ''
+    : formData.dca.reduceToAvailableMinSize;
   const _activeOrdersCount = isComboBot
     ? formData.combo.activeOrdersCount
     : formData.dca.activeOrdersCount;
@@ -895,6 +936,9 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
         | 'ordersCount'
         | 'useSmartOrders'
         | 'dcaByMarket'
+        | 'allowRaiseToExchangeMin'
+        | 'reduceToAvailableBalance'
+        | 'reduceToAvailableMinSize'
         | 'activeOrdersCount'
         | 'gridLevel'
         | 'baseGridLevels'
@@ -965,6 +1009,32 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
 
     dcaFields['dcaByMarket'] = Boolean(dcaByMarket);
     fieldsMapped.push('dcaByMarket');
+
+    // DCA bots only — the combo engine does not implement the refusal. Always
+    // written explicitly so a new bot stores `false` rather than relying on
+    // the engine's missing-means-refuse.
+    if (!isComboBot) {
+      dcaFields['allowRaiseToExchangeMin'] = Boolean(allowRaiseToExchangeMin);
+      fieldsMapped.push('allowRaiseToExchangeMin');
+
+      // DCA bots only — open a smaller deal on a balance shortfall.
+      dcaFields['reduceToAvailableBalance'] = Boolean(reduceToAvailableBalance);
+      fieldsMapped.push('reduceToAvailableBalance');
+      const minSize = String(reduceToAvailableMinSize ?? '').trim();
+      const parsedMinSize = Number(minSize);
+      if (!minSize) {
+        // '0' rather than '': the update path drops empty strings, which
+        // would make clearing the minimum on an edit a no-op. 0 = no minimum.
+        dcaFields['reduceToAvailableMinSize'] = '0';
+        fieldsMapped.push('reduceToAvailableMinSize');
+      } else if (Number.isFinite(parsedMinSize) && parsedMinSize >= 0) {
+        dcaFields['reduceToAvailableMinSize'] = minSize;
+        fieldsMapped.push('reduceToAvailableMinSize');
+      } else {
+        errors.push('Minimum reduced base order must be a non-negative number');
+        fieldsSkipped.push('reduceToAvailableMinSize');
+      }
+    }
 
     if (useSmartOrders) {
       const activeOrdersCount = Number(_activeOrdersCount ?? 0);
@@ -1195,10 +1265,19 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
       fieldsMapped.push('reinvestValue');
     }
 
+    // Same direction-aware ceiling the form's step inputs use; the minimum
+    // deviation guard is a floor on that spacing, so it shares it.
+    const stepCeiling =
+      resolveDcaRanges(formData).step.max ?? MAX_DCA_ORDER_STEP_PERCENT;
+
     if (step) {
       const stepValue = Number(step);
-      if (!Number.isFinite(stepValue) || stepValue <= 0 || stepValue > 50) {
-        errors.push('Step must be between 0.1% and 50%');
+      if (
+        !Number.isFinite(stepValue) ||
+        stepValue <= 0 ||
+        stepValue > stepCeiling
+      ) {
+        errors.push(`Step must be between 0.1% and ${stepCeiling}%`);
         fieldsSkipped.push('step');
       } else {
         dcaFields['step'] = step;
@@ -1257,9 +1336,11 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
         if (
           !Number.isFinite(parsedMinimumDeviation) ||
           parsedMinimumDeviation < 0 ||
-          parsedMinimumDeviation > 10
+          parsedMinimumDeviation > stepCeiling
         ) {
-          errors.push('Minimum deviation must be between 0 and 10');
+          errors.push(
+            `Minimum deviation must be between 0 and ${stepCeiling}`
+          );
           fieldsSkipped.push('minimumDeviation');
         } else {
           dcaFields['minimumDeviation'] = minimumDeviationValue;
@@ -3048,6 +3129,18 @@ export const mapBotControllerFields = (
   const _closeAfterXloss = isComboBot
     ? formData.combo.closeAfterXloss
     : formData.dca.closeAfterXloss;
+  const useCloseAfterXconsecutiveWin = isComboBot
+    ? formData.combo.useCloseAfterXconsecutiveWin
+    : formData.dca.useCloseAfterXconsecutiveWin;
+  const _closeAfterXconsecutiveWin = isComboBot
+    ? formData.combo.closeAfterXconsecutiveWin
+    : formData.dca.closeAfterXconsecutiveWin;
+  const useCloseAfterXconsecutiveLoss = isComboBot
+    ? formData.combo.useCloseAfterXconsecutiveLoss
+    : formData.dca.useCloseAfterXconsecutiveLoss;
+  const _closeAfterXconsecutiveLoss = isComboBot
+    ? formData.combo.closeAfterXconsecutiveLoss
+    : formData.dca.closeAfterXconsecutiveLoss;
   const useCloseAfterXprofit = isComboBot
     ? formData.combo.useCloseAfterXprofit
     : formData.dca.useCloseAfterXprofit;
@@ -3093,6 +3186,10 @@ export const mapBotControllerFields = (
             'closeAfterXwin',
             'useCloseAfterXloss',
             'closeAfterXloss',
+            'useCloseAfterXconsecutiveWin',
+            'closeAfterXconsecutiveWin',
+            'useCloseAfterXconsecutiveLoss',
+            'closeAfterXconsecutiveLoss',
             'useCloseAfterXprofit',
             'closeAfterXprofitCond',
             'closeAfterXprofitValue',
@@ -3118,6 +3215,10 @@ export const mapBotControllerFields = (
       'closeAfterXwin',
       'useCloseAfterXloss',
       'closeAfterXloss',
+      'useCloseAfterXconsecutiveWin',
+      'closeAfterXconsecutiveWin',
+      'useCloseAfterXconsecutiveLoss',
+      'closeAfterXconsecutiveLoss',
       'useCloseAfterXprofit',
       'closeAfterXprofitCond',
       'closeAfterXprofitValue',
@@ -3228,6 +3329,24 @@ export const mapBotControllerFields = (
       }
     }
 
+    if (useCloseAfterXconsecutiveWin) {
+      const consecutiveWin = parseInt(_closeAfterXconsecutiveWin || '0');
+      if (isNaN(consecutiveWin) || consecutiveWin <= 0) {
+        errors.push(
+          `Invalid closeAfterXconsecutiveWin: ${consecutiveWin}. Must be a positive integer`
+        );
+      }
+    }
+
+    if (useCloseAfterXconsecutiveLoss) {
+      const consecutiveLoss = parseInt(_closeAfterXconsecutiveLoss || '0');
+      if (isNaN(consecutiveLoss) || consecutiveLoss <= 0) {
+        errors.push(
+          `Invalid closeAfterXconsecutiveLoss: ${consecutiveLoss}. Must be a positive integer`
+        );
+      }
+    }
+
     if (useCloseAfterXprofit) {
       if (
         !validConditions.includes(
@@ -3300,6 +3419,10 @@ export const mapBotControllerFields = (
         | 'closeAfterXwin'
         | 'useCloseAfterXloss'
         | 'closeAfterXloss'
+        | 'useCloseAfterXconsecutiveWin'
+        | 'closeAfterXconsecutiveWin'
+        | 'useCloseAfterXconsecutiveLoss'
+        | 'closeAfterXconsecutiveLoss'
         | 'useCloseAfterXprofit'
         | 'closeAfterXprofitCond'
         | 'closeAfterXprofitValue'
@@ -3340,47 +3463,54 @@ export const mapBotControllerFields = (
       fieldsSkipped.push('stopBotPriceCondition', 'stopBotPriceValue');
     }
 
-    // Map indicator groups for start/stop bot conditions
-    if (botActualStart === BotStartTypeEnum.indicators) {
-      const startBotIndicators = indicators.filter(
-        (i) => i.indicatorAction === IndicatorAction.startBot
+    // Map indicator groups for start/stop bot conditions.
+    //
+    // Both roles serialize over ONE accumulator. Each branch used to map over
+    // the original `indicators` array and ASSIGN the result, so with the bot
+    // controller set to indicators for both start AND stop, the stop branch
+    // threw away everything the start branch had serialized and shipped the
+    // startBot rows exactly as the form held them: `indicatorLength` as the
+    // string the user typed ("50") where the schema wants an Int, and
+    // `keepConditionBars` as the catalog's numeric 0 where it wants a String.
+    // GraphQL rejects the whole mutation, so the bot simply could not be saved.
+    // The merge in mapFormDataToBackend could not repair it either — it treats
+    // a byte-identical row as a passthrough, and no other mapper owns the
+    // controller's roles.
+    let controllerIndicators: IndicatorConfig[] | undefined;
+    const serializeControllerRole = (
+      role: IndicatorAction.startBot | IndicatorAction.stopBot
+    ) => {
+      const roleIndicators = indicators.filter(
+        (i) => i.indicatorAction === role
       );
-      if (startBotIndicators.length > 0) {
-        controllerFields['indicators'] = indicators.map((indicator) => {
-          return startBotIndicators.find((i) => i.uuid === indicator.uuid)
+      if (roleIndicators.length === 0) {
+        fieldsSkipped.push('indicators');
+        return;
+      }
+      controllerIndicators = (controllerIndicators ?? indicators).map(
+        (indicator) =>
+          roleIndicators.some((i) => i.uuid === indicator.uuid)
             ? serializeIndicatorConfig(indicator as IndicatorConfig, {
                 warnings,
                 overrides: {
-                  indicatorAction: IndicatorAction.startBot,
+                  indicatorAction: role,
                 },
               })
-            : indicator;
-        });
-        fieldsMapped.push('indicators');
-      } else {
-        fieldsSkipped.push('indicators');
-      }
+            : indicator
+      );
+      fieldsMapped.push('indicators');
+    };
+
+    if (botActualStart === BotStartTypeEnum.indicators) {
+      serializeControllerRole(IndicatorAction.startBot);
     }
 
     if (botStart === BotStartTypeEnum.indicators) {
-      const stopBotIndicators = indicators.filter(
-        (i) => i.indicatorAction === IndicatorAction.stopBot
-      );
-      if (stopBotIndicators.length > 0) {
-        controllerFields['indicators'] = indicators.map((indicator) => {
-          return stopBotIndicators.find((i) => i.uuid === indicator.uuid)
-            ? serializeIndicatorConfig(indicator as IndicatorConfig, {
-                warnings,
-                overrides: {
-                  indicatorAction: IndicatorAction.stopBot,
-                },
-              })
-            : indicator;
-        });
-        fieldsMapped.push('indicators');
-      } else {
-        fieldsSkipped.push('indicators');
-      }
+      serializeControllerRole(IndicatorAction.stopBot);
+    }
+
+    if (controllerIndicators) {
+      controllerFields['indicators'] = controllerIndicators;
     }
 
     // Always include closeAfterX fields (they're part of the schema)
@@ -3395,6 +3525,20 @@ export const mapBotControllerFields = (
     controllerFields['useCloseAfterXloss'] = useCloseAfterXloss;
     controllerFields['closeAfterXloss'] = _closeAfterXloss;
     fieldsMapped.push('useCloseAfterXloss', 'closeAfterXloss');
+
+    controllerFields['useCloseAfterXconsecutiveWin'] =
+      useCloseAfterXconsecutiveWin;
+    controllerFields['closeAfterXconsecutiveWin'] = _closeAfterXconsecutiveWin;
+    controllerFields['useCloseAfterXconsecutiveLoss'] =
+      useCloseAfterXconsecutiveLoss;
+    controllerFields['closeAfterXconsecutiveLoss'] =
+      _closeAfterXconsecutiveLoss;
+    fieldsMapped.push(
+      'useCloseAfterXconsecutiveWin',
+      'closeAfterXconsecutiveWin',
+      'useCloseAfterXconsecutiveLoss',
+      'closeAfterXconsecutiveLoss'
+    );
 
     controllerFields['useCloseAfterXprofit'] = useCloseAfterXprofit;
     controllerFields['closeAfterXprofitCond'] = closeAfterXprofitCond;
@@ -3937,6 +4081,7 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
   const useNoOverlapDeals = isComboBot
     ? formData.combo.useNoOverlapDeals
     : formData.dca.useNoOverlapDeals;
+  const splitSource = isComboBot ? formData.combo : formData.dca;
   try {
     fieldsProcessed.push(
       'useCooldown',
@@ -3983,6 +4128,12 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
         | 'dynamicPriceFilterDirection'
         | 'dynamicPriceFilterPriceType'
         | 'useNoOverlapDeals'
+        | 'useSeparateMaxDealsOverAndUnder'
+        | 'maxDealsOver'
+        | 'maxDealsUnder'
+        | 'useSeparateMaxDealsOverAndUnderPerSymbol'
+        | 'maxDealsOverPerSymbol'
+        | 'maxDealsUnderPerSymbol'
       >
     > = {};
     const validCooldownUnits = Object.values(CooldownUnits);
@@ -4229,6 +4380,37 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
         'dynamicPriceFilterPriceType',
         'dynamicPriceFilterDirection'
       );
+    }
+
+    // Separate max deals above/below the first deal's price. The engine only
+    // reads them with the dynamic price filter on "over and under", but they
+    // are sent regardless so a stored value is never dropped. The engine
+    // treats each as a plain cap (`+(v || '1') || 1`), so -1 is not
+    // "unlimited" here — only 1..200 is accepted.
+    for (const flag of [
+      'useSeparateMaxDealsOverAndUnder',
+      'useSeparateMaxDealsOverAndUnderPerSymbol',
+    ] as const) {
+      fieldsProcessed.push(flag);
+      filterFields[flag] = Boolean(splitSource[flag]);
+      fieldsMapped.push(flag);
+    }
+    for (const key of [
+      'maxDealsOver',
+      'maxDealsUnder',
+      'maxDealsOverPerSymbol',
+      'maxDealsUnderPerSymbol',
+    ] as const) {
+      fieldsProcessed.push(key);
+      const raw = `${splitSource[key] ?? ''}`.trim();
+      const parsed = Number(raw);
+      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 200) {
+        filterFields[key] = String(parsed);
+        fieldsMapped.push(key);
+      } else {
+        warnings.push(`${key} must be a whole number between 1 and 200`);
+        fieldsSkipped.push(key);
+      }
     }
 
     // No overlap deals

@@ -182,6 +182,18 @@ export const botQueries = {
     return { query, variables };
   },
 
+  getPooledMarginAvailable: (input: { uuid: string }) => {
+    const query = `query getPooledMarginAvailable($input: getLeverageInput!){
+                    getPooledMarginAvailable(input: $input) {
+                        status
+                        reason
+                        data
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
   getDCABot: (input: { id: string; shareId?: string }) => {
     const query = `query getDCABot($input: getBotInput!) {
                     getDCABot(input: $input) {
@@ -297,6 +309,37 @@ export const botQueries = {
                             finished { dcas deals configured }
                             active { dcas deals configured }
                             maxConfiguredDcas
+                        }
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  /**
+   * Per-pair breakdown of a multi-pair DCA / Combo / hedge bot, folded by
+   * main-app from the bot's deals. `from` / `to` (ms) window the CLOSED deals
+   * by close time; open deals are always included. Older backends do not have
+   * this field — callers fall back to the bot's stored `symbolStats`.
+   */
+  getBotPairStats: (input: {
+    id: string;
+    type: string;
+    shareId?: string;
+    from?: number;
+    to?: number;
+  }) => {
+    const query = `query getBotPairStats($input: getBotPairStatsInput!) {
+                    getBotPairStats(input: $input) {
+                        status
+                        reason
+                        data {
+                            symbol baseAsset quoteAsset
+                            closedDeals wins losses
+                            realizedProfitUsd grossProfitUsd grossLossUsd profitFactor
+                            feesQuote peakCapitalUsd
+                            avgDealDuration maxDealDuration maxDrawdownPerc
+                            openDeals unrealizedProfitUsd openCapitalUsd
                         }
                     }
                 }`;
@@ -432,6 +475,8 @@ export const botQueries = {
                         exchangeUUID
                         initialPrice
                         createTime
+                        avgPrice
+                        lastPrice
                 }
             }
         }
@@ -925,6 +970,25 @@ export const botQueries = {
     }`;
     return { query };
   },
+  /**
+   * Paged terminal-bot list (newer backends: optional `input.dataGridInput`
+   * and a `total`). Callers must pass the unpaged query above as the
+   * fallback: an older backend rejects the argument.
+   */
+  getTradingTerminalBotsListPaged: (input: {
+    dataGridInput: DataGridFilterInput;
+  }) => {
+    const unpaged = botQueries.getTradingTerminalBotsList().query;
+    const inner = unpaged.slice(
+      unpaged.indexOf('getTradingTerminalBotsList {') +
+        'getTradingTerminalBotsList {'.length
+    );
+    const query = `query getTradingTerminalBotsList($input: getTradingTerminalBotsListInput) {
+        getTradingTerminalBotsList(input: $input) {
+            total
+            ${inner.trim()}`;
+    return { query, variables: { input } };
+  },
 
   // Backtest queries
   getBacktests: (input?: DataGridFilterInput) => {
@@ -1187,7 +1251,11 @@ export const botQueries = {
   // Order Management Queries
 
   // Order Management Mutations
-  cancelTerminalDealOrder: (input: { dealId: string; orderId: string }) => {
+  cancelTerminalDealOrder: (input: {
+    dealId: string;
+    botId: string;
+    orderId: string;
+  }) => {
     const query = `mutation cancelTerminalDealOrder($input: cancelTerminalDealOrderInput!) { 
                     cancelTerminalDealOrder(input: $input) {
                         status
@@ -1206,6 +1274,18 @@ export const botQueries = {
   }) => {
     const query = `mutation cancelPendingAddFundsDealOrder($input: cancelTerminalDealOrderInput!) { 
                     cancelPendingAddFundsDealOrder(input: $input) {
+                        status
+                        reason
+                        data
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  buyDealBaseRemainder: (input: { dealId: string; botId: string }) => {
+    const query = `mutation buyDealBaseRemainder($input: buyDealBaseRemainderInput!) {
+                    buyDealBaseRemainder(input: $input) {
                         status
                         reason
                         data

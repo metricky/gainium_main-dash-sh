@@ -8,6 +8,7 @@ import {
   type BotLegendItem,
   MARKET_CAP_TYPES,
 } from '../types/enhancedBalance.types';
+import { oldestUpdated } from './balanceStaleness';
 
 // Math helper for consistent rounding
 class MathHelper {
@@ -275,8 +276,27 @@ export const calculateEnhancedBalances = (
   // Convert portfolio assets to enhanced balance data
   // If raw balances are available (getBalances), prefer them to avoid mocked splits
   let balancesTable: EnhancedBalanceData[] = [];
+  // Restrict to the caller's exchange selection FIRST. It has to happen before
+  // the aggregation below, which blanks `exchangeUUID` on any token held on
+  // more than one venue — a caller that filters the RESULT instead loses
+  // exactly those tokens (BTC/USDT/ETH for anyone holding them twice) while
+  // single-venue tokens survive, so the table looks selectively broken rather
+  // than empty. Filtering first also makes the sums mean "across the selected
+  // exchanges" instead of "across all of them, then hidden".
+  const selection = input.selectedExchanges;
+  const restrictToSelection =
+    Array.isArray(selection) && selection.length > 0 && !selection.includes('ALL');
+  const selectedBalances =
+    input.balances && restrictToSelection
+      ? input.balances.filter((b) =>
+          selection.includes(b.exchangeUUID || b.exchange || ''),
+        )
+      : input.balances;
+  // Branch on the UNFILTERED list: an exchange that legitimately holds nothing
+  // must render an empty table, not fall through to the portfolioAssets
+  // fallback (which is portfolio-wide and mocks its free/used split).
   if (input.balances && input.balances.length > 0) {
-    balancesTable = input.balances
+    balancesTable = (selectedBalances ?? [])
       .map((balance, index) => {
         const freeValue =
           parseFloat((balance.free as unknown as string) ?? '0') || 0;
@@ -349,6 +369,7 @@ export const calculateEnhancedBalances = (
           currentPrice: price,
           usdRate: '0',
           priceUnavailable,
+          updatedAt: balance.updated ?? null,
           categories: getCategories(balance.asset, coins),
           marketCapCategory: getMarketCapCategory(balance.asset, coins),
           legend: assetLegend,
@@ -494,6 +515,7 @@ export const calculateEnhancedBalances = (
 
           free: math.round(current.free + balance.free, 8),
           used: math.round(current.used + balance.used, 8),
+          updatedAt: oldestUpdated([current.updatedAt, balance.updatedAt]),
           total: math.round(current.total + balance.total, 8),
           required: math.round(current.required + balance.required, 8),
           planned: math.round(current.planned + balance.planned, 8),

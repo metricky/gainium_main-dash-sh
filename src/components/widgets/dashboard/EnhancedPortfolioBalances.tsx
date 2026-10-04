@@ -18,6 +18,7 @@ import { balanceAssetToPairBase } from '@/utils/pairs';
 import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
 import { type ColumnDef } from '@tanstack/react-table';
 import { Info, Plus } from 'lucide-react';
+import { StaleBalanceMarker } from './StaleBalanceMarker';
 import React, {
   useCallback,
   useContext,
@@ -194,6 +195,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       exchangeName?: string;
       price?: string | null;
       usdValue?: string | null;
+      updated?: string | null;
     }>
   >(
     'getBalances',
@@ -206,19 +208,27 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
   exchangeUUID
   exchangeName
   price
-  usdValue`
+  usdValue
+  updated`
     ),
     { fallbackQuery: GraphQlQuery.getBalances({ shouldSumBalance: false }) }
   );
 
-  // Sync local widget exchange selections with the page-level portfolio context
+  // Sync local widget exchange selections with the page-level portfolio
+  // context — `null` when no <PortfolioProvider> is mounted above us.
+  // The Dashboards page renders the widget grid bare (Overview and Portfolio
+  // are the only pages that mount a provider), so falling back to a literal
+  // `['ALL']` there made the sync effect below mistake "there is no page
+  // selection" for "the page selected everything" and overwrite whatever the
+  // user had just picked in the widget's own Select Exchanges dialog.
   const selectedExchangeContext = useMemo(
     () =>
-      portfolioContext?.selectedExchanges &&
-      portfolioContext.selectedExchanges.length
-        ? portfolioContext.selectedExchanges
-        : ['ALL'],
-    [portfolioContext?.selectedExchanges]
+      portfolioContext
+        ? portfolioContext.selectedExchanges?.length
+          ? portfolioContext.selectedExchanges
+          : ['ALL']
+        : null,
+    [portfolioContext]
   );
 
   // Filtering settings
@@ -230,6 +240,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
   // Keep the widget's persisted exchange selections in sync with the global context
   useEffect(() => {
     const contextSelections = selectedExchangeContext;
+    if (!contextSelections) return;
     const areEqual =
       contextSelections.length === selectedExchanges.length &&
       contextSelections.every((val, idx) => val === selectedExchanges[idx]);
@@ -352,6 +363,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
             // screener-derived `prices` list below.
             price?: string | null;
             usdValue?: string | null;
+            // Last backend write; drives the stale marker. Absent on older
+            // backends (< main-app core 1.57.1) — then no marker is shown.
+            updated?: string | null;
           }>)
         : undefined;
 
@@ -387,6 +401,12 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         prices,
         coins,
         balances,
+        // Restrict BEFORE aggregating. Summing blanks `exchangeUUID` (an
+        // aggregate row spans venues), so the exchange filter below can only
+        // see a uuid on tokens held at exactly one venue — leaving it as the
+        // sole filter silently dropped every multi-venue token whenever
+        // Aggregate was on with a venue selected.
+        selectedExchanges,
       },
       shouldSumBalance
     );
@@ -447,6 +467,18 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
 
   // Memoize columns to prevent infinite renders
   const columns = useMemo<ColumnDef<EnhancedBalanceData>[]>(() => {
+    // The USD-valued columns render in the SELECTED display currency, so their
+    // number filter compares against that converted figure (what the user
+    // reads), not the raw USD the accessor holds. An unpriced asset has no
+    // value to compare, so it matches no numeric operator.
+    const displayCurrencyFilterValue =
+      (pick: (balance: EnhancedBalanceData) => number) =>
+      (row: unknown): number | undefined => {
+        const balance = row as EnhancedBalanceData;
+        if (balance.priceUnavailable) return undefined;
+        return (pick(balance) || 0) * getCurrencyInfo(selectedCurrency).rate;
+      };
+
     const cols: ColumnDef<EnhancedBalanceData>[] = [
       {
         accessorKey: 'token',
@@ -472,8 +504,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 exchange={resolved.exchange ?? data.exchange}
               />
               <div>
-                <div className="text-sm font-medium text-foreground">
+                <div className="flex items-center gap-xs text-sm font-medium text-foreground">
                   {data.token}
+                  <StaleBalanceMarker balance={data} />
                 </div>
                 <div className="text-xs text-muted-foreground">{assetName}</div>
               </div>
@@ -481,7 +514,6 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
         meta: { filterType: 'string' },
       },
     ];
@@ -499,7 +531,15 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           ) : null;
         },
         enableSorting: true,
-        meta: { filterType: 'string' },
+        // The accessor is the account UUID; offer and match the account NAME
+        // the chip shows instead.
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => {
+            const balance = row as EnhancedBalanceData;
+            return balance.exchangeName || balance.exchange || '';
+          },
+        },
       });
     }
 
@@ -530,6 +570,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
         totalsValueFn: (row: EnhancedBalanceData) => row.freeUsd || 0,
+        getNumericFilterValue: displayCurrencyFilterValue(
+          (balance) => balance.freeUsd
+        ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
     });
@@ -561,6 +604,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
         totalsValueFn: (row: EnhancedBalanceData) => row.usedUsd || 0,
+        getNumericFilterValue: displayCurrencyFilterValue(
+          (balance) => balance.usedUsd
+        ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
     });
@@ -592,6 +638,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
         totalsValueFn: (row: EnhancedBalanceData) => row.totalUsd || 0,
+        getNumericFilterValue: displayCurrencyFilterValue(
+          (balance) => balance.totalUsd
+        ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
     });
@@ -681,6 +730,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
           totalsValueFn: (row: EnhancedBalanceData) => row.requiredUsd || 0,
+          getNumericFilterValue: displayCurrencyFilterValue(
+            (balance) => balance.requiredUsd
+          ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
       });
@@ -711,6 +763,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
           totalsValueFn: (row: EnhancedBalanceData) => row.plannedUsd || 0,
+          getNumericFilterValue: displayCurrencyFilterValue(
+            (balance) => balance.plannedUsd
+          ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
       });
@@ -746,6 +801,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
           totalsValueFn: (row: EnhancedBalanceData) => row.freeAndOverUsd || 0,
+          getNumericFilterValue: displayCurrencyFilterValue(
+            (balance) => balance.freeAndOverUsd
+          ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
       });
@@ -784,7 +842,12 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       },
       enableSorting: true,
       sortingFn: 'basic',
-      meta: { filterType: 'number' },
+      meta: {
+        filterType: 'number',
+        getNumericFilterValue: displayCurrencyFilterValue(
+          (balance) => balance.currentPrice
+        ),
+      },
     });
 
     // Categories column (MISSING FEATURE)
@@ -804,7 +867,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           );
         },
         enableSorting: false,
-        meta: { filterType: 'string' },
+        meta: { filterType: 'array' },
       });
     }
 
@@ -822,7 +885,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           );
         },
         enableSorting: true,
-        meta: { filterType: 'string' },
+        meta: { filterType: 'array' },
       });
     }
 
@@ -852,8 +915,11 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       filtered = filtered.filter((item) => selectedCoins.includes(item.token));
     }
 
-    // Apply exchange filter
-    if (!selectedExchanges.includes('ALL')) {
+    // Apply exchange filter. Aggregated rows are already restricted to the
+    // selection upstream (`calculateEnhancedBalances`) and carry no
+    // `exchangeUUID` by design, so re-filtering them here would throw the
+    // whole table away.
+    if (!selectedExchanges.includes('ALL') && !shouldSumBalance) {
       filtered = filtered.filter((item) => {
         const exchangeId = item.exchangeUUID || item.exchange || '';
         return exchangeId ? selectedExchanges.includes(exchangeId) : false;
@@ -861,7 +927,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
     }
 
     return filtered;
-  }, [data, selectedCoins, selectedExchanges]);
+  }, [data, selectedCoins, selectedExchanges, shouldSumBalance]);
 
   // Dynamic height calculation (CRITICAL MISSING FEATURE - FIXED)
   const calculateDynamicHeight = () => {

@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useMemo,
   type MutableRefObject,
@@ -12,7 +13,7 @@ import {
 } from '@/features/bots/widgets/BotForm';
 import {
   BotFormProvider,
-  useBotFormState,
+  useBotFormStoreApi,
   type BotFormMode,
   type BotFormTabId,
 } from '@/contexts/bots/form/BotFormProvider';
@@ -27,7 +28,7 @@ import {
   tryGetBotExperience,
 } from '@/features/bots/catalog/BotExperienceCatalog';
 import type { BotExperienceDescriptor } from '@/features/bots/catalog/types';
-import { BotTypesEnum } from '@/types';
+import { BotTypesEnum, type BotVars } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 
 export interface BotFormWidgetProps extends BotFormProps {
@@ -51,6 +52,11 @@ export interface BotFormWidgetProps extends BotFormProps {
    *  hedge bot so it skips standalone-DCA chrome (the Quick/Manual mode
    *  toggle) and keeps each leg's state independent. */
   isNestedLeg?: boolean;
+  /** Forwarded to BotFormProvider — the seed is a full settings load
+   *  (backtest "Load in settings"), so the form opens in Manual. */
+  openInManual?: boolean;
+  /** Forwarded to BotFormProvider — the seed's global-variable bindings. */
+  initialBotVars?: BotVars | null;
 }
 
 /**
@@ -61,10 +67,14 @@ export interface BotFormWidgetProps extends BotFormProps {
 const FormDataRefPublisher: React.FC<{
   targetRef: MutableRefObject<BotFormData | null>;
 }> = ({ targetRef }) => {
-  const { formData } = useBotFormState();
+  // Mirror the store into the ref without rendering on each keystroke.
+  const store = useBotFormStoreApi();
   useEffect(() => {
-    targetRef.current = formData;
-  }, [formData, targetRef]);
+    targetRef.current = store.getState().formData;
+    return store.subscribe((state) => {
+      targetRef.current = state.formData;
+    });
+  }, [store, targetRef]);
   return null;
 };
 
@@ -81,6 +91,8 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
   formDataRef,
   innerSlot,
   isNestedLeg,
+  openInManual,
+  initialBotVars,
   ...restProps
 }) => {
   const { id: paramBotId } = useParams<{ id: string }>();
@@ -155,8 +167,10 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
       formContent
     );
 
-  const moduleInitialState =
-    resolvedExperience.form?.getInitialState?.(providerMode);
+  const moduleInitialState = useMemo(
+    () => resolvedExperience.form?.getInitialState?.(providerMode),
+    [resolvedExperience, providerMode]
+  );
 
   // Caller-supplied seed wins over the catalog default (used by the hedge
   // edit page to inject each leg's mapped formData).
@@ -170,6 +184,8 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
         initialFormData={resolvedInitialFormData}
         botType={botType}
         isNestedLeg={isNestedLeg}
+        openInManual={openInManual}
+        initialBotVars={initialBotVars}
       >
         {formDataRef && <FormDataRefPublisher targetRef={formDataRef} />}
         {innerSlot}
@@ -187,4 +203,10 @@ const BotFormWidget: React.FC<BotFormWidgetProps> = ({
 
 BotFormWidget.displayName = 'BotFormWidget';
 
-export default BotFormWidget;
+// Memoized: the form sits inside hosts that re-render for their own reasons
+// (the backtest panel next to it, page layout state). With stable props the
+// whole form now skips those renders.
+const MemoBotFormWidget = memo(BotFormWidget);
+MemoBotFormWidget.displayName = 'BotFormWidget';
+
+export default MemoBotFormWidget;

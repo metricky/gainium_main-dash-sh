@@ -1,6 +1,7 @@
 import { findUSDRate } from '@/lib/utils/unrealizedPnL';
 import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
 import { math } from '@/utils/math';
+import { extractPairAssets } from '@/utils/pairs';
 import {
   BotMarginTypeEnum,
   BotTypesEnum,
@@ -186,6 +187,24 @@ export type TransformedGridBot = Bot & AdditionalBotData; /* {
 
 const statsMap: Map<string, Bot['stats']> = new Map();
 
+/**
+ * The entry a futures grid's open position is valued against: the close entry
+ * the bot's value-changed TP/SL uses while it was computed for this very
+ * position, `position.price` otherwise. Mirrors main-app's
+ * `gridPositionEntry`.
+ */
+export const gridPositionEntry = (
+  position: { side: string; qty: number; price: number },
+  closeEntry?: Bot['closeEntry']
+): number =>
+  closeEntry &&
+  closeEntry.side === position.side &&
+  closeEntry.qty === position.qty &&
+  closeEntry.price === position.price &&
+  closeEntry.entry > 0
+    ? closeEntry.entry
+    : position.price;
+
 export const calculateCurrentStats = (
   bot: Bot,
   price?: number
@@ -210,14 +229,15 @@ export const calculateCurrentStats = (
   let valueChange = 0;
   let newPercent = 0;
   if (futures) {
+    const entry = current ? gridPositionEntry(current, bot.closeEntry) : 0;
     const diff = current
       ? current.side === PositionSide.LONG
-        ? price - current.price
-        : current.price - price
+        ? price - entry
+        : entry - price
       : 0;
-
-    const perc = current && current.price !== 0 ? diff / current.price : 0;
-    const val = current ? current.qty * perc * price : 0;
+    // `qty * (price - entry)`: the value the bot's TP/SL measures and its
+    // close books.
+    const val = current ? current.qty * diff : 0;
     const leverage =
       bot.settings.marginType !== BotMarginTypeEnum.inherit
         ? (bot.settings.leverage ?? 1)
@@ -278,6 +298,16 @@ export function transformGridBotToBot(
 ): TransformedGridBot {
   let currentStats = gridBot.stats;
   let res = { ...gridBot } as Bot & AdditionalBotData;
+  // `symbol` is the backend's pair-metadata record; when it is missing the
+  // unguarded `symbol.baseAsset` reads below would throw and take down the
+  // whole grid list, so rebuild a display copy from the bot's own pair
+  // (same fallback as `transformDcaBotToBot`).
+  if (!res.symbol?.baseAsset && res.settings.pair) {
+    res.symbol = {
+      symbol: res.settings.pair,
+      ...extractPairAssets(res.settings.pair),
+    };
+  }
   const symbolProfit =
     res.settings.profitCurrency === 'base'
       ? res.symbol?.baseAsset
@@ -321,13 +351,13 @@ export function transformGridBotToBot(
       if (!current) {
         notUseValueChange = true;
       } else {
+        const entry = gridPositionEntry(current, res.closeEntry);
         const diff =
           current.side === PositionSide.LONG
-            ? +findPrice.price - current.price
-            : current.price - +findPrice.price;
-
-        const perc = current.price !== 0 ? diff / current.price : 0;
-        const val = current.qty * perc * +findPrice.price;
+            ? +findPrice.price - entry
+            : entry - +findPrice.price;
+        // Same measure as `calculateCurrentStats` above.
+        const val = current.qty * diff;
         valueCurrent = res.profit.totalUsd + initialBalance / leverage + val;
         valueChange = res.profit.totalUsd + val;
       }
@@ -356,9 +386,15 @@ export function transformGridBotToBot(
       valueCurrent = res.profit.totalUsd + initialBalance / leverage;
       valueChange = res.profit.totalUsd;
     } else {
+      // Profit is denominated in the profit currency: base-profit bots must
+      // be priced before it joins the quote-denominated value.
+      const profitBase = res.settings.profitCurrency === 'base';
+      const profitTotal = res.profit?.total || 0;
       valueCurrent =
-        res.currentBalances.base * res.lastPrice + res.currentBalances.quote;
-      valueCurrent += res.profit?.total || 0;
+        (res.currentBalances.base + (profitBase ? profitTotal : 0)) *
+          res.lastPrice +
+        res.currentBalances.quote +
+        (profitBase ? 0 : profitTotal);
       valueCurrent *= res.lastUsdRate;
     }
   } else {
@@ -506,6 +542,22 @@ export function transformGridBotToBot(
     workingTimeNumber: workingTime,
     workingTime: resWork,
     valueChangeUsd: math.friendly(valueChangeUsd),
+    valueChangeUsdNumber: math.round(valueChangeUsd, 2),
+    initialBalanceUsd: math.round(initialBalance, 2),
+    // Net minus realized. A grid books profit per completed pair and holds
+    // inventory between levels; what the inventory is worth beyond what it
+    // cost is the only part of `valueChange` that is not already booked.
+    //
+    // When the bot's pair has no price in the feed, `valueChangeUsd` above
+    // degrades to a fabricated 0 rather than a real net. Subtracting realized
+    // from that zero would report the bot's booked profit back as an open
+    // LOSS of the same size — seen live as "Net PnL $0.00 / Unrealized
+    // −$3.82" on a bot whose only movement was +$3.82 booked. Degrade to 0
+    // the same way Net PnL does instead of inventing a number.
+    unrealizedPnlUsd:
+      !useLiveStats && notUseValueChange
+        ? 0
+        : math.round(valueChangeUsd - (res.profit?.totalUsd || 0), 2),
     symbolProfit,
     profitTodayPerc: showToday
       ? `${math.round(

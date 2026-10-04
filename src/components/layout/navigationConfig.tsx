@@ -6,9 +6,11 @@ import {
   BookOpen,
   Building2,
   Bot,
+  FlaskConical,
   Braces,
   Home,
   LayoutDashboard,
+  Layers,
   ListChecks,
   PieChart,
   Plus,
@@ -77,6 +79,40 @@ const filterCloudOnlyItems = (
       items: section.items.filter((item) => !isCloudOnlyHref(item.href)),
     }))
     .filter((section) => section.items.length > 0);
+};
+
+type NavigationItemExtension = {
+  /** Built with the same `readOnly` flag as the core items. */
+  build: (readOnly: boolean) => NavigationItem;
+  /** Insert before the item with this id; appended to the first section if absent. */
+  before: string;
+};
+
+const navigationItemExtensions: NavigationItemExtension[] = [];
+
+/**
+ * Let an edition overlay add its own nav items (e.g. cloud-only pages) at
+ * boot, so core does not have to know about them.
+ */
+export const registerNavigationItem = (extension: NavigationItemExtension) => {
+  navigationItemExtensions.push(extension);
+};
+
+const applyNavigationItemExtensions = (
+  sections: NavigationSection[],
+  readOnly: boolean
+) => {
+  navigationItemExtensions.forEach(({ build, before }) => {
+    const item = build(readOnly);
+    for (const section of sections) {
+      const index = section.items.findIndex((i) => i.id === before);
+      if (index >= 0) {
+        section.items.splice(index, 0, item);
+        return;
+      }
+    }
+    sections[0]?.items.push(item);
+  });
 };
 
 export const getNavigationSections = (
@@ -169,12 +205,31 @@ export const getNavigationSections = (
           icon: <TerminalIcon className="w-4 h-4" />,
           label: 'Terminal',
           href: '/terminal',
+          children: [
+            {
+              id: 'terminal-positions',
+              icon: <Layers className="w-4 h-4" />,
+              label: 'Positions',
+              // Deep link into the terminal's own Exchange Orders panel rather
+              // than a second page rendering the same table (V1 had a separate
+              // /terminal/positions route; the panel is the same component).
+              href: '/terminal?view=positions',
+            },
+          ],
         },
         {
           id: 'trading-bots',
           icon: <DCAIcon className="w-4 h-4" />,
           label: 'Trading Bots',
           href: '/bot',
+          children: [
+            {
+              id: 'trading-bots-backtests',
+              icon: <FlaskConical className="w-4 h-4" />,
+              label: 'Backtests',
+              href: '/bot/backtests',
+            },
+          ],
           ...(!readOnly
             ? {
                 action: {
@@ -190,6 +245,14 @@ export const getNavigationSections = (
           icon: <GridIcon className="w-4 h-4" />,
           label: 'Grid Bots',
           href: '/grid',
+          children: [
+            {
+              id: 'grid-bots-backtests',
+              icon: <FlaskConical className="w-4 h-4" />,
+              label: 'Backtests',
+              href: '/grid/backtests',
+            },
+          ],
           ...(!readOnly
             ? {
                 action: {
@@ -205,6 +268,14 @@ export const getNavigationSections = (
           icon: <ComboIcon className="w-4 h-4" />,
           label: 'Combo Bots',
           href: '/combo',
+          children: [
+            {
+              id: 'combo-bots-backtests',
+              icon: <FlaskConical className="w-4 h-4" />,
+              label: 'Backtests',
+              href: '/combo/backtests',
+            },
+          ],
           ...(!readOnly
             ? {
                 action: {
@@ -220,6 +291,14 @@ export const getNavigationSections = (
           icon: <HedgeDCAIcon className="w-3 h-3" />,
           label: 'Hedge DCA Bots',
           href: '/hedge/bot',
+          children: [
+            {
+              id: 'hedge-dca-bots-backtests',
+              icon: <FlaskConical className="w-4 h-4" />,
+              label: 'Backtests',
+              href: '/hedge/bot/backtests',
+            },
+          ],
           ...(!readOnly
             ? {
                 action: {
@@ -235,6 +314,14 @@ export const getNavigationSections = (
           icon: <HedgeComboIcon className="w-3 h-3" />,
           label: 'Hedge Combo Bots',
           href: '/hedge/combo',
+          children: [
+            {
+              id: 'hedge-combo-bots-backtests',
+              icon: <FlaskConical className="w-4 h-4" />,
+              label: 'Backtests',
+              href: '/hedge/combo/backtests',
+            },
+          ],
           ...(!readOnly
             ? {
                 action: {
@@ -304,6 +391,7 @@ export const getNavigationSections = (
   ];
   // Help & Resources items have moved to a fixed compact strip
   // rendered at the bottom of the sidebar (see NavigationSidebar.tsx).
+  applyNavigationItemExtensions(sections, readOnly);
 
   return IS_CLOUD ? sections : filterCloudOnlyItems(sections);
 };

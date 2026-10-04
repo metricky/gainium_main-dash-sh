@@ -1,4 +1,6 @@
 import { dcaDealToOpenTrade } from '@/lib/utils/dcaDealToOpenTrade';
+import { durationTextToDays } from '@/lib/utils/durationText';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion, type Transition } from 'framer-motion';
 import {
@@ -30,6 +32,7 @@ import {
   type BotTypeId,
 } from '../components/bots/BotActionsMenuItems';
 import { BotCard } from '../components/bots/BotCard';
+import { BotUsageCell } from '../components/bots/BotUsageCell';
 import { Skeleton } from '@/components/ui/skeleton';
 
 import { BotDetailsDrawer } from '../components/bots/BotDetailsDrawer';
@@ -43,7 +46,6 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
-import { DualArcProgressGauge } from '../components/ui/DualArcProgressGauge';
 import { MotionButton } from '../components/ui/MotionWrapper';
 import Widget from '../components/ui/widget';
 import getLatestPrices, { getLocalPrices } from '../helper/price';
@@ -53,17 +55,18 @@ import {
   useDcaBots,
 } from '../hooks/useDcaBots';
 /* import { useDcaDeals } from '../hooks/useDcaDeals'; */
+import { sameFeeRows, toSortedFeeRows } from '@/lib/utils/feeRows';
 import { useUserFees } from '../hooks/useUserFeesService';
 import { useAuthStore } from '../stores/authStore';
 import { useUIStore } from '../stores/uiStore';
 
 import { isReadOnly } from '@/lib/demoMode';
+import { BOT_METRIC_DESCRIPTIONS } from '@/lib/botMetricDescriptions';
 import { isReady as isAnalyticsReady } from '@/lib/analytics';
 import { useStarredBotsStore } from '@/stores/starredBotsStore';
 import {
   BotTypesEnum,
   CloseDCATypeEnum,
-  DCADealStatusEnum,
   StrategyEnum,
   type BotStatus,
   type DCABot,
@@ -78,6 +81,7 @@ import {
   filterStoppableBots,
   isBotActive,
 } from '@/utils/botStatusUtils';
+import { useBulkBotConfirm } from '@/hooks/useBulkBotConfirm';
 import {
   Tabs,
   TabsContent,
@@ -85,7 +89,6 @@ import {
   TabsTrigger,
 } from '../components/ui/tabs';
 import OpenOrdersWidget from '../components/widgets/shared/OpenOrdersWidget';
-import { useDcaDeals } from '../hooks/useDcaDeals';
 /* import { toDrawerBot } from '../adapters/bots/drawer'; */
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import {
@@ -121,6 +124,15 @@ import { transformDcaBotToBot } from '../types/dcaBot';
 import { useShareContext } from '../hooks/useShareContext';
 import { useDrawerBot } from '../hooks/useDrawerBot';
 import { useStableBotTransforms } from '../hooks/useStableBotTransforms';
+import { useBotListPaging } from '../hooks/useBotListPaging';
+import { useDealTablePaging } from '../hooks/useDealTablePaging';
+import { CANONICAL_DCA_STATUSES } from '../lib/botList/botListWindow';
+import {
+  BOT_LIST_PARTIAL_TOOLTIP,
+  DCA_BOT_SERVER_FIELDS,
+} from '../lib/botList/botListServerFields';
+import { withServerFields } from '../components/ui/data-table/serverSide';
+import { PartialCount } from '../components/ui/large-account';
 import type { CalculatedBotStats } from '../services/metrics/BotMetricsCalculator';
 
 // Bot table actions component for mobile accessibility
@@ -184,12 +196,9 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
   bot,
   originalBotData,
 }) => {
-  const navigate = useNavigate();
-
   // Shared bot-action orchestration (clone opens the pre-filled create page;
-  // status/delete via the confirmation modals rendered by <BotActionsModals>).
-  // "Duplicate to live/paper" stays a per-row override since it stages a fresh
-  // create form from this row's data.
+  // status/delete via the confirmation modals rendered by <BotActionsModals>;
+  // "Duplicate to live/paper" stages this row's bot for the other mode).
   const botActions = useBotActions({
     botId: bot.id,
     botType: BotTypesEnum.dca,
@@ -200,30 +209,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
     lastActivity: originalBotData?.created || 'Unknown',
     botData: originalBotData ?? bot,
-    onCopyToLive: () => {
-      const base = originalBotData
-        ? {
-            name: `${originalBotData.settings?.name || bot.name} (Live)`,
-            type: bot.type,
-            exchange: originalBotData.exchange,
-            symbol: originalBotData.symbol?.[0]?.value?.symbol ?? bot.symbol,
-            settings: originalBotData.settings,
-          }
-        : {
-            name: `${bot.name} (Live)`,
-            type: bot.type,
-            exchange: bot.exchange,
-            symbol: bot.symbol,
-            settings: undefined,
-          };
-      try {
-        sessionStorage.setItem('botConfig', JSON.stringify(base));
-        navigate('/bot/new');
-      } catch (err) {
-        console.error('Failed to stage config for live trading:', err);
-        toast.error('Failed to stage configuration');
-      }
-    },
   });
 
   const botActionsMenuItems = useMemo(
@@ -500,6 +485,7 @@ const TradingBots: React.FC = () => {
 
   // Bulk status change modal state
   const [bulkStatusOpen, setBulkStatusOpen] = useState(false);
+  const [bulkStatusSelectedCount, setBulkStatusSelectedCount] = useState(0);
   const [bulkStatusTargets, setBulkStatusTargets] = useState<
     ReturnType<typeof transformDcaBotToBot>[]
   >([]);
@@ -548,13 +534,32 @@ const TradingBots: React.FC = () => {
   );
 
   const {
-    bots: dcaBots,
+    bots: canonicalDcaBots,
     isLoading: botsLoading,
     isError: botsError,
     error: botsErrorObj,
     refetch: refetchBots,
     data: _rawBotData,
+    total: canonicalTotal,
+    isPartial: canonicalPartial,
+    loadedCount: canonicalLoaded,
   } = useDcaBots(useDcaBotsOptions);
+
+  // A list the server capped pages on the server (sorted and searched there);
+  // one that fits in what is loaded stays client-side, with no requests.
+  const botListPaging = useBotListPaging({
+    type: 'dca',
+    tableId: 'trading-bots',
+    canonical: {
+      bots: canonicalDcaBots,
+      total: canonicalTotal,
+      isPartial: canonicalPartial,
+      loadedCount: canonicalLoaded,
+    },
+    statuses: showArchived ? ['archive'] : CANONICAL_DCA_STATUSES,
+    fields: DCA_BOT_SERVER_FIELDS,
+  });
+  const dcaBots = botListPaging.bots;
 
   /* const { deals: allDeals } = useDcaDeals({});
 
@@ -582,6 +587,7 @@ const TradingBots: React.FC = () => {
     (botId: string) => originalBotMap.get(botId),
     [originalBotMap]
   );
+
 
   /* const getBotDeals = useCallback(
     (botId: string) => dealsByBotId.get(botId) ?? [],
@@ -685,6 +691,7 @@ const TradingBots: React.FC = () => {
         );
         return;
       }
+      setBulkStatusSelectedCount(bots.length);
       setBulkStatusTargets(filteredBots);
       setBulkStatusAction(action);
       setBulkStatusOpen(true);
@@ -755,8 +762,10 @@ const TradingBots: React.FC = () => {
     if (botsError) {
       return emptyDcaBotStatsSummary;
     }
-    return computeDcaBotStatsSummary(dcaBots);
-  }, [botsError, dcaBots]);
+    // Summed over the canonical list (the loaded window), not the visible
+    // page; a capped window is flagged by the PartialCount next to the title.
+    return computeDcaBotStatsSummary(canonicalDcaBots);
+  }, [botsError, canonicalDcaBots]);
 
   const {
     closedTrades,
@@ -903,13 +912,11 @@ const TradingBots: React.FC = () => {
         logger.error('[TradingBots] Error fetching fees via service:', error);
       })
       .then((res) => {
-        setAllFees(
-          (res || []).map((r) => ({
-            exchange: r.exchangeUUID,
-            symbol: r.symbol,
-            fee: r.maker,
-          }))
-        );
+        // Keep the previous state when the fees did not change: storing a new
+        // array on every refetch re-rendered the page (and every card) each
+        // time the bot list's identity changed, which could loop.
+        const next = toSortedFeeRows(res || []);
+        setAllFees((prev) => (sameFeeRows(prev, next) ? prev : next));
       });
   }, [botSymbolsMap, tokens?.accessToken, fetchMultipleFees]);
 
@@ -1017,6 +1024,8 @@ const TradingBots: React.FC = () => {
   );
 
   const transformedBots = useMemo(() => {
+    // Server-paged rows arrive in the server's order; keep it.
+    if (botListPaging.serverPaged) return stableTransformedBots;
     // Sort bots by creation date (newest first) by default. Copy first so the
     // per-bot cache's element references stay intact for the card memos.
     return [...stableTransformedBots].sort((a, b) => {
@@ -1024,7 +1033,7 @@ const TradingBots: React.FC = () => {
       const bCreated = b.createdAt ?? new Date(b.created || 0).getTime();
       return bCreated - aCreated;
     });
-  }, [stableTransformedBots]);
+  }, [stableTransformedBots, botListPaging.serverPaged]);
 
   // Create a lookup map for original bot data to avoid repeated finds
   const botDataMap = useMemo(() => {
@@ -1033,6 +1042,9 @@ const TradingBots: React.FC = () => {
     return map;
   }, [dcaBots]);
 
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the daily-profit surfaces use — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   // Define columns for the data table
   const columns: ColumnDef<ReturnType<typeof transformDcaBotToBot>>[] = useMemo(
     () => [
@@ -1040,6 +1052,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'coinPair',
         header: 'COIN PAIR',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.coinPair,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -1100,7 +1113,10 @@ const TradingBots: React.FC = () => {
       {
         accessorKey: 'name',
         header: 'NAME',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'string',
+          description: BOT_METRIC_DESCRIPTIONS.dca.name,
+        },
         cell: ({ getValue, row }) => {
           const name = getValue() as string;
           const id = row.original.id as string;
@@ -1111,6 +1127,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'strategy',
         header: 'STRATEGY',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.strategy,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -1150,6 +1167,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'exchangeUUID',
         header: 'EXCHANGE',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.exchange,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -1191,6 +1209,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'currentValue',
         header: 'CURRENT COST',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.currentCost,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1210,6 +1229,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'maxValue',
         header: 'MAX COST',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.maxCost,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1227,8 +1247,9 @@ const TradingBots: React.FC = () => {
       },
       {
         accessorKey: 'totalProfitUsd',
-        header: 'TOTAL PROFIT, $',
+        header: 'REALIZED PNL, $',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.realizedPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1263,8 +1284,9 @@ const TradingBots: React.FC = () => {
       },
       {
         accessorKey: 'profitPerc',
-        header: 'TOTAL PROFIT, %',
+        header: 'REALIZED PNL, %',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.realizedPnlPerc,
           filterType: 'number',
         },
         cell: ({ row }) => {
@@ -1274,8 +1296,9 @@ const TradingBots: React.FC = () => {
       },
       {
         accessorKey: 'unPnl',
-        header: 'VALUE',
+        header: 'UNREALIZED PNL',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.unrealizedPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1317,8 +1340,9 @@ const TradingBots: React.FC = () => {
       },
       {
         accessorKey: 'unPnlPerc',
-        header: 'VALUE, %',
+        header: 'UNREALIZED PNL, %',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.unrealizedPnlPerc,
           filterType: 'number',
         },
         cell: ({ row }) => {
@@ -1333,6 +1357,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'avgDaily',
         header: 'AVG DAILY',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.avgDaily,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'average',
@@ -1369,6 +1394,7 @@ const TradingBots: React.FC = () => {
         accessorKey: 'avgDailyPerc',
         header: 'AVG DAILY, %',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.avgDailyPerc,
           filterType: 'number',
         },
         cell: ({ row }) => {
@@ -1380,6 +1406,7 @@ const TradingBots: React.FC = () => {
         id: 'netPnl',
         header: 'NET PNL',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.netPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1397,7 +1424,7 @@ const TradingBots: React.FC = () => {
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.original.currentValue ?? row.original.maxValue ?? 0;
+          const cost = row.original.currentValue || row.original.maxValue || 0;
           const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
           return (
             <ProfitAndPerc
@@ -1427,13 +1454,14 @@ const TradingBots: React.FC = () => {
         id: 'netPnlPercentage',
         header: 'NET PNL, %',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.netPnlPerc,
           filterType: 'number',
         },
         accessorFn: (row) => {
           const totalProfit = row.totalProfitUsd ?? 0;
           const unrealized = row.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.currentValue ?? row.maxValue ?? 0;
+          const cost = row.currentValue || row.maxValue || 0;
           return cost > 0 ? (netPnl / cost) * 100 : 0;
         },
         cell: ({ row }) => {
@@ -1443,7 +1471,7 @@ const TradingBots: React.FC = () => {
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.original.currentValue ?? row.original.maxValue ?? 0;
+          const cost = row.original.currentValue || row.original.maxValue || 0;
           const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
           return <ProfitLossPercChip value={percentage} size="sm" />;
         },
@@ -1451,7 +1479,10 @@ const TradingBots: React.FC = () => {
       {
         accessorKey: 'annualizedReturn',
         header: 'ANNUALIZED RETURN',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.dca.annualizedReturn,
+        },
         cell: ({ row }) => {
           const annualizedReturnPerc = row.original.annualizedReturn ?? 0;
           const annualizedReturnUsd = (row.original.avgDaily ?? 0) * 365;
@@ -1469,12 +1500,21 @@ const TradingBots: React.FC = () => {
       {
         accessorKey: 'workingTime',
         header: 'TRADING TIME',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'number',
+          filterUnit: 'days',
+          getNumericFilterValue: (row: unknown) =>
+            durationTextToDays((row as { workingTime?: string }).workingTime),
+          description: BOT_METRIC_DESCRIPTIONS.dca.tradingTime,
+        },
       },
       {
         accessorKey: 'created',
         header: 'CREATED',
-        meta: { filterType: 'date' },
+        meta: {
+          filterType: 'date',
+          description: BOT_METRIC_DESCRIPTIONS.dca.created,
+        },
         cell: ({ row }) => {
           const created = row.original.created;
           if (!created) return 'N/A';
@@ -1483,13 +1523,17 @@ const TradingBots: React.FC = () => {
             year: 'numeric',
             month: 'short',
             day: 'numeric',
+            timeZone: accountTimeZone,
           });
         },
       },
       {
         accessorKey: 'status',
         header: 'STATUS',
-        meta: { filterType: 'array' },
+        meta: {
+          filterType: 'array',
+          description: BOT_METRIC_DESCRIPTIONS.dca.status,
+        },
         cell: ({ getValue, row }) => {
           const status = getValue() as string;
           const reason = (row.original as { statusReason?: unknown })
@@ -1523,31 +1567,26 @@ const TradingBots: React.FC = () => {
         // `usage` object that `accessorKey: 'usage'` would otherwise resolve to.
         accessorFn: (row) => row.usageTotal || 0,
         header: 'USAGE',
-        meta: { filterType: 'number' },
-        cell: ({ row }) => {
-          const usage = row.original.usageTotal;
-          return (
-            <div className="flex items-center justify-center">
-              <DualArcProgressGauge
-                size={40}
-                outerPercentage={usage || 0}
-                innerPercentage={0}
-                outerProgressColor="#10b981"
-                showInnerGauge={false}
-                displayMode="outer"
-                centerText={`${(usage || 0).toFixed(0)}%`}
-                label=""
-                animate={false}
-              />
-            </div>
-          );
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.dca.usage,
         },
+        cell: ({ row }) => (
+          <BotUsageCell
+            botId={row.original.id}
+            usageTotal={row.original.usageTotal}
+            dealType="dca"
+          />
+        ),
       },
       {
         accessorKey: 'deals',
         accessorFn: (row) => (row as DCABot).dealsInBot.all || 0,
         header: 'DEALS',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.dca.deals,
+        },
         cell: ({ row }) => {
           const totalDeals = (row.original as DCABot).dealsInBot.all;
           const activeDeals = (row.original as DCABot).dealsInBot.active;
@@ -1562,7 +1601,10 @@ const TradingBots: React.FC = () => {
       {
         accessorKey: 'cost',
         header: 'CREDITS COST',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.dca.creditsCost,
+        },
         cell: ({ getValue }) => {
           const cost = getValue() as number;
           return `${(cost || 0).toFixed(2)}`;
@@ -1572,6 +1614,7 @@ const TradingBots: React.FC = () => {
         id: 'botId',
         accessorFn: (row) => row.id,
         header: 'BOT ID',
+        meta: { description: BOT_METRIC_DESCRIPTIONS.dca.botId },
         cell: ({ row }) => {
           const value = row.original.id;
           if (!value) return <span className="text-muted-foreground">—</span>;
@@ -1596,7 +1639,12 @@ const TradingBots: React.FC = () => {
         size: 56,
       },
     ],
-    [botDataMap, privacyMode]
+    [botDataMap, privacyMode, accountTimeZone]
+  );
+  // Server mode only honours sorts/filters with a server field.
+  const serverColumns = useMemo(
+    () => withServerFields(columns, DCA_BOT_SERVER_FIELDS),
+    [columns]
   );
 
   // Apply advanced filtering with archive support
@@ -1643,6 +1691,9 @@ const TradingBots: React.FC = () => {
   // Put starred bots first (subscribe to starred ids for reactivity)
   const starredBotIds = useStarredBotsStore((s) => s.starredBotIds);
   const orderedFilteredData = useMemo(() => {
+    // Server-paged: the server's order is the order (starred-first would
+    // reshuffle only the visible page and read as a wrong sort).
+    if (botListPaging.serverPaged) return filteredData;
     return [...filteredData].sort((a, b) => {
       const aStar = starredBotIds.has(a.id) ? 0 : 1;
       const bStar = starredBotIds.has(b.id) ? 0 : 1;
@@ -1652,7 +1703,7 @@ const TradingBots: React.FC = () => {
       const bCreated = b.createdAt ?? new Date(b.created || 0).getTime();
       return bCreated - aCreated;
     });
-  }, [filteredData, starredBotIds]);
+  }, [filteredData, starredBotIds, botListPaging.serverPaged]);
 
   useRenderTelemetry('TradingBotsPage', () => ({
     filteredCount: orderedFilteredData.length,
@@ -1777,17 +1828,22 @@ const TradingBots: React.FC = () => {
     [handleSelectBot]
   );
 
+  const { confirmRestart, confirmArchive, confirmDialog } =
+    useBulkBotConfirm();
+
   const handleBulkArchive = useCallback(
     (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      bots.forEach((b) =>
-        archiveMutation.mutate({
-          id: b.id,
-          archive: !showArchived,
-          type: BotTypesEnum.dca,
-        })
+      confirmArchive(bots, !showArchived, (targets) =>
+        targets.forEach((b) =>
+          archiveMutation.mutate({
+            id: b.id,
+            archive: !showArchived,
+            type: BotTypesEnum.dca,
+          })
+        )
       );
     },
-    [archiveMutation, showArchived]
+    [archiveMutation, confirmArchive, showArchived]
   );
 
   const handleBulkStart = useCallback(
@@ -1805,27 +1861,22 @@ const TradingBots: React.FC = () => {
   );
 
   const handleBulkRestart = useCallback(
-    async (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      const restartableBots = filterRestartableBots(bots);
-
-      if (restartableBots.length === 0) {
-        toast.info('No active bots selected');
-        return;
-      }
-
-      try {
-        for (const b of restartableBots) {
-          await restartMutation.mutateAsync({
-            id: b.id,
-            type: BotTypesEnum.dca,
-          });
+    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
+      confirmRestart(bots, async (restartableBots) => {
+        try {
+          for (const b of restartableBots) {
+            await restartMutation.mutateAsync({
+              id: b.id,
+              type: BotTypesEnum.dca,
+            });
+          }
+          toast.success(`Restarted ${restartableBots.length} bot(s)`);
+        } catch {
+          toast.error('Failed to restart selected bots');
         }
-        toast.success(`Restarted ${restartableBots.length} bot(s)`);
-      } catch {
-        toast.error('Failed to restart selected bots');
-      }
+      });
     },
-    [restartMutation]
+    [confirmRestart, restartMutation]
   );
 
   const handleBulkDelete = useCallback(
@@ -1987,13 +2038,24 @@ const TradingBots: React.FC = () => {
   // backend defaults to open-only and the Closed view is always empty.
   const [dealsStatus, setDealsStatus] = useState<'open' | 'closed'>('open');
 
-  const { deals: dcaDealsForTab } = useDcaDeals({
+  // Server-paged for large accounts, and as soon as the first window of
+  // deals comes back capped (never a silent subset).
+  // The bots' pairs, so the Symbol filter of a server-paged list also offers
+  // pairs whose deals are older than the loaded window.
+  const dealsTablePairs = useMemo(
+    () =>
+      canonicalDcaBots.flatMap((b) =>
+        b.settings?.pair ? [b.settings.pair].flat() : []
+      ),
+    [canonicalDcaBots]
+  );
+  const dealsTable = useDealTablePaging({
+    status: dealsStatus,
     terminal: false,
-    status:
-      dealsStatus === 'closed'
-        ? DCADealStatusEnum.closed
-        : DCADealStatusEnum.open,
+    tableId: `dca-bot-deals-trades-${dealsStatus}`,
+    pairs: dealsTablePairs,
   });
+  const dcaDealsForTab = dealsTable.deals;
 
   // Transform DCA deals to OpenTrade[] for the OpenOrdersWidget
   const dcaDealsAsOpenTrades = useMemo(() => {
@@ -2025,7 +2087,6 @@ const TradingBots: React.FC = () => {
       currency:
         getOriginalBot(bulkDeleteTargets[0]?.id ?? '')?.symbol?.[0]?.value
           ?.quoteAsset || 'USD',
-      lastActivity: 'Multiple',
     }),
     [bulkDeleteTargets, getOriginalBot]
   );
@@ -2147,6 +2208,17 @@ const TradingBots: React.FC = () => {
                       <div className="flex items-center gap-xs">
                         <h2 className="font-semibold text-xl">Trading Bots</h2>
                         <StaleIndicator componentId="trading-bots" />
+                        {botListPaging.partial && (
+                          <PartialCount
+                            shown={botListPaging.partial.shown}
+                            total={botListPaging.partial.total}
+                            noun="bots"
+                            tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                              botListPaging.partial.shown,
+                              botListPaging.partial.total
+                            )}
+                          />
+                        )}
                       </div>
 
                       <div className="flex items-center gap-xs">
@@ -2189,6 +2261,17 @@ const TradingBots: React.FC = () => {
                       <div className="flex items-center gap-xs">
                         <h2 className="font-semibold text-xl">Trading Bots</h2>
                         <StaleIndicator componentId="trading-bots" />
+                        {botListPaging.partial && (
+                          <PartialCount
+                            shown={botListPaging.partial.shown}
+                            total={botListPaging.partial.total}
+                            noun="bots"
+                            tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                              botListPaging.partial.shown,
+                              botListPaging.partial.total
+                            )}
+                          />
+                        )}
                       </div>
 
                       <div className="min-w-0 flex justify-end px-md">
@@ -2239,7 +2322,8 @@ const TradingBots: React.FC = () => {
                       <TradingBotsCardContext.Provider value={cardContextValue}>
                         <DataTable
                           tableId="trading-bots"
-                          columns={columns}
+                          columns={serverColumns}
+                          serverSide={botListPaging.serverSide}
                           data={orderedFilteredData}
                           enableGlobalFilter={true}
                           enableColumnFilters={true}
@@ -2325,10 +2409,13 @@ const TradingBots: React.FC = () => {
                           title={`Delete ${bulkDeleteTargets.length} bot${bulkDeleteTargets.length === 1 ? '' : 's'}`}
                           description={`Are you sure you want to delete ${bulkDeleteTargets.length} selected bot${bulkDeleteTargets.length === 1 ? '' : 's'}? This action cannot be undone.`}
                           itemName={`${bulkDeleteTargets.length} bots`}
+                          bulkCount={bulkDeleteTargets.length}
                           itemType="bot"
                           additionalInfo={bulkDeleteAdditionalInfo}
                           isLoading={bulkDeleteLoading}
                         />
+
+                        {confirmDialog}
 
                         {/* Bulk status change modal */}
                         <BotStatusConfirmationModal
@@ -2336,6 +2423,8 @@ const TradingBots: React.FC = () => {
                           onOpenChange={setBulkStatusOpen}
                           onConfirm={handleConfirmBulkStatusChange}
                           botName={`${bulkStatusTargets.length} bot${bulkStatusTargets.length === 1 ? '' : 's'}`}
+                          bulkCount={bulkStatusTargets.length}
+                          bulkSelectedCount={bulkStatusSelectedCount}
                           currentStatus={
                             bulkStatusAction === 'start' ? 'closed' : 'open'
                           }
@@ -2357,6 +2446,8 @@ const TradingBots: React.FC = () => {
                       widgetId="dca-bot-deals"
                       data={{ trades: dcaDealsAsOpenTrades }}
                       rawDeals={dcaDealsForTab}
+                      serverPaging={dealsTable.serverPaging}
+                      exportDealToTrade={dcaDealToOpenTrade}
                       enableStatusToggle={true}
                       onStatusFilterChange={setDealsStatus}
                       privacyMode={privacyMode}

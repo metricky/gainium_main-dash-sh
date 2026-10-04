@@ -1,0 +1,275 @@
+import type { ExchangeEnum } from '@/types/exchange.types';
+import type { RowPosition } from '@/features/trading-terminal/components/exchangeOrderColumns';
+import {
+  isCoinmExchange,
+  isFuturesExchange,
+  unifiedAccountName,
+  unifiedLegName,
+} from '@/utils/exchangeUtils';
+
+import { balanceBasisFor } from './balanceBasis';
+
+/**
+ * Pure numbers behind the Portfolio page's futures card: per-account wallet /
+ * unrealized PnL / equity, and net exposure per base asset.
+ *
+ * `null` means "can't state this honestly" and renders as "—": a partial sum
+ * looks confident and is wrong.
+ */
+
+export type FuturesAccountInput = {
+  id: string;
+  name: string;
+  provider: ExchangeEnum | string;
+  /** Stored balance in USD, as the Accounts panel shows it. */
+  balance?: number | null | undefined;
+  /**
+   * The account whose wallet this one reads (a unified account's other
+   * market legs): its balance is that same wallet, so it is totalled once.
+   */
+  linkedTo?: string | undefined;
+};
+
+/** The subset of a terminal `RowPosition` the summary reads. */
+export type FuturesPositionInput = Pick<
+  RowPosition,
+  | 'exchangeUUID'
+  | 'exchange'
+  | 'side'
+  | 'quantity'
+  | 'baseAssetName'
+  | 'quoteAssetName'
+  | 'markPrice'
+  | 'pnl'
+  | 'symbolFull'
+>;
+
+export type FuturesAccountRow = {
+  id: string;
+  name: string;
+  provider: ExchangeEnum | string;
+  /**
+   * Market legs folded into this row: set when several legs of one unified
+   * account share its wallet (e.g. ["Inverse", "Linear"]).
+   */
+  legs?: string[];
+  wallet: number | null;
+  upnl: number | null;
+  equity: number | null;
+};
+
+export type ExposureRow = {
+  asset: string;
+  /** long − short, signed (USD). */
+  net: number;
+  /** Σ long notional for the asset (USD). */
+  long: number;
+  /** Σ short notional for the asset, as a positive amount (USD). */
+  short: number;
+};
+
+export type FuturesSummary = {
+  rows: FuturesAccountRow[];
+  total: { wallet: number | null; upnl: number | null; equity: number | null };
+  exposure: {
+    top: ExposureRow[];
+    other: { count: number; net: number; rows: ExposureRow[] } | null;
+    /** Σ long notional (USD). */
+    grossLong: number;
+    /** Σ short notional (USD), as a positive amount. */
+    grossShort: number;
+    /** grossLong − grossShort. */
+    net: number;
+  };
+  openPositions: number;
+};
+
+export const EXPOSURE_TOP_N = 5;
+
+/** A My Accounts entry, as `useTransformedExchanges` returns it. */
+type ExchangeEntry = {
+  id: string;
+  type: 'exchange' | 'aggregate';
+  name: string;
+  provider: ExchangeEnum | string;
+  balance?: number | null | undefined;
+  linkedTo?: string | undefined;
+};
+
+/**
+ * The futures accounts covered by the Portfolio page's account selection
+ * (`PortfolioContext.selectedExchanges`). `['ALL']`, `[]` and no page context
+ * all mean every account, as for the other Portfolio widgets.
+ */
+export function selectFuturesAccounts(
+  exchanges: ExchangeEntry[],
+  selection: string[] | undefined
+): FuturesAccountInput[] {
+  const all = !selection || selection.length === 0 || selection.includes('ALL');
+  return exchanges
+    .filter(
+      (ex) =>
+        ex.type === 'exchange' &&
+        isFuturesExchange(ex.provider) &&
+        (all || selection.includes(ex.id))
+    )
+    .map((ex) => ({
+      id: ex.id,
+      name: ex.name,
+      provider: ex.provider,
+      balance: ex.balance,
+      linkedTo: ex.linkedTo,
+    }));
+}
+
+/** Quote assets counted 1:1 as USD. Anything else is treated as unpriced. */
+const USD_LIKE_QUOTES = new Set(['USD', 'USDT', 'USDC', 'USDH', 'FDUSD', 'BUSD']);
+
+const quoteOf = (p: FuturesPositionInput) =>
+  (p.quoteAssetName ?? p.symbolFull?.quoteAsset?.name ?? '').toUpperCase();
+
+/** Unrealized PnL in USD, or null when it can't be valued. */
+function positionUpnl(p: FuturesPositionInput): number | null {
+  if (!p.pnl || !USD_LIKE_QUOTES.has(quoteOf(p))) return null;
+  return p.pnl.pnlQuote;
+}
+
+/** Signed notional at mark in USD (long +, short −), or null when unpriced. */
+function positionNotional(p: FuturesPositionInput): number | null {
+  if (!USD_LIKE_QUOTES.has(quoteOf(p))) return null;
+  const qty = Math.abs(Number(p.quantity));
+  if (!Number.isFinite(qty) || qty === 0) return null;
+  const sign = String(p.side).toUpperCase() === 'SHORT' ? -1 : 1;
+  if (isCoinmExchange(p.exchange)) {
+    // Inverse sizes count contracts; the contract's USD value is the
+    // notional, the same reading `addSymbolToPositions` uses for P&L.
+    const contractSize = Number(p.symbolFull?.quoteAsset?.minAmount ?? 1);
+    return sign * qty * (contractSize > 0 ? contractSize : 1);
+  }
+  if (!p.markPrice || !(p.markPrice > 0)) return null;
+  return sign * qty * p.markPrice;
+}
+
+const sumOrNull = (values: Array<number | null>) =>
+  values.some((v) => v === null)
+    ? null
+    : values.reduce<number>((s, v) => s + (v as number), 0);
+
+export function summarizeFutures({
+  accounts,
+  positions,
+  positionsKnown = true,
+}: {
+  accounts: FuturesAccountInput[];
+  positions: FuturesPositionInput[];
+  /**
+   * False while positions are loading or failed to load: unrealized PnL is
+   * then unknown (not zero), so only the balance's own basis column shows.
+   */
+  positionsKnown?: boolean;
+}): FuturesSummary {
+  const legRows: FuturesAccountRow[] = accounts.map((a) => {
+    const own = positions.filter((p) => p.exchangeUUID === a.id);
+    const upnl = positionsKnown ? sumOrNull(own.map(positionUpnl)) : null;
+    const reported =
+      typeof a.balance === 'number' && Number.isFinite(a.balance)
+        ? a.balance
+        : null;
+    const basis = balanceBasisFor(a.provider);
+
+    let wallet: number | null = null;
+    let equity: number | null = null;
+    if (reported !== null && basis === 'wallet') {
+      wallet = reported;
+      equity = upnl === null ? null : reported + upnl;
+    } else if (reported !== null && basis === 'equity') {
+      equity = reported;
+      wallet = upnl === null ? null : reported - upnl;
+    }
+    return { id: a.id, name: a.name, provider: a.provider, wallet, upnl, equity };
+  });
+
+  // Legs of one unified account report the same wallet: fold them into one
+  // row that shows the wallet once. Positions stay per leg, so PnL sums.
+  const walletOf = new Map(accounts.map((a) => [a.id, a.linkedTo ?? a.id]));
+  const byWallet = new Map<string, FuturesAccountRow[]>();
+  for (const r of legRows) {
+    const key = walletOf.get(r.id) ?? r.id;
+    byWallet.set(key, [...(byWallet.get(key) ?? []), r]);
+  }
+  const rows: FuturesAccountRow[] = [...byWallet.entries()].map(([key, legs]) => {
+    if (legs.length === 1) return legs[0];
+    const wallet = legs.find((l) => l.wallet !== null)?.wallet ?? null;
+    const upnl = sumOrNull(legs.map((l) => l.upnl));
+    return {
+      id: key,
+      name: unifiedAccountName(legs[0].name),
+      provider: legs[0].provider,
+      legs: legs.map((l) => unifiedLegName(l)),
+      wallet,
+      upnl,
+      equity: wallet === null || upnl === null ? null : wallet + upnl,
+    };
+  });
+
+  const total = {
+    wallet: sumOrNull(rows.map((r) => r.wallet)),
+    upnl: sumOrNull(rows.map((r) => r.upnl)),
+    equity: sumOrNull(rows.map((r) => r.equity)),
+  };
+
+  const accountIds = new Set(accounts.map((a) => a.id));
+  const byAsset = new Map<string, { long: number; short: number }>();
+  let openPositions = 0;
+  let grossLong = 0;
+  let grossShort = 0;
+  for (const p of positionsKnown ? positions : []) {
+    if (!accountIds.has(p.exchangeUUID)) continue;
+    openPositions += 1;
+    const notional = positionNotional(p);
+    if (notional === null) continue;
+    const asset = (
+      p.baseAssetName ??
+      p.symbolFull?.baseAsset?.name ??
+      ''
+    ).toUpperCase();
+    if (!asset) continue;
+    // Same positions as the per-coin rows, so gross and rows always agree.
+    if (notional >= 0) grossLong += notional;
+    else grossShort -= notional;
+    const acc = byAsset.get(asset) ?? { long: 0, short: 0 };
+    if (notional >= 0) acc.long += notional;
+    else acc.short -= notional;
+    byAsset.set(asset, acc);
+  }
+
+  const sorted: ExposureRow[] = [...byAsset.entries()]
+    .map(([asset, { long, short }]) => ({
+      asset,
+      net: long - short,
+      long,
+      short,
+    }))
+    .sort((x, y) => Math.abs(y.net) - Math.abs(x.net));
+  const top = sorted.slice(0, EXPOSURE_TOP_N);
+  const rest = sorted.slice(EXPOSURE_TOP_N);
+
+  return {
+    rows,
+    total,
+    exposure: {
+      top,
+      other: rest.length
+        ? {
+            count: rest.length,
+            net: rest.reduce((s, r) => s + r.net, 0),
+            rows: rest,
+          }
+        : null,
+      grossLong,
+      grossShort,
+      net: grossLong - grossShort,
+    },
+    openPositions,
+  };
+}

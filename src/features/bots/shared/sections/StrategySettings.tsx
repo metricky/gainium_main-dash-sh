@@ -13,17 +13,21 @@ import MarginTypeSelector from '@/components/widgets/bots/MarginTypeSelector';
 import OrderSizeReferenceSelector from '@/components/widgets/bots/OrderSizeReferenceSelector';
 import StrategySelector from '@/components/widgets/bots/StrategySelector';
 import LeverageSlider from '@/components/widgets/shared/LeverageSlider';
+import LiquidationSummary from '@/components/widgets/bots/LiquidationSummary';
 import SettingsRow, {
   SettingsRowSurface,
 } from '@/components/widgets/shared/SettingsRow';
 import {
+  useBotFormErrorsOr,
   useBotFormSelector,
-  useBotFormState,
+  useTrackedBotFormData,
+  useTrackedBotFormState,
   type BotFormUpdateValue,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import useBotVarBinding from '@/hooks/bots/global-variables/useBotVarBinding';
+import useLadderLiquidation from '@/hooks/bots/dca/useLadderLiquidation';
 import {
   BotTypesEnum,
   ENTER_MARKET_TIMEOUT_GUARD,
@@ -39,6 +43,7 @@ import type { DcaBot } from '@/types/dcaBot';
 import type { GlobalVariable } from '@/types/globalVariables';
 import React, { useCallback, useMemo } from 'react';
 import { useStrategySettingsTab } from '../../bot-types/dca/form/hooks/useStrategySettignsTab';
+import { useHedgeBotFormOptional } from '@/contexts/bots/form/HedgeBotFormProvider';
 import { formatNumericInput } from '../../bot-types/dca/form/hooks/useTerminalControls';
 import { PERCENTAGE_GUARD } from '../utils/order-guard';
 
@@ -54,15 +59,23 @@ export interface StrategySettingsProps {
   onUpdateBalances?: () => unknown;
 }
 
-export const StrategySettings: React.FC<StrategySettingsProps> = ({
-  formData,
+/** Omitted form state is read from the store (the bot form shell omits it). */
+type StrategySettingsRootProps = Omit<
+  StrategySettingsProps,
+  'formData' | 'errors'
+> & { formData?: BotFormData; errors?: BotFormErrors };
+
+export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
+  formData: givenFormData,
   updateFormData,
-  errors,
+  errors: givenErrors,
   bot,
   onUpdateBalances,
   currentExchange,
 }) => {
-  const { alerts: mergedAlerts, mode } = useBotFormState();
+  const formData = useTrackedBotFormData(givenFormData);
+  const errors = useBotFormErrorsOr(givenErrors);
+  const { alerts: mergedAlerts, mode } = useTrackedBotFormState();
   const {
     baseOrderDisplayValue,
     handleBaseOrderSizeChange,
@@ -149,7 +162,29 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
   const reinvestValue = useBotFormSelector('reinvestValue');
   const notUseLimitReposition = useBotFormSelector('notUseLimitReposition');
   const skipBalanceCheck = useBotFormSelector('skipBalanceCheck');
+  const allowRaiseToExchangeMin = useBotFormSelector('allowRaiseToExchangeMin');
+  const reduceToAvailableBalance = useBotFormSelector(
+    'reduceToAvailableBalance'
+  );
+  const reduceToAvailableMinSize = useBotFormSelector(
+    'reduceToAvailableMinSize'
+  );
+  const useRiskReward = useBotFormSelector('useRiskReward');
+  // Hedge-DCA legs render this form too, but the engine never refuses on a
+  // hedge leg, so the switch would do nothing there.
+  const isHedgeContext = useHedgeBotFormOptional() !== undefined;
   const futures = useBotFormSelector('futures');
+  // Estimated liquidation price for the ladder this form describes. Null for
+  // spot bots and leverage <= 1, in which case nothing renders.
+  const { liquidation, isCross } = useLadderLiquidation({
+    futures,
+    // The committed form value, not `leverageInputValue` — typing into the
+    // number field only commits on blur, and reading the uncommitted draft here
+    // would make this readout disagree with the ladder graph/table/chart.
+    leverage: normalizedLeverage,
+    strategy: strategy as string | undefined,
+    marginType: marginType as string | undefined,
+  });
   const baseOrderSize = useBotFormSelector('baseOrderSize');
   const startOrderType = useBotFormSelector('startOrderType');
   const useReinvest = useBotFormSelector('useReinvest');
@@ -350,6 +385,12 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
                   Max available leverage: {maxLeverage}×
                 </p>
               </div>
+
+              <LiquidationSummary
+                liquidation={liquidation}
+                isCross={isCross}
+                quoteAsset={displayQuoteAsset}
+              />
             </div>
           </SettingsRow>
         )}
@@ -612,6 +653,7 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
           (isLimitOrder &&
             (!!notUseLimitReposition || isEnterMarketTimeoutEnabled)) ||
           !!skipBalanceCheck ||
+          (!isComboBot && !!reduceToAvailableBalance) ||
           !!isRiskReductionEnabled ||
           !!useReinvest
         }
@@ -740,6 +782,83 @@ export const StrategySettings: React.FC<StrategySettingsProps> = ({
             />
           )}
         </SettingsRow>
+
+        {!isComboBot && !isHedgeContext && (
+          <SettingsRow
+            name="Allow increasing orders to exchange minimum"
+            tooltip="If a Base or Safety Order is smaller than the exchange's minimum order size for a pair, the bot won't open a deal on that pair and will notify you, so your configured sizes are never exceeded. Turn this on to let the bot increase those orders to the exchange minimum instead. Increases of up to 10% (rounding) are always allowed."
+            trailing={
+              <Switch
+                id="allow-raise-to-exchange-min"
+                checked={!!allowRaiseToExchangeMin}
+                onCheckedChange={(checked) =>
+                  updateFormData('allowRaiseToExchangeMin', checked)
+                }
+              />
+            }
+          />
+        )}
+
+        {/* Regular DCA with a fixed order size only: a balance-percentage size
+            already follows the balance, risk/reward sizes by risk, and the
+            engine never reduces a hedge leg. */}
+        {!isComboBot &&
+          !isHedgeContext &&
+          !isBaseOrderPercentageMode &&
+          !useRiskReward && (
+            <SettingsRow
+              name="Use available"
+              tooltip="If your free balance is insufficient for the full deal (Base Order plus all Safety Orders), the bot opens it with the balance that is available instead of skipping it. The Base Order and every Safety Order are reduced by the same ratio, so the ladder keeps its shape. In a multi-pair bot the available balance is not split: the first pair that needs it uses it and the other pairs are skipped until that deal closes. Has no effect while Skip Balance Check is on."
+              trailing={
+                <Switch
+                  id="reduce-to-available-balance"
+                  checked={!!reduceToAvailableBalance}
+                  onCheckedChange={(checked) =>
+                    updateFormData('reduceToAvailableBalance', checked)
+                  }
+                />
+              }
+            >
+              {reduceToAvailableBalance && (
+                <div className="space-y-sm">
+                  <Label className="text-sm font-medium">
+                    Minimum base order
+                  </Label>
+                  <NumberInput
+                    value={reduceToAvailableMinSize ?? ''}
+                    onChange={(value) =>
+                      updateFormData(
+                        'reduceToAvailableMinSize',
+                        typeof value === 'number'
+                          ? value.toString()
+                          : (value ?? '')
+                      )
+                    }
+                    min={0}
+                    placeholder="No minimum"
+                    className="w-40"
+                    showControls={false}
+                    endAdornment={unitAdornment(
+                      baseOrderContext.currencyLabel,
+                      { tone: 'muted', size: 'xs' }
+                    )}
+                  />
+                  <SettingsAlert
+                    variant="info"
+                    title="Smaller reduced deals are skipped"
+                    description="The deal is skipped when the reduced Base Order would be smaller than this. Leave empty for no minimum beyond the exchange's."
+                  />
+                  {skipBalanceCheck && (
+                    <SettingsAlert
+                      variant="warning"
+                      title="No effect while Skip Balance Check is on"
+                      description="Skip Balance Check is on, so the bot never checks for a shortfall and this setting has no effect."
+                    />
+                  )}
+                </div>
+              )}
+            </SettingsRow>
+          )}
 
         <SettingsRow
           name="Risk Reduction"

@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button';
+import WebhooksDisabledWarning from '@/components/webhook/WebhooksDisabledWarning';
 import { FieldVariableBinding } from '@/components/ui/field-variable-binding';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -160,10 +161,83 @@ function normalizeSymbol(pair?: string | null): NormalizedSymbol | null {
   return null;
 }
 
+type SplitDealsCapField =
+  | 'maxDealsOver'
+  | 'maxDealsUnder'
+  | 'maxDealsOverPerSymbol'
+  | 'maxDealsUnderPerSymbol';
+
+/**
+ * One of the over/under deal caps that replace "Max open deals" (or "per
+ * pair") when the dynamic price filter runs on "over and under" and the user
+ * splits the limit. The engine reads each as a plain cap, so no -1 here.
+ */
+const SplitDealsCapInput: React.FC<{
+  field: SplitDealsCapField;
+  label: string;
+}> = ({ field, label }) => {
+  const { updateFormData } = useBotFormActions();
+  const errors = useBotFormErrors();
+  const value = useBotFormSelector(field);
+  const { isBound } = useBotVarBinding(field);
+  const applyVariable = (variable: GlobalVariable | null) => {
+    const next = `${variable?.value ?? ''}`.trim();
+    if (next) {
+      updateFormData(field, next);
+    }
+  };
+  const error = (errors as Record<string, string | undefined>)[field];
+  return (
+    <div className="space-y-xs">
+      <Label htmlFor={`split-${field}`}>{label}</Label>
+      <FieldVariableBinding
+        path={field}
+        varType="int"
+        tooltip={`Bind ${label.toLowerCase()}`}
+        variant="inline"
+        onVariableResolved={applyVariable}
+        onVariableSelected={applyVariable}
+      >
+        <NumberInput
+          id={`split-${field}`}
+          value={value || '1'}
+          onChange={(next) =>
+            updateFormData(
+              field,
+              typeof next === 'number' ? next.toString() : String(next ?? '')
+            )
+          }
+          min={1}
+          max={200}
+          step={1}
+          showControls={false}
+          endAdornment={unitAdornment('deals', { size: 'sm' })}
+          className="w-full"
+          disabled={isBound}
+        />
+      </FieldVariableBinding>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+};
+
 const toLocalDateTimeInputValue = (date: Date): string => {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
+
+// Daily timers: the bot engine reads only the UTC calendar date of
+// hodlNextBuy and runs at hodlAt in the user's profile timezone. So the
+// date is stored at UTC noon and shown/edited as a plain date — reading it
+// as a browser-local instant shifts it by a day east/west of UTC.
+const nextBuyToDateValue = (value: number): string =>
+  new Date(value).toISOString().slice(0, 10);
+
+const dateValueToNextBuy = (value: string): number =>
+  Date.parse(`${value}T12:00:00Z`);
+
+const todayInTimezone = (timeZone: string): string =>
+  new Date().toLocaleDateString('en-CA', { timeZone });
 
 export const DealStartSettings: React.FC = () => {
   const { currentExchange } = useBotFormQuery();
@@ -401,6 +475,42 @@ export const DealStartSettings: React.FC = () => {
 
   //   return false;
   // }, []);
+
+  // "Over and under" dynamic filter: the deal limit can be split into one
+  // cap above and one below the first deal's price (per pair on multi-pair).
+  const useSeparateMaxDeals = useBotFormSelector(
+    'useSeparateMaxDealsOverAndUnder'
+  );
+  const useSeparateMaxDealsPerSymbol = useBotFormSelector(
+    'useSeparateMaxDealsOverAndUnderPerSymbol'
+  );
+  const overAndUnderFilter =
+    !!useDynamicPriceFilter && dynamicPriceFilterDirection === 'overAndUnder';
+  const canSplitMaxDeals = overAndUnderFilter && !isMultiBot;
+  const canSplitMaxDealsPerSymbol = overAndUnderFilter && isMultiBot;
+  const showSplitMaxDeals = canSplitMaxDeals && !!useSeparateMaxDeals;
+  const showSplitMaxDealsPerSymbol =
+    canSplitMaxDealsPerSymbol && !!useSeparateMaxDealsPerSymbol;
+  const splitSwitch = (
+    field:
+      | 'useSeparateMaxDealsOverAndUnder'
+      | 'useSeparateMaxDealsOverAndUnderPerSymbol',
+    checked: boolean
+  ) => (
+    <div className="flex items-center gap-xs">
+      <Label
+        htmlFor={`split-${field}`}
+        className="text-xs text-muted-foreground"
+      >
+        Over / under
+      </Label>
+      <Switch
+        id={`split-${field}`}
+        checked={checked}
+        onCheckedChange={(next) => updateFormData(field, next)}
+      />
+    </div>
+  );
 
   const maxDealsPerPairValue = React.useMemo(() => {
     const value = maxDealsPerPair as unknown;
@@ -853,25 +963,15 @@ export const DealStartSettings: React.FC = () => {
       ? `${intro}.`
       : `${intro} at ${hodlAt} (${timezone} timezone).`;
 
-    let resolvedNext: Date | null = null;
-    if (hodlNextBuy) {
-      const parsed = new Date(hodlNextBuy);
-      if (!Number.isNaN(parsed.getTime())) {
-        if (isHourly) {
-          resolvedNext = parsed;
-        } else {
-          const combined = new Date(`${parsed.toDateString()} ${hodlAt}`);
-          if (!Number.isNaN(combined.getTime())) {
-            resolvedNext = combined;
-          }
-        }
-      }
+    let nextRun: string | null = null;
+    if (hodlNextBuy && !Number.isNaN(new Date(hodlNextBuy).getTime())) {
+      nextRun = isHourly
+        ? `${new Date(hodlNextBuy).toLocaleString()} (${timezone} timezone)`
+        : `${nextBuyToDateValue(hodlNextBuy)} ${hodlAt} (${timezone} timezone)`;
     }
 
-    const nextRunText = resolvedNext
-      ? `Next deal will start on ${resolvedNext.toLocaleString()}${
-          isHourly ? ` (${timezone} timezone)` : ''
-        }.`
+    const nextRunText = nextRun
+      ? `Next deal will start on ${nextRun}.`
       : 'Next deal timing will be determined after saving the bot.';
 
     return {
@@ -912,6 +1012,9 @@ export const DealStartSettings: React.FC = () => {
                 ))}
               </TabsList>
             </SettingsRow>
+            {startCondition === StartConditionEnum.tradingviewSignals && (
+              <WebhooksDisabledWarning className="mt-md" />
+            )}
             {/* Tab contents for each start condition. Put a Masonry inside each content so layout is scoped to the tab */}
             <TabsContent value={StartConditionEnum.timer}>
               <MasonryLayout
@@ -1003,25 +1106,46 @@ export const DealStartSettings: React.FC = () => {
 
                     <div className="space-y-xs">
                       <Label>Next deal</Label>
-                      <Input
-                        type="datetime-local"
-                        value={
-                          Number.isFinite(hodlNextBuy) && hodlNextBuy > 0
-                            ? toLocalDateTimeInputValue(new Date(hodlNextBuy))
-                            : ''
-                        }
-                        min={timerMinimumDateTime}
-                        onChange={(event) => {
-                          const raw = event.target.value;
-                          const parsed = raw ? new Date(raw).getTime() : NaN;
-                          updateFormData(
-                            'hodlNextBuy',
-                            Number.isFinite(parsed) ? parsed : NaN
-                          );
-                        }}
-                      />
+                      {hodlHourly ? (
+                        <Input
+                          type="datetime-local"
+                          value={
+                            Number.isFinite(hodlNextBuy) && hodlNextBuy > 0
+                              ? toLocalDateTimeInputValue(new Date(hodlNextBuy))
+                              : ''
+                          }
+                          min={timerMinimumDateTime}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            const parsed = raw ? new Date(raw).getTime() : NaN;
+                            updateFormData(
+                              'hodlNextBuy',
+                              Number.isFinite(parsed) ? parsed : NaN
+                            );
+                          }}
+                        />
+                      ) : (
+                        <Input
+                          type="date"
+                          value={
+                            Number.isFinite(hodlNextBuy) && hodlNextBuy > 0
+                              ? nextBuyToDateValue(hodlNextBuy)
+                              : ''
+                          }
+                          min={todayInTimezone(timezone)}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            updateFormData(
+                              'hodlNextBuy',
+                              raw ? dateValueToNextBuy(raw) : NaN
+                            );
+                          }}
+                        />
+                      )}
                       <p className="text-xs text-muted-foreground">
-                        Set the next execution window in your local timezone.
+                        {hodlHourly
+                          ? 'Set the next execution time in your local timezone.'
+                          : `Day of the next deal; it opens at ${hodlAt || 'the set time'} in your profile timezone (${timezone}).`}{' '}
                         Leave empty to let the system compute it automatically.
                       </p>
                       <div className="rounded-md bg-blue-500/10 p-sm">
@@ -1113,10 +1237,24 @@ export const DealStartSettings: React.FC = () => {
         {!isTerminal && (
           <SettingsRow
             name="Max open deals"
-            tooltip="This is the maximum number of concurrent deals the bot can open at any given time. Any signals for deal start received after the bot reaches this number will be ignored."
+            tooltip="This is the maximum number of concurrent deals the bot can open at any given time. Any signals for deal start received after the bot reaches this number will be ignored. With the dynamic price filter on Over and Under, turn on Over / under to set separate limits for deals opened above and below the first deal's price."
             navId="max-open-deals"
             alerts={alerts?.maxNumberOfOpenDeals ?? []}
+            trailing={
+              canSplitMaxDeals
+                ? splitSwitch(
+                    'useSeparateMaxDealsOverAndUnder',
+                    !!useSeparateMaxDeals
+                  )
+                : undefined
+            }
           >
+            {showSplitMaxDeals ? (
+              <div className="grid grid-cols-2 gap-sm">
+                <SplitDealsCapInput field="maxDealsOver" label="Over" />
+                <SplitDealsCapInput field="maxDealsUnder" label="Under" />
+              </div>
+            ) : (
             <div className="space-y-xs">
               <FieldVariableBinding
                 path="maxNumberOfOpenDeals"
@@ -1152,14 +1290,32 @@ export const DealStartSettings: React.FC = () => {
                 Max opened deals 200
               </p>
             </div>
+            )}
           </SettingsRow>
         )}
 
         {isMultiBot && (
           <SettingsRow
             name="Max open deals per pair"
-            tooltip="The total number of simultaneous open deals the bot is allowed to open per token pair. Once this number is reached on a specific pair the bot won't be allowed to open new ones."
+            tooltip="The total number of simultaneous open deals the bot is allowed to open per token pair. Once this number is reached on a specific pair the bot won't be allowed to open new ones. With the dynamic price filter on Over and Under, turn on Over / under to set separate per-pair limits above and below the first deal's price."
+            trailing={
+              canSplitMaxDealsPerSymbol
+                ? splitSwitch(
+                    'useSeparateMaxDealsOverAndUnderPerSymbol',
+                    !!useSeparateMaxDealsPerSymbol
+                  )
+                : undefined
+            }
           >
+            {showSplitMaxDealsPerSymbol ? (
+              <div className="grid grid-cols-2 gap-sm">
+                <SplitDealsCapInput field="maxDealsOverPerSymbol" label="Over" />
+                <SplitDealsCapInput
+                  field="maxDealsUnderPerSymbol"
+                  label="Under"
+                />
+              </div>
+            ) : (
             <div className="space-y-xs">
               <FieldVariableBinding
                 path="maxDealsPerPair"
@@ -1218,6 +1374,7 @@ export const DealStartSettings: React.FC = () => {
                 Max deals per pair 200
               </p>
             </div>
+            )}
           </SettingsRow>
         )}
 

@@ -28,9 +28,10 @@ import {
   User,
   Volume2,
   VolumeX,
+  Webhook,
   X,
 } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import WidgetContainer from '../components/layout/WidgetContainer';
@@ -77,10 +78,15 @@ import {
 import { useAPIKeysOperations } from '../hooks/useAPIKeys';
 import { useLicenseKeyOperations } from '../hooks/useLicenseKey';
 import { usePasswordOperations } from '../hooks/usePasswordChange';
+import { useRequestPasswordReset } from '../hooks/usePasswordReset';
+import { passwordMeetsAllRules } from '../components/auth/passwordRules';
 import {
   useUserSettingsOperations,
   useSetAllowedLoginMethods,
+  useSetWebhooksDisabled,
+  useLoadWebhookDependentBots,
   type AllowedLoginMethods,
+  type WebhookDependentBot,
 } from '../hooks/useUserSettings';
 import logger from '../lib/loggerInstance';
 import { toast } from '../lib/toast';
@@ -93,6 +99,11 @@ import {
   useNotificationsSettingsStore,
 } from '../stores/notificationsSettingsStore';
 import { playNotificationSound } from '../utils/soundUtils';
+import {
+  getTimezoneOptions,
+  getValidTimezone,
+  isValidTimezone,
+} from '../utils/timeUtils';
 import { useVisualSettingsStore } from '../stores/visualSettingsStore';
 import { useShortcutStore } from '../stores/shortcutStore';
 import { useUIStore } from '../stores/uiStore';
@@ -336,6 +347,54 @@ const Settings: React.FC = () => {
   const apiKeysOps = useAPIKeysOperations();
   const licenseKeyOps = useLicenseKeyOperations();
   const setAllowedLoginMethods = useSetAllowedLoginMethods();
+  const setWebhooksDisabled = useSetWebhooksDisabled();
+  const loadWebhookDependentBots = useLoadWebhookDependentBots();
+  const [checkingWebhookBots, setCheckingWebhookBots] = useState(false);
+  // Active bots that would lose their webhook triggers; non-null = the
+  // "disable anyway?" confirmation is open.
+  const [webhookDependentBots, setWebhookDependentBots] = useState<
+    WebhookDependentBot[] | null
+  >(null);
+
+  const applyWebhooksDisabled = (next: boolean) =>
+    setWebhooksDisabled.mutate(next, {
+      onSuccess: () => {
+        setWebhookDependentBots(null);
+        toast.success(
+          next ? 'Webhook actions disabled' : 'Webhook actions enabled'
+        );
+      },
+      onError: (err) =>
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to update webhook actions'
+        ),
+    });
+
+  // Turning webhooks off silently breaks every bot that starts or closes
+  // deals by signal, so name those bots and ask first.
+  const handleToggleWebhooksDisabled = async (next: boolean) => {
+    if (!next) {
+      applyWebhooksDisabled(false);
+      return;
+    }
+    setCheckingWebhookBots(true);
+    try {
+      const bots = await loadWebhookDependentBots();
+      if (bots.length) {
+        setWebhookDependentBots(bots);
+      } else {
+        applyWebhooksDisabled(true);
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : 'Could not check which bots use webhooks'
+      );
+    } finally {
+      setCheckingWebhookBots(false);
+    }
+  };
 
   // Regenerate-recovery-codes dialog state.
   // Pending API-key action driving the React rename/restrict/delete dialogs
@@ -449,6 +508,22 @@ const Settings: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [invoiceAddress, setInvoiceAddress] = useState('');
 
+  // The account TIME ZONE is the platform's canonical per-user day boundary,
+  // so a value the runtime cannot resolve does not fail loudly — every surface
+  // that reads it falls through `getValidTimezone` to the BROWSER's zone and
+  // the user is silently ignored. Offer a closed list so such a value cannot
+  // be entered, and say so when one is already stored.
+  const browserTimezone = getValidTimezone(null);
+  const timezoneOptions = useMemo(
+    () => getTimezoneOptions(user?.timezone),
+    [user?.timezone]
+  );
+  const storedTimezoneRejected =
+    !!user?.timezone && !isValidTimezone(user.timezone);
+  // A rejected value matches no option, so the picker reads as unset while
+  // `timezone` still holds the original string until a choice is made.
+  const selectedTimezone = isValidTimezone(timezone) ? timezone : '';
+
   // Initialize invoice address from local settings
   useEffect(() => {
     setInvoiceAddress(localSettings.invoiceAddress || '');
@@ -514,6 +589,31 @@ const Settings: React.FC = () => {
     confirmPassword,
     currentPassword
   );
+  // The current password is NOT required to submit: an account created with an
+  // email link or Google has never had a password to enter, and the server
+  // lets it choose its first one without. Whether one is needed is the
+  // server's call; its rejection says what to do next.
+  const newPasswordValid = passwordMeetsAllRules(newPassword, confirmPassword);
+
+  // Works for every account, including one whose owner does not know the
+  // current password: proving control of the inbox is enough to set a new one.
+  const requestPasswordLink = useRequestPasswordReset();
+  const handleEmailPasswordLink = () => {
+    if (!email) return;
+    requestPasswordLink.mutate(
+      { email },
+      {
+        onSuccess: () =>
+          toast.success(
+            `We sent a link to ${email}. Open it within 15 minutes to set your password.`
+          ),
+        onError: (error) =>
+          toast.error(
+            error instanceof Error ? error.message : 'Could not send the link'
+          ),
+      }
+    );
+  };
 
   // Form submission handler - sends a single mutation with all changed fields
   const handlePersonalDataSubmit = () => {
@@ -545,6 +645,14 @@ const Settings: React.FC = () => {
   };
 
   const handleTimezoneSubmit = () => {
+    // An account that already stores a rejected zone can reach this from a
+    // WEEK START-only edit — saving then re-persists the rejected value and it
+    // stays invisible. Make it the one thing that has to be fixed first. An
+    // empty zone is "never chosen" and keeps saving as before.
+    if (timezone && !isValidTimezone(timezone)) {
+      toast.error('Pick a time zone from the list before saving');
+      return;
+    }
     if (timezone !== user?.timezone || weekStart !== user?.weekStart) {
       updateTimezone({ timezone, weekStart });
       logger.info('Timezone settings updated successfully');
@@ -552,7 +660,7 @@ const Settings: React.FC = () => {
   };
 
   const handlePasswordSubmit = () => {
-    if (!Object.values(passwordValidation).every(Boolean)) return;
+    if (!newPasswordValid) return;
 
     passwordOps.changePassword(
       { password: newPassword, currentPassword },
@@ -771,14 +879,39 @@ const Settings: React.FC = () => {
                   >
                     TIME ZONE
                   </Label>
-                  <Input
-                    id="timezone"
-                    value={timezone}
-                    onChange={(e) => setTimezone(e.target.value)}
-                    className="mt-1"
+                  <Select
+                    value={selectedTimezone}
+                    onValueChange={(v) => setTimezone(v)}
                     disabled={isLoading}
-                    placeholder="e.g., Asia/Bangkok"
-                  />
+                  >
+                    <SelectTrigger id="timezone" className="mt-1 w-full">
+                      <SelectValue placeholder="Select a time zone" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {timezoneOptions.map((tz) => (
+                        <SelectItem key={tz} value={tz}>
+                          {tz}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {/* Only while nothing valid is picked — once it is, the
+                      field shows the replacement and repeating the warning
+                      reads as if the new choice were the rejected one. */}
+                  {storedTimezoneRejected && !selectedTimezone && (
+                    <p className="text-xs text-warning mt-1">
+                      &quot;{user?.timezone}&quot; is not a time zone we can
+                      use, so Gainium is using {browserTimezone} instead.{' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={() => setTimezone(browserTimezone)}
+                      >
+                        Use {browserTimezone}
+                      </button>
+                      , or pick one above.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -976,6 +1109,125 @@ const Settings: React.FC = () => {
             </Card>
           )}
 
+          {/* Webhook Actions Card — cloud-only (enforced at the cloud
+              backend's webhook entry point). */}
+          {IS_CLOUD && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-xs text-primary">
+                  <Webhook className="w-4 h-4" />
+                  Webhook Actions
+                  {(setWebhooksDisabled.isPending || checkingWebhookBots) && (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-md">
+                <div className="flex items-center justify-between gap-md">
+                  <div className="space-y-xs">
+                    <Label className="text-muted-foreground uppercase text-xs tracking-wider">
+                      Disable all webhook actions
+                    </Label>
+                    <p className="text-sm text-muted-foreground">
+                      Refuse every incoming webhook signal (TradingView alerts,
+                      scripts, automations) for all your bots. Bots keep
+                      running and actions you take in the app still work.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={user?.webhooksDisabled === true}
+                    disabled={
+                      isReadOnly ||
+                      setWebhooksDisabled.isPending ||
+                      checkingWebhookBots
+                    }
+                    onCheckedChange={(next) =>
+                      void handleToggleWebhooksDisabled(next)
+                    }
+                  />
+                </div>
+                {user?.webhooksDisabled === true && (
+                  <p className="text-sm text-warning">
+                    Webhook signals are currently refused for every bot on
+                    this account.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          <Dialog
+            open={webhookDependentBots !== null}
+            onOpenChange={(open) => {
+              if (!open) setWebhookDependentBots(null);
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Disable webhook actions?</DialogTitle>
+              </DialogHeader>
+              <DialogBody>
+                <div className="space-y-md">
+                  <p className="text-sm text-muted-foreground">
+                    {webhookDependentBots?.length === 1
+                      ? 'This active bot relies on webhook signals. It'
+                      : `These ${webhookDependentBots?.length ?? 0} active bots rely on webhook signals. They`}{' '}
+                    will keep running, but every signal sent to{' '}
+                    {webhookDependentBots?.length === 1 ? 'it' : 'them'} will
+                    be refused until you re-enable webhook actions.
+                  </p>
+                  <ul className="max-h-64 space-y-xs overflow-y-auto rounded-lg bg-muted p-sm">
+                    {webhookDependentBots?.map((bot) => (
+                      <li
+                        key={bot._id}
+                        className="flex items-start justify-between gap-md text-sm"
+                      >
+                        <span className="font-medium">
+                          {bot.name || 'Unnamed bot'}
+                          <span className="ml-xs text-xs text-muted-foreground">
+                            {bot.type === 'combo' ? 'Combo' : 'DCA'}
+                            {bot.parentBotId ? ' (hedge)' : ''}
+                            {bot.paperContext ? ' · Paper' : ' · Live'}
+                          </span>
+                        </span>
+                        <span className="text-right text-xs text-muted-foreground">
+                          {bot.uses
+                            .map(
+                              (use) =>
+                                ({
+                                  openDeal: 'Opens deals',
+                                  closeDeal: 'Take profit',
+                                  closeDealSl: 'Stop loss',
+                                })[use] ?? use
+                            )
+                            .join(' · ')}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </DialogBody>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setWebhookDependentBots(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  disabled={setWebhooksDisabled.isPending}
+                  onClick={() => applyWebhooksDisabled(true)}
+                >
+                  {setWebhooksDisabled.isPending && (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  )}
+                  Disable anyway
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           {/* Change Password Card */}
           <Card>
             <CardHeader>
@@ -1017,6 +1269,15 @@ const Settings: React.FC = () => {
                         )}
                       </button>
                     </div>
+                    {/* Cloud only: self-hosted accounts register with a
+                        password and have no email-reset endpoint. */}
+                    {IS_CLOUD && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Don&apos;t know it? If you signed up with an email link
+                        or Google, use &quot;Email me a link to set a
+                        password&quot; below.
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -1090,7 +1351,7 @@ const Settings: React.FC = () => {
                     <span
                       className={`text-sm ${passwordValidation.minLength ? 'text-green-500' : 'text-red-500'}`}
                     >
-                      Password has at least 6 characters
+                      Password has between 8 and 200 characters
                     </span>
                   </div>
                   <div className="flex items-center gap-xs">
@@ -1118,6 +1379,18 @@ const Settings: React.FC = () => {
                     </span>
                   </div>
                   <div className="flex items-center gap-xs">
+                    {passwordValidation.hasLowercase ? (
+                      <Check className="w-4 h-4 text-green-500" />
+                    ) : (
+                      <X className="w-4 h-4 text-red-500" />
+                    )}
+                    <span
+                      className={`text-sm ${passwordValidation.hasLowercase ? 'text-green-500' : 'text-red-500'}`}
+                    >
+                      Password has a lowercase letter
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-xs">
                     {passwordValidation.passwordsMatch ? (
                       <Check className="w-4 h-4 text-green-500" />
                     ) : (
@@ -1132,14 +1405,27 @@ const Settings: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex justify-end pt-4">
+              <div
+                className={`flex flex-wrap items-center gap-sm pt-4 ${IS_CLOUD ? 'justify-between' : 'justify-end'}`}
+              >
+                {IS_CLOUD && (
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="px-0 text-muted-foreground"
+                    onClick={handleEmailPasswordLink}
+                    disabled={requestPasswordLink.isPending || !email}
+                  >
+                    {requestPasswordLink.isPending && (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    )}
+                    Email me a link to set a password
+                  </Button>
+                )}
                 <Button
                   className="bg-primary"
                   onClick={handlePasswordSubmit}
-                  disabled={
-                    passwordOps.isChangingPassword ||
-                    !Object.values(passwordValidation).every(Boolean)
-                  }
+                  disabled={passwordOps.isChangingPassword || !newPasswordValid}
                 >
                   {passwordOps.isChangingPassword && (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -2038,6 +2324,7 @@ const Settings: React.FC = () => {
                 }}
               />
             </div>
+            <Slot name="settings.notificationChannels.panel" />
             <div>
               <Label className="text-muted-foreground uppercase text-xs tracking-wider">
                 Type
@@ -2063,7 +2350,15 @@ const Settings: React.FC = () => {
                   </thead>
                   <tbody>
                     {NOTIFICATION_TYPES_ORDER.map((type) => {
-                      const settings = notificationsSettings[type];
+                      // Never assume the store has a row for every type: a
+                      // persisted settings object written before a type was
+                      // added will not, and reading through undefined here
+                      // takes down the whole page.
+                      const settings = notificationsSettings[type] ?? {
+                        telegram: false,
+                        email: false,
+                        inApp: false,
+                      };
                       // Only these 4 notification types can have in-app enabled
                       const inAppEnabled = [
                         'buyOrderFilled',
@@ -2177,6 +2472,7 @@ const Settings: React.FC = () => {
                 </table>
               </div>
             </div>
+            <Slot name="settings.notificationChannels.actions" />
           </CardContent>
         </Card>
       </div>

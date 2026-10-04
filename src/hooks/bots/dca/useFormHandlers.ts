@@ -1,7 +1,9 @@
 import {
+  useBotFormBotVars,
+  useBotFormContext,
   useBotFormEditing,
   useBotFormSelector,
-  useBotFormState,
+  useBotFormStoreApi,
   type BotFormMode,
   type BotFormUpdateValue,
   type Fields,
@@ -26,8 +28,10 @@ import {
   type UpdateDCABotPayload,
 } from '@/mappers/bots/dca/map-form-data-to-payload';
 import { stripUndeclaredUpdateFields } from '@/mappers/bots/dca/update-payload-denylist';
+import { formatGridInitialPrice } from '@/mappers/bots/grid/map-grid-bot-settings-to-form-data';
 import {
   BotTypesEnum,
+  BuyTypeEnum,
   ExchangeIntervals,
   TerminalDealTypeEnum,
   type BotVars,
@@ -94,25 +98,39 @@ export interface BacktestOverrides {
 
 export interface UseFormHandlersReturn {
   updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
-  handleSave: (e?: React.FormEvent) => Promise<void>;
+  handleSave: (
+    e?: React.FormEvent,
+    gridRebalance?: GridRebalanceChoice
+  ) => Promise<void>;
   handleBacktest: (overrides?: BacktestOverrides) => Promise<void>;
   backtestPending: boolean;
 }
 
+/** How a grid edit covers the balance change its new settings need. */
+export type GridRebalanceChoice = {
+  buyType: BuyTypeEnum;
+  buyAmount?: number;
+};
+
+/**
+ * Save / backtest handlers for the bot form. They read the form state from the
+ * store at CALL time, so the component that owns them (the form shell) does
+ * not subscribe to — and re-render on — every keystroke.
+ */
 export const useFormHandlers = (
-  formData: BotFormData,
   setFormData: React.Dispatch<React.SetStateAction<BotFormData>>,
   setIsDirty: React.Dispatch<React.SetStateAction<boolean>>,
   setErrors: React.Dispatch<React.SetStateAction<BotFormErrors>>,
-  errors: BotFormErrors,
   bot: Bot | null,
   updateMutation: UpdateMutation,
   options: UseFormHandlersOptions = {},
   terminal: boolean
 ): UseFormHandlersReturn => {
   const mode: BotFormMode = options.mode ?? 'edit';
-  const { botVars, setAlerts } = useBotFormState();
-  const { currentExchange } = useBotFormQuery();
+  const botVars = useBotFormBotVars();
+  const { setAlerts } = useBotFormContext();
+  const store = useBotFormStoreApi();
+  const { currentExchange, hasStoredPair } = useBotFormQuery();
   // After a successful edit-mode save, flip the form back to view mode.
   // Without this the user sees the success toast but the toolbar stays
   // in edit mode with the (now-disabled, since `isDirty=false`) Save
@@ -166,11 +184,11 @@ export const useFormHandlers = (
       if (mode === 'edit') {
         setIsDirty(true);
       }
-      if (errors[field]) {
+      if (store.getState().errors[field]) {
         setErrors((prev) => ({ ...prev, [field]: '' }));
       }
     },
-    [errors, setFormData, setIsDirty, setErrors, mode]
+    [store, setFormData, setIsDirty, setErrors, mode]
   );
 
   const useMulti = useBotFormSelector('useMulti');
@@ -196,8 +214,13 @@ export const useFormHandlers = (
     return { value: error };
   }, []);
 
-  const handleSave = async (e?: React.FormEvent) => {
+  const handleSave = async (
+    e?: React.FormEvent,
+    gridRebalance?: GridRebalanceChoice
+  ) => {
     e?.preventDefault();
+    // The form as it is at the moment of the click.
+    const formData = store.getState().formData;
 
     logger.info('[BotForm] Save requested', {
       mode,
@@ -378,10 +401,16 @@ export const useFormHandlers = (
       // by tests/botSavePayloadSchema.unit.test.ts — add a form field the
       // schema has never heard of and that test tells you, instead of every
       // save of that bot type breaking in production.
+      //
+      // `hasStoredPair` is the one case that overrides the "single-pair bots
+      // don't send `pair`" rule: a bot the engine emptied has no stored pair
+      // to protect, `changeDCABot`/`changeComboBot` accept exactly one back
+      // for it, and stripping the user's choice here would silently revert the
+      // only edit that can make the bot tradeable again.
       if (formData.type === BotTypesEnum.dca) {
         const upb = stripUndeclaredUpdateFields(
           updatePayloadBase as Record<string, unknown>,
-          { botType: 'dca', stripPair: !useMulti }
+          { botType: 'dca', stripPair: !useMulti && hasStoredPair }
         ) as UpdateDCABotPayload;
         sentSettings = upb as Record<string, unknown>;
         await updateMutation.mutateAsync({
@@ -393,7 +422,12 @@ export const useFormHandlers = (
       if (formData.type === BotTypesEnum.combo) {
         const upb = stripUndeclaredUpdateFields(
           updatePayloadBase as Record<string, unknown>,
-          { botType: 'combo', stripPair: true }
+          // Combo strips `pair` on every save today, multi or not; only the
+          // emptied-bot repair above is exempted. Keyed on `hasStoredPair`
+          // alone rather than `!useMulti && hasStoredPair` so a multi-pair
+          // combo bot keeps sending nothing — starting to send its
+          // client-filtered pair list is a different change with its own risk.
+          { botType: 'combo', stripPair: hasStoredPair }
         ) as UpdateDCABotPayload;
         sentSettings = upb as Record<string, unknown>;
         await updateMutation.mutateAsync({
@@ -409,6 +443,27 @@ export const useFormHandlers = (
           // DCA and combo branches grid leaves it in place.
           { botType: 'grid', stripPair: false }
         ) as UpdateDCABotPayload;
+        // "Initial purchase price" lives on formData, outside the grid slice
+        // the payload is built from, so it has to be added here. Only when the
+        // user moved it: the form shows it rounded to 6 dp, and sending that
+        // back unchanged would overwrite a more precise stored price.
+        const editedInitialPrice = formatGridInitialPrice(
+          formData.initialPrice
+        );
+        if (
+          editedInitialPrice !== undefined &&
+          editedInitialPrice !== formatGridInitialPrice(
+            (bot as { initialPrice?: number }).initialPrice
+          )
+        ) {
+          (upb as Record<string, unknown>)['initialPrice'] =
+            Number(editedInitialPrice);
+        }
+        // The user's answer to the rebalance dialog (start dialog in update
+        // mode): how changeBot covers the balance the new settings need.
+        if (gridRebalance) {
+          Object.assign(upb as Record<string, unknown>, gridRebalance);
+        }
         sentSettings = upb as Record<string, unknown>;
         await updateMutation.mutateAsync({
           id: bot._id,
@@ -434,6 +489,7 @@ export const useFormHandlers = (
   };
 
   const handleBacktest = useCallback(async (overrides?: BacktestOverrides) => {
+    const formData = store.getState().formData;
     try {
       if (options.validate) {
         const validation = options.validate(formData) as unknown as {
@@ -549,7 +605,7 @@ export const useFormHandlers = (
       toast.error(`Backtest failed: ${message}`);
     }
   }, [
-    formData,
+    store,
     mode,
     botVars,
     currentExchange,

@@ -120,14 +120,19 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
   const { exchanges } = useTransformedExchangesFromContext();
 
   const portfolioContext = useContext(PortfolioContext);
-  // Use fallback when portfolio context is not available (e.g., in dashboard)
+  // `null` when no <PortfolioProvider> is mounted (e.g. on the Dashboards
+  // page). A `['ALL']` fallback there is indistinguishable from a real
+  // page-level "show everything" selection, and the sync effect below would
+  // write it straight back over the user's own pick — see the same fix in
+  // EnhancedPortfolioBalances.
   const selectedExchangeContext = useMemo(
     () =>
-      portfolioContext?.selectedExchanges &&
-      portfolioContext.selectedExchanges.length
-        ? portfolioContext.selectedExchanges
-        : ['ALL'],
-    [portfolioContext?.selectedExchanges]
+      portfolioContext
+        ? portfolioContext.selectedExchanges?.length
+          ? portfolioContext.selectedExchanges
+          : ['ALL']
+        : null,
+    [portfolioContext]
   );
 
   const parseMaybeNumber = useCallback((value: unknown): number => {
@@ -307,6 +312,7 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
   // Sync with portfolio-level exchange selection when page context changes
   useEffect(() => {
     const contextSelections = selectedExchangeContext;
+    if (!contextSelections) return;
     const areEqual =
       contextSelections.length === selectedExchanges.length &&
       contextSelections.every((val, idx) => val === selectedExchanges[idx]);
@@ -543,7 +549,6 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
           );
         },
         enableSorting: true,
-        filterFn: 'includesString',
         meta: { filterType: 'string' },
       },
       {
@@ -557,8 +562,20 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
           ) : null;
         },
         enableSorting: true,
-        filterFn: 'includesString',
-        meta: { filterType: 'string' },
+        // The accessor is the account UUID; offer and match the account NAME
+        // the chip resolves it to instead.
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) => {
+            const data = row as BalanceRow;
+            return (
+              exchanges.find((ex) => ex.id === data.exchangeUUID)?.name ||
+              data.exchangeName ||
+              data.exchange ||
+              ''
+            );
+          },
+        },
       },
       {
         id: 'locked',
@@ -636,6 +653,15 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
+          // The cell shows this USD value converted to the selected display
+          // currency, so filter on that figure; an unpriced holding has none.
+          getNumericFilterValue: (row: unknown): number | undefined => {
+            const { usdValue, priceUnavailable } = getRowTotals(
+              row as BalanceRow
+            );
+            if (priceUnavailable) return undefined;
+            return usdValue * getCurrencyInfo(selectedCurrency).rate;
+          },
         },
         footerValue: (value: number) => formatValueInCurrency(value),
       },
@@ -673,7 +699,14 @@ const PortfolioBalances: React.FC<PortfolioBalancesProps> = ({
         meta: { filterType: 'number' },
       },
     ],
-    [formatValueInCurrency, formatTokenAmount, getRowTotals]
+    [
+      formatValueInCurrency,
+      formatTokenAmount,
+      getRowTotals,
+      exchanges,
+      getCurrencyInfo,
+      selectedCurrency,
+    ]
   );
 
   // Calculate total portfolio value

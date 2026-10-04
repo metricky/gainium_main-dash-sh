@@ -1,4 +1,4 @@
-import type { BotTypesEnum } from '@/types';
+import type { BotSymbolsStats, BotTypesEnum } from '@/types';
 import { io, Socket } from 'socket.io-client';
 import { logger } from '../../lib/loggerInstance';
 import { recordSocketBreadcrumb } from '../../lib/crashBreadcrumbs';
@@ -23,9 +23,22 @@ export type WebSocketEventType =
   | 'chat msg out'
   | 'chat error'
   | 'chat message update'
+  | 'permission error'
+  | 'permission success'
   | 'credit-update'
   | 'connect'
-  | 'disconnect';
+  | 'disconnect'
+  | ExtensionWebSocketEventType;
+
+/**
+ * Socket events owned by an edition overlay rather than core (e.g. cloud-only
+ * features). The overlay declares their names by augmenting this interface
+ * and calls `registerPassthroughEvents` so the manager relays them to
+ * subscribers unchanged.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface ExtensionWebSocketEvents {}
+export type ExtensionWebSocketEventType = keyof ExtensionWebSocketEvents;
 
 export interface WebSocketSubscriber {
   id: string;
@@ -77,6 +90,12 @@ export interface BalanceUpdate {
 export interface BotStatsUpdate {
   botId: string;
   data: Record<string, unknown>;
+  /**
+   * Per-pair stats. main-app emits `bot stats update` as
+   * `{ botId, data: { stats, symbolStats } }` (dcaHelper), so the pairs ride
+   * along with every tick; the Statistics tab's Pairs table is their consumer.
+   */
+  symbolStats?: BotSymbolsStats[];
 }
 
 export interface MinigridUpdate {
@@ -102,6 +121,9 @@ export interface ChatMessage {
   toolArgs?: string;
   permissionId?: string;
   permissionMessage?: string;
+  /** Epoch ms after which the backend stops waiting for an answer to this
+   *  confirmation. */
+  permissionExpiresAt?: number;
   toolParameters?: Record<string, unknown>;
 }
 
@@ -150,6 +172,7 @@ export class BotWebSocketManager {
   private userToken?: string;
   private paperContext: boolean = false;
   private pendingAuthentication = false;
+  private passthroughEvents = new Set<ExtensionWebSocketEventType>();
 
   constructor() {
     logger.info('🔧 [BotWebSocketManager] Initializing...');
@@ -243,6 +266,7 @@ export class BotWebSocketManager {
     this.socket.off('chat error');
     this.socket.off('chat message update');
     this.socket.off('credit-update');
+    this.passthroughEvents.forEach((name) => this.socket?.off(name));
     this.socket.offAny();
 
     this.socket.on('bot sends settings', (data: BotSettingsUpdate) => {
@@ -368,6 +392,26 @@ export class BotWebSocketManager {
       }
     );
 
+    // The server's verdict on an answered confirmation card. Without these
+    // the client could not tell an accepted approval from one the backend
+    // discarded — a click that landed after the confirmation window closed
+    // left the card reading "approved" while nothing ran.
+    this.socket.on('permission error', (msg: { reason?: string }) => {
+      this.emitToSubscribers({
+        type: 'permission error',
+        data: (msg ?? {}) as Record<string, unknown>,
+        timestamp: Date.now(),
+      });
+    });
+
+    this.socket.on('permission success', (msg: { reason?: string }) => {
+      this.emitToSubscribers({
+        type: 'permission success',
+        data: (msg ?? {}) as Record<string, unknown>,
+        timestamp: Date.now(),
+      });
+    });
+
     this.socket.on(
       'credit-update',
       (data: { cost: number; balance: number }) => {
@@ -379,6 +423,26 @@ export class BotWebSocketManager {
         });
       }
     );
+
+    this.passthroughEvents.forEach((name) => this.attachPassthrough(name));
+  }
+
+  private attachPassthrough(name: ExtensionWebSocketEventType) {
+    this.socket?.on(name, (data: Record<string, unknown>) => {
+      this.emitToSubscribers({ type: name, data, timestamp: Date.now() });
+    });
+  }
+
+  /**
+   * Relay extension events (see `ExtensionWebSocketEvents`) to subscribers
+   * as-is. Safe to call before or after the socket connects.
+   */
+  registerPassthroughEvents(names: ExtensionWebSocketEventType[]) {
+    names.forEach((name) => {
+      if (this.passthroughEvents.has(name)) return;
+      this.passthroughEvents.add(name);
+      if (this.isConnected) this.attachPassthrough(name);
+    });
   }
 
   private emitToSubscribers(event: WebSocketEvent) {

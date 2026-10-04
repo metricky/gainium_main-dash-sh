@@ -1,5 +1,8 @@
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
-import { useBotFormState } from '@/features/bots';
+import {
+  useBotFormActions,
+  useBotFormPick,
+} from '@/features/bots';
 import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { type AssetClass, type TradingPair } from '@/hooks/useTradingPairs';
 import {
@@ -14,6 +17,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import CoinIcon from './CoinIcon';
 import CoinPair from './CoinPair';
 import { ListModal, type ListModalSortOption } from './ListModal';
+
+const NO_TOP_KEYS = [] as const;
+const STRATEGY_KEY = ['strategy'] as const;
 
 const PAIR_SORT_OPTIONS: ListModalSortOption[] = [
   { value: 'marketcap', label: 'By market cap' },
@@ -43,7 +49,8 @@ export interface CoinFilterProps {
   mode?: 'coins' | 'pairs';
   /** Provider identifier (e.g. BINANCE). When supplied we filter pairs to that exchange */
   /* exchangeProvider?: string; */
-  onPairsPaste?: (raw: string) => void;
+  /** Bulk-add several pasted pairs; returns a message to show in the dialog. */
+  onPairsPaste?: (raw: string) => string | undefined;
   helperTokens?: CoinFilterHelperToken[];
   shouldShowAddButton?: boolean;
   showAllOption?: boolean;
@@ -100,7 +107,9 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // only (provider-injected); favorites are local (Zustand + localStorage).
   const [sortMode, setSortMode] = useState('marketcap');
   const [favoritesFirst, setFavoritesFirst] = useState(false);
-  const { formData, updateFormData } = useBotFormState();
+  const { updateFormData } = useBotFormActions();
+  // Only the fields this picker reads (type + direction) — not every keystroke.
+  const formData = useBotFormPick(NO_TOP_KEYS, STRATEGY_KEY);
 
   // Surface the curated ROI that matches the bot form's risk-profile
   // cards: DCA & Combo read the DCA leaderboard, Grid reads grid; the
@@ -345,6 +354,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
           ...(item.baseDisplayName
             ? { baseDisplayName: item.baseDisplayName }
             : {}),
+          ...(item.baseLabel ? { baseLabel: item.baseLabel } : {}),
           ...(item.subtitle ? { subtitle: item.subtitle } : {}),
           ...(item.isHelper ? { isHelper: true } : {}),
           ...(item.disabledReason
@@ -528,7 +538,12 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
       const [splitBase = '?', splitQuote = '?'] = symbol.split('-');
       const baseAsset = item?.baseAsset ?? splitBase;
       const quoteAsset = item?.quoteAsset ?? splitQuote;
-      const label = item?.name ?? `${baseAsset}/${quoteAsset}`;
+      // A stock keeps the exchange's own spelling (`rSPY/USDT`), as its
+      // picker row does; `name` is the upper-cased form used for matching.
+      const label =
+        item?.baseLabel && item.quoteAsset
+          ? `${item.baseLabel}/${item.quoteAsset}`
+          : (item?.name ?? `${baseAsset}/${quoteAsset}`);
       const pairBody = (
         <>
           <CoinPair
@@ -740,7 +755,13 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
               onSortModeChange: setSortMode,
             }
           : {})}
-        {...(isPairsMode && onPairsPaste ? { onPaste: onPairsPaste } : {})}
+        {...(isPairsMode && onPairsPaste && replacingSymbol === null
+          ? // Bulk add is a multi-select feature. In replace mode the bot's
+            // existing pair is still selected and the cap is 1, so every
+            // pasted symbol is truncated away before it can be added — the
+            // handler could only ever answer "Maximum pairs to choose is 1".
+            { onPaste: onPairsPaste }
+          : {})}
       />
     </>
   );

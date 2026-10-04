@@ -65,7 +65,7 @@ import {
   reconcileLayout,
   type NavLayoutSection,
 } from './navigationLayout';
-import * as LucideIcons from 'lucide-react';
+import { DynamicLucideIcon } from '../ui/DynamicLucideIcon';
 
 interface NavigationSidebarProps {
   activePage: string;
@@ -126,7 +126,7 @@ const BOT_RECENT_CATEGORY_SET = new Set<PageCategory>([
 const getCategoryFromPath = (href: string): PageCategory | null => {
   const normalized = href.toLowerCase();
 
-  if (normalized.startsWith('/bot') || normalized.startsWith('/bot')) {
+  if (normalized.startsWith('/bot')) {
     return 'trading-bots';
   }
   if (normalized.startsWith('/grid')) {
@@ -748,16 +748,9 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
 
   const customItemById = new Map<string, NavigationItem>();
   for (const custom of customNavItems) {
-    const CustomIcon =
-      (
-        LucideIcons as unknown as Record<
-          string,
-          React.ComponentType<{ className?: string }>
-        >
-      )[custom.icon] || LucideIcons.Home;
     customItemById.set(custom.id, {
       id: custom.id,
-      icon: <CustomIcon className="w-4 h-4" />,
+      icon: <DynamicLucideIcon name={custom.icon} className="w-4 h-4" />,
       label: custom.name,
       href: custom.url,
       shortcut: custom.shortcut,
@@ -1038,7 +1031,16 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                         const categoryForItem = item.href
                           ? getCategoryFromPath(item.href)
                           : null;
+                        // A user-created custom link carries whatever URL the
+                        // user typed, so one pointing at e.g. `/bots` would
+                        // otherwise match the built-in Trading Bots category
+                        // and render that category's recent-visit pills under
+                        // itself. Recents belong to the built-in bot rows only.
+                        const isCustomItem = Boolean(
+                          item.id && isCustomNavItemId(item.id)
+                        );
                         const itemSupportsRecents = Boolean(
+                          !isCustomItem &&
                           categoryForItem &&
                           BOT_RECENT_CATEGORY_SET.has(categoryForItem)
                         );
@@ -1237,125 +1239,6 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                               )}
                             </div>
 
-                            {/* Recent visits for top-level bot items */}
-                            {itemSupportsRecents &&
-                              itemRecentVisits.length > 0 &&
-                              isExpanded && (
-                                <div
-                                  className={`overflow-hidden transition-all duration-300 ease-in-out ${
-                                    isActive ||
-                                    hoveredCategory === categoryForItem ||
-                                    itemIsCategoryExpanded
-                                      ? 'max-h-[2000px] opacity-100'
-                                      : 'max-h-0 opacity-0'
-                                  }`}
-                                >
-                                  <div
-                                    className={`mt-2 px-2 ml-8 transform transition-transform duration-300 ease-in-out ${
-                                      isActive ||
-                                      hoveredCategory === categoryForItem ||
-                                      itemIsCategoryExpanded
-                                        ? 'translate-y-0'
-                                        : '-translate-y-2'
-                                    }`}
-                                  >
-                                    <div className="flex flex-wrap gap-1">
-                                      {itemVisibleVisits.map((visit, idx) => {
-                                        const isActiveVisit =
-                                          activePage === visit.path;
-                                        const pathParts = visit.path.split('/');
-                                        const id =
-                                          pathParts[pathParts.length - 1];
-                                        const shortId =
-                                          id.length > 6
-                                            ? `...${id.slice(-6)}`
-                                            : id;
-                                        const statusConfig = visit.botStatus
-                                          ? getBotStatusConfig(visit.botStatus)
-                                          : null;
-                                        const pnlText =
-                                          typeof visit.botPnlPercentage ===
-                                          'number'
-                                            ? formatPnLPercentage(
-                                                visit.botPnlPercentage
-                                              )
-                                            : null;
-                                        const isProfitable =
-                                          (visit.botPnlPercentage ?? 0) >= 0;
-
-                                        return (
-                                          <Link
-                                            key={`${visit.path}-${idx}`}
-                                            to={visit.path}
-                                            onClick={() => onNavigate?.()}
-                                          >
-                                            <Badge
-                                              variant="outline"
-                                              className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
-                                                isActiveVisit
-                                                  ? 'bg-primary/10 text-primary border-primary/50'
-                                                  : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
-                                              }`}
-                                              style={{ opacity: 0.8 }}
-                                              title={visit.path}
-                                            >
-                                              {statusConfig && (
-                                                <span
-                                                  className="w-1.5 h-1.5 rounded-full"
-                                                  style={{
-                                                    backgroundColor:
-                                                      statusConfig.color ??
-                                                      'var(--muted-foreground)',
-                                                    opacity: 0.8,
-                                                  }}
-                                                  title={statusConfig.label}
-                                                />
-                                              )}
-                                              <span className="truncate max-w-[70px]">
-                                                {visit.displayName || shortId}
-                                              </span>
-                                              {pnlText && (
-                                                <span
-                                                  className={`font-semibold ${
-                                                    isProfitable
-                                                      ? 'text-profit'
-                                                      : 'text-loss'
-                                                  }`}
-                                                >
-                                                  {pnlText}
-                                                </span>
-                                              )}
-                                            </Badge>
-                                          </Link>
-                                        );
-                                      })}
-
-                                      {itemHasMore &&
-                                        !itemIsClickExpanded &&
-                                        itemIsCategoryExpanded && (
-                                          <button
-                                            onClick={(e) => {
-                                              e.preventDefault();
-                                              setClickExpandedCategories(
-                                                (prev) => {
-                                                  const newSet = new Set(prev);
-                                                  if (categoryForItem) {
-                                                    newSet.add(categoryForItem);
-                                                  }
-                                                  return newSet;
-                                                }
-                                              );
-                                            }}
-                                            className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
-                                          >
-                                            +{itemRecentVisits.length - 3} more
-                                          </button>
-                                        )}
-                                    </div>
-                                  </div>
-                                </div>
-                              )}
-
                             {/* Submenu Items */}
                             {hasSubmenu && (
                               <div
@@ -1378,7 +1261,11 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                                     const categoryForSubItem = subItem.href
                                       ? getCategoryFromPath(subItem.href)
                                       : null;
+                                    // A parent bot row already shows its
+                                    // category's recents; its sub-pages
+                                    // (e.g. Backtests) must not repeat them.
                                     const supportsRecentItems = Boolean(
+                                      !itemSupportsRecents &&
                                       categoryForSubItem &&
                                       BOT_RECENT_CATEGORY_SET.has(
                                         categoryForSubItem
@@ -1660,6 +1547,125 @@ const NavigationSidebar: React.FC<NavigationSidebarProps> = ({
                                 </div>
                               </div>
                             )}
+
+                            {/* Recent visits for top-level bot items */}
+                            {itemSupportsRecents &&
+                              itemRecentVisits.length > 0 &&
+                              isExpanded && (
+                                <div
+                                  className={`overflow-hidden transition-all duration-300 ease-in-out ${
+                                    isActive ||
+                                    hoveredCategory === categoryForItem ||
+                                    itemIsCategoryExpanded
+                                      ? 'max-h-[2000px] opacity-100'
+                                      : 'max-h-0 opacity-0'
+                                  }`}
+                                >
+                                  <div
+                                    className={`mt-2 px-2 ml-8 transform transition-transform duration-300 ease-in-out ${
+                                      isActive ||
+                                      hoveredCategory === categoryForItem ||
+                                      itemIsCategoryExpanded
+                                        ? 'translate-y-0'
+                                        : '-translate-y-2'
+                                    }`}
+                                  >
+                                    <div className="flex flex-wrap gap-1">
+                                      {itemVisibleVisits.map((visit, idx) => {
+                                        const isActiveVisit =
+                                          activePage === visit.path;
+                                        const pathParts = visit.path.split('/');
+                                        const id =
+                                          pathParts[pathParts.length - 1];
+                                        const shortId =
+                                          id.length > 6
+                                            ? `...${id.slice(-6)}`
+                                            : id;
+                                        const statusConfig = visit.botStatus
+                                          ? getBotStatusConfig(visit.botStatus)
+                                          : null;
+                                        const pnlText =
+                                          typeof visit.botPnlPercentage ===
+                                          'number'
+                                            ? formatPnLPercentage(
+                                                visit.botPnlPercentage
+                                              )
+                                            : null;
+                                        const isProfitable =
+                                          (visit.botPnlPercentage ?? 0) >= 0;
+
+                                        return (
+                                          <Link
+                                            key={`${visit.path}-${idx}`}
+                                            to={visit.path}
+                                            onClick={() => onNavigate?.()}
+                                          >
+                                            <Badge
+                                              variant="outline"
+                                              className={`text-xs px-1.5 py-0.5 h-5 cursor-pointer transition-colors border-dashed flex items-center gap-0.5 ${
+                                                isActiveVisit
+                                                  ? 'bg-primary/10 text-primary border-primary/50'
+                                                  : 'text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 border-muted-foreground/20'
+                                              }`}
+                                              style={{ opacity: 0.8 }}
+                                              title={visit.path}
+                                            >
+                                              {statusConfig && (
+                                                <span
+                                                  className="w-1.5 h-1.5 rounded-full"
+                                                  style={{
+                                                    backgroundColor:
+                                                      statusConfig.color ??
+                                                      'var(--muted-foreground)',
+                                                    opacity: 0.8,
+                                                  }}
+                                                  title={statusConfig.label}
+                                                />
+                                              )}
+                                              <span className="truncate max-w-[70px]">
+                                                {visit.displayName || shortId}
+                                              </span>
+                                              {pnlText && (
+                                                <span
+                                                  className={`font-semibold ${
+                                                    isProfitable
+                                                      ? 'text-profit'
+                                                      : 'text-loss'
+                                                  }`}
+                                                >
+                                                  {pnlText}
+                                                </span>
+                                              )}
+                                            </Badge>
+                                          </Link>
+                                        );
+                                      })}
+
+                                      {itemHasMore &&
+                                        !itemIsClickExpanded &&
+                                        itemIsCategoryExpanded && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              setClickExpandedCategories(
+                                                (prev) => {
+                                                  const newSet = new Set(prev);
+                                                  if (categoryForItem) {
+                                                    newSet.add(categoryForItem);
+                                                  }
+                                                  return newSet;
+                                                }
+                                              );
+                                            }}
+                                            className="text-xs py-0.5 px-1.5 text-muted-foreground/40 hover:text-primary/60 transition-colors cursor-pointer"
+                                          >
+                                            +{itemRecentVisits.length - 3} more
+                                          </button>
+                                        )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
                           </div>
                         );
                       })}

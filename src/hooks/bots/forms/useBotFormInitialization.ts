@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 import {
-  useBotFormState,
+  useBotFormContext,
+  useBotFormStoreApi,
   type BotFormMode,
 } from '@/contexts/bots/form/BotFormProvider';
 import {
@@ -96,18 +97,61 @@ const normalizeBotVarsPaths = (vars: BotVars | null): BotVars | null => {
   };
 };
 
+/**
+ * Fingerprint of everything the mapper reads: the settings payload, the bot's
+ * variable bindings and its exchange identity. Runtime-only fields of a live
+ * bot (stats, deals, status, profit) are not part of it.
+ */
+const hydrationVersionKey = (
+  sourceKey: string,
+  bot: unknown,
+  botSettings: unknown
+): string => {
+  const b = (bot ?? {}) as {
+    settings?: unknown;
+    vars?: unknown;
+    exchange?: unknown;
+    exchangeUUID?: unknown;
+    initialPrice?: unknown;
+  };
+  try {
+    return `${sourceKey}|${JSON.stringify([
+      botSettings ?? null,
+      botSettings ? null : (b.settings ?? null),
+      b.vars ?? null,
+      b.exchange ?? null,
+      b.exchangeUUID ?? null,
+      b.initialPrice ?? null,
+    ])}`;
+  } catch {
+    // Unserialisable payload: never treat it as already hydrated.
+    return `${sourceKey}|${Math.random()}`;
+  }
+};
+
 export const useBotFormInitialization = (
   options: UseBotFormInitializationOptions
 ): void => {
   const { mode, bot, botSettings, mapper, debug, botType } = options;
 
+  // Stable setters only — no store subscription, so this hook never
+  // re-renders the form shell. `isDirty` is read from the store when the
+  // effect runs (not a dependency: Save clears it before its refetch lands,
+  // and re-running on that flip would re-map the OLD settings).
   const { setFormData, setErrors, setIsDirty, setIsLoading, setBotVars } =
-    useBotFormState();
+    useBotFormContext();
+  const store = useBotFormStoreApi();
+  const lastHydratedSourceKeyRef = useRef<string>('');
+  // Source + saved-settings fingerprint of the last hydration. A new `bot`
+  // object whose saved settings did not change (live stats / deals / status
+  // updates of a running bot) must not re-run the mapper and rewrite the form.
+  const lastHydratedVersionRef = useRef<string>('');
 
   useEffect(() => {
     if (mode === 'create') {
+      // Bindings in create mode come only from the provider's
+      // `initialBotVars` (a clone's source bot); leave them in place.
       setIsLoading(false);
-      setBotVars(null);
       return;
     }
 
@@ -119,6 +163,33 @@ export const useBotFormInitialization = (
       botSettings ?? (bot as { settings?: unknown } | undefined)?.settings;
 
     if (!settingsSource) {
+      return;
+    }
+
+    // A running bot's `bot` is replaced by a new object with the same data every
+    // few seconds (persisted-store rehydrate, list refetch, `bot sends settings`
+    // merges). Re-hydrating on each one spread the saved settings over the form
+    // and cleared `isDirty`, so an unsaved edit snapped back mid-typing. Skip
+    // when the user has unsaved edits and this is the source already hydrated.
+    // The last segment still lets the full `botSettings` payload replace an
+    // earlier hydrate from the list's `bot.settings`.
+    const sourceBot = bot as
+      { _id?: unknown; exchangeUUID?: unknown } | undefined;
+    const sourceKey = `${mode}:${botType}:${String(
+      sourceBot?._id ?? sourceBot?.exchangeUUID ?? 'unknown'
+    )}:${botSettings ? 'settings' : 'bot'}`;
+
+    if (
+      store.getState().isDirty &&
+      lastHydratedSourceKeyRef.current === sourceKey
+    ) {
+      setIsLoading(false);
+      return;
+    }
+
+    const versionKey = hydrationVersionKey(sourceKey, bot, botSettings);
+    if (lastHydratedVersionRef.current === versionKey) {
+      setIsLoading(false);
       return;
     }
 
@@ -161,6 +232,13 @@ export const useBotFormInitialization = (
         ) {
           nextFormState.pairPrecisionMap = previous.pairPrecisionMap;
         }
+        // Same race for `userFee`: it comes from the account fee lookup, which
+        // also dedupes per pair, and the mapper seeds it as `null`. A re-map
+        // after the lookup resolved wiped the fee for good, and quick
+        // backtests then ran at 0%.
+        if (!mappingResult.formData.userFee) {
+          nextFormState.userFee = previous.userFee;
+        }
 
         nextFormState.originalBot =
           nextFormState.type === BotTypesEnum.dca
@@ -184,6 +262,8 @@ export const useBotFormInitialization = (
       });
 
       setBotVars(normalizedVars);
+      lastHydratedSourceKeyRef.current = sourceKey;
+      lastHydratedVersionRef.current = versionKey;
 
       setErrors({});
       setIsDirty(false);
@@ -218,5 +298,6 @@ export const useBotFormInitialization = (
     setIsLoading,
     setBotVars,
     botType,
+    store,
   ]);
 };

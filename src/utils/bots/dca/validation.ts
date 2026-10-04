@@ -80,6 +80,9 @@ const getNavIdForDcaField = (field: string): string => {
       return 'max-open-deals';
     case 'maxDealsPerPair':
       return 'max-deals-per-pair';
+    case 'maxDealsOver':
+    case 'maxDealsUnder':
+      return 'max-open-deals';
     case 'step':
       return 'dca-step';
     case 'stepScale':
@@ -256,6 +259,29 @@ export const validateDcaFormData = (
 
   if (!isNonEmptyString(formData.exchangeUUID)) {
     addError('exchangeUUID', 'Select an exchange account.');
+  }
+
+  // Over/under deal caps are only in effect, and only shown, with the dynamic
+  // price filter on "over and under" and the split switched on.
+  const splitSource = isComboBot ? formData.combo : formData.dca;
+  if (
+    splitSource.useDynamicPriceFilter &&
+    splitSource.dynamicPriceFilterDirection ===
+      DynamicPriceFilterDirectionEnum.overAndUnder
+  ) {
+    const splitFields = splitSource.useMulti
+      ? splitSource.useSeparateMaxDealsOverAndUnderPerSymbol
+        ? (['maxDealsOverPerSymbol', 'maxDealsUnderPerSymbol'] as const)
+        : []
+      : splitSource.useSeparateMaxDealsOverAndUnder
+        ? (['maxDealsOver', 'maxDealsUnder'] as const)
+        : [];
+    for (const field of splitFields) {
+      const value = Number(`${splitSource[field] ?? ''}`.trim());
+      if (!Number.isInteger(value) || value < 1 || value > 200) {
+        addError(field, 'Enter a whole number of deals between 1 and 200.');
+      }
+    }
   }
 
   const validPairs = Array.isArray(formData.pair)
@@ -443,6 +469,10 @@ export const hotValidateDcaFormData = ({
     | 'closeAfterXloss'
     | 'useCloseAfterXwin'
     | 'closeAfterXwin'
+    | 'useCloseAfterXconsecutiveWin'
+    | 'closeAfterXconsecutiveWin'
+    | 'useCloseAfterXconsecutiveLoss'
+    | 'closeAfterXconsecutiveLoss'
     | 'useCloseAfterXprofit'
     | 'closeAfterXprofitValue'
     | 'stopBotPriceValue'
@@ -526,6 +556,10 @@ export const hotValidateDcaFormData = ({
     closeAfterXloss,
     useCloseAfterXwin,
     closeAfterXwin,
+    useCloseAfterXconsecutiveWin,
+    closeAfterXconsecutiveWin,
+    useCloseAfterXconsecutiveLoss,
+    closeAfterXconsecutiveLoss,
     useCloseAfterXprofit,
     closeAfterXprofitValue,
     stopBotPriceValue,
@@ -1165,6 +1199,20 @@ export const hotValidateDcaFormData = ({
   }
   if (useCloseAfterXwin && !checkNumber(closeAfterXwin)) {
     errors['closeAfterXwin'] = `Close after X wins must be set`;
+  }
+  if (
+    useCloseAfterXconsecutiveWin &&
+    !checkNumber(closeAfterXconsecutiveWin)
+  ) {
+    errors['closeAfterXconsecutiveWin'] =
+      `Close after X consecutive wins must be set`;
+  }
+  if (
+    useCloseAfterXconsecutiveLoss &&
+    !checkNumber(closeAfterXconsecutiveLoss)
+  ) {
+    errors['closeAfterXconsecutiveLoss'] =
+      `Close after X consecutive losses must be set`;
   }
   if (useCloseAfterXprofit && !checkNumber(closeAfterXprofitValue)) {
     errors['closeAfterXprofitValue'] = `Close after X profit must be set`;

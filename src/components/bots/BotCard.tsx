@@ -1,6 +1,5 @@
 import { cardHoverVariants } from '@/lib/animations/variants';
 import { AXIS_INDEX_KEY, withAxisIndex } from '@/lib/charts/axisIndex';
-import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import {
   BotTypesEnum,
@@ -16,7 +15,6 @@ import { buildBotViewRoute } from '@/utils/bots/navigation';
 import { motion } from 'framer-motion';
 import { ExternalLink, MoreVertical } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   Area,
   AreaChart,
@@ -46,6 +44,7 @@ import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { DualArcProgressGauge } from '../ui/DualArcProgressGauge';
 import CoinPair from '../widgets/shared/CoinPair';
 import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
+import { useBotDcaOrderFill } from '@/hooks/useBotDcaOrderFill';
 import { BotActionsMenuItems } from './BotActionsMenuItems';
 /* import { useBotSpecificDeals } from '@/hooks/useBotSpecificDeals'; */
 
@@ -144,8 +143,15 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
   privacyMode = false,
 }) => {
   const colors = useChartColors();
-  const navigate = useNavigate();
   const resolvePairAsset = useResolvePairAsset();
+  // DCA ladder position for the Usage ring's label. Grid/hedge cards have no
+  // ladder, so the hook is fed an undefined id there and returns undefined.
+  const dcaOrderFill = useBotDcaOrderFill(
+    type === BotTypesEnum.dca || type === BotTypesEnum.combo
+      ? bot.id
+      : undefined,
+    type === BotTypesEnum.combo ? 'combo' : 'dca'
+  );
   // Header pair base/quote — resolve its asset class + venue so tokenized
   // stocks render their real logo (not a letter tile) on the card.
   const headerBaseAsset =
@@ -260,23 +266,6 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
           statusTogglePending: !!isTogglingStatus,
         }
       : {}),
-    // "Duplicate to live/paper" stages the config and opens a fresh create form.
-    onCopyToLive: () => {
-      const base = {
-        name: `${bot.settings?.name || bot.name} (Live)`,
-        type: bot.type,
-        exchange: bot.exchange,
-        symbol: bot.pair,
-        settings: bot.settings || {},
-      };
-      try {
-        sessionStorage.setItem('botConfig', JSON.stringify(base));
-        navigate('/bot/new');
-      } catch (err) {
-        logger.error('Failed to stage config for live trading:', err);
-        toast.error('Failed to stage configuration');
-      }
-    },
   });
 
   // Helper function to determine gauge color based on percentage
@@ -586,8 +575,21 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
             {bot.usage !== undefined && (
               <div className="mb-4">
                 <div className="flex items-start gap-3 mb-4">
-                  {/* Left side - Usage gauge section (smaller) */}
-                  <div className="shrink-0 w-20">
+                  {/* Left side - Usage gauge section (smaller).
+                      The label under the ring is the DCA ladder — filled /
+                      total orders across the bot's open deals, the same
+                      quantity the deal card and the deals table print under
+                      their Usage rings. It used to repeat `dealsInBot`, which
+                      restated the "Deals — Open / Total" stat lower down on
+                      this very card and said nothing about usage. */}
+                  <div
+                    className="shrink-0 w-20"
+                    title={
+                      dcaOrderFill
+                        ? `${dcaOrderFill.complete} of ${dcaOrderFill.all} DCA orders filled`
+                        : undefined
+                    }
+                  >
                     <div className="text-xs text-muted-foreground mb-2">
                       Usage
                     </div>
@@ -600,9 +602,8 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                       trailColor="var(--color-border)"
                       centerText={`${(bot.usageTotal || 0).toFixed(0)}%`}
                       label={
-                        bot.type === BotTypesEnum.dca ||
-                        bot.type === BotTypesEnum.combo
-                          ? `${(bot as DCABot)?.dealsInBot?.active || 0}/${(bot as DCABot)?.dealsInBot?.all || 0}`
+                        dcaOrderFill
+                          ? `${dcaOrderFill.complete}/${dcaOrderFill.all}`
                           : ''
                       }
                       animate={true}
@@ -610,7 +611,9 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                     />
                   </div>
 
-                  {/* Middle - Value section (same as table view) */}
+                  {/* Middle - same figure the table's second money column
+                      shows: grid bots put their absolute worth here, every
+                      other type puts the open PnL. */}
                   <div
                     className={cn(
                       'flex-1 min-w-0 transition-opacity',
@@ -623,7 +626,9 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                     }
                   >
                     <div className="text-xs text-muted-foreground mb-1">
-                      Value
+                      {type === BotTypesEnum.grid
+                        ? 'Current Value'
+                        : 'Unrealized PnL'}
                     </div>
                     <ProfitAndPerc
                       value={currentValue}
@@ -634,10 +639,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                     />
                   </div>
 
-                  {/* Right side - Total Profit */}
+                  {/* Right side - Realized PnL */}
                   <div className="flex-1 min-w-0">
                     <div className="text-xs text-muted-foreground mb-1">
-                      Total Profit
+                      Realized PnL
                     </div>
                     <ProfitAndPerc
                       value={bot.totalProfitUsd || 0}
@@ -778,7 +783,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   </div>
                   <div className="min-w-0">
                     <div className="text-muted-foreground mb-1 text-xs">
-                      Value Change
+                      Net PnL
                     </div>
                     <ProfitAndPerc
                       value={+(bot.valueChangeUsd || 0)}

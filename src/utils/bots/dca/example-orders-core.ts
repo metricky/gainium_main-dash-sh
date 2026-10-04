@@ -264,6 +264,13 @@ async function replaceVarsInMultiTpSettings(
   const pathPrefix = section === 'tp' ? 'multiTp' : 'multiSl';
   return _baseReplaceVarsInSettings(settings, botVars, pathPrefix);
 }
+/**
+ * The sections whose bindings are addressed as `<section>.<uuid>.<key>` and
+ * resolved by the four array walks above. Every other binding path is a bare
+ * top-level settings key.
+ */
+const VAR_PATH_SECTIONS = ['indicators', 'dcaCustom', 'multiTp', 'multiSl'];
+
 async function replaceVarsInSettings(
   settings: LocalDCASettings,
   botVars: BotVars | null | undefined
@@ -275,8 +282,50 @@ async function replaceVarsInSettings(
   s.dcaCustom = await replaceVarsInDCACustomSettings(s.dcaCustom, botVars);
   s.multiTp = await replaceVarsInMultiTpSettings(s.multiTp, botVars, 'tp');
   s.multiSl = await replaceVarsInMultiTpSettings(s.multiSl, botVars, 'sl');
+  // A binding path is either one of the four uuid-keyed sections above or a
+  // bare top-level settings key — `baseOrderSize`, `orderSize`, `tpPerc`,
+  // `step`, … The bot engine splits on exactly that shape and resolves the
+  // top-level ones directly, so a projection that walks only the sections is
+  // built from the literal the user superseded when they bound the field.
+  const record = s as unknown as Record<string, unknown>;
+  for (const { path } of botVars?.paths ?? []) {
+    if (VAR_PATH_SECTIONS.some((section) => path.includes(section))) {
+      continue;
+    }
+    // A bot can bind settings this ladder's slice does not carry (deal-start
+    // filters, open-deal caps, …). Leave those alone rather than inventing
+    // the key on the object.
+    if (typeof record[path] === 'undefined') {
+      continue;
+    }
+    record[path] = await replaceInputVars(botVars, path, record[path]);
+  }
   return s;
 }
+
+/**
+ * Settings with every global-variable binding resolved to the variable's
+ * current value.
+ *
+ * A bound setting keeps its old literal in the bot document, so anything that
+ * reads the raw settings is reading a value the engine will not use. Both order
+ * generators below run this before they read a single field; it is exported so
+ * a caller that needs the resolved settings for its own arithmetic — rather
+ * than only the ladder they produce — can resolve once and hand the result
+ * straight to the generator instead of resolving twice or, worse, projecting
+ * from the stale copy.
+ *
+ * `botVars` null/empty is the identity case: no request is made and the
+ * settings come back unchanged (deep-cloned).
+ */
+export async function resolveSettingsVars<T extends LocalDCASettings>(
+  settings: T,
+  botVars: BotVars | null | undefined
+): Promise<T> {
+  await globalVariablesStore.getVariablesByIds(botVars?.list ?? []);
+  return (await replaceVarsInSettings(settings, botVars)) as T;
+}
+
 function getAssetPrecision(symbol: Symbols, type: 'base' | 'quote') {
   if (!symbol) {
     return 8;
@@ -345,8 +394,7 @@ export async function createDCAOrders(
   }
   if (!Object.entries(errors).filter(([_k, v]) => !!v).length || noCheck) {
     let settings = JSON.parse(JSON.stringify(_settings)) as LocalDCASettings;
-    await globalVariablesStore.getVariablesByIds(botVars?.list ?? []);
-    settings = await replaceVarsInSettings(settings, botVars);
+    settings = await resolveSettingsVars(settings, botVars);
     const baseOrderSize = parseFloat(settings.baseOrderSize);
     const _orderSize = parseFloat(settings.orderSize);
     const tpPerc = parseFloat(settings.tpPerc) / 100;
@@ -781,6 +829,11 @@ export async function createDCAOrders(
         maxVolumeSize = Infinity;
       }
 
+      // Unrounded running level of the percentage ladder. Each level is
+      // `step × scale^(i-1)` of the start price beyond the one before; only
+      // the level itself is rounded to the tick, so the rounding does not carry
+      // into every level after it.
+      let percentageLevel = latestPrice;
       for (let i = 1; i <= ordersCount; i++) {
         if (scaleAr && !dcaArValues.length) {
           continue;
@@ -796,13 +849,11 @@ export async function createDCAOrders(
           useVolumeChange
             ? 1
             : volumeScale ** (i - 1);
-        let price = math.round(
-          (i === 1 ? latestPrice : (orders[orders.length - 1]?.price ?? 0)) -
-            (settings.strategy === StrategyEnum.long ? 1 : -1) *
-              gridStep *
-              stepVal,
-          symbol.priceAssetPrecision
-        );
+        percentageLevel -=
+          (settings.strategy === StrategyEnum.long ? 1 : -1) *
+          gridStep *
+          stepVal;
+        let price = math.round(percentageLevel, symbol.priceAssetPrecision);
         if (settings.dcaCondition === DCAConditionEnum.indicators) {
           const indicatorValue =
             +(
@@ -878,7 +929,18 @@ export async function createDCAOrders(
           }
         }
         if (i > 1) {
-          if (price === orders[orders.length - 1].price) {
+          const prevPrice = orders[orders.length - 1].price;
+          if (
+            price === prevPrice ||
+            // A percentage level rounded off the unrounded ladder can land
+            // behind the previous one when this guard pushed that one a tick
+            // further.
+            (settings.dcaCondition !== DCAConditionEnum.indicators &&
+              settings.dcaCondition !== DCAConditionEnum.custom &&
+              (settings.strategy === StrategyEnum.long
+                ? price > prevPrice
+                : price < prevPrice))
+          ) {
             price = math.round(
               orders[orders.length - 1].price +
                 (settings.strategy === StrategyEnum.long ? -1 : 1) *
@@ -1716,16 +1778,19 @@ export async function createComboOrders(
     }
     let orders: DCAGrid[] = [];
     if (settings.useDca && symbol) {
+      // Unrounded running level of the ladder. Each level is
+      // `step × scale^(i-1)` of the start price beyond the one before; only
+      // the level itself is rounded to the tick, so the rounding does not carry
+      // into every level after it.
+      let ladderLevel = latestPrice;
       for (let i = 1; i <= parseInt(settings.ordersCount); i++) {
         const stepVal = stepScale ** (i - 1);
         const volumeVal = volumeScale ** (i - 1);
-        let price = math.round(
-          (i === 1 ? latestPrice : orders[orders.length - 1].price) -
-            (settings.strategy === StrategyEnum.long ? 1 : -1) *
-              gridStep *
-              stepVal,
-          symbol.priceAssetPrecision
-        );
+        ladderLevel -=
+          (settings.strategy === StrategyEnum.long ? 1 : -1) *
+          gridStep *
+          stepVal;
+        let price = math.round(ladderLevel, symbol.priceAssetPrecision);
         if (i === 1) {
           if (price === baseOrder.price) {
             price = math.round(
@@ -1737,7 +1802,15 @@ export async function createComboOrders(
           }
         }
         if (i > 1) {
-          if (price === orders[orders.length - 1].price) {
+          const prevPrice = orders[orders.length - 1].price;
+          if (
+            price === prevPrice ||
+            // A level rounded off the unrounded ladder can land behind the
+            // previous one when this guard pushed that one a tick further.
+            (settings.strategy === StrategyEnum.long
+              ? price > prevPrice
+              : price < prevPrice)
+          ) {
             price = math.round(
               orders[orders.length - 1].price +
                 (settings.strategy === StrategyEnum.long ? -1 : 1) *
@@ -2238,6 +2311,9 @@ function createGridOrders(
     sellDisplacement,
     gridType,
   });
+  if (!prices.length) {
+    return [];
+  }
   const gs = (top / low) ** (1 / parseFloat(levels)) - 1;
   const { sellCount, buyCount, buys, sells } = getSellBuyCount(prices, {
     useStartPrice,
@@ -2586,8 +2662,13 @@ function getPrices({
 }) {
   const low = parseFloat(lowPrice);
   const top = parseFloat(topPrice);
-  const newGS = (top / low) ** (1 / parseFloat(levels)) - 1;
   const prices: { buy: number; sell: number }[] = [];
+  // A level count of 0 makes the geometric factor Infinity, and
+  // `Infinity <= Infinity` never ends the ladder loop below.
+  if (!(parseFloat(levels) > 0) || !Number.isFinite(parseFloat(levels))) {
+    return prices;
+  }
+  const newGS = (top / low) ** (1 / parseFloat(levels)) - 1;
   let sellD = parseFloat(sellDisplacement);
   sellD = isNaN(sellD) ? 0 : sellD / 100;
   if (gridType === 'arithmetic') {

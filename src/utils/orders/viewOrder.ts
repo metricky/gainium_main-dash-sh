@@ -57,7 +57,10 @@ export const orderDataToViewOrder = (
     sl: order.sl,
     clientOrderId: order.clientOrderId,
     reduceFundsId: order.reduceFundsId,
-    time: order.updateTime,
+    // Execution time, which chart markers are plotted on — see
+    // `getOrderExecutionTime` for why neither placement time nor `updateTime`
+    // is right for every order.
+    time: formatted.executionTime,
     executedQty: order.executedQty,
   };
 };

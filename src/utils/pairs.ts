@@ -106,6 +106,23 @@ export const balanceAssetToPairBase = (asset: string): string =>
 export const normalizePairKey = (pair: string): string =>
   pair.replace(/[\s/_-]/gu, '').toUpperCase();
 
+/**
+ * Split a pasted blob into candidate pair tokens: whitespace, commas and
+ * semicolons all separate, and surrounding quotes are stripped.
+ *
+ * Lives here, next to `normalizePairKey`, because two places have to agree on
+ * it. The picker's search box only hands a paste to the bulk-add handler when
+ * this yields more than one token — a one-symbol paste is someone searching,
+ * and has to be left alone to land in the input. The bulk-add handler then
+ * re-splits the same way. Two copies of the rule would let a paste be routed
+ * as "several pairs" and then parsed as one, or the reverse.
+ */
+export const splitPastedPairTokens = (raw: string): string[] =>
+  raw
+    .split(/[\s,;\n\r\t]+/u)
+    .map((token) => token.replace(/['"]/g, '').trim())
+    .filter(Boolean);
+
 /** Minimal shape of a loaded trading pair needed to resolve its identity. */
 export interface PairIdentitySource {
   pair?: string | null;
@@ -167,7 +184,10 @@ export const resolvePairSelectionSymbol = (
   quoteAsset?: string | null
 ): string =>
   isPairSymbolReconstructable(nativeSymbol, baseAsset, quoteAsset)
-    ? `${baseAsset}-${quoteAsset}`
+    ? // Upper-cased: callers pass the base as listed (`rSPY`) or upper-cased
+      // (`RSPY`), and a selected chip only matches its picker row when both
+      // sides build the same identity.
+      `${baseAsset?.toUpperCase()}-${quoteAsset?.toUpperCase()}`
     : nativeSymbol;
 
 /**
@@ -198,6 +218,24 @@ export const resolveStoredPairSymbol = (
     return native.trim();
   }
   return normalizePairKey(symbol);
+};
+
+/**
+ * The symbol to request candles (or anything else exchange-bound) under, for a
+ * pair taken from `formData.pair`.
+ *
+ * `formData.pair` is upper-cased, but some venues only know a market under its
+ * mixed-case native symbol and reject the upper-cased one as unknown:
+ * Hyperliquid HIP-3 markets (`xyz:EUR-USDC`, never `XYZ:EUR-USDC`) and
+ * tokenized stocks (`AAPLx-USD`). Use the native symbol whenever its case
+ * differs; all-uppercase natives keep the stored symbol byte-identically.
+ */
+export const resolveNativePairSymbol = (
+  stored: string,
+  metadata?: PairIdentitySource | null
+): string => {
+  const native = metadata?.pair?.trim();
+  return native && native !== native.toUpperCase() ? native : stored;
 };
 
 export const extractPairAssets = (symbol: string) => {

@@ -1,6 +1,5 @@
 import { paidExchanges } from '@/constants/subscription';
 import { useWeb3Wallet, type WalletProvider } from '@/hooks/useWeb3Wallet';
-import { useIsBetaUser } from '@/hooks/useIsBetaUser';
 import { track as analyticsTrack } from '@/lib/analytics';
 import { useEntitlements } from '@/lib/entitlements';
 import { Slot } from '@/lib/extensions';
@@ -17,6 +16,10 @@ import React, {
   useState,
 } from 'react';
 import logger from '../../lib/loggerInstance';
+import {
+  looksLikePemSecret,
+  normalizePemSecret,
+} from './secretNormalization';
 import {
   CoinbaseKeysType,
   ExchangeEnum,
@@ -447,11 +450,6 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
     return getExchangeConfig(formData.provider);
   }, [formData.provider]);
 
-  // OKX Europe X-Perp futures are in beta — only the 'Alpha' group can add
-  // EU futures; everyone else is auto-corrected to Spot (the backend
-  // enforces the same rule). Remove at GA.
-  const okxEuFuturesAllowed = useIsBetaUser();
-
   // Get paper trading assets for current exchange. Origin-aware: an OKX
   // account on the Europe origin funds from the `okxEu` lists (no USDT on
   // the EU venue).
@@ -688,6 +686,24 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
     updateFormData(updates);
   };
 
+  /**
+   * True once the user has typed a NEW key or secret into an existing
+   * connection — i.e. they are rotating credentials, not renaming.
+   *
+   * That distinction decides how the passphrase field behaves. Blank normally
+   * means "unchanged", because the backend never returns a stored secret to
+   * the browser. But a new API key comes with its OWN passphrase, and the
+   * backend falls back to the stored one when the field is blank — so a
+   * rotation submitted with the passphrase untouched pairs the new key with
+   * the previous key's passphrase, and the exchange rejects it as a wrong
+   * passphrase. The user reads that as "my passphrase is wrong" and retries
+   * identically, because nothing ever asked them for it.
+   */
+  const credentialsChangedInEdit =
+    mode === 'edit' &&
+    (formData.key.trim() !== (initialData?.key ?? '').trim() ||
+      !!formData.secret.trim());
+
   // Form validation
   const validateForm = (): ValidationResult => {
     const newErrors: ExchangeFormErrors = {};
@@ -757,14 +773,20 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
         }
       }
 
-      // Passphrase validation for exchanges that require it (add mode only —
-      // like the secret, it isn't returned for an existing exchange).
+      // Passphrase validation for exchanges that require it. Blank stays
+      // legal for a metadata-only edit (a rename must not demand it), but is
+      // rejected once the key or secret it belongs to has changed — see
+      // `credentialsChangedInEdit`. The backend enforces the same rule.
       if (
-        mode !== 'edit' &&
         requiresPassphrase(formData.provider) &&
         !formData.passphrase?.trim()
       ) {
-        newErrors.passphrase = 'Passphrase is required for this exchange';
+        if (mode !== 'edit') {
+          newErrors.passphrase = 'Passphrase is required for this exchange';
+        } else if (credentialsChangedInEdit) {
+          newErrors.passphrase =
+            'Re-enter the passphrase — a new API key has its own, and leaving this blank would keep the one from your previous key.';
+        }
       }
     }
 
@@ -947,7 +969,42 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
         }
     } */
 
+    // A PEM-armoured secret (Coinbase's CDP "Trading key") is repaired rather
+    // than rejected — see `normalizePemSecret`. Only armour with no
+    // recoverable body is a genuine dead end, and saying so here beats the
+    // venue's opaque "must be an asymmetric key when using ES256" much later.
+    if (
+      looksLikePemSecret(trimmedSecret) &&
+      !normalizePemSecret(trimmedSecret)
+    ) {
+      return {
+        isValid: false,
+        error:
+          'This looks like a private key, but the key data between the BEGIN and END lines is missing. Copy the whole key, including both of those lines.',
+      };
+    }
+
     return { isValid: trimmedSecret.length > 0 };
+  };
+
+  /**
+   * Captures a pasted secret from the clipboard before the DOM discards it.
+   *
+   * The API Secret field is a single-line `<input>`, and the HTML value
+   * sanitisation algorithm strips CR and LF from an input's value. A
+   * multi-line PEM key — Coinbase's CDP "Trading key" — therefore loses its
+   * line breaks the instant it lands in the field, and the damage is invisible
+   * to the user: what they see is the key they copied. `clipboardData` still
+   * holds the original, so repair it here and store the escaped one-liner,
+   * which survives the input intact.
+   */
+  const handleSecretPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData('text');
+    if (!looksLikePemSecret(pasted)) return;
+
+    e.preventDefault();
+    const repaired = normalizePemSecret(pasted);
+    updateFormData({ secret: repaired ?? pasted.trim() });
   };
 
   // Handle form submission
@@ -968,6 +1025,15 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
       // mutation doesn't silently re-credit the paper account every
       // time the user changes an unrelated setting like hedge mode.
       const submissionData = { ...formData };
+
+      // Belt and braces for a secret that never went through `onPaste` —
+      // typed by hand, autofilled, or dropped onto the field. Non-PEM secrets
+      // come back trimmed and otherwise untouched.
+      if (submissionData.secret) {
+        submissionData.secret =
+          normalizePemSecret(submissionData.secret) ?? submissionData.secret;
+      }
+
       if (mode === 'edit' && formData.isPaperTrading) {
         const parsed = parseFloat(topUpAmount);
         submissionData.stablecoinBalance =
@@ -1542,6 +1608,7 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                     spellCheck={false}
                     value={formData.secret}
                     onChange={(e) => updateFormData({ secret: e.target.value })}
+                    onPaste={handleSecretPaste}
                     placeholder={
                       mode === 'edit'
                         ? '•••••••••••• — leave blank to keep current'
@@ -1581,9 +1648,11 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                         updateFormData({ passphrase: e.target.value })
                       }
                       placeholder={
-                        mode === 'edit'
-                          ? '•••••••••••• — leave blank to keep current'
-                          : 'Enter your passphrase'
+                        mode !== 'edit'
+                          ? 'Enter your passphrase'
+                          : credentialsChangedInEdit
+                            ? 'Required — enter the new key’s passphrase'
+                            : '•••••••••••• — leave blank to keep current'
                       }
                       className={`pr-10 ${errors.passphrase ? 'border-destructive' : ''}`}
                     />
@@ -1678,46 +1747,18 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                           okxSource: value as OKXSource,
                         };
                         // OKX Europe (my.okx.com) futures are the linear,
-                        // USDC-settled X-Perps — supported on the okxLinear
-                        // rail, currently in BETA (Alpha group only). For
-                        // beta users the EU venue simply has no coin-margined
-                        // (inverse) product, so an Inverse selection corrects
-                        // to Linear; Spot/Linear/All stay as picked. For
-                        // everyone else any futures-bearing selection
-                        // auto-corrects to Spot (the pre-beta behavior; the
-                        // backend enforces the same rule).
+                        // USDC-settled X-Perps on the okxLinear rail. The EU
+                        // venue has no coin-margined (inverse) product, so an
+                        // Inverse selection corrects to Linear; Spot/Linear/All
+                        // stay as picked.
                         if (value === OKXSource.my) {
-                          if (okxEuFuturesAllowed) {
-                            if (
-                              formData.provider === ExchangeEnum.okxInverse
-                            ) {
-                              updates.provider = ExchangeEnum.okxLinear;
-                            }
-                            if (
-                              formData.provider ===
-                              ExchangeEnum.paperOkxInverse
-                            ) {
-                              updates.provider = ExchangeEnum.paperOkxLinear;
-                            }
-                          } else {
-                            if (
-                              [
-                                ExchangeEnum.okxAll,
-                                ExchangeEnum.okxLinear,
-                                ExchangeEnum.okxInverse,
-                              ].includes(formData.provider)
-                            ) {
-                              updates.provider = ExchangeEnum.okxSpot;
-                            }
-                            if (
-                              [
-                                ExchangeEnum.paperOkxAll,
-                                ExchangeEnum.paperOkxLinear,
-                                ExchangeEnum.paperOkxInverse,
-                              ].includes(formData.provider)
-                            ) {
-                              updates.provider = ExchangeEnum.paperOkxSpot;
-                            }
+                          if (formData.provider === ExchangeEnum.okxInverse) {
+                            updates.provider = ExchangeEnum.okxLinear;
+                          }
+                          if (
+                            formData.provider === ExchangeEnum.paperOkxInverse
+                          ) {
+                            updates.provider = ExchangeEnum.paperOkxLinear;
                           }
                         }
                         // Origin change swaps the funding-asset universe for a
@@ -1764,22 +1805,9 @@ const ExchangeForm: React.FC<ExchangeFormProps> = ({
                         <span>
                           OKX Europe offers a restricted product set. Through
                           Gainium you can trade <strong>USDC/EUR spot</strong>{' '}
-                          pairs
-                          {okxEuFuturesAllowed ? (
-                            <>
-                              {' '}
-                              and <strong>X-Perp futures</strong>
-                            </>
-                          ) : (
-                            <>
-                              {' '}
-                              on EU accounts; <strong>
-                                X-Perp futures
-                              </strong>{' '}
-                              support is in beta and not yet generally
-                              available
-                            </>
-                          )}{' '}
+                          pairs and <strong>X-Perp futures</strong>{' '}
+                          (USDC-margined — keep some USDC in your account to
+                          trade them){' '}
                           — USDT pairs and coin-margined (inverse) contracts
                           aren&apos;t available.
                         </span>

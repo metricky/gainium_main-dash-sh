@@ -2,11 +2,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { GRID_FORM_DEFAULTS } from '@/contexts/bots/form/formDefaults';
-import { useBotFormState } from '@/contexts/bots/form/BotFormProvider';
+import {
+  useTrackedBotFormState,
+} from '@/contexts/bots/form/BotFormProvider';
 import { useCuratedPresetRois } from '@/lib/curatedPresets';
 import { useBotFormPreloadStore } from '@/stores/botFormPreloadStore';
 import { useBotTemplatesStore } from '@/stores/botTemplatesStore';
-import { BotTypesEnum, StrategyEnum } from '@/types';
+import { BotTypesEnum, FuturesStrategyEnum, StrategyEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 import { formatPriceWithPrecision } from '@/utils/formatters';
 import type { MarketStats } from '@/utils/marketStats';
@@ -16,6 +18,7 @@ import {
   getGridPresetFormState,
   getGridPresetPreview,
   getQuickGridPreset,
+  type GridRangeDirection,
   type QuickGridPreset,
 } from './quickGridPresets';
 import {
@@ -36,8 +39,12 @@ interface GridPresetsPickerProps {
    * history), the static fallback values apply.
    */
   marketStats?: MarketStats | null;
-  /** Strategy from formData.grid.strategy — drives range asymmetry. */
-  strategy: StrategyEnum | undefined;
+  /**
+   * The side the range tilts towards — `formData.grid.strategy` for a spot
+   * grid, `formData.grid.futuresStrategy` for a futures one (which adds
+   * NEUTRAL, a symmetric range).
+   */
+  strategy: GridRangeDirection | undefined;
   /** Base asset of the selected pair, e.g. "BTC". Used to look up curated ROIs. */
   coin?: string | null;
   /** Exchange of the selected pair, e.g. "binance". */
@@ -74,11 +81,16 @@ export const GridPresetsPicker: React.FC<GridPresetsPickerProps> = ({
     setIsDirty,
     isDirty,
     mode,
-  } = useBotFormState();
+  } = useTrackedBotFormState();
 
   // Curated leaderboard ROI for the form's CURRENT direction so the
   // chip on each Risk Profile card matches what the wizard showed.
-  const curatedStrategy = strategy === StrategyEnum.short ? 'short' : 'long';
+  // The curated leaderboard only publishes long/short ROIs, so a NEUTRAL
+  // futures grid reads the long side — the closest available reference.
+  const curatedStrategy =
+    strategy === StrategyEnum.short || strategy === FuturesStrategyEnum.short
+      ? 'short'
+      : 'long';
   const roiByTier = useCuratedPresetRois({
     coin,
     exchange,
@@ -368,7 +380,7 @@ export const GridPresetsPicker: React.FC<GridPresetsPickerProps> = ({
     <div className="space-y-md">
       <div
         role="radiogroup"
-        aria-label="Risk profile"
+        aria-label="Preset"
         className="grid grid-cols-1 gap-xs"
       >
         {QUICK_GRID_PRESETS.map((preset) => {

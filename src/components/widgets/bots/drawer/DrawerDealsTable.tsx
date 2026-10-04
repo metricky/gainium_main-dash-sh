@@ -2,6 +2,7 @@
 // Usage: bot details drawer deals table (active/closed tabs) rendered via DrawerWidgetRenderer.
 // Not used by the Trading page or the Trading Terminal; those use OpenOrdersWidget.
 import { dealStartBlockedSummary } from '@/lib/utils/dealStartBlocked';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { Tooltip as HelpTooltip } from '@/components/ui/tooltip';
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { ColumnDef } from '@tanstack/react-table';
@@ -23,6 +24,7 @@ import {
     Square,
     X,
     XCircle,
+    Zap,
 } from 'lucide-react';
 import React, {
     useCallback,
@@ -42,12 +44,15 @@ import {
     AdjustFundsDialog,
     ChangeDcaLevelsDialog,
     CloseOptionsDialog,
+    ExecuteNextDcaDialog,
+    canExecuteNextDca,
     type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
 import { formatNumber } from '@/utils/numberFormatter';
 import { logger } from '../../../../lib/loggerInstance';
 import { toast } from '../../../../lib/toast';
 import { useTradeJournalStore } from '../../../../stores/tradeJournalStore';
+import { isDealInJournal } from '../../../../utils/journalDealDedupe';
 import {
     BotTypesEnum,
     CloseDCATypeEnum,
@@ -70,19 +75,28 @@ import {
     useAdjustFunds,
     useDealActions,
     useEditDeal,
+    useExecuteNextDca,
     useMoveDealToTerminal,
     useRestoreDeal,
+    isDealNotOpenError,
+    toastDealCloseError,
 } from '@/hooks/useDealActions';
 import { useOpenDeal } from '@/hooks/useOpenDeal';
 import { useUserFees } from '@/hooks/useUserFeesService';
 import {
+    calculatePnlPercentage,
     calculatePnlPercentageNullable,
+    dealGridProfitPercentageSortValue,
+    dealPercentStringSortValue,
+    dealWorkingTimeSortValue,
     isMetricUnavailable,
+    toDealSortEpochMs,
     toSortableMetricValue,
 } from '@/lib/utils/tradingMetrics';
 import { useAuthStore } from '@/stores/authStore';
 import type { ViewOrder } from '@/types/bots';
 import { transformDealToTrade, type TransformedTrade } from '@/types/dcaDeal';
+import { TrailingBadge } from '@/components/trades/TrailingBadge';
 import { Button } from '../../../ui/button';
 import {
     ProfitAndPerc,
@@ -118,7 +132,23 @@ import {
 import { Skeleton } from '../../../ui/skeleton';
 import CoinPair from '../../../widgets/shared/CoinPair';
 import { DealOrdersDialog } from '../../../widgets/shared/DealOrdersDialog';
+import { SYMBOL_COLUMN_FILTER_META } from '../../../widgets/shared/symbolColumnFilterMeta';
 import { DealsLoadingIndicator } from './DealsLoadingIndicator';
+import { DrawerSection } from './DrawerSection';
+import { useLargeAccount } from '../../../../hooks/useLargeAccount';
+import { useShareContext } from '../../../../hooks/useShareContext';
+import { useDealTablePaging } from '../../../../hooks/useDealTablePaging';
+import {
+  DRAWER_CLOSED_DEAL_SERVER_FIELDS,
+  DRAWER_OPEN_DEAL_SERVER_FIELDS,
+} from '../../../../lib/botList/dealListServerFields';
+import { withServerFields } from '../../../ui/data-table/serverSide';
+
+const DRAWER_TOTALS_COLUMNS = {
+  cost: 'cost',
+  realizedProfitUsd: 'realizedPnl',
+  unrealizedProfitNet: 'unrealizedPnl',
+};
 interface TradeCardWrapperProps {
   item: TransformedTrade;
   index: number;
@@ -215,6 +245,12 @@ export interface DrawerDealsTableProps {
 
 const LOG_PREFIX = 'DrawerDealsTable';
 
+/** A deal row's symbol as the plain string the Pair column filters on. */
+const drawerDealSymbol = (row: unknown): string => {
+  const symbol = (row as TransformedTrade).symbol;
+  return (typeof symbol === 'string' ? symbol : symbol?.symbol) || '';
+};
+
 const MOVE_TO_TERMINAL_WARNING =
   'After moving deals to terminal, the bot may immediately start new deals if slots are available (especially with ASAP start conditions). To avoid this, adjust max open deals or max deals per pair before confirming.';
 
@@ -243,6 +279,7 @@ const DealActionsMenu: React.FC<{
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
+  const [executeNextDcaOpen, setExecuteNextDcaOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
@@ -296,7 +333,20 @@ const DealActionsMenu: React.FC<{
       const symbolString =
         typeof trade.symbol === 'string' ? trade.symbol : trade.symbol.symbol;
 
+      if (
+        isDealInJournal(useTradeJournalStore.getState().trades, {
+          dealId: trade.id,
+          symbol: symbolString,
+          exchange: trade.exchange,
+          entryTime,
+        })
+      ) {
+        toast.info(`Deal ${symbolString} is already in your journal`);
+        return;
+      }
+
       const journalEntry: any = {
+        sourceDealId: trade.id,
         symbol: symbolString,
         exchange: trade.exchange,
         direction: (trade.side?.toUpperCase() === 'LONG' ||
@@ -380,7 +430,7 @@ const DealActionsMenu: React.FC<{
             botId: trade.botId,
             error,
           });
-          toast.error('Failed to cancel deal');
+          toastDealCloseError(error, 'Failed to cancel deal');
           setCancelDialogOpen(false);
         },
       }
@@ -418,7 +468,7 @@ const DealActionsMenu: React.FC<{
             botId: trade.botId,
             error,
           });
-          toast.error('Failed to cancel deal');
+          toastDealCloseError(error, 'Failed to cancel deal');
           setCancelDialogOpen(false);
         },
       }
@@ -532,6 +582,26 @@ const DealActionsMenu: React.FC<{
   const changeDcaBotType =
     trade.type === 'Combo' ? BotTypesEnum.combo : BotTypesEnum.dca;
 
+  // Execute next DCA — see canExecuteNextDca: DCA only (combo levels are
+  // minigrid-managed), open, not risk-based, and a level still left.
+  const canShowExecuteNextDca = canExecuteNextDca(trade);
+  const executeNextDcaMutation = useExecuteNextDca();
+  const handleExecuteNextDcaConfirm = useCallback(
+    (expectedLevel: number) => {
+      if (!trade.botId) {
+        toast.error('Cannot execute the next DCA - missing bot ID');
+        return;
+      }
+      executeNextDcaMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        expectedLevel,
+      });
+      setExecuteNextDcaOpen(false);
+    },
+    [executeNextDcaMutation, trade.botId, trade.id]
+  );
+
   const editDealMutation = useEditDeal({
     onSuccess: () => {
       toast.success('DCA levels updated');
@@ -558,7 +628,7 @@ const DealActionsMenu: React.FC<{
         settings:
           newMax === 0
             ? { useDca: false }
-            : { useDca: true, ordersCount: `${newMax}` },
+            : { useDca: true, ordersCount: newMax },
       });
     },
     [editDealMutation, trade.botId, trade.id, changeDcaBotType]
@@ -575,6 +645,10 @@ const DealActionsMenu: React.FC<{
         quoteAsset={quoteSymbol}
         symbol={symbolString}
         exchange={trade.exchange}
+        percentBasis={trade.percentBasis}
+        exchangeUUID={trade.exchangeUUID}
+        futures={!!trade.futures}
+        long={trade.side !== 'SELL'}
       />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -618,6 +692,15 @@ const DealActionsMenu: React.FC<{
             <Edit className="w-4 h-4 mr-2" />
             Edit
           </DropdownMenuItem>
+          {canShowExecuteNextDca && (
+            <DropdownMenuItem
+              onClick={() => setExecuteNextDcaOpen(true)}
+              disabled={!isDealOpen}
+            >
+              <Zap className="w-4 h-4 mr-2" />
+              Execute next DCA
+            </DropdownMenuItem>
+          )}
           {canShowChangeDca && (
             <DropdownMenuItem
               onClick={() => setChangeDcaDialogOpen(true)}
@@ -703,6 +786,15 @@ const DealActionsMenu: React.FC<{
         onConfirm={handleChangeDcaConfirm}
         isProcessing={editDealMutation.isPending}
       />
+      {canShowExecuteNextDca && (
+        <ExecuteNextDcaDialog
+          open={executeNextDcaOpen}
+          onOpenChange={setExecuteNextDcaOpen}
+          trade={trade}
+          onConfirm={handleExecuteNextDcaConfirm}
+          isProcessing={executeNextDcaMutation.isPending}
+        />
+      )}
     </>
   );
 };
@@ -960,16 +1052,53 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     return selectedTab === 'active' ? useDealsOpenInput : useDealsClosedInput;
   }, [selectedTab, useDealsOpenInput, useDealsClosedInput]);
 
+  // Large accounts: a DCA bot's deals page on the server (only the page on
+  // screen is fetched; live uPnL only for its rows). Everyone else keeps the
+  // bot-specific auto-loader, which reports "N of total" when capped.
+  const largeAccount = useLargeAccount();
+  const { isDemo: isShareView } = useShareContext();
+  const drawerServerPaged =
+    largeAccount.active && !isComboBot && !!botId && !isShareView;
+  // The bot's pairs: the Symbol filter of the server page offers them all.
+  const botPairs = useMemo(
+    () => (bot?.settings?.pair ? [bot.settings.pair].flat() : undefined),
+    [bot?.settings?.pair]
+  );
+  const pagedDeals = useDealTablePaging({
+    status: selectedTab === 'active' ? 'open' : 'closed',
+    terminal: false,
+    botId: botId || undefined,
+    tableId: `${widgetId}-${selectedTab}-deals`,
+    enabled: drawerServerPaged,
+    force: true,
+    fields: {
+      open: DRAWER_OPEN_DEAL_SERVER_FIELDS,
+      closed: DRAWER_CLOSED_DEAL_SERVER_FIELDS,
+    },
+    totalsColumns: DRAWER_TOTALS_COLUMNS,
+    pairs: botPairs,
+  });
+  // An empty id disables the auto-loader while the server page is in use.
+  const specificDealsInput = useMemo(
+    () => (drawerServerPaged ? { ...useDealsInput, botId: '' } : useDealsInput),
+    [drawerServerPaged, useDealsInput]
+  );
+
   // DCA deals: active and closed via bot-specific queries
   const {
-    deals: deals,
-    isLoading: dealsLoading,
+    deals: specificDeals,
+    isLoading: specificLoading,
     isFetching: dealsFetching,
     isError: dealsError,
     data: _dealsData,
-    total: dealsServerTotal,
+    total: specificServerTotal,
     fetchAllDeals,
-  } = useBotSpecificDeals(useDealsInput);
+  } = useBotSpecificDeals(specificDealsInput);
+  const deals = drawerServerPaged ? pagedDeals.deals : specificDeals;
+  const dealsLoading = drawerServerPaged ? pagedDeals.isLoading : specificLoading;
+  const dealsServerTotal = drawerServerPaged
+    ? pagedDeals.total
+    : specificServerTotal;
 
   // Handler for confirming deal opening with selected pair (defined after activeDealsData)
   const handleConfirmOpenDeal = useCallback(() => {
@@ -1340,10 +1469,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           ? comboClosed || !comboActiveStatuses.has(status)
           : dcaClosed;
       })
-      .sort((a: DCADeals | ComboDeal, b: DCADeals | ComboDeal) => {
-        // Sort by creation time, newest first
-        return getCreateTime(b) - getCreateTime(a);
-      });
+      .sort((a: DCADeals | ComboDeal, b: DCADeals | ComboDeal) =>
+        // Server-paged rows keep the server's order; otherwise newest first.
+        drawerServerPaged ? 0 : getCreateTime(b) - getCreateTime(a)
+      );
 
     logger.debug('[DrawerDealsTable:DEAL_FILTERING] Filtering closed deals', {
       totalDeals: botDeals.length,
@@ -1360,6 +1489,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     transformDealToTradeWrapper,
     comboClosedStatuses,
     comboActiveStatuses,
+    drawerServerPaged,
   ]);
 
   // Server-complete export: fetch EVERY page of the current tab's deals.
@@ -1514,6 +1644,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       symbol:
         typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol,
       exchange: deal.exchange,
+      percentBasis: deal.percentBasis,
     }),
     [botId, isComboBot]
   );
@@ -1703,6 +1834,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
       let successCount = 0;
       let errorCount = 0;
+      let endedCount = 0;
 
       const closeFn = isComboLike
         ? bulkCloseDealMutation.closeComboDeal
@@ -1733,7 +1865,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
                 });
               },
               onError: (error) => {
-                errorCount++;
+                if (isDealNotOpenError(error)) endedCount++;
+                else errorCount++;
                 logger.error(`${LOG_PREFIX}: Failed to close deal`, {
                   dealId: deal.id,
                   botId: deal.botId,
@@ -1758,6 +1891,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (errorCount > 0) {
           toast.error(`Failed to close ${errorCount} deal(s)`);
         }
+        if (endedCount > 0) {
+          toast.info(
+            `${endedCount} deal(s) had already ended. The list has been refreshed.`
+          );
+        }
       }, 500);
     },
     [bulkCloseDealMutation, closeBulkDialogOpen, isComboLike]
@@ -1778,6 +1916,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
     let successCount = 0;
     let errorCount = 0;
+    let endedCount = 0;
 
     const closeFn = isComboLike
       ? bulkCloseDealMutation.closeComboDeal
@@ -1808,7 +1947,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               });
             },
             onError: (error) => {
-              errorCount++;
+              if (isDealNotOpenError(error)) endedCount++;
+              else errorCount++;
               logger.error(`${LOG_PREFIX}: Failed to cancel deal`, {
                 dealId: deal.id,
                 botId: deal.botId,
@@ -1832,6 +1972,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       }
       if (errorCount > 0) {
         toast.error(`Failed to cancel ${errorCount} deal(s)`);
+      }
+      if (endedCount > 0) {
+        toast.info(
+          `${endedCount} deal(s) had already ended. The list has been refreshed.`
+        );
       }
     }, 500);
   }, [bulkCloseDealMutation, cancelBulkDialogOpen, isComboLike]);
@@ -1882,6 +2027,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     });
 
     let successCount = 0;
+    let skippedCount = 0;
+    // Re-read after every add so a deal selected twice is only added once.
+    const getJournalTrades = () => useTradeJournalStore.getState().trades;
 
     for (const deal of selectedDeals) {
       try {
@@ -1920,7 +2068,20 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         const symbolString =
           typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol;
 
+        if (
+          isDealInJournal(getJournalTrades(), {
+            dealId: deal.id,
+            symbol: symbolString,
+            exchange: deal.exchange,
+            entryTime,
+          })
+        ) {
+          skippedCount++;
+          continue;
+        }
+
         const journalEntry: any = {
+          sourceDealId: deal.id,
           symbol: symbolString,
           exchange: deal.exchange,
           direction: (deal.side?.toUpperCase() === 'LONG' ||
@@ -1952,9 +2113,12 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     if (successCount > 0) {
       toast.success(`Added ${successCount} deal(s) to journal`);
     }
-    if (successCount < selectedDeals.length) {
+    if (skippedCount > 0) {
+      toast.info(`${skippedCount} deal(s) already in your journal, skipped`);
+    }
+    if (successCount + skippedCount < selectedDeals.length) {
       toast.error(
-        `Failed to add ${selectedDeals.length - successCount} deal(s)`
+        `Failed to add ${selectedDeals.length - successCount - skippedCount} deal(s)`
       );
     }
   }, [addToJournalBulk, completedOrders, journalBulkDialogOpen]);
@@ -2057,6 +2221,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   );
 
   // Define columns for the DataTable
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the daily-profit surfaces use — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   const columns = useMemo<
     ColumnDef<ReturnType<typeof transformDealToTradeWrapper>>[]
   >(() => {
@@ -2067,28 +2234,52 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'status',
         accessorKey: 'status',
         header: 'Status',
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) =>
+            (row as TransformedTrade).status || '',
+        },
         cell: ({ row }) => {
           const trade = row.original;
-          const chip = (
+          let chip = (
             <StatusChip status={trade.status} size="sm" dotOnly={true} />
           );
           // A deal whose opening order the venue refused reads as an ordinary
           // pending deal here - same chip, no orders, all-zero numbers. The dot
           // alone cannot say that, so hang the reason off it: this table is
           // where a user scans for the deal that "did nothing".
-          if (!trade.startBlocked?.reason) {
+          if (trade.startBlocked?.reason) {
+            chip = (
+              <HelpTooltip tooltip={dealStartBlockedSummary(trade.startBlocked)}>
+                <span
+                  className="relative inline-flex items-center gap-0.5"
+                  data-testid="deal-start-blocked-dot"
+                >
+                  {chip}
+                  <PauseCircle className="size-3 text-amber-500" />
+                </span>
+              </HelpTooltip>
+            );
+          }
+          // Trailing is invisible otherwise: the dot only says open/closed, and
+          // an armed trailing exit replaces the deal's TP/SL entirely, so
+          // without this the user cannot tell a deal is riding its best price.
+          if (!trade.trailingMode || !trade.trailingLevel) {
             return chip;
           }
           return (
-            <HelpTooltip tooltip={dealStartBlockedSummary(trade.startBlocked)}>
-              <span
-                className="relative inline-flex items-center gap-0.5"
-                data-testid="deal-start-blocked-dot"
-              >
-                {chip}
-                <PauseCircle className="size-3 text-amber-500" />
-              </span>
-            </HelpTooltip>
+            <div className="flex flex-col items-start gap-0.5">
+              {chip}
+              <TrailingBadge
+                mode={trade.trailingMode}
+                level={trade.trailingLevel}
+                quoteAsset={
+                  typeof trade.symbol === 'string'
+                    ? undefined
+                    : trade.symbol.quoteAsset
+                }
+              />
+            </div>
           );
         },
         enableSorting: true,
@@ -2104,6 +2295,16 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           return symbolObj.symbol;
         },
         header: 'Pair',
+        // Same filter as the deals tables' Symbol column, but these rows carry
+        // the symbol as an object — hand the shared meta the plain string.
+        meta: {
+          ...SYMBOL_COLUMN_FILTER_META,
+          getOptionValue: (row: unknown) => drawerDealSymbol(row),
+          getFilterValue: (row: unknown) =>
+            SYMBOL_COLUMN_FILTER_META.getFilterValue({
+              symbol: drawerDealSymbol(row),
+            }),
+        },
         cell: ({ row }) => {
           const trade = row.original;
           const symbolObj = trade.symbol;
@@ -2147,6 +2348,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'strategy',
         accessorKey: 'strategy',
         header: 'Strategy',
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) =>
+            (row as TransformedTrade).strategy || '',
+        },
         cell: ({ row }) => {
           const strategy = row.original.strategy;
           if (!strategy)
@@ -2162,6 +2368,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'avgPrice',
         accessorKey: 'avgPrice',
         header: 'Avg Price',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const value = Number(trade.avgPrice || 0);
@@ -2184,6 +2391,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         accessorFn: (row) =>
           Number(row.initialPrice || row.entryPrice || row.avgPrice || 0),
         header: 'Entry Price',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const value = Number(
@@ -2207,6 +2415,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'cost',
         accessorKey: 'cost',
         header: 'Cost',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const cost = trade.cost || 0;
@@ -2241,6 +2450,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           return createdDate;
         },
         header: 'Created',
+        meta: { filterType: 'date' },
         cell: ({ row }) => {
           const trade = row.original;
           const createdDate = trade.created
@@ -2254,12 +2464,15 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               {createdDate ? (
                 <div className="flex flex-col">
                   <span className="font-medium">
-                    {createdDate.toLocaleDateString()}
+                    {createdDate.toLocaleDateString(undefined, {
+                      timeZone: accountTimeZone,
+                    })}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {createdDate.toLocaleTimeString([], {
                       hour: '2-digit',
                       minute: '2-digit',
+                      timeZone: accountTimeZone,
                     })}
                   </span>
                 </div>
@@ -2276,6 +2489,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'orders',
         accessorFn: (row) => row.levels.complete,
         header: 'Orders',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const levels = trade.levels;
@@ -2330,6 +2544,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'size',
         accessorKey: 'size',
         header: 'Size',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const size = trade.size || 0;
@@ -2356,6 +2571,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'value',
         accessorKey: 'value',
         header: 'Notional Value',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const value = trade.value || 0;
@@ -2382,6 +2598,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'drawdown',
         accessorKey: 'drawdown',
         header: 'Drawdown',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const drawdown = trade.drawdown || 0;
@@ -2403,6 +2620,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'runUp',
         accessorKey: 'runUp',
         header: 'Run Up',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const runUp = trade.runUp || 0;
@@ -2416,8 +2634,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'timeInLoss',
-        accessorKey: 'timeInLoss',
+        accessorFn: (row) => dealPercentStringSortValue(row.timeInLoss),
         header: 'Time In Loss',
+        // The accessor is the numeric percentage the cell renders ("12.3%"),
+        // so it both sorts and number-filters (`> 50`) in displayed units.
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const value = trade.timeInLoss || '';
@@ -2431,8 +2652,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'timeInProfit',
-        accessorKey: 'timeInProfit',
+        accessorFn: (row) => dealPercentStringSortValue(row.timeInProfit),
         header: 'Time In Profit',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
           const value = trade.timeInProfit || '';
@@ -2446,8 +2668,16 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'workingTime',
-        accessorKey: 'workingTime',
+        accessorFn: (row) => dealWorkingTimeSortValue(row),
         header: 'Working Time',
+        // Numeric (minutes) accessor for sorting. The cell renders "3D 4H", so
+        // the number filter works in HOURS (`> 24` = ran longer than a day).
+        meta: {
+          filterType: 'number',
+          filterUnit: 'hours',
+          getNumericFilterValue: (row: unknown) =>
+            dealWorkingTimeSortValue(row as TransformedTrade) / 60,
+        },
         cell: ({ row }) => {
           const trade = row.original;
           const value = trade.workingTime || '';
@@ -2464,7 +2694,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         accessorKey: 'initialBalances',
         header: 'Initial Balances',
         cell: ({ row }) => {
-          const balances = row.original.currentBalance;
+          const balances = row.original.initialBalances;
           const baseAsset =
             typeof row.original.symbol === 'string'
               ? ''
@@ -2535,6 +2765,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'closePrice',
         accessorKey: 'exitPrice',
         header: 'Close Price',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const closePrice = row.original.exitPrice || 0;
           const status = row.original.status?.toLowerCase();
@@ -2548,6 +2779,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'gridProfit',
         accessorKey: 'gridProfitUsd',
         header: 'Grid Profit',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const type = row.original.type;
           // Only show for Combo and Hedge Combo bots
@@ -2573,14 +2805,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'gridProfitPercentage',
-        accessorFn: (row) => {
-          const type = row.type;
-          if (type !== 'Combo' && type !== 'Hedge Combo') return 0;
-          const gridProfitUsd = (row as any).gridProfitUsd || 0;
-          const cost = row.cost || 0;
-          return cost > 0 ? (gridProfitUsd / cost) * 100 : 0;
-        },
+        accessorFn: (row) => dealGridProfitPercentageSortValue(row as never),
         header: 'Grid Profit, %',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const type = row.original.type;
           if (type !== 'Combo' && type !== 'Hedge Combo') {
@@ -2602,6 +2829,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'transactions',
         accessorKey: 'transactionsTotal',
         header: 'Transactions',
+        meta: { filterType: 'number' },
         cell: ({ row }) => {
           const type = row.original.type;
           // Only show for Combo and Hedge Combo bots
@@ -2625,19 +2853,25 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       },
       {
         id: 'updateTime',
-        accessorKey: 'updateTime',
+        accessorFn: (row) => toDealSortEpochMs((row as any).updateTime),
         header: 'Update Time',
+        meta: { filterType: 'date' },
         cell: ({ row }) => {
           const value = (row.original as any).updateTime;
           if (!value) return <span className="text-muted-foreground">-</span>;
           const date = new Date(value);
           return (
             <div className="flex flex-col">
-              <span className="text-sm">{date.toLocaleDateString()}</span>
+              <span className="text-sm">
+                {date.toLocaleDateString(undefined, {
+                  timeZone: accountTimeZone,
+                })}
+              </span>
               <span className="text-xs text-muted-foreground">
                 {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
+                  timeZone: accountTimeZone,
                 })}
               </span>
             </div>
@@ -2649,6 +2883,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'closeTime',
         accessorKey: 'closeTime',
         header: 'Close Time',
+        meta: { filterType: 'date' },
         cell: ({ row }) => {
           const value = (row.original as any).closeTime;
           const status = row.original.status?.toLowerCase();
@@ -2657,11 +2892,16 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           const date = new Date(value);
           return (
             <div className="flex flex-col">
-              <span className="text-sm">{date.toLocaleDateString()}</span>
+              <span className="text-sm">
+                {date.toLocaleDateString(undefined, {
+                  timeZone: accountTimeZone,
+                })}
+              </span>
               <span className="text-xs text-muted-foreground">
                 {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
+                  timeZone: accountTimeZone,
                 })}
               </span>
             </div>
@@ -2736,6 +2976,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       id: 'unrealizedPnl',
       accessorFn: (row) => toSortableMetricValue(row.unrealizedProfit),
       header: 'Unrealized P&L',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         // Closed/canceled deals have no unrealized P&L (legacy parity).
@@ -2782,6 +3023,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         return toSortableMetricValue(percentage);
       },
       header: 'Unrealized P&L, %',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         // Closed/canceled deals have no unrealized P&L (legacy parity).
@@ -2820,6 +3062,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       id: 'realizedPnl',
       accessorKey: 'profit.totalUsd',
       header: 'Realized P&L',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
@@ -2844,8 +3087,18 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       ReturnType<typeof transformDealToTradeWrapper>
     > = {
       id: 'realizedPnlPercentage',
-      accessorKey: 'realizedProfitPercentage',
+      // Same dead accessor as the shared OpenOrdersWidget column: nothing
+      // produces `realizedProfitPercentage` (`transformDealToTrade` emits
+      // `profit`/`pnl`/`cost`), so TanStack read `undefined` for every row and
+      // both the sort and the number filter were no-ops. Derive it with the
+      // existing `calculatePnlPercentage` helper — same formula the cell uses.
+      accessorFn: (row) =>
+        calculatePnlPercentage(
+          Number(row.profit?.totalUsd || row.pnl || 0),
+          Number(row.cost || 0)
+        ),
       header: 'Realized P&L, %',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
@@ -2872,6 +3125,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         return unrealizedPnl + realizedPnl;
       },
       header: 'Net P&L',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         if (trade.active && pricesLoading) {
@@ -2909,6 +3163,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         return cost > 0 ? (netPnl / cost) * 100 : 0;
       },
       header: 'Net P&L, %',
+      meta: { filterType: 'number' },
       cell: ({ row }) => {
         const trade = row.original;
         if (trade.active && pricesLoading) {
@@ -2969,7 +3224,14 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     selectedTab,
     handleEdit,
     handleMoveToTerminal,
+    accountTimeZone,
   ]);
+  // Server-paged drawer: only columns with a server field sort.
+  const pagedFields = pagedDeals.serverPaging?.fields;
+  const drawerColumns = useMemo(
+    () => (pagedFields ? withServerFields(columns, pagedFields) : columns),
+    [columns, pagedFields]
+  );
 
   const dealsData = useMemo(
     () => (selectedTab === 'active' ? activeDeals : closedDeals),
@@ -3142,94 +3404,110 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
   return (
     <>
-      <div className="w-full h-full flex flex-col">
-        {showTable ? (
-          <DataTable
-            tableId={`${widgetId}-${selectedTab}-deals`}
-            columns={columns}
-            data={dealsData}
-            enableGlobalFilter
-            enableColumnFilters
-            enableSorting
-            enableColumnVisibility
-            defaultColumnVisibility={defaultColumnVisibility}
-            defaultPinnedColumns={{ left: [], right: ['actions'] }}
-            enableCardView
-            cardComponent={cardComponentWrapper}
-            defaultView={defaultView}
-            cardViewBreakpoints={cardViewBreakpoints}
-            cardViewGap={cardViewGap}
-            emptyMessage={emptyMessage}
-            onRowClick={onRowClick}
-            getRowIsSelected={getRowIsSelected}
-            bulkActions={bulkActions}
-            getRowId={getRowId}
-            firstToolbarActions={firstToolbarAction}
-            firstToolbarActionsCompact={firstToolbarActionCompact}
-            getExportData={getExportData}
-            serverTotalRows={dealsServerTotal}
-            exportFilename={`${selectedTab === 'active' ? 'open' : 'closed'}-deals`}
-          />
-        ) : (
-          <div className="flex flex-col">
-            {/* Keep the Open/Closed status filter reachable even when the
-                current tab has no deals — otherwise closed deals are
-                stranded behind an empty "Open" tab (e.g. a combo bot with
-                0 open but 42 closed deals). */}
-            <div className="flex items-center py-2">
-              <Select
-                value={selectedTab}
-                onValueChange={(value) =>
-                  setSelectedTab(value as 'active' | 'closed')
-                }
-              >
-                <SelectTrigger className="h-9 w-40">
-                  <SelectValue placeholder={`Open (${activeDealsCount})`} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">
-                    Open ({activeDealsCount})
-                  </SelectItem>
-                  <SelectItem value="closed">
-                    Closed ({closedDealsCount})
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+      {/* DrawerSection (i.e. a headerless WidgetWrapper) is what carries the
+          "Enter fullscreen" control. Without it this tab had no way into
+          full-screen at all — not the button, not the triple-tap — which on a
+          tablet left the widest table in the drawer stuck at drawer width.
+          `bare` keeps the title out of the tab body (the tab bar right above
+          already says "Deals") while still naming the widget for the
+          full-screen view. The dialogs below stay outside the section; they
+          portal to `body` anyway. */}
+      <DrawerSection
+        widgetId={widgetId}
+        widgetType="drawer-deals-table"
+        title="Deals"
+        bare
+      >
+        <div className="w-full h-full flex flex-col">
+          {showTable ? (
+            <DataTable
+              tableId={`${widgetId}-${selectedTab}-deals`}
+              columns={drawerColumns}
+              serverSide={pagedDeals.serverPaging?.serverSide}
+              data={dealsData}
+              enableGlobalFilter
+              enableColumnFilters
+              enableSorting
+              enableColumnVisibility
+              defaultColumnVisibility={defaultColumnVisibility}
+              defaultPinnedColumns={{ left: [], right: ['actions'] }}
+              enableCardView
+              cardComponent={cardComponentWrapper}
+              defaultView={defaultView}
+              cardViewBreakpoints={cardViewBreakpoints}
+              cardViewGap={cardViewGap}
+              emptyMessage={emptyMessage}
+              onRowClick={onRowClick}
+              getRowIsSelected={getRowIsSelected}
+              bulkActions={bulkActions}
+              getRowId={getRowId}
+              firstToolbarActions={firstToolbarAction}
+              firstToolbarActionsCompact={firstToolbarActionCompact}
+              getExportData={getExportData}
+              serverTotalRows={dealsServerTotal}
+              exportFilename={`${selectedTab === 'active' ? 'open' : 'closed'}-deals`}
+            />
+          ) : (
+            <div className="flex flex-col">
+              {/* Keep the Open/Closed status filter reachable even when the
+                  current tab has no deals — otherwise closed deals are
+                  stranded behind an empty "Open" tab (e.g. a combo bot with
+                  0 open but 42 closed deals). */}
+              <div className="flex items-center py-2">
+                <Select
+                  value={selectedTab}
+                  onValueChange={(value) =>
+                    setSelectedTab(value as 'active' | 'closed')
+                  }
+                >
+                  <SelectTrigger className="h-9 w-40">
+                    <SelectValue placeholder={`Open (${activeDealsCount})`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">
+                      Open ({activeDealsCount})
+                    </SelectItem>
+                    <SelectItem value="closed">
+                      Closed ({closedDealsCount})
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="text-center py-8 text-muted-foreground">
+                {selectedTab === 'active' ? (
+                  <Handshake className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                ) : (
+                  <Square className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                )}
+                <p>
+                  {selectedTab === 'active'
+                    ? 'No active deals'
+                    : 'No closed deals'}
+                </p>
+                <p className="text-sm">
+                  {selectedTab === 'active'
+                    ? 'Deals will appear here when the bot starts trading'
+                    : 'Completed deals will appear here'}
+                </p>
+                {selectedTab === 'active' ? (
+                  <div className="flex items-center justify-center gap-4 ">
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleOpenNewDeal}
+                      disabled={isOpenDealPending || !botId}
+                      className="mt-4 gap-1"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Open New Deal
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
             </div>
-            <div className="text-center py-8 text-muted-foreground">
-              {selectedTab === 'active' ? (
-                <Handshake className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              ) : (
-                <Square className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              )}
-              <p>
-                {selectedTab === 'active'
-                  ? 'No active deals'
-                  : 'No closed deals'}
-              </p>
-              <p className="text-sm">
-                {selectedTab === 'active'
-                  ? 'Deals will appear here when the bot starts trading'
-                  : 'Completed deals will appear here'}
-              </p>
-              {selectedTab === 'active' ? (
-                <div className="flex items-center justify-center gap-4 ">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={handleOpenNewDeal}
-                    disabled={isOpenDealPending || !botId}
-                    className="mt-4 gap-1"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Open New Deal
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </DrawerSection>
 
       {/* Orders Dialog */}
       {selectedDealForOrders && (
@@ -3272,6 +3550,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         defaultCloseType={CloseDCATypeEnum.closeByMarket}
         ignoreOptions={[CloseDCATypeEnum.leave]}
         mode="deal"
+        count={closeBulkDialogOpen.length}
       />
 
       <ConfirmationDialog

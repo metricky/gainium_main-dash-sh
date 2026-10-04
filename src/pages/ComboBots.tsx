@@ -1,4 +1,7 @@
 import { isReadOnly } from '@/lib/demoMode';
+import { durationTextToDays } from '@/lib/utils/durationText';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
+import { BOT_METRIC_DESCRIPTIONS } from '@/lib/botMetricDescriptions';
 import { isReady as isAnalyticsReady } from '@/lib/analytics';
 import { useStarredBotsStore } from '@/stores/starredBotsStore';
 import {
@@ -18,6 +21,7 @@ import {
   filterStartableBots,
   filterStoppableBots,
 } from '@/utils/botStatusUtils';
+import { useBulkBotConfirm } from '@/hooks/useBulkBotConfirm';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
 import {
@@ -48,6 +52,7 @@ import {
   type BotTypeId,
 } from '../components/bots/BotActionsMenuItems';
 import { BotCard } from '../components/bots/BotCard';
+import { BotUsageCell } from '../components/bots/BotUsageCell';
 import { Skeleton } from '@/components/ui/skeleton';
 import { BotDetailsDrawer } from '../components/bots/BotDetailsDrawer';
 import MainLayout from '../components/layout/MainLayout';
@@ -106,9 +111,9 @@ import { useComboBotStore } from '../stores/botWidgetsStoreFactory';
 import { useUIStore } from '../stores/uiStore';
 /* import type { DrawerBot } from '../types/bots/drawer'; */
 /* import { transformDcaBotToBot,  type ComboBot } from '../types/comboBot'; */
-import DualArcProgressGauge from '@/components/ui/DualArcProgressGauge';
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
+import { sameFeeRows, toSortedFeeRows } from '@/lib/utils/feeRows';
 import { useUserFees } from '@/hooks/useUserFeesService';
 import { useAuthStore } from '@/stores/authStore';
 import { useBotStatsStore } from '@/stores/live';
@@ -116,6 +121,14 @@ import { transformDcaBotToBot } from '@/types/dcaBot';
 import { useShareContext } from '../hooks/useShareContext';
 import { useDrawerBot } from '../hooks/useDrawerBot';
 import { useStableBotTransforms } from '../hooks/useStableBotTransforms';
+import { useBotListPaging } from '../hooks/useBotListPaging';
+import { CANONICAL_DCA_STATUSES } from '../lib/botList/botListWindow';
+import {
+  BOT_LIST_PARTIAL_TOOLTIP,
+  COMBO_BOT_SERVER_FIELDS,
+} from '../lib/botList/botListServerFields';
+import { withServerFields } from '../components/ui/data-table/serverSide';
+import { PartialCount } from '../components/ui/large-account';
 import type { CalculatedBotStats } from '../services/metrics/BotMetricsCalculator';
 import { useComboDeals } from '../hooks/useComboDeals';
 
@@ -143,9 +156,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
     lastActivity: originalBotData?.created || 'Unknown',
     botData: originalBotData ?? bot,
-    onCopyToLive: () => {
-      toast.info('Copy to live not yet implemented for combo bots');
-    },
   });
 
   return (
@@ -232,10 +242,29 @@ const ComboBots: React.FC = () => {
     [showArchived]
   );
   const {
-    bots: comboBots,
+    bots: canonicalComboBots,
     isLoading: botsLoading,
     isError: botsError,
+    total: canonicalTotal,
+    isPartial: canonicalPartial,
+    loadedCount: canonicalLoaded,
   } = useComboBots(filterOptions);
+
+  // A list the server capped pages on the server (sorted and searched there);
+  // one that fits in what is loaded stays client-side, with no requests.
+  const botListPaging = useBotListPaging({
+    type: 'combo',
+    tableId: 'combo-bots',
+    canonical: {
+      bots: canonicalComboBots,
+      total: canonicalTotal,
+      isPartial: canonicalPartial,
+      loadedCount: canonicalLoaded,
+    },
+    statuses: showArchived ? ['archive'] : CANONICAL_DCA_STATUSES,
+    fields: COMBO_BOT_SERVER_FIELDS,
+  });
+  const comboBots = botListPaging.bots;
 
   const handleSelectBot = useCallback(
     (botId: string | null) => {
@@ -266,6 +295,8 @@ const ComboBots: React.FC = () => {
 
   const deleteMutation = useBotDelete();
   const archiveMutation = useBotArchive();
+  const { confirmRestart, confirmArchive, confirmDialog } =
+    useBulkBotConfirm();
 
   // Bulk delete modal state
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -276,6 +307,7 @@ const ComboBots: React.FC = () => {
 
   // Bulk status change modal state
   const [bulkStatusOpen, setBulkStatusOpen] = useState(false);
+  const [bulkStatusSelectedCount, setBulkStatusSelectedCount] = useState(0);
   const [bulkStatusTargets, setBulkStatusTargets] = useState<
     ReturnType<typeof transformDcaBotToBot>[]
   >([]);
@@ -373,33 +405,28 @@ const ComboBots: React.FC = () => {
       );
       return;
     }
+    setBulkStatusSelectedCount(bots.length);
     setBulkStatusTargets(filteredBots);
     setBulkStatusAction(action);
     setBulkStatusOpen(true);
   };
 
-  const handleBulkRestart = async (
+  const handleBulkRestart = (
     bots: ReturnType<typeof transformDcaBotToBot>[]
-  ) => {
-    const restartableBots = filterRestartableBots(bots);
-
-    if (restartableBots.length === 0) {
-      toast.info('No active bots selected');
-      return;
-    }
-
-    try {
-      for (const b of restartableBots) {
-        await restartMutation.mutateAsync({
-          id: b.id,
-          type: BotTypesEnum.combo,
-        });
+  ) =>
+    confirmRestart(bots, async (restartableBots) => {
+      try {
+        for (const b of restartableBots) {
+          await restartMutation.mutateAsync({
+            id: b.id,
+            type: BotTypesEnum.combo,
+          });
+        }
+        toast.success(`Restarted ${restartableBots.length} bot(s)`);
+      } catch {
+        toast.error('Failed to restart selected bots');
       }
-      toast.success(`Restarted ${restartableBots.length} bot(s)`);
-    } catch {
-      toast.error('Failed to restart selected bots');
-    }
-  };
+    });
 
   // Confirm bulk status change
   const handleConfirmBulkStatusChange = async (closeType?: string) => {
@@ -488,13 +515,11 @@ const ComboBots: React.FC = () => {
         logger.error('[TradingBots] Error fetching fees via service:', error);
       })
       .then((res) => {
-        setAllFees(
-          (res || []).map((r) => ({
-            exchange: r.exchangeUUID,
-            symbol: r.symbol,
-            fee: r.maker,
-          }))
-        );
+        // Keep the previous state when the fees did not change: storing a new
+        // array on every refetch re-rendered the page (and every card) each
+        // time the bot list's identity changed, which could loop.
+        const next = toSortedFeeRows(res || []);
+        setAllFees((prev) => (sameFeeRows(prev, next) ? prev : next));
       });
   }, [botSymbolsMap, tokens?.accessToken, fetchMultipleFees]);
 
@@ -858,6 +883,9 @@ const ComboBots: React.FC = () => {
     );
   };
 
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the `filterType: 'date'` filter matches on — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   // Define columns for the data table
   const columns: ColumnDef<ReturnType<typeof transformDcaBotToBot>>[] = useMemo(
     () => [
@@ -865,6 +893,7 @@ const ComboBots: React.FC = () => {
         accessorKey: 'exchangeUUID',
         header: 'EXCHANGE',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.exchange,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -907,6 +936,7 @@ const ComboBots: React.FC = () => {
         accessorKey: 'coinPair',
         header: 'COIN PAIR',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.coinPair,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -941,7 +971,10 @@ const ComboBots: React.FC = () => {
       {
         accessorKey: 'name',
         header: 'NAME',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'string',
+          description: BOT_METRIC_DESCRIPTIONS.combo.name,
+        },
         cell: ({ getValue, row }) => {
           const name = getValue() as string;
           const id = row.original.id as string;
@@ -952,6 +985,7 @@ const ComboBots: React.FC = () => {
         accessorKey: 'strategy',
         header: 'STRATEGY',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.strategy,
           filterType: 'array',
           getFilterValue: (row: unknown) => {
             const bot = row as Record<string, unknown>;
@@ -993,6 +1027,7 @@ const ComboBots: React.FC = () => {
         accessorKey: 'maxValue',
         header: 'MAX COST',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.maxCost,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1010,8 +1045,9 @@ const ComboBots: React.FC = () => {
       },
       {
         accessorKey: 'totalProfitUsd',
-        header: 'TOTAL PROFIT, $',
+        header: 'REALIZED PNL, $',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.realizedPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1046,8 +1082,11 @@ const ComboBots: React.FC = () => {
       },
       {
         accessorKey: 'profitPerc',
-        header: 'TOTAL PROFIT',
-        meta: { filterType: 'number' },
+        header: 'REALIZED PNL, %',
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.combo.realizedPnlPerc,
+        },
         cell: ({ getValue }) => {
           const profit = getValue() as number;
           return <ProfitLossPercChip value={profit} size="sm" />;
@@ -1055,8 +1094,9 @@ const ComboBots: React.FC = () => {
       },
       {
         accessorKey: 'unPnl',
-        header: 'VALUE',
+        header: 'UNREALIZED PNL',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.unrealizedPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1100,6 +1140,7 @@ const ComboBots: React.FC = () => {
         accessorKey: 'avgDaily',
         header: 'AVG DAILY',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.avgDaily,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'average',
@@ -1136,6 +1177,7 @@ const ComboBots: React.FC = () => {
         id: 'netPnl',
         header: 'NET PNL',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.netPnl,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1153,7 +1195,7 @@ const ComboBots: React.FC = () => {
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.original.currentValue ?? row.original.maxValue ?? 0;
+          const cost = row.original.currentValue || row.original.maxValue || 0;
           const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
           return (
             <ProfitAndPerc
@@ -1183,13 +1225,14 @@ const ComboBots: React.FC = () => {
         id: 'netPnlPercentage',
         header: 'NET PNL, %',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.netPnlPerc,
           filterType: 'number',
         },
         accessorFn: (row) => {
           const totalProfit = row.totalProfitUsd ?? 0;
           const unrealized = row.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.currentValue ?? row.maxValue ?? 0;
+          const cost = row.currentValue || row.maxValue || 0;
           return cost > 0 ? (netPnl / cost) * 100 : 0;
         },
         cell: ({ row }) => {
@@ -1199,7 +1242,7 @@ const ComboBots: React.FC = () => {
           const totalProfit = row.original.totalProfitUsd ?? 0;
           const unrealized = row.original.unPnl ?? 0;
           const netPnl = totalProfit + unrealized;
-          const cost = row.original.currentValue ?? row.original.maxValue ?? 0;
+          const cost = row.original.currentValue || row.original.maxValue || 0;
           const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
           return <ProfitLossPercChip value={percentage} size="sm" />;
         },
@@ -1207,7 +1250,10 @@ const ComboBots: React.FC = () => {
       {
         accessorKey: 'annualizedReturn',
         header: 'ANNUALIZED RETURN',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.combo.annualizedReturn,
+        },
         cell: ({ row }) => {
           const annualizedReturnPerc = row.original.annualizedReturn ?? 0;
           const annualizedReturnUsd = (row.original.avgDaily ?? 0) * 365;
@@ -1225,12 +1271,19 @@ const ComboBots: React.FC = () => {
       {
         accessorKey: 'workingTime',
         header: 'TRADING TIME',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'number',
+          filterUnit: 'days',
+          getNumericFilterValue: (row: unknown) =>
+            durationTextToDays((row as { workingTime?: string }).workingTime),
+          description: BOT_METRIC_DESCRIPTIONS.combo.tradingTime,
+        },
       },
       {
         accessorKey: 'currentValue',
         header: 'CURRENT COST',
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.combo.currentCost,
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -1249,7 +1302,10 @@ const ComboBots: React.FC = () => {
       {
         accessorKey: 'created',
         header: 'CREATED',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'date',
+          description: BOT_METRIC_DESCRIPTIONS.combo.created,
+        },
         cell: ({ row }) => {
           const created = row.original.created;
           if (!created) return 'N/A';
@@ -1258,13 +1314,20 @@ const ComboBots: React.FC = () => {
             year: 'numeric',
             month: 'short',
             day: 'numeric',
+            timeZone: accountTimeZone,
           });
         },
       },
       {
         accessorKey: 'status',
         header: 'STATUS',
-        meta: { filterType: 'string' },
+        meta: {
+          // Closed enum — see the note on the grid bots status column. `array`
+          // is what offers `Is any of`, so several statuses can be selected as
+          // ONE condition instead of several ANDed ones.
+          filterType: 'array',
+          description: BOT_METRIC_DESCRIPTIONS.combo.status,
+        },
         cell: ({ getValue, row }) => {
           const status = getValue() as string;
           const reason = (row.original as { statusReason?: unknown })
@@ -1298,30 +1361,27 @@ const ComboBots: React.FC = () => {
         // `usage` object that `accessorKey: 'usage'` would otherwise resolve to.
         accessorFn: (row) => row.usageTotal || 0,
         header: 'USAGE',
-        meta: { filterType: 'number' },
-        cell: ({ row }) => {
-          const usage = row.original.usageTotal;
-          return (
-            <div className="flex items-center justify-center">
-              <DualArcProgressGauge
-                size={40}
-                outerPercentage={usage || 0}
-                innerPercentage={0}
-                outerProgressColor="#10b981"
-                showInnerGauge={false}
-                displayMode="outer"
-                centerText={`${(usage || 0).toFixed(0)}%`}
-                label=""
-                animate={false}
-              />
-            </div>
-          );
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.combo.usage,
         },
+        cell: ({ row }) => (
+          <BotUsageCell
+            botId={row.original.id}
+            usageTotal={row.original.usageTotal}
+            dealType="combo"
+          />
+        ),
       },
       {
         accessorKey: 'deals',
+        // The row has no `deals` field; filter/sort on the total the cell shows.
+        accessorFn: (row) => (row as DCABot).dealsInBot.all || 0,
         header: 'DEALS',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.combo.deals,
+        },
         cell: ({ row }) => {
           const totalDeals = (row.original as DCABot).dealsInBot.all;
           const activeDeals = (row.original as DCABot).dealsInBot.active;
@@ -1336,7 +1396,10 @@ const ComboBots: React.FC = () => {
       {
         accessorKey: 'cost',
         header: 'CREDITS COST',
-        meta: { filterType: 'number' },
+        meta: {
+          filterType: 'number',
+          description: BOT_METRIC_DESCRIPTIONS.combo.creditsCost,
+        },
         cell: ({ getValue }) => {
           const cost = getValue() as number;
           return `${(cost || 0).toFixed(2)}`;
@@ -1346,6 +1409,7 @@ const ComboBots: React.FC = () => {
         id: 'botId',
         accessorFn: (row) => row.id,
         header: 'BOT ID',
+        meta: { description: BOT_METRIC_DESCRIPTIONS.combo.botId },
         cell: ({ row }) => {
           const value = row.original.id;
           if (!value) return <span className="text-muted-foreground">—</span>;
@@ -1370,7 +1434,12 @@ const ComboBots: React.FC = () => {
         size: 56,
       },
     ],
-    [privacyMode, botDataMap]
+    [privacyMode, botDataMap, accountTimeZone]
+  );
+  // Server mode only honours sorts/filters with a server field.
+  const serverColumns = useMemo(
+    () => withServerFields(columns, COMBO_BOT_SERVER_FIELDS),
+    [columns]
   );
 
   // archived/active counts are intentionally not shown in header anymore
@@ -1413,6 +1482,8 @@ const ComboBots: React.FC = () => {
   // Put starred bots first in the list (subscribe to starred ids for reactivity)
   const starredBotIds = useStarredBotsStore((s) => s.starredBotIds);
   const orderedFilteredData = useMemo(() => {
+    // Server-paged rows arrive in the server's order; keep it.
+    if (botListPaging.serverPaged) return filteredData;
     return [...filteredData].sort((a, b) => {
       const aStar = starredBotIds.has(a.id) ? 0 : 1;
       const bStar = starredBotIds.has(b.id) ? 0 : 1;
@@ -1427,7 +1498,7 @@ const ComboBots: React.FC = () => {
         new Date(/* b.rawData?.created ||  */ b.created || 0).getTime();
       return bCreated - aCreated;
     });
-  }, [filteredData, starredBotIds]);
+  }, [filteredData, starredBotIds, botListPaging.serverPaged]);
 
   // Keep current values in refs so BotCardWrapper can read the latest values
   // without recreating the component type (which causes all cards to remount).
@@ -1487,7 +1558,11 @@ const ComboBots: React.FC = () => {
   // backend defaults to open-only and the Closed view is always empty.
   const [dealsStatus, setDealsStatus] = useState<'open' | 'closed'>('open');
 
-  const { deals: comboDealsForTab } = useComboDeals({
+  const {
+    deals: comboDealsForTab,
+    total: comboDealsTotal,
+    isPartial: comboDealsPartial,
+  } = useComboDeals({
     status:
       dealsStatus === 'closed'
         ? DCADealStatusEnum.closed
@@ -1603,6 +1678,17 @@ const ComboBots: React.FC = () => {
                           Active Combo Bots
                         </h2>
                         <StaleIndicator componentId="combo-bots" />
+                        {botListPaging.partial && (
+                          <PartialCount
+                            shown={botListPaging.partial.shown}
+                            total={botListPaging.partial.total}
+                            noun="bots"
+                            tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                              botListPaging.partial.shown,
+                              botListPaging.partial.total
+                            )}
+                          />
+                        )}
                       </div>
                     </div>
 
@@ -1648,6 +1734,17 @@ const ComboBots: React.FC = () => {
                           Active Combo Bots
                         </h2>
                         <StaleIndicator componentId="combo-bots" />
+                        {botListPaging.partial && (
+                          <PartialCount
+                            shown={botListPaging.partial.shown}
+                            total={botListPaging.partial.total}
+                            noun="bots"
+                            tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                              botListPaging.partial.shown,
+                              botListPaging.partial.total
+                            )}
+                          />
+                        )}
                       </div>
                     </div>
 
@@ -1696,7 +1793,8 @@ const ComboBots: React.FC = () => {
                   >
                     <DataTable
                       tableId="combo-bots"
-                      columns={columns}
+                      columns={serverColumns}
+                      serverSide={botListPaging.serverSide}
                       data={orderedFilteredData}
                       enableGlobalFilter={true}
                       enableColumnFilters={true}
@@ -1829,15 +1927,19 @@ const ComboBots: React.FC = () => {
                                 id: 'archive',
                                 label: showArchived ? 'Unarchive' : 'Archive',
                                 icon: Archive,
-                                onAction: (bots) => {
-                                  bots.forEach((b) =>
-                                    archiveMutation.mutate({
-                                      id: b.id,
-                                      archive: !showArchived,
-                                      type: BotTypesEnum.combo,
-                                    })
-                                  );
-                                },
+                                onAction: (bots) =>
+                                  confirmArchive(
+                                    bots,
+                                    !showArchived,
+                                    (targets) =>
+                                      targets.forEach((b) =>
+                                        archiveMutation.mutate({
+                                          id: b.id,
+                                          archive: !showArchived,
+                                          type: BotTypesEnum.combo,
+                                        })
+                                      )
+                                  ),
                               },
                             ]
                       }
@@ -1889,6 +1991,7 @@ const ComboBots: React.FC = () => {
                       title={`Delete ${bulkDeleteTargets.length} bot${bulkDeleteTargets.length === 1 ? '' : 's'}`}
                       description={`Are you sure you want to delete ${bulkDeleteTargets.length} selected bot${bulkDeleteTargets.length === 1 ? '' : 's'}? This action cannot be undone.`}
                       itemName={`${bulkDeleteTargets.length} bots`}
+                      bulkCount={bulkDeleteTargets.length}
                       itemType="bot"
                       additionalInfo={{
                         activeDeals: bulkDeleteTargets.reduce(
@@ -1908,10 +2011,11 @@ const ComboBots: React.FC = () => {
                         currency:
                           getOriginalComboBot(bulkDeleteTargets[0]?.id ?? '')
                             ?.symbol?.[0]?.value?.quoteAsset || 'USD',
-                        lastActivity: 'Multiple',
                       }}
                       isLoading={bulkDeleteLoading}
                     />
+
+                    {confirmDialog}
 
                     {/* Bulk status change modal */}
                     <BotStatusConfirmationModal
@@ -1919,6 +2023,8 @@ const ComboBots: React.FC = () => {
                       onOpenChange={setBulkStatusOpen}
                       onConfirm={handleConfirmBulkStatusChange}
                       botName={`${bulkStatusTargets.length} bot${bulkStatusTargets.length === 1 ? '' : 's'}`}
+                      bulkCount={bulkStatusTargets.length}
+                      bulkSelectedCount={bulkStatusSelectedCount}
                       currentStatus={
                         bulkStatusAction === 'start' ? 'closed' : 'open'
                       }
@@ -1938,6 +2044,14 @@ const ComboBots: React.FC = () => {
                   <OpenOrdersWidget
                     widgetId="combo-bot-deals"
                     data={{ trades: comboDealsAsOpenTrades }}
+                    partial={
+                      comboDealsPartial
+                        ? {
+                            shown: comboDealsForTab.length,
+                            total: comboDealsTotal,
+                          }
+                        : null
+                    }
                     enableStatusToggle={true}
                     onStatusFilterChange={setDealsStatus}
                     privacyMode={privacyMode}

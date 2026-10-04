@@ -14,21 +14,28 @@
  * socket-pushed stats when the bot recomputes.
  */
 
+import type { PeriodValue } from '@/components/ui/PeriodDatePicker';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useBotFullStats } from '@/hooks/useBotFullStats';
+import { useBotPairStats } from '@/hooks/useBotPairStats';
 import { useShareContext } from '@/hooks/useShareContext';
-import type { BotTypesEnum } from '@/types';
-import { useMemo, type FC } from 'react';
+import type { BotSymbolsStats, BotTypesEnum } from '@/types';
+import { useMemo, useState, type FC } from 'react';
+
+import { DrawerSection } from '../drawer/DrawerSection';
 
 import { BotStatsBreakdown } from './BotStatsBreakdown';
 import { BotStatsOverview } from './BotStatsOverview';
-import { BotSymbolStatsTable } from './BotSymbolStatsTable';
+import { BotPairStatsTable } from './BotPairStatsTable';
 import {
   buildBotStatsBreakdown,
   buildBotStatsHeadline,
-  buildBotSymbolStatsRows,
   type BotStatsSourceBot,
 } from './botStatsViewModel';
+import {
+  buildPairStatsRows,
+  buildPairStatsRowsFromSymbolStats,
+} from './pairStatsViewModel';
 
 export interface BotStatsTabProps {
   botId: string;
@@ -68,9 +75,7 @@ export const BotStatsTab: FC<BotStatsTabProps> = ({
     shareId: shareId ?? null,
     enabled: active,
     existing: bot.stats as Parameters<typeof buildBotStatsHeadline>[0] | undefined,
-    existingSymbolStats: bot.symbolStats as Parameters<
-      typeof buildBotSymbolStatsRows
-    >[0],
+    existingSymbolStats: bot.symbolStats as BotSymbolsStats[] | undefined,
   });
 
   const headline = useMemo(
@@ -81,9 +86,28 @@ export const BotStatsTab: FC<BotStatsTabProps> = ({
     () => (stats ? buildBotStatsBreakdown(stats, bot) : null),
     [stats, bot]
   );
-  const symbolRows = useMemo(
-    () => buildBotSymbolStatsRows(symbolStats),
-    [symbolStats]
+  // Per-pair breakdown only earns its space on multi-pair bots. The stored
+  // symbolStats seed one row even for a single-pair bot, hence `> 1`.
+  const multiPair =
+    !!bot.settings?.useMulti ||
+    (bot.symbol?.length ?? 0) > 1 ||
+    (symbolStats?.length ?? 0) > 1;
+
+  const [range, setRange] = useState<PeriodValue | null>(null);
+  const pairStats = useBotPairStats({
+    botId,
+    type: botType,
+    shareId: shareId ?? null,
+    from: range?.from.getTime(),
+    to: range?.to.getTime(),
+    enabled: active && multiPair,
+  });
+  const pairRows = useMemo(
+    () =>
+      pairStats.unavailable
+        ? buildPairStatsRowsFromSymbolStats(symbolStats)
+        : buildPairStatsRows(pairStats.rows),
+    [pairStats.unavailable, pairStats.rows, symbolStats]
   );
 
   if (isLoading) return <StatsSkeleton />;
@@ -109,12 +133,35 @@ export const BotStatsTab: FC<BotStatsTabProps> = ({
   // in read as a duplicate of the tab bar right above it. Legacy main-dash
   // needed the switcher because its widget lived inline on the bot page with
   // no tab of its own; here the drawer tab does that job.
+  // DrawerSection (a headerless WidgetWrapper) is what carries the "Enter
+  // fullscreen" control; without it this tab had no route into full-screen at
+  // all. This component is rendered straight into the tab rather than through
+  // the drawer widget registry, so it has no widget id of its own — derive a
+  // stable one from the bot. `bare` keeps the title off
+  // the tab body (the tab bar above already says "Stats") while still naming
+  // the widget in the full-screen view.
   return (
-    <div className="flex flex-col gap-md">
-      <BotStatsOverview vm={headline} />
-      <BotStatsBreakdown vm={breakdown} />
-      {/* Per-pair breakdown only earns its space on multi-pair bots. */}
-      {symbolRows.length > 1 && <BotSymbolStatsTable rows={symbolRows} />}
-    </div>
+    <DrawerSection
+      widgetId={`drawer-bot-stats-${botId}`}
+      widgetType="drawer-bot-stats"
+      title="Statistics"
+      bare
+    >
+      <div className="flex flex-col gap-md">
+        <BotStatsOverview vm={headline} />
+        <BotStatsBreakdown vm={breakdown} />
+        {multiPair && (
+          <BotPairStatsTable
+            botId={botId}
+            rows={pairRows}
+            isLoading={pairStats.isLoading}
+            range={range}
+            // An older backend has no per-pair query, so no range to apply.
+            {...(pairStats.unavailable ? {} : { onRangeChange: setRange })}
+            fromStoredStats={pairStats.unavailable}
+          />
+        )}
+      </div>
+    </DrawerSection>
   );
 };

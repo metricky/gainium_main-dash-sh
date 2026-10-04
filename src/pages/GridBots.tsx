@@ -1,4 +1,7 @@
 import { isReadOnly } from '@/lib/demoMode';
+import { durationTextToDays } from '@/lib/utils/durationText';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
+import { BOT_METRIC_DESCRIPTIONS } from '@/lib/botMetricDescriptions';
 import { isReady as isAnalyticsReady } from '@/lib/analytics';
 import { useStarredBotsStore } from '@/stores/starredBotsStore';
 import {
@@ -17,6 +20,7 @@ import {
   filterStartableBots,
   filterStoppableBots,
 } from '@/utils/botStatusUtils';
+import { useBulkBotConfirm } from '@/hooks/useBulkBotConfirm';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
 import {
@@ -99,6 +103,14 @@ import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import { transformGridBotToBot, type GridBot } from '../types/gridBot';
 import { useShareContext } from '../hooks/useShareContext';
 import { useDrawerBot } from '../hooks/useDrawerBot';
+import { useBotListPaging } from '../hooks/useBotListPaging';
+import { CANONICAL_GRID_STATUSES } from '../lib/botList/botListWindow';
+import {
+  BOT_LIST_PARTIAL_TOOLTIP,
+  GRID_BOT_SERVER_FIELDS,
+} from '../lib/botList/botListServerFields';
+import { withServerFields } from '../components/ui/data-table/serverSide';
+import { PartialCount } from '../components/ui/large-account';
 import { useAuthStore } from '../stores/authStore';
 
 const GRID_BOT_TYPE_ID = 'grid';
@@ -131,9 +143,6 @@ const BotTableActions: React.FC<BotTableActionsProps> = ({
     gridFutures: isFuturesExchange(bot.exchange),
     gridHasOpenPosition: (originalBotData?.position?.price ?? 0) !== 0,
     gridIsShort: originalBotData?.position?.side === PositionSide.SHORT,
-    onCopyToLive: () => {
-      toast.info('Copy to live not yet implemented for grid bots');
-    },
   });
 
   return (
@@ -222,10 +231,29 @@ const GridBots: React.FC = () => {
     [showArchived]
   );
   const {
-    bots: gridBots,
+    bots: canonicalGridBots,
     isLoading: botsLoading,
     isError: botsError,
+    total: canonicalTotal,
+    isPartial: canonicalPartial,
+    loadedCount: canonicalLoaded,
   } = useGridBots(options);
+
+  // A list the server capped pages on the server (sorted and searched there);
+  // one that fits in what is loaded stays client-side, with no requests.
+  const botListPaging = useBotListPaging({
+    type: 'grid',
+    tableId: 'grid-bots',
+    canonical: {
+      bots: canonicalGridBots,
+      total: canonicalTotal,
+      isPartial: canonicalPartial,
+      loadedCount: canonicalLoaded,
+    },
+    statuses: showArchived ? ['archive'] : CANONICAL_GRID_STATUSES,
+    fields: GRID_BOT_SERVER_FIELDS,
+  });
+  const gridBots = botListPaging.bots;
 
   // Share-link path: see TradingBots.tsx
   const currentUser = useAuthStore((s) => s.user);
@@ -233,6 +261,8 @@ const GridBots: React.FC = () => {
 
   const deleteMutation = useBotDelete();
   const archiveMutation = useBotArchive();
+  const { confirmRestart, confirmArchive, confirmDialog } =
+    useBulkBotConfirm();
 
   // Bulk delete modal state
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
@@ -243,6 +273,7 @@ const GridBots: React.FC = () => {
 
   // Bulk status change modal state
   const [bulkStatusOpen, setBulkStatusOpen] = useState(false);
+  const [bulkStatusSelectedCount, setBulkStatusSelectedCount] = useState(0);
   const [bulkStatusTargets, setBulkStatusTargets] = useState<
     ReturnType<typeof transformGridBotToBot>[]
   >([]);
@@ -321,33 +352,28 @@ const GridBots: React.FC = () => {
       );
       return;
     }
+    setBulkStatusSelectedCount(bots.length);
     setBulkStatusTargets(filteredBots);
     setBulkStatusAction(action);
     setBulkStatusOpen(true);
   };
 
-  const handleBulkRestart = async (
+  const handleBulkRestart = (
     bots: ReturnType<typeof transformGridBotToBot>[]
-  ) => {
-    const restartableBots = filterRestartableBots(bots);
-
-    if (restartableBots.length === 0) {
-      toast.info('No active bots selected');
-      return;
-    }
-
-    try {
-      for (const b of restartableBots) {
-        await restartMutation.mutateAsync({
-          id: b.id,
-          type: BotTypesEnum.grid,
-        });
+  ) =>
+    confirmRestart(bots, async (restartableBots) => {
+      try {
+        for (const b of restartableBots) {
+          await restartMutation.mutateAsync({
+            id: b.id,
+            type: BotTypesEnum.grid,
+          });
+        }
+        toast.success(`Restarted ${restartableBots.length} bot(s)`);
+      } catch {
+        toast.error('Failed to restart selected bots');
       }
-      toast.success(`Restarted ${restartableBots.length} bot(s)`);
-    } catch {
-      toast.error('Failed to restart selected bots');
-    }
-  };
+    });
 
   // Confirm bulk status change
   const handleConfirmBulkStatusChange = async (
@@ -665,6 +691,9 @@ const GridBots: React.FC = () => {
     );
   };
 
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the `filterType: 'date'` filter matches on — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   // Define columns for the data table
   const columns: ColumnDef<ReturnType<typeof transformGridBotToBot>>[] =
     useMemo(
@@ -672,7 +701,10 @@ const GridBots: React.FC = () => {
         {
           accessorKey: 'name',
           header: 'NAME',
-          meta: { filterType: 'string' },
+          meta: {
+            filterType: 'string',
+            description: BOT_METRIC_DESCRIPTIONS.grid.name,
+          },
           cell: ({ getValue, row }) => {
             const name = getValue() as string;
             const id = row.original.id as string;
@@ -683,6 +715,7 @@ const GridBots: React.FC = () => {
           id: 'coinPair',
           header: 'COIN PAIR',
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.coinPair,
             filterType: 'array',
             getFilterValue: (row: unknown) => {
               const bot = row as Record<string, unknown>;
@@ -721,6 +754,7 @@ const GridBots: React.FC = () => {
           accessorKey: 'budget',
           header: 'BUDGET',
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.budget,
             filterType: 'number',
             enableTotalsRow: true,
             totalsDefaultAggregation: 'sum',
@@ -738,8 +772,9 @@ const GridBots: React.FC = () => {
         },
         {
           accessorKey: 'value',
-          header: 'VALUE',
+          header: 'CURRENT VALUE',
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.currentValue,
             filterType: 'number',
             enableTotalsRow: true,
             totalsDefaultAggregation: 'sum',
@@ -760,9 +795,10 @@ const GridBots: React.FC = () => {
         },
         {
           id: 'valueChange',
-          header: 'VALUE CHANGE',
-          accessorFn: (row) => row.valueChangeUsd || 0,
+          header: 'NET PNL',
+          accessorFn: (row) => row.valueChangeUsdNumber || 0,
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.netPnl,
             filterType: 'number',
             enableTotalsRow: true,
             totalsDefaultAggregation: 'sum',
@@ -773,7 +809,7 @@ const GridBots: React.FC = () => {
               return <Skeleton className="h-4 w-16" />;
             }
             const bot = row.original;
-            const valueChangeUsd = +(bot.valueChangeUsd || 0);
+            const valueChangeUsd = bot.valueChangeUsdNumber || 0;
             const valueChangePerc = +(bot.valueChange || 0);
             return (
               <ProfitAndPerc
@@ -800,10 +836,57 @@ const GridBots: React.FC = () => {
           ),
         },
         {
+          id: 'unrealizedPnl',
+          header: 'UNREALIZED PNL',
+          accessorFn: (row) => row.unrealizedPnlUsd || 0,
+          meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.unrealizedPnl,
+            filterType: 'number',
+            enableTotalsRow: true,
+            totalsDefaultAggregation: 'sum',
+          },
+          aggregationFn: 'sum',
+          cell: ({ row }) => {
+            if (row.original.isActive && row.original.loadedPrices === false) {
+              return <Skeleton className="h-4 w-16" />;
+            }
+            const bot = row.original;
+            const unrealized = bot.unrealizedPnlUsd || 0;
+            // Measured against what the bot started with, the same basis Net
+            // PnL uses beside it.
+            const initialBalance = bot.initialBalanceUsd || 0;
+            const percentage =
+              initialBalance > 0 ? (unrealized / initialBalance) * 100 : 0;
+            return (
+              <ProfitAndPerc
+                value={unrealized}
+                percentage={percentage}
+                privacyMode={privacyMode}
+                chipPosition="right"
+                size="sm"
+              />
+            );
+          },
+          footerValue: (value: number) => (
+            <span
+              className={
+                privacyMode
+                  ? 'text-muted-foreground font-bold'
+                  : value >= 0
+                    ? 'text-success font-bold'
+                    : 'text-destructive font-bold'
+              }
+            >
+              {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            </span>
+          ),
+        },
+        {
           id: 'avgDaily',
           header: 'AVG DAILY',
           accessorFn: (row) => row.avgDaily || 0,
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.avgDaily,
             filterType: 'number',
             enableTotalsRow: true,
             totalsDefaultAggregation: 'average',
@@ -840,7 +923,10 @@ const GridBots: React.FC = () => {
         {
           accessorKey: 'annualizedReturn',
           header: 'ANNUALIZED RETURN',
-          meta: { filterType: 'number' },
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.annualizedReturn,
+          },
           cell: ({ row }) => {
             const annualizedReturnPerc = row.original.annualizedReturn ?? 0;
             const annualizedReturnUsd = (row.original.avgDaily ?? 0) * 365;
@@ -857,9 +943,10 @@ const GridBots: React.FC = () => {
         },
         {
           id: 'totalProfit',
-          header: 'TOTAL PROFIT, $',
+          header: 'REALIZED PNL, $',
           accessorFn: (row) => row.profit.totalUsd || 0,
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.realizedPnl,
             filterType: 'number',
             enableTotalsRow: true,
             totalsDefaultAggregation: 'sum',
@@ -868,7 +955,11 @@ const GridBots: React.FC = () => {
           cell: ({ row }) => {
             const bot = row.original;
             const totalProfit = bot.profit.totalUsd || 0;
-            const profitPerc = bot.profitPerc || 0;
+            // `profitPerc` is FREE profit over the initial balance, so it
+            // under-reported the dollar figure beside it on any running bot
+            // holding unreleased profit. `fullProfitPerc` is the same
+            // numerator as `totalProfit`.
+            const profitPerc = bot.fullProfitPerc || 0;
             return (
               <ProfitAndPerc
                 value={totalProfit}
@@ -896,7 +987,15 @@ const GridBots: React.FC = () => {
         {
           id: 'transactions',
           header: 'TRANSACTIONS',
-          meta: { filterType: 'number' },
+          // Without an accessor TanStack treats the column as unfilterable
+          // (and unsortable), so the numeric filter below never appeared.
+          accessorFn: (row) =>
+            (row.transactionsCount?.buy || 0) +
+            (row.transactionsCount?.sell || 0),
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.transactions,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const buyCount = bot.transactionsCount?.buy || 0;
@@ -908,22 +1007,37 @@ const GridBots: React.FC = () => {
         {
           accessorKey: 'created',
           header: 'CREATED',
-          meta: { filterType: 'string' },
+          meta: {
+            filterType: 'date',
+            description: BOT_METRIC_DESCRIPTIONS.grid.created,
+          },
           cell: ({ getValue }) => {
             const created = getValue() as string;
             const date = new Date(created);
-            return date.toLocaleDateString();
+            return date.toLocaleDateString(undefined, {
+              timeZone: accountTimeZone,
+            });
           },
         },
         {
           accessorKey: 'workingTime',
           header: 'TRADING TIME',
-          meta: { filterType: 'string' },
+          meta: {
+            filterType: 'number',
+            filterUnit: 'days',
+            getNumericFilterValue: (row: unknown) =>
+              durationTextToDays((row as { workingTime?: string }).workingTime),
+            description: BOT_METRIC_DESCRIPTIONS.grid.tradingTime,
+          },
         },
         {
           id: 'totalGrids',
           header: 'TOTAL GRIDS',
-          meta: { filterType: 'number' },
+          accessorFn: (row) => row.levels.all.buy + row.levels.all.sell,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.totalGrids,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             return `${bot.levels.all.buy + bot.levels.all.sell}`;
@@ -932,7 +1046,12 @@ const GridBots: React.FC = () => {
         {
           id: 'gridLevels',
           header: 'GRID LEVELS',
-          meta: { filterType: 'string' },
+          accessorFn: (row) =>
+            `${row.levels.active.buy + row.levels.active.sell} / ${row.levels.all.buy + row.levels.all.sell}`,
+          meta: {
+            filterType: 'string',
+            description: BOT_METRIC_DESCRIPTIONS.grid.gridLevels,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             return `${bot.levels.active.buy + bot.levels.active.sell} / ${bot.levels.all.buy + bot.levels.all.sell}`;
@@ -942,6 +1061,7 @@ const GridBots: React.FC = () => {
           accessorKey: 'exchangeUUID',
           header: 'EXCHANGE',
           meta: {
+            description: BOT_METRIC_DESCRIPTIONS.grid.exchange,
             filterType: 'array',
             getFilterValue: (row: unknown) => {
               const bot = row as Record<string, unknown>;
@@ -982,7 +1102,17 @@ const GridBots: React.FC = () => {
         {
           accessorKey: 'status',
           header: 'BOT STATUS',
-          meta: { filterType: 'string' },
+          meta: {
+            // Bot status is a closed enum, so it filters like one. `array` is
+            // the filter type that offers `Is any of` / `Is none of` and the
+            // checkbox multi-select, letting ONE condition select several
+            // statuses. Two separate conditions on a column are ANDed, so
+            // without this a user wanting "open or range" can only build a
+            // filter that matches nothing. Same declaration as the DCA bots
+            // status column, and as EXCHANGE on this page.
+            filterType: 'array',
+            description: BOT_METRIC_DESCRIPTIONS.grid.status,
+          },
           cell: ({ getValue, row }) => {
             const status = getValue() as string;
             const reason = (row.original as { statusReason?: unknown })
@@ -1013,13 +1143,21 @@ const GridBots: React.FC = () => {
         {
           id: 'drawdown',
           header: 'DRAWDOWN',
-          meta: { filterType: 'number' },
+          // `stats.drawdownPercent` is stored as a POSITIVE magnitude (see
+          // core/src/bot/gridMonitor.ts); sort/filter on that magnitude, but
+          // feed the chip a negative so it is coloured as a loss, like every
+          // other drawdown cell in the app.
+          accessorFn: (row) => Math.abs(row.stats?.drawdownPercent || 0) * 100,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.drawdown,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const drawdownPerc = bot.stats?.drawdownPercent || 0;
             return (
               <ProfitLossPercChip
-                value={Math.abs(drawdownPerc) * 100}
+                value={-Math.abs(drawdownPerc) * 100}
                 size="sm"
                 showSign={false}
               />
@@ -1029,7 +1167,11 @@ const GridBots: React.FC = () => {
         {
           id: 'runUp',
           header: 'RUN UP',
-          meta: { filterType: 'number' },
+          accessorFn: (row) => (row.stats?.runUpPercent || 0) * 100,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.runUp,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const runUpPerc = bot.stats?.runUpPercent || 0;
@@ -1041,7 +1183,13 @@ const GridBots: React.FC = () => {
         {
           id: 'timeInLoss',
           header: 'TIME IN LOSS',
-          meta: { filterType: 'number' },
+          // The percentage the cell shows, not the raw tracked milliseconds.
+          accessorFn: (row) =>
+            ((row.stats?.timeInLoss || 0) / (row.stats?.trackTime || 1)) * 100,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.timeInLoss,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const timeInLoss = bot.stats?.timeInLoss || 0;
@@ -1059,7 +1207,13 @@ const GridBots: React.FC = () => {
         {
           id: 'timeInProfit',
           header: 'TIME IN PROFIT',
-          meta: { filterType: 'number' },
+          accessorFn: (row) =>
+            ((row.stats?.timeInProfit || 0) / (row.stats?.trackTime || 1)) *
+            100,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.timeInProfit,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const timeInProfit = bot.stats?.timeInProfit || 0;
@@ -1077,7 +1231,11 @@ const GridBots: React.FC = () => {
         {
           id: 'creditsCost',
           header: 'CREDITS COST',
-          meta: { filterType: 'number' },
+          accessorFn: (row) => row.cost || 0,
+          meta: {
+            filterType: 'number',
+            description: BOT_METRIC_DESCRIPTIONS.grid.creditsCost,
+          },
           cell: ({ row }) => {
             const bot = row.original;
             const cost = bot.cost || 0;
@@ -1088,6 +1246,7 @@ const GridBots: React.FC = () => {
           id: 'botId',
           accessorFn: (row) => row.id,
           header: 'BOT ID',
+          meta: { description: BOT_METRIC_DESCRIPTIONS.grid.botId },
           cell: ({ row }) => {
             const value = row.original.id;
             if (!value)
@@ -1113,8 +1272,13 @@ const GridBots: React.FC = () => {
           size: 56,
         },
       ],
-      [privacyMode, botDataMap]
+      [privacyMode, botDataMap, accountTimeZone]
     );
+  // Server mode only honours sorts/filters with a server field.
+  const serverColumns = useMemo(
+    () => withServerFields(columns, GRID_BOT_SERVER_FIELDS),
+    [columns]
+  );
 
   // archived/active counts are intentionally not shown in header anymore
 
@@ -1149,6 +1313,8 @@ const GridBots: React.FC = () => {
   // Put starred bots first and then sort by creation date (newest first)
   const starredBotIds = useStarredBotsStore((s) => s.starredBotIds);
   const orderedFilteredData = useMemo(() => {
+    // Server-paged rows arrive in the server's order; keep it.
+    if (botListPaging.serverPaged) return filteredData;
     return [...filteredData].sort((a, b) => {
       const aStar = starredBotIds.has(a.id) ? 0 : 1;
       const bStar = starredBotIds.has(b.id) ? 0 : 1;
@@ -1164,7 +1330,7 @@ const GridBots: React.FC = () => {
       const bCreated = b.createdAt ?? findOriginalCreated(b.id) ?? 0;
       return bCreated - aCreated;
     });
-  }, [filteredData, starredBotIds, gridBots]);
+  }, [filteredData, starredBotIds, gridBots, botListPaging.serverPaged]);
 
   // Keep current values in refs so BotCardWrapper can read the latest values
   // without recreating the component type (which causes all cards to remount).
@@ -1300,6 +1466,17 @@ const GridBots: React.FC = () => {
                         Active Grid Bots
                       </h2>
                       <StaleIndicator componentId="grid-bots" />
+                      {botListPaging.partial && (
+                        <PartialCount
+                          shown={botListPaging.partial.shown}
+                          total={botListPaging.partial.total}
+                          noun="bots"
+                          tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                            botListPaging.partial.shown,
+                            botListPaging.partial.total
+                          )}
+                        />
+                      )}
                     </div>
                   </div>
 
@@ -1342,6 +1519,17 @@ const GridBots: React.FC = () => {
                         Active Grid Bots
                       </h2>
                       <StaleIndicator componentId="grid-bots" />
+                      {botListPaging.partial && (
+                        <PartialCount
+                          shown={botListPaging.partial.shown}
+                          total={botListPaging.partial.total}
+                          noun="bots"
+                          tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                            botListPaging.partial.shown,
+                            botListPaging.partial.total
+                          )}
+                        />
+                      )}
                     </div>
                   </div>
 
@@ -1383,7 +1571,8 @@ const GridBots: React.FC = () => {
               >
                 <DataTable
                   tableId="grid-bots"
-                  columns={columns}
+                  columns={serverColumns}
+                  serverSide={botListPaging.serverSide}
                   data={orderedFilteredData}
                   enableGlobalFilter={true}
                   enableColumnFilters={true}
@@ -1502,15 +1691,16 @@ const GridBots: React.FC = () => {
                             id: 'archive',
                             label: showArchived ? 'Unarchive' : 'Archive',
                             icon: Archive,
-                            onAction: (bots) => {
-                              bots.forEach((b) =>
-                                archiveMutation.mutate({
-                                  id: b.id,
-                                  archive: !showArchived,
-                                  type: BotTypesEnum.grid,
-                                })
-                              );
-                            },
+                            onAction: (bots) =>
+                              confirmArchive(bots, !showArchived, (targets) =>
+                                targets.forEach((b) =>
+                                  archiveMutation.mutate({
+                                    id: b.id,
+                                    archive: !showArchived,
+                                    type: BotTypesEnum.grid,
+                                  })
+                                )
+                              ),
                           },
                         ]
                   }
@@ -1557,6 +1747,7 @@ const GridBots: React.FC = () => {
                   title={`Delete ${bulkDeleteTargets.length} bot${bulkDeleteTargets.length === 1 ? '' : 's'}`}
                   description={`Are you sure you want to delete ${bulkDeleteTargets.length} selected bot${bulkDeleteTargets.length === 1 ? '' : 's'}? This action cannot be undone.`}
                   itemName={`${bulkDeleteTargets.length} bots`}
+                  bulkCount={bulkDeleteTargets.length}
                   itemType="bot"
                   additionalInfo={{
                     activeDeals: /*  bulkDeleteTargets.reduce(
@@ -1575,10 +1766,11 @@ const GridBots: React.FC = () => {
                     ),
                     currency:
                       bulkDeleteTargets[0]?.pair?.split('/')[1] || 'USD',
-                    lastActivity: 'Multiple',
                   }}
                   isLoading={bulkDeleteLoading}
                 />
+
+                {confirmDialog}
 
                 {/* Bulk status change modal */}
                 <BotStatusConfirmationModal
@@ -1586,6 +1778,8 @@ const GridBots: React.FC = () => {
                   onOpenChange={setBulkStatusOpen}
                   onConfirm={handleConfirmBulkStatusChange}
                   botName={`${bulkStatusTargets.length} bot${bulkStatusTargets.length === 1 ? '' : 's'}`}
+                  bulkCount={bulkStatusTargets.length}
+                  bulkSelectedCount={bulkStatusSelectedCount}
                   currentStatus={
                     bulkStatusAction === 'start' ? 'closed' : 'open'
                   }

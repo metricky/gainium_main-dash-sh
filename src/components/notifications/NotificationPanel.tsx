@@ -1,5 +1,8 @@
 import { SHORTCUT_IDS } from '@/config/shortcuts';
-import { useNotifications } from '@/hooks/useNotifications';
+import {
+  formatUnreadCount,
+  useNotifications,
+} from '@/hooks/useNotifications';
 import { showShortcutHint } from '@/lib/shortcutHints';
 import { toast } from '@/lib/toast';
 import {
@@ -149,6 +152,9 @@ const NotificationPanel: React.FC = () => {
     search: debouncedSearch,
     page,
     pageSize: 20,
+    // The feed is only fetched while the panel is open; the bell badge
+    // comes from the navbar's count-only query.
+    enabled: isNotificationsPanelOpen,
   });
 
   const getBotUrl = useCallback((notification: (typeof notifications)[0]) => {
@@ -439,7 +445,13 @@ const NotificationPanel: React.FC = () => {
             (notification.botId || notification.terminal))
         );
 
-        const actions = (
+        // Only offer "Mark as read" when there is actually something to mark.
+        // An already-read card has no work to do, so the click fired a no-op
+        // mutation and nothing on screen changed — which reads as a broken
+        // button. Users whose Updates/News are fully read (unread count 0)
+        // saw an active ✓✓ on every card that could never do anything.
+        // Same `!isRead` gate NotificationItem already uses.
+        const actions = notification.isRead ? null : (
           <Button
             size="sm"
             variant="ghost"
@@ -466,14 +478,22 @@ const NotificationPanel: React.FC = () => {
           ? () => handleNotificationClick(notification)
           : undefined;
 
-        const newBadge = !notification.isRead ? (
+        // Read cards get the same "Read" marker NotificationItem uses, so a
+        // successful mark is observable and an already-read card is
+        // distinguishable from an unread one at a glance.
+        const statusAddon = notification.isRead ? (
+          <span className="flex items-center gap-0.5 text-xs text-success">
+            <CheckCheck className="h-3 w-3" />
+            Read
+          </span>
+        ) : (
           <Badge
             variant="default"
             className="min-w-0 h-5 px-2 py-0 text-xs font-semibold bg-destructive/10 text-destructive border-0 rounded-full"
           >
             New
           </Badge>
-        ) : null;
+        );
 
         // removed category chip (type badge) next to the title by design
 
@@ -512,7 +532,11 @@ const NotificationPanel: React.FC = () => {
               </div>
             ) : null,
           actions,
-          titleAddon: newBadge,
+          titleAddon: statusAddon,
+          // Mirrors NotificationItem's read treatment.
+          ...(notification.isRead
+            ? { className: 'opacity-75 hover:opacity-90' }
+            : {}),
         };
 
         if (onClick) {
@@ -553,7 +577,7 @@ const NotificationPanel: React.FC = () => {
               showShortcutHint('toggleNotifications');
               toggleNotificationsPanel();
             }}
-            aria-label={`Notifications${unreadCounts.total > 0 ? ` (${unreadCounts.total} unread)` : ''}`}
+            aria-label={`Notifications${unreadCounts.total > 0 ? ` (${formatUnreadCount(unreadCounts.total)} unread)` : ''}`}
           >
             <Bell className="h-4 w-4" />
           </Button>
@@ -565,7 +589,7 @@ const NotificationPanel: React.FC = () => {
                   : 'bg-success hover:bg-success/90'
               }`}
             >
-              {unreadCounts.total}
+              {formatUnreadCount(unreadCounts.total)}
             </Badge>
           )}
         </div>
@@ -581,7 +605,7 @@ const NotificationPanel: React.FC = () => {
                     variant="default"
                     className="min-w-5 h-5 px-1 text-xs flex items-center justify-center border-0 bg-destructive rounded-full"
                   >
-                    {unreadCounts.total}
+                    {formatUnreadCount(unreadCounts.total)}
                   </Badge>
                 )}
                 <ShortcutChip id={SHORTCUT_IDS.ActionNotifications} />
@@ -625,7 +649,7 @@ const NotificationPanel: React.FC = () => {
                     All
                     {unreadCounts.total > 0 && (
                       <Badge className="min-w-4 h-4 px-1 text-xs bg-success text-white border-0 rounded-full flex items-center justify-center">
-                        {unreadCounts.total}
+                        {formatUnreadCount(unreadCounts.total)}
                       </Badge>
                     )}
                   </TabsTrigger>

@@ -125,6 +125,52 @@ class DB<T extends Record<string, unknown>> {
     }
   }
 
+  // Every entry WITH its `data` payload, read in one transaction.
+  public async getAllFull(): Promise<T[]> {
+    try {
+      const db = await this.initDb();
+      if (!db || !this.DBCredentials) {
+        throw new Error(`DB not found`);
+      }
+      const tx = db.transaction(this.DBCredentials.store, 'readonly');
+      tx.onerror = (event) => {
+        this.handleError(
+          // @ts-ignore
+          `TX get all full error ${event.target?.error}.`
+        );
+      };
+      const objectStore = tx.objectStore(this.DBCredentials.store);
+      const result = (await objectStore.getAll()) as T[] | null;
+      await tx.done;
+      db.close();
+      return result ?? [];
+    } catch (e) {
+      this.handleError(`Catch error in get all full ${(e as Error).message}`);
+      return [];
+    }
+  }
+
+  // Every primary key, without reading any value. Values here can be
+  // megabytes each; reading keys lets a caller decide which few to load.
+  public async getAllKeys(): Promise<StoreKey<T, StoreNames<T>>[]> {
+    try {
+      const db = await this.initDb();
+      if (!db || !this.DBCredentials) {
+        throw new Error(`DB not found`);
+      }
+      const tx = db.transaction(this.DBCredentials.store, 'readonly');
+      const keys = (await tx
+        .objectStore(this.DBCredentials.store)
+        .getAllKeys()) as StoreKey<T, StoreNames<T>>[];
+      await tx.done;
+      db.close();
+      return keys;
+    } catch (e) {
+      this.handleError(`Catch error in get all keys ${(e as Error).message}`);
+      return [];
+    }
+  }
+
   public async getById(
     id: StoreKey<T, StoreNames<T>>,
     full = false
@@ -150,6 +196,45 @@ class DB<T extends Record<string, unknown>> {
     } catch (e) {
       this.handleError(`Catch error in get by id ${(e as Error).message}`);
       return null;
+    }
+  }
+
+  // Delete one entry without re-reading the rest of the store (removeId
+  // returns every remaining entry, which reads all of their values).
+  public async deleteKey(id: StoreKey<T, StoreNames<T>>): Promise<boolean> {
+    try {
+      const db = await this.initDb();
+      if (!db || !this.DBCredentials) {
+        throw new Error(`DB not found`);
+      }
+      const tx = db.transaction(this.DBCredentials.store, 'readwrite');
+      await tx.objectStore(this.DBCredentials.store).delete(id);
+      await tx.done;
+      db.close();
+      return true;
+    } catch (e) {
+      this.handleError(
+        `Catch error in delete key ${(e as Error).message}. ID: ${id}`
+      );
+      return false;
+    }
+  }
+
+  // Empty the store without reading it.
+  public async clear(): Promise<boolean> {
+    try {
+      const db = await this.initDb();
+      if (!db || !this.DBCredentials) {
+        throw new Error(`DB not found`);
+      }
+      const tx = db.transaction(this.DBCredentials.store, 'readwrite');
+      await tx.objectStore(this.DBCredentials.store).clear();
+      await tx.done;
+      db.close();
+      return true;
+    } catch (e) {
+      this.handleError(`Catch error in clear ${(e as Error).message}`);
+      return false;
     }
   }
 

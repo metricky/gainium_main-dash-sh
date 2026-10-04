@@ -13,6 +13,8 @@ import type {
   TrackEventEnum,
   SurveyResult,
   ChangeAlertsInput,
+  ChangeAlertTemplatesInput,
+  SendTestAlertInput,
   BotOrderSideEnum,
   GlobalVariablesTypeEnum,
   ResetAccountTypeEnum,
@@ -579,7 +581,9 @@ export const otherQueries = {
     return { query };
   },
 
-  getAllPairs: (fields?: string) => {
+  // `withUnderlying: false` builds the same query without `underlying`, for
+  // `useGraphQL`'s `fallbackQuery` against a backend that predates the field.
+  getAllPairs: (fields?: string, withUnderlying = true) => {
     const query = `query getAllPairs{
             getAllPairs{
                 status
@@ -607,6 +611,7 @@ export const otherQueries = {
                         crossAvailable
                         assetCategory
                         isCanonical
+                        ${withUnderlying ? 'underlying' : ''}
                         source`
                         }
                     }
@@ -1407,6 +1412,15 @@ export const otherQueries = {
   botId
   botName
   botType
+  linkedBots {
+  botId
+  botName
+  botType
+  dealId
+  size
+  startCondition
+  botStatus
+  }
   marginType
   }
   }
@@ -1973,9 +1987,65 @@ export const otherQueries = {
     return { query, variables };
   },
 
+  /**
+   * The admin-managed default wording for every alert type, this user's own
+   * overrides, and the placeholders they may use — one round trip so the
+   * template editor can render, preview and reset without a second request.
+   */
+  getAlertTemplates: () => {
+    const query = `query getAlertTemplates {
+  getAlertTemplates {
+  status
+  reason
+  data {
+  templates {
+  type
+  terminal
+  default { subject header body }
+  custom { subject header body }
+  }
+  variables { name description sample }
+  }
+  }
+  }`;
+    return { query, variables: {} };
+  },
+
+  /**
+   * Send the given wording to the user's own Telegram as a one-off preview.
+   * Takes the text from the caller, not from storage, so an unsaved edit can
+   * be tried before it is committed.
+   */
+  sendTestAlert: (input: SendTestAlertInput) => {
+    const query = `mutation sendTestAlert($input: sendTestAlertInput!) {
+  sendTestAlert(input: $input) {
+  status
+  reason
+  }
+  }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  changeAlertTemplates: (input: ChangeAlertTemplatesInput) => {
+    const query = `mutation changeAlertTemplates($input: userAlertTemplatesInput!) {
+  changeAlertTemplates(input: $input) {
+  status
+  reason
+  data {
+  type
+  terminal
+  custom { subject header body }
+  }
+  }
+  }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
   // Cloud-only: Telegram link is a cloud feature. App-sh has no
   // Telegram integration; shipped here as type-safe stubs so cloud's
-  // NotificationPreferencesSection can call through `otherQueries`.
+  // notification-channel slot fillers can call through `otherQueries`.
   getTelegramUsername: () => {
     const query = `query getTelegramUsername {
       getTelegramUsername {

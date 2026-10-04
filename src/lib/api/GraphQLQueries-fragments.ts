@@ -43,6 +43,7 @@ const botSettings = `
     tpSlLimit
     slLimit
     feeOrder
+    skipBalanceCheck
     `;
 
 const orders = `
@@ -165,6 +166,7 @@ assets {
     }
 }
 lastPrice
+lastUsdRate
 avgPrice
 usdRate
 share
@@ -173,6 +175,12 @@ position {
   qty
   price
   side
+}
+closeEntry {
+  qty
+  price
+  side
+  entry
 }
 exchangeUnassigned
 vars {${varsFragment}}
@@ -197,6 +205,9 @@ dcaCondition
     dcaVolumeRequiredChangeRef
     dcaVolumeMaxValue
 skipBalanceCheck
+allowRaiseToExchangeMin
+reduceToAvailableBalance
+reduceToAvailableMinSize
 baseSlOn
 closeByTimer
                     closeByTimerValue
@@ -216,6 +227,15 @@ adaptiveClose
     dynamicPriceFilterPriceType
 dynamicPriceFilterDirection
 useRiskReward
+rrSlType
+rrSlFixedValue
+dcaByMarket
+useSeparateMaxDealsOverAndUnder
+maxDealsOver
+maxDealsUnder
+useSeparateMaxDealsOverAndUnderPerSymbol
+maxDealsOverPerSymbol
+maxDealsUnderPerSymbol
 useNoOverlapDeals
   riskSlType
   riskSlAmountPerc
@@ -426,6 +446,10 @@ comboSmartGridsCount
                 closeAfterXwin
                 useCloseAfterXloss
                 closeAfterXloss
+                useCloseAfterXconsecutiveWin
+                closeAfterXconsecutiveWin
+                useCloseAfterXconsecutiveLoss
+                closeAfterXconsecutiveLoss
                 useCloseAfterXprofit
                 closeAfterXprofitValue
                 closeAfterXprofitCond
@@ -437,6 +461,7 @@ comboSmartGridsCount
                 useMinTP
                 minTp
                 closeDealType
+                closeOrderType
                 terminalDealType
                 useMultiTp
                 multiTp {
@@ -500,6 +525,15 @@ adaptiveClose
     dynamicPriceFilterPriceType
 dynamicPriceFilterDirection
 useRiskReward
+rrSlType
+rrSlFixedValue
+dcaByMarket
+useSeparateMaxDealsOverAndUnder
+maxDealsOver
+maxDealsUnder
+useSeparateMaxDealsOverAndUnderPerSymbol
+maxDealsOverPerSymbol
+maxDealsUnderPerSymbol
 useNoOverlapDeals
   riskSlType
   riskSlAmountPerc
@@ -710,6 +744,10 @@ useCloseAfterXwin
                 closeAfterXwin
                 useCloseAfterXloss
                 closeAfterXloss
+                useCloseAfterXconsecutiveWin
+                closeAfterXconsecutiveWin
+                useCloseAfterXconsecutiveLoss
+                closeAfterXconsecutiveLoss
                 useCloseAfterXprofit
                 closeAfterXprofitValue
                 closeAfterXprofitCond
@@ -721,6 +759,7 @@ useCloseAfterXwin
                 useMinTP
                 minTp
                 closeDealType
+                closeOrderType
                 terminalDealType
                 useMultiTp
                 multiTp {
@@ -898,6 +937,11 @@ note
                   base
                   quote
                 }
+                feeByAsset {
+                  asset
+                  total
+                  totalUsd
+                }
                 avgPrice
                 displayAvg
                 commission
@@ -933,6 +977,10 @@ baseSlOn
                       step
                       size
                     }
+                    dcaIndicatorLevels {
+                      orderSize
+                      minPercFromLast
+                    }
                     ordersCount
                     tpPerc
                     slPerc
@@ -947,6 +995,7 @@ baseSlOn
                     useSl
                     useDca
                     useSmartOrders
+                    dcaByMarket
                     activeOrdersCount
                     trailingSl
                     moveSL
@@ -959,6 +1008,7 @@ baseSlOn
                     useMinTP
                     minTp
                     closeDealType
+                    closeOrderType
                     orderSizeType
                     useMultiSl
                     multiSl {
@@ -1055,6 +1105,8 @@ fixedSlPrice
                   asset
                   id
                   type
+                  baseRemainder
+                  baseTotal
                 }
                 pendingReduceFunds {
                   qty
@@ -1131,6 +1183,11 @@ moveSlActivated
                   base
                   quote
                 }
+                feeByAsset {
+                  asset
+                  total
+                  totalUsd
+                }
                 avgPrice
                 displayAvg
                 commission
@@ -1180,6 +1237,7 @@ baseSlOn
                     useSl
                     useDca
                     useSmartOrders
+                    dcaByMarket
                     activeOrdersCount
                     trailingSl
                     moveSL
@@ -1192,6 +1250,7 @@ baseSlOn
                     useMinTP
                     minTp
                     closeDealType
+                    closeOrderType
                     orderSizeType
                     useMultiSl
                     multiSl {

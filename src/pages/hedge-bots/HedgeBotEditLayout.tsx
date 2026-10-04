@@ -45,11 +45,16 @@ import {
 import { Input } from '@/components/ui/input';
 import type { WidgetMenuActionItem } from '@/components/widgets/WidgetWrapper';
 import { Switch } from '@/components/ui/switch';
+import { TerminalButtonStack } from '@/components/ui/terminal-button-stack';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { HedgeBacktestListView } from '@/components/widgets/bots/backtest/HedgeBacktestTab';
+import { HEDGE_BACKTEST_LOAD_KEY } from '@/pages/hedge-bots/HedgeBotBacktests';
 import { BacktestResultsFullModal } from '@/components/widgets/bots/backtest/redesign/BacktestResultsFullModal';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
-import { useBotFormState } from '@/contexts/bots/form/BotFormProvider';
+import {
+  useBotFormBotVars,
+  useBotFormState,
+} from '@/contexts/bots/form/BotFormProvider';
 import {
   SHARED_SETTINGS_DEFAULTS,
   useHedgeBotForm,
@@ -75,6 +80,7 @@ import {
   BacktestSettingsDialog,
   type BacktestConfig,
 } from '@/features/bots/widgets/BotForm/components/BacktestSettingsDialog';
+import { toBacktestFee } from '@/utils/bots/backtestFee';
 import { BotFormSaveTemplateDialog } from '@/features/bots/widgets/BotForm/components/BotFormSaveTemplateDialog';
 import { BotSettingsImportExportDialog } from '@/features/bots/widgets/BotForm/components/BotSettingsImportExportDialog';
 import { QuickModeToggle } from '@/features/bots/widgets/BotForm/components/QuickModeToggle';
@@ -106,8 +112,10 @@ import { useShortcutStore } from '@/stores/shortcutStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
   BotTypesEnum,
+  ComboTpBase,
   ExchangeIntervals,
   StrategyEnum,
+  type BotVars,
   type ComboBot,
   type DCABot,
   type DCAGrid,
@@ -124,6 +132,7 @@ import { useContainerWidth } from '@/hooks/useContainerWidth';
 import { BotFormAlertButton } from '@/features/bots/widgets/BotForm/components/BotFormAlertButton';
 import { navigateToSetting } from '@/hooks/bots/useSettingsNavigation';
 import { validateDcaFormData } from '@/utils/bots/dca/validation';
+import { buildBotListRoute, buildBotViewRoute } from '@/utils/bots/navigation';
 import HedgeChartPanel from './HedgeChartPanel';
 import { HedgeNameInput } from './HedgeNameInput';
 import HedgeQuickLeg, {
@@ -219,6 +228,35 @@ const findLegBot = (
   strategy: StrategyEnum
 ): DCABot | ComboBot | undefined =>
   bots?.find((b) => b.settings?.strategy === strategy);
+
+/**
+ * Mirrors a leg's global-variable bindings into a ref the layout owns. The
+ * bindings live in the leg's own BotFormProvider, which unmounts on a tab
+ * switch, so save and the next mount of that leg read them from here.
+ */
+const HedgeLegVarsPublisher: React.FC<{
+  targetRef: React.MutableRefObject<BotVars | null | undefined>;
+}> = ({ targetRef }) => {
+  const botVars = useBotFormBotVars();
+  useEffect(() => {
+    targetRef.current = botVars;
+  }, [botVars, targetRef]);
+  return null;
+};
+
+/** The bindings a leg saves with: what the leg form last held, else the
+ *  loaded leg bot's (edit, or a clone's source bot). */
+const resolveLegVars = (
+  published: BotVars | null | undefined,
+  legBot: DCABot | ComboBot | null | undefined
+): BotVars | null =>
+  published !== undefined ? published : (legBot?.vars ?? null);
+
+/** The create/change input shape for `vars` — never null. */
+const toVarsInput = (vars: BotVars | null): BotVars => ({
+  list: vars?.list ?? [],
+  paths: vars?.paths ?? [],
+});
 
 /**
  * Hedge-level alert button for the form header (F8). The header sits outside
@@ -333,6 +371,10 @@ export const HedgeBotEditLayout: React.FC = () => {
   // Read at save time only — no re-render storm from per-keystroke changes.
   const longFormDataRef = useRef<BotFormData | null>(null);
   const shortFormDataRef = useRef<BotFormData | null>(null);
+  // Each leg's global-variable bindings, published from inside the leg's
+  // form. `undefined` = the leg has not mounted yet (use the loaded bot's).
+  const longVarsRef = useRef<BotVars | null | undefined>(undefined);
+  const shortVarsRef = useRef<BotVars | null | undefined>(undefined);
 
   // Re-mount seed per leg. We can't keep both legs mounted at once because
   // exampleOrdersStore (the example/estimated-orders pipeline) is a single
@@ -558,9 +600,17 @@ export const HedgeBotEditLayout: React.FC = () => {
     // forced per leg below, so saving as long+short still produces two
     // independent backend bots that the user can customize separately
     // after the initial save.
+    let longVars = resolveLegVars(longVarsRef.current, longLegBot);
+    let shortVars = resolveLegVars(shortVarsRef.current, shortLegBot);
     if (mode === 'create') {
-      if (!longData && shortData) longData = shortData;
-      if (!shortData && longData) shortData = longData;
+      if (!longData && shortData) {
+        longData = shortData;
+        longVars = shortVars;
+      }
+      if (!shortData && longData) {
+        shortData = longData;
+        shortVars = longVars;
+      }
     }
 
     if (!longData || !shortData) {
@@ -726,13 +776,13 @@ export const HedgeBotEditLayout: React.FC = () => {
       const longMapping = mapFormDataToPayload(
         longData,
         { mode },
-        null,
+        longVars,
         longExchange
       );
       const shortMapping = mapFormDataToPayload(
         shortData,
         { mode },
-        null,
+        shortVars,
         shortExchange
       );
 
@@ -773,13 +823,26 @@ export const HedgeBotEditLayout: React.FC = () => {
         const longPayload = {
           ...(longMapping.createPayload ?? {}),
           strategy: StrategyEnum.long,
+          vars: toVarsInput(longVars),
         };
         const shortPayload = {
           ...(shortMapping.createPayload ?? {}),
           strategy: StrategyEnum.short,
+          vars: toVarsInput(shortVars),
         };
         delete (longPayload as Record<string, unknown>)['importFrom'];
         delete (shortPayload as Record<string, unknown>)['importFrom'];
+        // Both hedge create inputs type each leg as createComboBotInput, which
+        // rejects the DCA-only fields (DECLARED_BY_DCA_ONLY) — even on a
+        // hedge DCA bot.
+        for (const payload of [longPayload, shortPayload] as Record<
+          string,
+          unknown
+        >[]) {
+          delete payload['allowRaiseToExchangeMin'];
+          delete payload['reduceToAvailableBalance'];
+          delete payload['reduceToAvailableMinSize'];
+        }
         const input = {
           long: longPayload as Parameters<
             typeof botQueries.createHedgeDCABot
@@ -917,10 +980,12 @@ export const HedgeBotEditLayout: React.FC = () => {
           long: {
             id: longBot._id,
             ...longDelta,
+            vars: toVarsInput(longVars),
           } as Parameters<typeof botQueries.changeHedgeDCABot>[0]['long'],
           short: {
             id: shortBot._id,
             ...shortDelta,
+            vars: toVarsInput(shortVars),
           } as Parameters<typeof botQueries.changeHedgeDCABot>[0]['short'],
           sharedSettings,
         };
@@ -972,6 +1037,9 @@ export const HedgeBotEditLayout: React.FC = () => {
         // the fresh formData and the leg widgets remount keyed off the
         // new seq, replacing user-edited state with the persisted state.
         refetchHedgeBot();
+        // Bindings, like settings, come back from the refetched legs.
+        longVarsRef.current = undefined;
+        shortVarsRef.current = undefined;
         setPostSaveSeq((n) => n + 1);
       }
     } catch (error) {
@@ -998,6 +1066,8 @@ export const HedgeBotEditLayout: React.FC = () => {
     exchanges,
     refetchHedgeBot,
     activeTab,
+    longLegBot,
+    shortLegBot,
   ]);
 
   const saveLabel = useMemo(() => {
@@ -1016,6 +1086,10 @@ export const HedgeBotEditLayout: React.FC = () => {
   const [showCelebration, setShowCelebration] = useState(false);
   const [createdBotId, setCreatedBotId] = useState<string | undefined>();
 
+  // Set by the dialog's buttons so the onClose that Celebration fires right
+  // after them doesn't override their navigation with the edit page.
+  const celebrationActionRef = useRef(false);
+
   const buildHedgeEditPath = useCallback(
     (id: string) =>
       botType === BotTypesEnum.hedgeCombo
@@ -1026,6 +1100,7 @@ export const HedgeBotEditLayout: React.FC = () => {
 
   const handleHedgeCelebrationStartBot = useCallback(() => {
     if (!createdBotId) return;
+    celebrationActionRef.current = true;
     const idToStart = createdBotId;
     // Fire-and-forget: navigate immediately, let the start mutation
     // resolve in the background. Matches the DCA/Combo/Grid pattern in
@@ -1066,21 +1141,31 @@ export const HedgeBotEditLayout: React.FC = () => {
         toast.error(`Failed to start hedge bot: ${message}`);
       }
     })();
-    navigate(buildHedgeEditPath(idToStart));
-  }, [
-    createdBotId,
-    botType,
-    tokens,
-    isLiveTrading,
-    navigate,
-    buildHedgeEditPath,
-  ]);
+    // `{base}/view/:id` is the list page with the bot open in its sidebar.
+    navigate(buildBotViewRoute(botType, idToStart));
+  }, [createdBotId, botType, tokens, isLiveTrading, navigate]);
 
+  const handleHedgeCelebrationAllBots = useCallback(() => {
+    celebrationActionRef.current = true;
+    navigate(buildBotListRoute(botType));
+  }, [botType, navigate]);
+
+  // The create pages key the form on the navigation, so pushing the create
+  // route again remounts it with defaults.
+  const handleHedgeCelebrationNewBot = useCallback(() => {
+    celebrationActionRef.current = true;
+    navigate(`${buildBotListRoute(botType)}/new`);
+  }, [botType, navigate]);
+
+  // Dismissing without a button (X / Esc) opens the new bot's edit page.
   const handleHedgeCelebrationClose = useCallback(() => {
     setShowCelebration(false);
-    if (createdBotId) {
+    const acted = celebrationActionRef.current;
+    celebrationActionRef.current = false;
+    if (createdBotId && !acted) {
       navigate(buildHedgeEditPath(createdBotId));
     }
+    setCreatedBotId(undefined);
   }, [createdBotId, navigate, buildHedgeEditPath]);
   const handleHedgeToggleStatus = useCallback(
     async (payload: { nextStatus: string; closeType?: string }) => {
@@ -1330,6 +1415,24 @@ export const HedgeBotEditLayout: React.FC = () => {
     [legBotType]
   );
 
+  // "Load in settings" from the standalone backtests page stages the row in
+  // sessionStorage and navigates here; apply it once on a fresh create form.
+  useEffect(() => {
+    if (mode !== 'create' || botId) return;
+    const staged = sessionStorage.getItem(HEDGE_BACKTEST_LOAD_KEY);
+    if (!staged) return;
+    sessionStorage.removeItem(HEDGE_BACKTEST_LOAD_KEY);
+    try {
+      handleLoadBacktestIntoForm(JSON.parse(staged) as HedgeBacktestHistoryItem);
+    } catch (error) {
+      logger.error('[HedgeBotEditLayout] Staged backtest parse failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    // Mount-only: consume the one-shot hand-off exactly once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Footer "Backtest complete · View results →" chip (T1). Derived from the
   // combined `hedgeResult` so the headline net %/win/deals reconcile with the
   // Combined tab in the results modal (same fields the redesign viewModel
@@ -1385,6 +1488,20 @@ export const HedgeBotEditLayout: React.FC = () => {
           toast.error('Pick a pair on both legs before backtesting.');
           return;
         }
+        // The footer hands over no fee. Use the long leg's looked-up fee —
+        // the one the settings dialog shows — and never run an unknown fee
+        // as 0.
+        const userFee = toBacktestFee(
+          cfg.userFee ?? snap.longFormData.userFee?.takerCommission
+        );
+        if (userFee === null) {
+          toast.error(
+            'Exchange fee is unknown for this pair. Set it in the backtest settings, then run again.'
+          );
+          setDialogSnapshot(snap);
+          setBacktestDialogOpen(true);
+          return;
+        }
         // Don't open the dialog — runner's progress flows through
         // the footer instead. Dialog state stays untouched.
         const from = cfg.startDate
@@ -1396,7 +1513,7 @@ export const HedgeBotEditLayout: React.FC = () => {
           ...(from !== undefined ? { from } : {}),
           ...(to !== undefined ? { to } : {}),
           slippagePercent: cfg.slippagePercent ?? 0,
-          userFee: cfg.userFee ?? 0,
+          userFee,
           RFR: cfg.RFR ?? '2',
           MAR: cfg.MAR ?? '7',
         });
@@ -1461,6 +1578,33 @@ export const HedgeBotEditLayout: React.FC = () => {
           />
         )}
       </SettingsRow>
+
+      {/* Hedge Combo only: the controller divides the combined PnL by the
+          legs' max usage (Max DCA) or actual usage (Used DCA). Legacy also
+          showed Limit/Market close types here, but the combined close is
+          always sent at market, so those are not offered. */}
+      {botType === BotTypesEnum.hedgeCombo && sharedSettings.useTp && (
+        <SettingsRow
+          name="Base take profit on"
+          tooltip="The combined take profit % can be based on the maximum DCA amount the legs could use or the DCA amount they actually used. For example, with a $1,000 maximum and a 10% take profit based on used DCA, the hedge closes at $10 profit while $100 is in use, and at $50 while $500 is. Based on max DCA, it always needs $100."
+          navId="hedge-tp-base"
+        >
+          <TerminalButtonStack
+            value={
+              sharedSettings.comboTpBase === ComboTpBase.filled
+                ? ComboTpBase.filled
+                : ComboTpBase.full
+            }
+            onValueChange={(value) =>
+              updateSharedSetting('comboTpBase', value as ComboTpBase)
+            }
+            options={[
+              { value: ComboTpBase.filled, label: 'Used DCA' },
+              { value: ComboTpBase.full, label: 'Max DCA' },
+            ]}
+          />
+        </SettingsRow>
+      )}
 
       <SettingsRow
         name="Stop Loss (hedge)"
@@ -1773,6 +1917,8 @@ export const HedgeBotEditLayout: React.FC = () => {
 
       longSeedRef.current = withStrategy(longForm, StrategyEnum.long);
       shortSeedRef.current = withStrategy(shortForm, StrategyEnum.short);
+      longVarsRef.current = null;
+      shortVarsRef.current = null;
 
       // handleSave overrides each leg's name with hedgeName, so seed the
       // shared name from the imported long leg or it would be wiped on save.
@@ -1822,6 +1968,8 @@ export const HedgeBotEditLayout: React.FC = () => {
       if (!template.hedge) return;
       longSeedRef.current = template.hedge.long;
       shortSeedRef.current = template.hedge.short;
+      longVarsRef.current = null;
+      shortVarsRef.current = null;
       setSharedSettings({
         ...SHARED_SETTINGS_DEFAULTS,
         ...template.hedge.sharedSettings,
@@ -1865,6 +2013,8 @@ export const HedgeBotEditLayout: React.FC = () => {
     shortQuickRef.current = null;
     longFormDataRef.current = null;
     shortFormDataRef.current = null;
+    longVarsRef.current = null;
+    shortVarsRef.current = null;
     setSharedSettings({ ...SHARED_SETTINGS_DEFAULTS });
     setHedgeName('');
     setSelectedHedgePreset(null);
@@ -1956,7 +2106,7 @@ export const HedgeBotEditLayout: React.FC = () => {
 
         <div className="rounded-lg bg-muted/40 p-md space-y-sm">
           <div>
-            <h3 className="text-sm font-semibold">Risk profile</h3>
+            <h3 className="text-sm font-semibold">Preset</h3>
             <p className="text-xs text-muted-foreground">
               Pick a starting point. Configures both legs identically. Switch to
               Manual to fine-tune each leg.
@@ -1964,7 +2114,7 @@ export const HedgeBotEditLayout: React.FC = () => {
           </div>
           <div
             role="radiogroup"
-            aria-label="Hedge risk profile"
+            aria-label="Hedge preset"
             // Auto-fit so the three cards sit side-by-side when the form panel
             // is wide but wrap to two / one column when it's narrow (the panel
             // width is independent of the viewport, so viewport breakpoints
@@ -2097,8 +2247,10 @@ export const HedgeBotEditLayout: React.FC = () => {
                   <>
                     <HedgeLegActiveChartPublisher leg="long" />
                     <HedgeLegAlertPublisher leg="long" />
+                    <HedgeLegVarsPublisher targetRef={longVarsRef} />
                   </>
                 }
+                initialBotVars={resolveLegVars(longVarsRef.current, longLegBot)}
                 {...(longSeedRef.current
                   ? { initialFormData: longSeedRef.current }
                   : {})}
@@ -2120,8 +2272,10 @@ export const HedgeBotEditLayout: React.FC = () => {
                   <>
                     <HedgeLegActiveChartPublisher leg="short" />
                     <HedgeLegAlertPublisher leg="short" />
+                    <HedgeLegVarsPublisher targetRef={shortVarsRef} />
                   </>
                 }
+                initialBotVars={resolveLegVars(shortVarsRef.current, shortLegBot)}
                 {...(shortSeedRef.current
                   ? { initialFormData: shortSeedRef.current }
                   : {})}
@@ -2221,6 +2375,11 @@ export const HedgeBotEditLayout: React.FC = () => {
             // progress only in the footer, which the user reported
             // as inconsistent. The dialog also auto-closes after a
             // successful run via the runner's resolution.
+            const userFee = toBacktestFee(cfg.userFee);
+            if (userFee === null) {
+              toast.error('Enter an exchange fee to run the backtest.');
+              return;
+            }
             await backtestRunner.run({
               timeframe: cfg.timeframe,
               from: cfg.startDate
@@ -2228,7 +2387,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 : undefined,
               to: cfg.endDate ? new Date(cfg.endDate).getTime() : undefined,
               slippagePercent: cfg.slippagePercent,
-              userFee: cfg.userFee,
+              userFee,
               RFR: cfg.RFR,
               MAR: cfg.MAR,
               ...(cfg.periodId && !['auto', 'custom'].includes(cfg.periodId)
@@ -2352,15 +2511,16 @@ export const HedgeBotEditLayout: React.FC = () => {
         open={showCelebration}
         onClose={handleHedgeCelebrationClose}
         title="🎉 Hedge bot created successfully!"
-        description="Your new hedge bot is ready to go. You can start it now or make additional adjustments first."
-        primaryAction={{
-          label: 'Start bot',
-          onClick: handleHedgeCelebrationStartBot,
-        }}
-        secondaryAction={{
-          label: 'Close',
-          variant: 'outline',
-        }}
+        description="Your new hedge bot is ready to go."
+        actions={[
+          { label: 'To all bots', onClick: handleHedgeCelebrationAllBots },
+          { label: 'New bot', onClick: handleHedgeCelebrationNewBot },
+          {
+            label: 'Start',
+            onClick: handleHedgeCelebrationStartBot,
+            variant: 'default',
+          },
+        ]}
       />
     </div>
   );

@@ -11,6 +11,9 @@
  */
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
 import { computeCompoundBreakdown } from '@/lib/utils/compoundBreakdown';
+import { dealWorkingMs } from '@/lib/utils/tradingMetrics';
+import { formatDuration } from '@/utils/formatters';
+import { extractPairAssets } from '@/utils/pairs';
 import type { ComboDeal } from '@/hooks/useComboDeals';
 
 export function comboDealToOpenTrade(
@@ -18,18 +21,22 @@ export function comboDealToOpenTrade(
   botNameFallback?: (botId: string) => string | undefined
 ) {
   const symbol = deal.symbol?.symbol || 'Unknown';
-  const baseSymbol = symbol.replace(deal.symbol?.quoteAsset || '', '');
+  // Not `symbol.replace(quoteAsset, '')`: that strips only the quote substring
+  // and leaves the venue's separator behind, so a hyphen-native symbol became a
+  // pair no one uses (`GAIB-USD` -> `GAIB-` -> `GAIB-/USD`). The API already
+  // reports the base asset; `extractPairAssets` is the shared fallback the
+  // Symbol cell itself renders through.
+  const baseSymbol =
+    deal.symbol?.baseAsset || extractPairAssets(symbol).baseAsset || symbol;
   const quoteSymbol = deal.symbol?.quoteAsset || 'USD';
   const pair = `${baseSymbol}/${quoteSymbol}`;
   const cost = deal.usage?.current?.quote || 0;
   const createdTime = deal.createTime ? new Date(deal.createTime) : new Date();
-  const workingMs = Date.now() - createdTime.getTime();
-  const workingDays = Math.floor(workingMs / (1000 * 60 * 60 * 24));
-  const workingHours = Math.floor(
-    (workingMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
-  );
-  const workingTime =
-    workingDays > 0 ? `${workingDays}D ${workingHours}H` : `${workingHours}H`;
+  // Closed/canceled deals stop at their close instead of counting on to now —
+  // see `dealWorkingMs` (V1 parity, bug #567). Formatted through the shared
+  // `formatDuration` so a sub-hour deal reports the minutes it ran instead of
+  // flooring to "0H" — see the sibling `dcaDealToOpenTrade` for the detail.
+  const workingTime = formatDuration(dealWorkingMs(deal));
 
   const hookUnrealized = (deal as { unrealizedUsd?: number }).unrealizedUsd;
   const unrealizedProfit =
@@ -125,8 +132,11 @@ export function comboDealToOpenTrade(
     transactionsSell: deal.transactions?.sell ?? 0,
     transactionsTotal:
       (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
+    // ISO string, same reason as closeTime: the Update Time column re-parses
+    // this value (to render it and to sort on it) and a locale string gets
+    // misparsed by new Date(), swapping day/month.
     updateTime: deal.updateTime
-      ? new Date(deal.updateTime).toLocaleString()
+      ? new Date(deal.updateTime).toISOString()
       : undefined,
     // ISO string so the Close Time column can re-parse it unambiguously.
     closeTime: deal.closeTime

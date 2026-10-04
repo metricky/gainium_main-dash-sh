@@ -2,21 +2,63 @@ import type { ComponentType, ReactElement } from 'react';
 import { Route } from 'react-router-dom';
 import ProtectedRoute from '../../../components/auth/ProtectedRoute';
 import { BotViewRedirect } from '../../../components/routing/BotViewRedirect';
-import TradingBots from '../../../pages/TradingBots';
-import TradingBotNew from '../../../pages/bots/TradingBotNew';
-import TradingBotEdit from '../../../pages/bots/TradingBotEdit';
-import ComboBots from '../../../pages/ComboBots';
-import ComboBotNew from '../../../pages/bots/ComboBotNew';
-import ComboBotEdit from '../../../pages/bots/ComboBotEdit';
-import GridBots from '../../../pages/GridBots';
-import GridBotNew from '../../../pages/bots/GridBotNew';
-import GridBotEdit from '../../../pages/bots/GridBotEdit';
-import HedgeDcaBots from '../../../pages/hedge-bots/HedgeDcaBots';
-import HedgeDcaBotNew from '../../../pages/hedge-bots/HedgeDcaBotNew';
-import HedgeDcaBotEdit from '../../../pages/hedge-bots/HedgeDcaBotEdit';
-import HedgeComboBots from '../../../pages/hedge-bots/HedgeComboBots';
-import HedgeComboBotNew from '../../../pages/hedge-bots/HedgeComboBotNew';
-import HedgeComboBotEdit from '../../../pages/hedge-bots/HedgeComboBotEdit';
+import {
+  lazyNamed,
+  lazyPage,
+  PageSuspense,
+  registerRoutePreload,
+  type PageComponent,
+} from '../../../lib/lazyPage';
+
+// Pages are route-level lazy chunks (see lib/lazyPage).
+const TradingBots = lazyPage(() => import('../../../pages/TradingBots'), {
+  prefetch: true,
+});
+const TradingBotNew = lazyPage(
+  () => import('../../../pages/bots/TradingBotNew')
+);
+const TradingBotEdit = lazyPage(
+  () => import('../../../pages/bots/TradingBotEdit')
+);
+const ComboBots = lazyPage(() => import('../../../pages/ComboBots'));
+const ComboBotNew = lazyPage(() => import('../../../pages/bots/ComboBotNew'));
+const ComboBotEdit = lazyPage(() => import('../../../pages/bots/ComboBotEdit'));
+const GridBots = lazyPage(() => import('../../../pages/GridBots'));
+const GridBotNew = lazyPage(() => import('../../../pages/bots/GridBotNew'));
+const GridBotEdit = lazyPage(() => import('../../../pages/bots/GridBotEdit'));
+const HedgeDcaBots = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeDcaBots')
+);
+const HedgeDcaBotNew = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeDcaBotNew')
+);
+const HedgeDcaBotEdit = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeDcaBotEdit')
+);
+const HedgeComboBots = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeComboBots')
+);
+const HedgeComboBotNew = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeComboBotNew')
+);
+const HedgeComboBotEdit = lazyPage(
+  () => import('../../../pages/hedge-bots/HedgeComboBotEdit')
+);
+const loadBotBacktests = () => import('../../../pages/bots/BotBacktests');
+const TradingBotBacktests = lazyNamed(loadBotBacktests, 'TradingBotBacktests');
+const ComboBotBacktests = lazyNamed(loadBotBacktests, 'ComboBotBacktests');
+const GridBotBacktests = lazyNamed(loadBotBacktests, 'GridBotBacktests');
+const BacktestsRoute = lazyNamed(loadBotBacktests, 'BacktestsRoute');
+const loadHedgeBacktests = () =>
+  import('../../../pages/hedge-bots/HedgeBotBacktests');
+const HedgeDcaBotBacktests = lazyNamed(
+  loadHedgeBacktests,
+  'HedgeDcaBotBacktests'
+);
+const HedgeComboBotBacktests = lazyNamed(
+  loadHedgeBacktests,
+  'HedgeComboBotBacktests'
+);
 
 /**
  * Descriptor for one bot type's route family. The common per-type route
@@ -29,12 +71,17 @@ export interface BotRouteSpec {
   basePath: string;
   /** Rendered by `{base}` and `{base}/view/:id` (the drawer route). */
   listPage: ComponentType;
-  /** Rendered by `{base}/new` and, when hasBacktests, `{base}/backtests`. */
+  /**
+   * Rendered by `{base}/new`, and by `{base}/backtests` when the URL carries
+   * `?backtestShare=` (the shared-backtest viewer).
+   */
   newPage: ComponentType;
   /** Rendered by `{base}/edit/:id`. */
   editPage: ComponentType;
-  /** dca/combo/grid → true; hedge types → false. */
-  hasBacktests: boolean;
+  /**
+   * Backtests list rendered by `{base}/backtests` (no share param).
+   */
+  backtestsPage?: ComponentType;
 }
 
 /**
@@ -49,37 +96,50 @@ export const BOT_ROUTE_SPECS: readonly BotRouteSpec[] = [
     listPage: TradingBots,
     newPage: TradingBotNew,
     editPage: TradingBotEdit,
-    hasBacktests: true,
+    backtestsPage: TradingBotBacktests,
   },
   {
     basePath: '/combo',
     listPage: ComboBots,
     newPage: ComboBotNew,
     editPage: ComboBotEdit,
-    hasBacktests: true,
+    backtestsPage: ComboBotBacktests,
   },
   {
     basePath: '/grid',
     listPage: GridBots,
     newPage: GridBotNew,
     editPage: GridBotEdit,
-    hasBacktests: true,
+    backtestsPage: GridBotBacktests,
   },
   {
     basePath: '/hedge/bot',
     listPage: HedgeDcaBots,
     newPage: HedgeDcaBotNew,
     editPage: HedgeDcaBotEdit,
-    hasBacktests: false,
+    backtestsPage: HedgeDcaBotBacktests,
   },
   {
     basePath: '/hedge/combo',
     listPage: HedgeComboBots,
     newPage: HedgeComboBotNew,
     editPage: HedgeComboBotEdit,
-    hasBacktests: false,
+    backtestsPage: HedgeComboBotBacktests,
   },
 ] as const;
+
+// Boot-time preload of the page for the URL being opened (see preloadRoute).
+const esc = (p: string) => p.replace(/\//g, '\\/');
+for (const spec of BOT_ROUTE_SPECS) {
+  const b = esc(spec.basePath);
+  const pre = (c: unknown) => (c as Partial<PageComponent<object>>).preload;
+  const list = pre(spec.listPage);
+  const create = pre(spec.newPage);
+  const edit = pre(spec.editPage);
+  if (list) registerRoutePreload(new RegExp(`^${b}(/view/[^/]+)?/?$`), list);
+  if (create) registerRoutePreload(new RegExp(`^${b}/new/?$`), create);
+  if (edit) registerRoutePreload(new RegExp(`^${b}/edit/[^/]+/?$`), edit);
+}
 
 /**
  * Emit the common `<Route>` elements for one bot type, in the same order the
@@ -87,17 +147,26 @@ export const BOT_ROUTE_SPECS: readonly BotRouteSpec[] = [
  * (optional) shared-backtest landing → legacy `:id` redirect.
  *
  * Note the asymmetry preserved here: base and view render the LIST page; new
- * and backtests render the NEW page; edit renders the EDIT page.
+ * (and a `?backtestShare=` backtests link) render the NEW page; edit renders
+ * the EDIT page.
  */
 function botTypeRoutes(spec: BotRouteSpec): ReactElement[] {
-  const { basePath, listPage: List, newPage: New, editPage: Edit, hasBacktests } = spec;
+  const {
+    basePath,
+    listPage: List,
+    newPage: New,
+    editPage: Edit,
+    backtestsPage,
+  } = spec;
   const routes: ReactElement[] = [
     <Route
       key={basePath}
       path={basePath}
       element={
         <ProtectedRoute>
-          <List />
+          <PageSuspense>
+            <List />
+          </PageSuspense>
         </ProtectedRoute>
       }
     />,
@@ -106,7 +175,9 @@ function botTypeRoutes(spec: BotRouteSpec): ReactElement[] {
       path={`${basePath}/new`}
       element={
         <ProtectedRoute>
-          <New />
+          <PageSuspense>
+            <New />
+          </PageSuspense>
         </ProtectedRoute>
       }
     />,
@@ -115,7 +186,9 @@ function botTypeRoutes(spec: BotRouteSpec): ReactElement[] {
       path={`${basePath}/edit/:id`}
       element={
         <ProtectedRoute>
-          <Edit />
+          <PageSuspense>
+            <Edit />
+          </PageSuspense>
         </ProtectedRoute>
       }
     />,
@@ -124,20 +197,24 @@ function botTypeRoutes(spec: BotRouteSpec): ReactElement[] {
       path={`${basePath}/view/:id`}
       element={
         <ProtectedRoute>
-          <List />
+          <PageSuspense>
+            <List />
+          </PageSuspense>
         </ProtectedRoute>
       }
     />,
   ];
 
-  if (hasBacktests) {
+  if (backtestsPage) {
     routes.push(
       <Route
         key={`${basePath}/backtests`}
         path={`${basePath}/backtests`}
         element={
           <ProtectedRoute>
-            <New />
+            <PageSuspense>
+              <BacktestsRoute newPage={New} listPage={backtestsPage} />
+            </PageSuspense>
           </ProtectedRoute>
         }
       />

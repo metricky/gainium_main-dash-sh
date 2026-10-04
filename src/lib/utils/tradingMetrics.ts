@@ -272,6 +272,115 @@ export const toSortableMetricValue = (
   return Number.isFinite(numericValue) ? numericValue : unavailableValue;
 };
 
+/**
+ * Sort accessors for the deal tables (Trading Bots → Deals and the bot
+ * drawer's Deals table).
+ *
+ * Follow-up to bug #561: those columns render a human-readable STRING —
+ * "3D 4H", "12.3%", a locale date — and the column defs sorted on that
+ * rendered text. So "3D 4H" ranked below "4H", 12.3% below 9.5%, and
+ * Jan 2026 below Dec 2025. Each accessor below returns the NUMBER the
+ * column is actually meant to be ordered by; every cell keeps rendering
+ * exactly what it rendered before.
+ */
+
+/** Epoch ms for a deal timestamp that may arrive as ms, ISO string or Date. */
+export const toDealSortEpochMs = (
+  value?: string | number | Date | null
+): number => {
+  if (value === null || value === undefined || value === '') return 0;
+  const epoch =
+    value instanceof Date ? value.getTime() : new Date(value).getTime();
+  return Number.isFinite(epoch) ? epoch : 0;
+};
+
+/**
+ * How long a deal actually RAN, in ms.
+ *
+ * A live deal is still running, so it counts up to now. A closed or canceled
+ * one stopped at its close, and counting past that made every finished deal's
+ * Working Time keep ticking forever — a 12-minute deal read "1D 4H", and grew
+ * by another day every day (bug #567). `closeTime` is authoritative;
+ * `updateTime` is the fallback for deals stored without one.
+ *
+ * This is V1's rule verbatim (`main-dash/components/dcabot/utils.ts`:
+ * `isNotActiveDeal(d) ? d.closeTime ?? d.updateTime : now`), and V1 is the
+ * oracle for the correct behaviour here.
+ *
+ * The terminal set mirrors V1's `isNotActiveDeal` exactly — closed/canceled,
+ * NOT "anything that is not one of the active statuses". A deal whose status
+ * we do not recognise keeps counting as before, rather than silently freezing
+ * at a timestamp that may not mean "it ended".
+ *
+ * Timestamps arrive as epoch ms on raw deals and as ISO strings on the
+ * `OpenTrade` rows the deal tables build, so both go through
+ * `toDealSortEpochMs`.
+ */
+export const dealWorkingMs = (deal: {
+  status?: string | null;
+  createTime?: string | number | Date | null;
+  closeTime?: string | number | Date | null;
+  updateTime?: string | number | Date | null;
+}): number => {
+  const startedAt = toDealSortEpochMs(deal.createTime);
+  if (!startedAt) return 0;
+  const status = String(deal.status ?? '').toLowerCase();
+  const endedAt =
+    status === DCADealStatusEnum.closed || status === DCADealStatusEnum.canceled
+      ? toDealSortEpochMs(deal.closeTime) || toDealSortEpochMs(deal.updateTime)
+      : 0;
+  return Math.max(0, (endedAt || Date.now()) - startedAt);
+};
+
+/**
+ * Working Time as total MINUTES, so the column orders by real elapsed time
+ * instead of comparing "3D 4H" with "4H" as text.
+ *
+ * Orders by the same elapsed time the cell renders: this also counted to now
+ * for closed deals, so sorting the Closed tab by Working Time ranked rows by
+ * how OLD the deal was rather than by how long it ran.
+ */
+export const dealWorkingTimeSortValue = (row: {
+  status?: string | null;
+  created?: number | null;
+  createdTime?: Date | string | null;
+  closeTime?: string | number | Date | null;
+  updateTime?: string | number | Date | null;
+}): number =>
+  dealWorkingMs({
+    status: row.status,
+    createTime: row.created ?? row.createdTime,
+    closeTime: row.closeTime,
+    updateTime: row.updateTime,
+  }) / 60_000;
+
+/**
+ * The numeric percentage behind a formatted "12.3%" cell (Time In Loss /
+ * Time In Profit). Unset cells render "-" and sort as unavailable, matching
+ * how `toSortableMetricValue` already treats missing metrics elsewhere.
+ */
+export const dealPercentStringSortValue = (value?: string | null): number => {
+  // NB: not `toSortableMetricValue(null)` — Number(null) is 0, which is
+  // finite, so an unset cell would sort as a real 0% rather than as missing.
+  if (!value || value === '-') return Number.NEGATIVE_INFINITY;
+  return toSortableMetricValue(Number.parseFloat(value));
+};
+
+/**
+ * Grid Profit as a percentage of deal cost. Only Combo / Hedge Combo deals
+ * render a value; everything else shows "-" and sorts as a neutral 0.
+ */
+export const dealGridProfitPercentageSortValue = (row: {
+  type?: string;
+  gridProfitUsd?: number | null;
+  cost?: number | null;
+}): number => {
+  if (row.type !== 'Combo' && row.type !== 'Hedge Combo') return 0;
+  const gridProfitUsd = Number(row.gridProfitUsd || 0);
+  const cost = Number(row.cost || 0);
+  return cost > 0 ? (gridProfitUsd / cost) * 100 : 0;
+};
+
 export const calculateUsagePercentage = (
   currentValue: number,
   maxValue: number

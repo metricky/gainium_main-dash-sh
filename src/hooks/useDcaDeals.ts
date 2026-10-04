@@ -1,6 +1,6 @@
 import { useDealStore, type DealType, type DealWithType } from '@/stores/live';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import getLatestPrices /* , { setActiveExchanges }  */ from '../helper/price';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDealResyncStore } from '@/stores/live/dealResync';
 import { dealQueries } from '../lib/api/GraphQLQueries-deal-queries';
 import {
   GraphQLClient,
@@ -12,20 +12,12 @@ import { useShareContext } from './useShareContext';
 import { useUIStore } from '@/stores/uiStore';
 import type { ReturnResult } from '../lib/api/types';
 import { logger } from '../lib/loggerInstance';
-import {
-  calculateUnrealizedPnL,
-  findUSDRate,
-  type PriceData,
-} from '../lib/utils/unrealizedPnL';
-import { isLongStrategy } from '../lib/utils/tradingMetrics';
+import { serverDealUnrealizedPnl } from '../lib/utils/dealUnrealizedPnl';
 import type {
   DataGridFilterInput,
   DCADeals,
   DCADealStatusEnum,
-  Prices,
 } from '../types';
-import { useUsdRate } from './useUsdRate';
-import { useUserFees } from './useUserFeesService';
 import {
   ACTIVE_ONLY_DEFAULT_STATUSES,
   dealStatusGroup,
@@ -115,7 +107,18 @@ export interface DcaDealsFilter {
 export interface UseDcaDealsResult {
   data: ReturnResult<DcaDealsResponse> | null;
   deals: DCADeals[];
+  /** The server's count of ALL matching deals (not just the loaded ones). */
   total: number;
+  /** How many of them are held client-side. */
+  loadedCount: number;
+  /** The fetched rows stop short of the server's total — render "N of M", never a silent subset. */
+  isPartial: boolean;
+  /** More pages exist beyond what is loaded (non-paged mode). */
+  hasMore: boolean;
+  /** Fetch the next page and append it. */
+  loadMore: () => Promise<void>;
+  /** A request is in flight (initial or loadMore). */
+  isFetching: boolean;
   hasValidResponse: boolean;
   isLoading: boolean;
   isError: boolean;
@@ -127,9 +130,17 @@ export interface UseDcaDealsResult {
 
 export interface UseDcaDealsOptions {
   enabled?: boolean;
+  /**
+   * Server-paged mode: fetch exactly this 0-based page (the table's current
+   * page) and return its rows in server order. Without it the hook loads the
+   * first page and `loadMore()` appends the next one on demand.
+   */
+  page?: number;
+  /** Rows per request (max 500, the server's clamp). Default 500. */
+  pageSize?: number;
 }
 
-const isTerminalDeal = (deal: Partial<DCADeals>): boolean => {
+export const isTerminalDeal = (deal: Partial<DCADeals>): boolean => {
   const directType = String(deal.type || '').toLowerCase();
   const hasTerminalSettings = Boolean(
     (deal.settings as { terminalDealType?: unknown } | undefined)
@@ -155,7 +166,7 @@ export function useDcaDeals(
     [filter?.terminal]
   );
   const isLiveTrading = useUIStore((s) => s.isLiveTrading);
-  const { tradingMode } = useUIStore();
+  const tradingMode = useUIStore((s) => s.tradingMode);
   const currentPaperContext = useMemo(() => {
     if (typeof filter?.paperContext === 'boolean') {
       return filter.paperContext;
@@ -199,7 +210,7 @@ export function useDcaDeals(
     };
 
     if (filter?.botId) {
-      return filterByType(Object.values(allDealsRecord[filter.botId]) || []);
+      return filterByType(Object.values(allDealsRecord[filter.botId] ?? {}));
     }
     // Otherwise, get all deals from all bots and flatten
     // Apply terminal/dca type filter to all deals
@@ -220,252 +231,210 @@ export function useDcaDeals(
     isTerminal,
   ]);
 
-  const endpoint = useMemo(
-    () => import.meta.env.VITE_API_ENDPOINT || 'http://localhost:4000',
-    []
-  );
-
-  // Auth tokens and UI state
-  const { tokens } = useAuthStore();
-
-  // State for managing pagination fetch
-  const [queryResult, setQueryResult] = useState<{
-    data: ReturnResult<DcaDealsResponse> | null;
-    isLoading: boolean;
-    isError: boolean;
-    error: Error | null;
-  }>({
-    data: null,
-    isLoading: false,
-    isError: false,
-    error: null,
-  });
+  // Only whether a session exists — the token itself is read at request time.
+  // Selecting the whole `tokens` object re-ran the full fetch on every token
+  // refresh.
+  const hasSession = useAuthStore((s) => !!s.tokens?.accessToken);
 
   // Prepare input for GraphQL query based on filter.
   // NOTE: dcaDealList ignores a top-level `status` arg — the status must be
   // expressed as a dataGridInput.filterModel item (it overrides the backend's
   // active-only default). So we translate `filter.status` into that item.
-  const input = useMemo(() => {
-    const i: {
-      terminal?: boolean;
-      botId?: string;
-      dataGridInput?: DataGridFilterInput;
-    } = {};
-    // Always pass terminal flag explicitly so the backend
-    // excludes terminal deals from non-terminal queries and vice-versa
-    i.terminal = isTerminal;
-    if (filter?.botId) {
-      i.botId = filter.botId;
-    }
-    const statusItem = statusFilterItem(filter?.status);
-    if (statusItem || filter?.dataGrid) {
-      const baseGrid = filter?.dataGrid;
-      const baseItems = (baseGrid?.filterModel?.items ?? []).filter(
-        (it) => (it as { field?: string })?.field !== 'status'
-      );
-      i.dataGridInput = {
-        ...(baseGrid ?? {}),
-        filterModel: {
-          ...(baseGrid?.filterModel ?? { items: [] }),
-          items: statusItem ? [...baseItems, statusItem] : baseItems,
-        },
-      };
-    }
-    return i;
-  }, [isTerminal, filter?.status, filter?.botId, filter?.dataGrid]);
+  const input = useMemo(
+    () =>
+      buildDcaDealListInput({
+        terminal: isTerminal,
+        status: filter?.status,
+        botId: filter?.botId,
+        dataGrid: filter?.dataGrid,
+      }),
+    [isTerminal, filter?.status, filter?.botId, filter?.dataGrid]
+  );
 
   const { isDemo: isShareMode } = useShareContext();
 
   // Determine if the hook is enabled. Share-mode visitors never load the
   // visitor's own deal list — they only see the single shared resource.
   const isEnabled = useMemo(
-    () => options?.enabled !== false && !!tokens?.accessToken && !isShareMode,
-    [options?.enabled, tokens?.accessToken, isShareMode]
+    () => options?.enabled !== false && hasSession && !isShareMode,
+    [options?.enabled, hasSession, isShareMode]
   );
 
-  // Fetch all pages with autopagination
-  const fetchAllPages = useCallback(async () => {
-    if (!isEnabled) return;
+  const pageSize = Math.min(
+    DEAL_PAGE_SIZE_MAX,
+    Math.max(1, options?.pageSize ?? DEAL_PAGE_SIZE_MAX)
+  );
+  const serverPage = options?.page;
+  const isServerPaged = typeof serverPage === 'number';
 
-    setQueryResult({
-      data: null,
-      isLoading: true,
-      isError: false,
-      error: null,
-    });
+  // Pages are fetched ON DEMAND. The hook used to walk every page in sequence
+  // (up to 40 × 500 = 20 000 closed deals, 58 MB for a large account) on every
+  // mount of every instance. Now it loads one page — the requested one in
+  // server-paged mode, else the first — and `loadMore()` appends the next.
+  const [queryResult, setQueryResult] = useState<{
+    data: ReturnResult<DcaDealsResponse> | null;
+    isLoading: boolean;
+    isError: boolean;
+    error: Error | null;
+    serverTotal: number | null;
+    loadedPages: number;
+    reachedEnd: boolean;
+    pageRows: DCADeals[];
+  }>({
+    data: null,
+    isLoading: false,
+    isError: false,
+    error: null,
+    serverTotal: null,
+    loadedPages: 0,
+    reachedEnd: false,
+    pageRows: [],
+  });
 
-    try {
-      const config = getGraphQLConfig(tokens, isLiveTrading);
-      const paperContext = currentPaperContext;
-      const client = new GraphQLClient(endpoint, config.token, paperContext);
+  // Accumulated rows of the current (non-paged) walk, for reconcile.
+  const accumulatedRef = useRef<DCADeals[]>([]);
+  const rawLoadedRef = useRef(0);
+  const generationRef = useRef(0);
 
-      const allDeals: DCADeals[] = [];
-      const MAX_PAGES = isTerminal ? 5 : 1; // Only autopaginate for terminal deals
-      const PAGE_SIZE = 500;
-      let totalPages = MAX_PAGES;
-      // Whether we fetched the full result set (vs. stopping at the page cap
-      // with more pages remaining). Only a complete snapshot may absence-delete
-      // in reconcileDeals — pruning against a capped page drops genuine deals.
-      let reachedEnd = false;
-
-      // Fetch pages sequentially (0-based) until we reach max pages or no more pages
-      for (let page = 0; page < MAX_PAGES && page < totalPages; page++) {
-        const pageInput = {
-          ...input,
-          dataGridInput: {
-            ...(input.dataGridInput || {}),
-            page,
-            pageSize: PAGE_SIZE,
-          },
-        };
-
-        const { query, variables } = dealQueries.dcaDealList(pageInput);
-
-        const result = await client.request<{
-          dcaDealList: ReturnResult<DcaDealsResponse>;
-        }>(query, variables, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
-
-        if (
-          result.dcaDealList?.status === 'OK' &&
-          result.dcaDealList.data?.result
-        ) {
-          const pageDeals = Array.isArray(result.dcaDealList.data.result)
-            ? result.dcaDealList.data.result
-            : [];
-
-          allDeals.push(...pageDeals);
-          totalPages = result.dcaDealList.data.totalPages || MAX_PAGES;
-
-          logger.debug(`[useDcaDeals] Fetched page ${page + 1}/${totalPages}`, {
-            pageDeals: pageDeals.length,
-            totalDeals: allDeals.length,
-            isTerminal,
-          });
-
-          // If this page has fewer deals than page size, we've reached the last page
-          if (pageDeals.length < PAGE_SIZE) {
-            reachedEnd = true;
-            break;
-          }
-          // Fetched every page the backend reports -> snapshot is complete.
-          if (page + 1 >= totalPages) {
-            reachedEnd = true;
-            break;
-          }
-        } else {
-          // If page fails, stop pagination
-          break;
-        }
-      }
-
-      // Apply client-side filtering
-      const scopedDeals = isTerminal
-        ? allDeals
-        : allDeals.filter((deal) => !isTerminalDeal(deal));
-
-      const normalizedDeals = scopedDeals.map((deal) => ({
-        ...deal,
-        paperContext:
-          typeof deal.paperContext === 'boolean'
-            ? deal.paperContext
-            : paperContext,
-      }));
-
-      // Update store once with all deals
-      const dealType: DealType = isTerminal ? 'terminal' : 'dca';
-      const mapDealsByBotId: Record<string, DCADeals[]> =
-        normalizedDeals.reduce(
-          (acc, deal) => {
-            const key = isTerminal ? 'terminal' : deal.botId;
-            if (!acc[key]) {
-              acc[key] = [];
-            }
-            acc[key].push(deal);
-            return acc;
-          },
-          {} as Record<string, DCADeals[]>
-        );
-
-      // Reconcile the whole fetched scope in one authoritative pass. Unlike the
-      // old per-bot replace=true writes, this also prunes stale in-scope deals
-      // of bots that are ABSENT from the response (all-bots fetch where a bot
-      // has zero remaining active deals). An empty snapshot still triggers the
-      // absence-delete, subsuming the old empty-result special cases.
-      useDealStore.getState().reconcileDeals(
-        {
-          dealType,
-          paperContext,
-          statuses:
-            dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
-          botId: isTerminal ? 'terminal' : filter?.botId,
-          // Only prune absent deals when we fetched the whole result set;
-          // a page-capped snapshot must not delete deals beyond the cap.
-          complete: reachedEnd,
-          // This hook always fetches over the raw client (no RQ cache), so
-          // the snapshot is fresh as of now.
-          snapshotAt: Date.now(),
-        },
-        mapDealsByBotId
-      );
-
-      // Set final result
-      setQueryResult({
-        data: {
-          status: 'OK',
-          data: {
-            page: 0,
-            totalPages: Math.min(totalPages, MAX_PAGES),
-            totalResults: allDeals.length,
-            result: normalizedDeals,
-          },
-        } as ReturnResult<DcaDealsResponse>,
-        isLoading: false,
+  const fetchPage = useCallback(
+    async (page: number, opts: { reset: boolean; fresh?: boolean }) => {
+      if (!isEnabled) return;
+      const generation = opts.reset
+        ? ++generationRef.current
+        : generationRef.current;
+      setQueryResult((prev) => ({
+        ...prev,
+        isLoading: true,
         isError: false,
         error: null,
-      });
+      }));
+      const paperContext = currentPaperContext;
+      try {
+        const { rows, total } = await fetchDcaDealPage(
+          { input, page, pageSize, paperContext },
+          { fresh: !!opts.fresh }
+        );
+        if (generation !== generationRef.current) return; // superseded
 
-      logger.debug(
-        `[useDcaDeals] ${isTerminal ? 'Autopagination' : 'Single page load'} complete`,
-        {
-          totalDeals: allDeals.length,
-          scopedDeals: scopedDeals.length,
-          pagesLoaded: Math.ceil(allDeals.length / PAGE_SIZE),
-          isTerminal,
+        const scoped = (
+          isTerminal ? rows : rows.filter((deal) => !isTerminalDeal(deal))
+        ).map((deal) => ({
+          ...deal,
+          paperContext:
+            typeof deal.paperContext === 'boolean'
+              ? deal.paperContext
+              : paperContext,
+        }));
+
+        const base = opts.reset || isServerPaged ? [] : accumulatedRef.current;
+        const accumulated = isServerPaged ? scoped : [...base, ...scoped];
+        accumulatedRef.current = accumulated;
+        const loadedRows = isServerPaged
+          ? page * pageSize + rows.length
+          : (opts.reset ? 0 : rawLoadedRef.current) + rows.length;
+        if (!isServerPaged) rawLoadedRef.current = loadedRows;
+        const reachedEnd =
+          rows.length < pageSize ||
+          (typeof total === 'number' && loadedRows >= total);
+
+        const dealType: DealType = isTerminal ? 'terminal' : 'dca';
+        const mapDealsByBotId: Record<string, DCADeals[]> = {};
+        for (const deal of accumulated) {
+          const key = isTerminal ? 'terminal' : deal.botId;
+          (mapDealsByBotId[key] ??= []).push(deal);
         }
-      );
-    } catch (error) {
-      logger.error('[useDcaDeals] Query error:', error);
-      setQueryResult({
-        data: null,
-        isLoading: false,
-        isError: true,
-        error: error instanceof Error ? error : new Error('Unknown error'),
-      });
-    }
-  }, [
-    isEnabled,
-    tokens,
-    isLiveTrading,
-    currentPaperContext,
-    endpoint,
-    input,
-    isTerminal,
-    filter?.botId,
-    filter?.status,
-  ]);
+        // Reconcile the fetched scope. Only a snapshot that holds the whole
+        // result set (first page through the end, not a server page in the
+        // middle) may absence-delete — a partial one would prune real deals.
+        useDealStore.getState().reconcileDeals(
+          {
+            dealType,
+            paperContext,
+            statuses:
+              dealStatusGroup(filter?.status) ?? ACTIVE_ONLY_DEFAULT_STATUSES,
+            botId: isTerminal ? 'terminal' : filter?.botId,
+            complete: reachedEnd && (!isServerPaged || page === 0),
+            snapshotAt: Date.now(),
+          },
+          mapDealsByBotId
+        );
 
-  // Trigger fetch when dependencies change
+        setQueryResult({
+          data: {
+            status: 'OK',
+            data: {
+              page,
+              totalPages:
+                typeof total === 'number'
+                  ? Math.max(1, Math.ceil(total / pageSize))
+                  : page + 1,
+              totalResults: typeof total === 'number' ? total : loadedRows,
+              result: accumulated,
+            },
+          } as ReturnResult<DcaDealsResponse>,
+          isLoading: false,
+          isError: false,
+          error: null,
+          serverTotal: typeof total === 'number' ? total : null,
+          loadedPages: isServerPaged ? 1 : page + 1,
+          reachedEnd,
+          pageRows: scoped,
+        });
+      } catch (error) {
+        if (generation !== generationRef.current) return;
+        logger.error('[useDcaDeals] Query error:', error);
+        setQueryResult((prev) => ({
+          ...prev,
+          isLoading: false,
+          isError: true,
+          error: error instanceof Error ? error : new Error('Unknown error'),
+        }));
+      }
+    },
+    [
+      isEnabled,
+      currentPaperContext,
+      input,
+      isTerminal,
+      filter?.botId,
+      filter?.status,
+      pageSize,
+      isServerPaged,
+    ]
+  );
+
+  const fetchPageRef = useRef(fetchPage);
+  fetchPageRef.current = fetchPage;
+
+  // (Re)load the first / requested page whenever the query changes.
   useEffect(() => {
-    void fetchAllPages();
-  }, [fetchAllPages]);
+    if (!isEnabled) return;
+    void fetchPageRef.current(serverPage ?? 0, { reset: true });
+  }, [isEnabled, currentPaperContext, input, pageSize, serverPage]);
 
-  // Refetch function to manually trigger a new fetch
+  // Re-fetch on a resync request (socket reconnect, tab back after a while, a
+  // close answered "already closed"): this list is otherwise patched only by
+  // socket events, so one that never landed would keep a finished deal open.
+  const resyncNonce = useDealResyncStore((s) => s.nonce);
+  const handledResyncRef = useRef(resyncNonce);
+  useEffect(() => {
+    if (handledResyncRef.current === resyncNonce) return;
+    handledResyncRef.current = resyncNonce;
+    void fetchPageRef.current(serverPage ?? 0, { reset: true, fresh: true });
+  }, [resyncNonce, serverPage]);
+
   const refetch = useCallback(async () => {
-    await fetchAllPages();
-  }, [fetchAllPages]);
+    await fetchPageRef.current(serverPage ?? 0, { reset: true, fresh: true });
+  }, [serverPage]);
+
+  const hasMore = !isServerPaged && !queryResult.reachedEnd && queryResult.loadedPages > 0;
+  const loadMore = useCallback(async () => {
+    if (!hasMore || queryResult.isLoading) return;
+    await fetchPageRef.current(queryResult.loadedPages, { reset: false });
+  }, [hasMore, queryResult.isLoading, queryResult.loadedPages]);
 
   // No need for additional client-side filtering - status is handled by the query
-  const dealsArray = useMemo(() => dealsFromStore, [dealsFromStore]);
+  const dealsArray = dealsFromStore;
 
   // Only show loading on initial load (when store data for this filter is
   // empty) OR while IDB is still rehydrating — otherwise the table flashes
@@ -479,155 +448,34 @@ export function useDcaDeals(
     [queryResult.data, dealsFromStore.length]
   );
 
-  // Subscribe to latest prices (same as Trades) and compute unrealized PnL
-  const [latestPrices, setLatestPrices] = useState<Prices>([]);
-  // no need for explicit ready flag; presence of latestPrices is enough
-
-  useEffect(() => {
-    // Skip price subscription when disabled
-    if (!isEnabled) return;
-
-    const unsubscribe = getLatestPrices(
-      (result) => {
-        if (result.status === 'OK') {
-          setLatestPrices(result.data);
-        }
-      },
-      false // don't load US exchanges (same as Trades)
-    );
-    return () => unsubscribe();
-  }, [isEnabled]);
-
-  // Fetch cached USD rate (updates every 12 hours on backend)
-  const { rate: usdRate } = useUsdRate();
-
-  // Keep active exchanges similar to Trades
-  /* React.useEffect(() => {
-    if (!isEnabled) return;
-
-    const active = Array.from(
-      new Set(
-        (dealsArray || [])
-          .map((d) => d?.exchange || d.exchangeUUID)
-          .filter(Boolean) as string[]
-      )
-    );
-    if (active.length > 0) setActiveExchanges(active);
-  }, [dealsArray, isEnabled]); */
-
-  const priceData: PriceData[] = useMemo(() => {
-    const out: PriceData[] = [];
-    for (const p of latestPrices) {
-      out.push({
-        symbol: p.symbol,
-        price: p.price,
-        exchange: p.exchange || 'all',
-      });
-    }
-    out.push({ symbol: 'USDTUSD', price: 1, exchange: 'all' });
-    out.push({ symbol: 'USDUSDT', price: 1, exchange: 'all' });
-    return out;
-  }, [latestPrices]);
-
-  const finalUsdRate = useMemo(() => usdRate || 0, [usdRate]);
-
-  // Fetch and cache per-exchange symbol fee rates (prefer taker)
-  const [feesByExchange, setFeesByExchange] = useState<
-    Record<string, Record<string, number>>
-  >({});
-
-  const { fetchMultipleFees } = useUserFees();
-
-  useEffect(() => {
-    // Skip fee fetching when disabled
-    if (!isEnabled || !dealsArray?.length) return;
-
-    // Build symbols list per exchange
-    const byExchange = new Map<string, Set<string>>();
-    for (const d of dealsArray) {
-      // Prefer exchange UUID for fee queries
-      const ex = d.exchangeUUID || d.exchange;
-      const sym = d.symbol?.symbol;
-      if (!ex || !sym) continue;
-      if (!byExchange.has(ex)) byExchange.set(ex, new Set());
-      byExchange.get(ex)?.add(sym);
-    }
-
-    const fetchFees = async () => {
-      const updates: Record<string, Record<string, number>> = {};
-      for (const [ex, symbolsSet] of byExchange.entries()) {
-        const multipleFees = await fetchMultipleFees({
-          exchangeSymbolMap: new Map().set(ex, symbolsSet),
-        });
-        updates[ex] = updates[ex] || {};
-        for (const f of multipleFees) {
-          // Use taker fee when available; values are expected as decimal (e.g., 0.001 for 0.1%)
-          const rate =
-            typeof f.taker === 'number'
-              ? f.taker
-              : typeof f.maker === 'number'
-                ? f.maker
-                : 0;
-          updates[ex][f.symbol] = rate;
-        }
-      }
-      if (Object.keys(updates).length > 0) {
-        setFeesByExchange((prev) => ({ ...prev, ...updates }));
-      }
-    };
-
-    void fetchFees();
-  }, [dealsArray, endpoint, isEnabled, fetchMultipleFees]);
-
+  // Per-deal unrealized P&L: the server's stored value. Live, fee-inclusive
+  // values are computed only for the rows actually on screen — see
+  // `useLiveDealPnl`. This hook used to price EVERY loaded deal (thousands)
+  // on every price tick in every mounted instance.
   const dealMetrics = useMemo(() => {
     const map: Record<
       string,
       { unrealizedUsd: number; unrealizedPct: number }
     > = {};
-    // Skip calculations when disabled or no deals
-    if (!isEnabled || !dealsArray?.length) return map;
+    if (!isEnabled) return map;
     for (const d of dealsArray) {
-      // Adapt to DealData expected by util
-      const dealForCalc = {
-        ...d,
-        dcaBot: d.dcaBot ? [{ exchange: d.exchange }] : [],
-      } as unknown as DCADeals;
-      const u =
-        calculateUnrealizedPnL(dealForCalc, priceData, finalUsdRate) || 0;
-      // Legacy parity: the fee & percentage denominator ("usage") depends on
-      // strategy.  LONG spot → current.quote; SHORT spot → current.base * price.
-      // Both are then multiplied by the quoteAsset USD rate.
-      const long = isLongStrategy(d.strategy);
-      const symStr = d.symbol?.symbol;
-      const dealPrice = symStr
-        ? (priceData.find((p) => p.symbol === symStr)?.price ?? 0)
-        : 0;
-      const quoteAsset = d.symbol?.quoteAsset || 'USDT';
-      const usdRateForDenom = findUSDRate(quoteAsset, priceData, d.exchange);
-      const denom = long
-        ? (d.usage?.current?.quote ?? 0) * usdRateForDenom
-        : (d.usage?.current?.base ?? 0) * dealPrice * usdRateForDenom;
-      // Apply 2x exchange fee (open + close) against the invested amount
-      const ex = d.exchangeUUID || d.exchange;
-      const sym = d.symbol?.symbol;
-      const feeRate = (ex && sym && feesByExchange[ex]?.[sym]) || 0;
-      const feeCost = denom > 0 && feeRate > 0 ? 2 * feeRate * denom : 0;
-      const uNet = u - feeCost;
-      const pct = denom > 0 ? (uNet / denom) * 100 : 0;
+      const server = serverDealUnrealizedPnl(d);
       const key = d._id || d.botId;
-      if (key) map[key] = { unrealizedUsd: uNet, unrealizedPct: pct };
+      if (key && server) {
+        map[key] = {
+          unrealizedUsd: server.unrealizedUsd,
+          unrealizedPct: server.percent,
+        };
+      }
     }
     return map;
-  }, [dealsArray, feesByExchange, isEnabled, priceData, finalUsdRate]);
+  }, [dealsArray, isEnabled]);
 
-  // Augment deals with computed metrics for consumers
+  // Augment deals with flattened fields for consumers
   const dealsWithMetrics: DCADeals[] = useMemo(() => {
     return dealsArray.map((d: DCADeals) => {
       const key = d._id || d.botId;
-      const m = (key && dealMetrics[key]) || {
-        unrealizedUsd: 0,
-        unrealizedPct: 0,
-      };
+      const m = key ? dealMetrics[key] : undefined;
       // Flatten commonly-used UI fields for parity across widgets
       const flatExchange = d.exchange || d.exchangeUUID || undefined;
       // Prefer any existing top-level botName, then nested settings.name
@@ -639,25 +487,177 @@ export function useDcaDeals(
         undefined;
       return {
         ...d,
-        unrealizedUsd: m.unrealizedUsd,
-        unrealizedPct: m.unrealizedPct,
+        unrealizedUsd: m?.unrealizedUsd,
+        unrealizedPct: m?.unrealizedPct,
         exchange: flatExchange,
         botName: flatBotName,
       } as DCADeals;
     });
   }, [dealsArray, dealMetrics]);
 
+  // Server-paged mode: the requested page's rows in server order, each
+  // replaced by the store's live copy when it has one.
+  const pageDeals = useMemo(() => {
+    if (!isServerPaged) return dealsWithMetrics;
+    const byId = new Map(dealsWithMetrics.map((d) => [d._id, d]));
+    return queryResult.pageRows.map((row) => byId.get(row._id) ?? row);
+  }, [isServerPaged, dealsWithMetrics, queryResult.pageRows]);
+
+  const serverTotal = queryResult.serverTotal;
   return {
     data: queryResult.data || null,
-    deals: dealsWithMetrics,
-    total: dealsWithMetrics.length,
+    deals: pageDeals,
+    total: serverTotal ?? dealsWithMetrics.length,
+    loadedCount: dealsWithMetrics.length,
+    // Partial = the fetch stopped before the server's last row. Judged on
+    // what was FETCHED, not on the live store: a deal that closes on screen
+    // leaves the store before the next fetch, and that is not a capped list.
+    isPartial:
+      !isServerPaged && queryResult.loadedPages > 0 && !queryResult.reachedEnd,
+    hasMore,
+    loadMore,
     hasValidResponse,
     isLoading: isInitialLoad, // Only show loading on first load
+    isFetching: queryResult.isLoading,
     isError: queryResult.isError,
     error: queryResult.error,
     refetch,
     dealMetrics,
   };
+}
+
+type DcaDealListInput = {
+  terminal?: boolean;
+  botId?: string;
+  dataGridInput?: DataGridFilterInput;
+};
+
+/** The `dcaDealList` input for a deal-list filter. */
+export function buildDcaDealListInput(filter?: DcaDealsFilter): DcaDealListInput {
+  const i: DcaDealListInput = {};
+  // Always pass terminal flag explicitly so the backend
+  // excludes terminal deals from non-terminal queries and vice-versa
+  i.terminal = filter?.terminal === true;
+  if (filter?.botId) {
+    i.botId = filter.botId;
+  }
+  const statusItem = statusFilterItem(filter?.status);
+  if (statusItem || filter?.dataGrid) {
+    const baseGrid = filter?.dataGrid;
+    const baseItems = (baseGrid?.filterModel?.items ?? []).filter(
+      (it) => (it as { field?: string })?.field !== 'status'
+    );
+    i.dataGridInput = {
+      ...(baseGrid ?? {}),
+      filterModel: {
+        ...(baseGrid?.filterModel ?? { items: [] }),
+        items: statusItem ? [...baseItems, statusItem] : baseItems,
+      },
+    };
+  }
+  return i;
+}
+
+/** The server clamps every deal page to 500 rows. */
+export const DEAL_PAGE_SIZE_MAX = 500;
+const inFlight = new Map<
+  string,
+  Promise<{ rows: DCADeals[]; total: number | null }>
+>();
+
+/**
+ * Fetch one `dcaDealList` page. Identical requests in flight at the same time
+ * (the sidebar, the page and a widget mounting together) share one network
+ * call instead of each hook instance fetching the same page.
+ */
+export async function fetchDcaDealPage(
+  args: {
+    input: DcaDealListInput;
+    page: number;
+    pageSize: number;
+    paperContext: boolean;
+  },
+  opts: { fresh?: boolean } = {}
+): Promise<{ rows: DCADeals[]; total: number | null }> {
+  const { tokens } = useAuthStore.getState();
+  const isLiveTrading = useUIStore.getState().isLiveTrading;
+  const pageInput = {
+    ...args.input,
+    dataGridInput: {
+      ...(args.input.dataGridInput || {}),
+      page: args.page,
+      pageSize: args.pageSize,
+    },
+  };
+  const key = JSON.stringify([args.paperContext, pageInput]);
+  const pending = inFlight.get(key);
+  if (!opts.fresh && pending) return pending;
+  const promise = (async () => {
+    const config = getGraphQLConfig(tokens, isLiveTrading);
+    const client = new GraphQLClient(
+      import.meta.env.VITE_API_ENDPOINT || 'http://localhost:4000',
+      config.token,
+      args.paperContext
+    );
+    const { query, variables } = dealQueries.dcaDealList(pageInput);
+    const result = await client.request<{
+      dcaDealList: ReturnResult<DcaDealsResponse>;
+    }>(query, variables, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
+    if (result.dcaDealList?.status !== 'OK') {
+      throw new Error(result.dcaDealList?.reason || 'dcaDealList failed');
+    }
+    const rows = Array.isArray(result.dcaDealList.data?.result)
+      ? result.dcaDealList.data.result
+      : [];
+    const total =
+      typeof result.dcaDealList.total === 'number'
+        ? result.dcaDealList.total
+        : null;
+    return { rows, total };
+  })();
+  inFlight.set(key, promise);
+  const clear = () => {
+    if (inFlight.get(key) === promise) inFlight.delete(key);
+  };
+  promise.then(clear, clear);
+  return promise;
+}
+
+/**
+ * Every deal matching `filter` (its status, filters and sort), fetched in
+ * server-sized pages until the server's total is reached — for exports of a
+ * server-paged list, whose table only holds the page on screen.
+ */
+export async function fetchAllDcaDeals(
+  filter: DcaDealsFilter
+): Promise<DCADeals[]> {
+  const isTerminal = filter.terminal === true;
+  const ui = useUIStore.getState();
+  const paperContext =
+    typeof filter.paperContext === 'boolean'
+      ? filter.paperContext
+      : ui.tradingMode === 'demo'
+        ? true
+        : !ui.isLiveTrading;
+  const input = buildDcaDealListInput(filter);
+  const out: DCADeals[] = [];
+  let fetched = 0;
+  for (let page = 0; ; page++) {
+    const { rows, total } = await fetchDcaDealPage(
+      { input, page, pageSize: DEAL_PAGE_SIZE_MAX, paperContext },
+      { fresh: true }
+    );
+    fetched += rows.length;
+    for (const deal of rows) {
+      if (isTerminal || !isTerminalDeal(deal)) out.push(deal);
+    }
+    if (
+      rows.length < DEAL_PAGE_SIZE_MAX ||
+      (typeof total === 'number' && fetched >= total)
+    ) {
+      return out;
+    }
+  }
 }
 
 export function useDcaDealsStats(filter?: DcaDealsFilter) {

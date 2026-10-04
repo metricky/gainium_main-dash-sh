@@ -1,15 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import {
   getPwaUpdateUrgentIdleMs,
   subscribePwaUpdateUrgency,
 } from '@/lib/pwaUpdateUrgency';
 
-// A pending bundle update is auto-applied at the next SAFE moment instead of an
-// immediate reload: the tab going hidden, or the user being input-idle (no
-// keyboard/pointer/scroll) for this long while the tab is visible. Never
-// interrupts active use. Maintenance (cloud) lowers this via the urgency store.
-const DEFAULT_IDLE_MS = 60_000;
+// A pending bundle update is applied only when the user clicks "Update Now".
+// The one exception is an imminent maintenance window (cloud), which raises an
+// urgency via the store below: then it is auto-applied at the next SAFE moment
+// — the tab going hidden, or the user being input-idle for that long.
 const IDLE_CHECK_INTERVAL_MS = 5_000;
 
 interface PWAUpdateState {
@@ -31,121 +35,140 @@ interface NetworkState {
   showBackOnline?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// New-version detection (no service worker)
+//
+// The app used to rely on the service worker update cycle for "Update Now".
+// The worker never cached anything useful (its generated routes threw at
+// startup), so it is retired: `public/sw.js` now unregisters itself, and a new
+// deployment is detected by re-reading index.html — which is served uncached —
+// and comparing its entry script with the one this page booted from.
+//
+// One module-level watcher, shared by every usePWAUpdate() instance: a single
+// poll timer and one visibility listener, started with the first subscriber
+// and stopped with the last (the per-mount interval and listeners used to
+// leak on every remount).
+// ---------------------------------------------------------------------------
+
+const VERSION_POLL_MS = 5 * 60_000;
+
+const ENTRY_SCRIPT_RE =
+  /<script\b[^>]*\btype=["']module["'][^>]*\bsrc=["']([^"']+)["']|<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*\btype=["']module["']/i;
+
+/** Entry module script of an HTML document (exported for tests). */
+export function entryScriptFromHtml(html: string): string | null {
+  const m = ENTRY_SCRIPT_RE.exec(html);
+  return (m && (m[1] || m[2])) || null;
+}
+
+function currentEntryScript(): string | null {
+  const el = document.querySelector<HTMLScriptElement>(
+    'script[type="module"][src]'
+  );
+  if (!el) return null;
+  // Compare paths as they appear in index.html.
+  try {
+    return new URL(el.src, location.href).pathname;
+  } catch {
+    return el.getAttribute('src');
+  }
+}
+
+let newVersionAvailable = false;
+const versionListeners = new Set<() => void>();
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let checking = false;
+let legacyWorkersRetired = false;
+
+async function checkForNewVersion(): Promise<void> {
+  if (checking || newVersionAvailable) return;
+  checking = true;
+  try {
+    const res = await fetch('/', {
+      cache: 'no-store',
+      headers: { Accept: 'text/html' },
+    });
+    if (!res.ok) return;
+    const latest = entryScriptFromHtml(await res.text());
+    const current = currentEntryScript();
+    if (latest && current) {
+      const latestPath = new URL(latest, location.href).pathname;
+      if (latestPath !== current) {
+        newVersionAvailable = true;
+        versionListeners.forEach((l) => l());
+      }
+    }
+  } catch {
+    // Offline / transient — try again on the next tick.
+  } finally {
+    checking = false;
+  }
+}
+
+const onVisibleCheck = () => {
+  if (document.visibilityState === 'visible') void checkForNewVersion();
+};
+
+function retireLegacyServiceWorkers(): void {
+  if (legacyWorkersRetired || !('serviceWorker' in navigator)) return;
+  legacyWorkersRetired = true;
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+    .catch(() => undefined);
+}
+
+function subscribeVersion(listener: () => void): () => void {
+  versionListeners.add(listener);
+  if (versionListeners.size === 1 && !import.meta.env.DEV) {
+    retireLegacyServiceWorkers();
+    pollTimer = setInterval(() => void checkForNewVersion(), VERSION_POLL_MS);
+    document.addEventListener('visibilitychange', onVisibleCheck);
+  }
+  return () => {
+    versionListeners.delete(listener);
+    if (versionListeners.size === 0) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+      document.removeEventListener('visibilitychange', onVisibleCheck);
+    }
+  };
+}
+
+const getVersionSnapshot = () => newVersionAvailable;
+
 export function usePWAUpdate(): PWAUpdateState {
-  const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [updateInstalled, setUpdateInstalled] = useState(false);
-  // Held in a ref (not state) so the idle auto-apply effect can reach the
-  // current registration without re-arming, and nothing re-renders on it.
-  const registrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const updateAvailable = useSyncExternalStore(
+    subscribeVersion,
+    getVersionSnapshot,
+    getVersionSnapshot
+  );
 
   // Maintenance (cloud) can lower the idle threshold via this external store so
   // stale clients refresh promptly before a scheduled outage. Null = default.
-  const [urgentIdleMs, setUrgentIdleMs] = useState<number | null>(
+  const urgentIdleMs = useSyncExternalStore(
+    subscribePwaUpdateUrgency,
+    getPwaUpdateUrgentIdleMs,
     getPwaUpdateUrgentIdleMs
-  );
-  useEffect(
-    () =>
-      subscribePwaUpdateUrgency(() =>
-        setUrgentIdleMs(getPwaUpdateUrgentIdleMs())
-      ),
-    []
   );
 
   // Don't show update prompts in development mode - Vite HMR causes false positives
   const isDev = import.meta.env.DEV;
 
-  useEffect(() => {
-    if (!('serviceWorker' in navigator)) return;
-
-    // In dev a service worker must NEVER control the page (it serves stale
-    // precached bundles and can't self-update). Teardown of any leftover SW
-    // happens at app entry via unregisterServiceWorkersInDev() in main.tsx;
-    // here we simply never register one.
-    if (isDev) return;
-
-    // Only a genuine UPDATE (a new SW replacing an existing controller) should
-    // force a reload. On a user's first visit the initial SW claims the page
-    // (clientsClaim) and ALSO fires controllerchange — reloading then would
-    // bounce a freshly-loaded page for no reason. This flag flips true only when
-    // an installing worker appears while a controller already exists.
-    let reloadOnControllerChange = false;
-
-    const registerAndListen = async () => {
-      try {
-        let reg = await navigator.serviceWorker.getRegistration();
-        if (!reg) {
-          reg = await navigator.serviceWorker.register('/sw.js', {
-            scope: '/',
-          });
-        }
-
-        registrationRef.current = reg;
-
-        if (reg.waiting) {
-          setUpdateAvailable(true);
-        }
-
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          if (!newWorker) return;
-          // A controller already present means this is an update, not the
-          // first install — so a subsequent controllerchange should reload.
-          if (navigator.serviceWorker.controller) {
-            reloadOnControllerChange = true;
-          }
-          newWorker.addEventListener('statechange', () => {
-            if (
-              newWorker.state === 'installed' &&
-              navigator.serviceWorker.controller
-            ) {
-              setUpdateAvailable(true);
-            }
-            if (newWorker.state === 'activated') {
-              setUpdateInstalled(true);
-              setTimeout(() => setUpdateInstalled(false), 3000);
-            }
-          });
-        });
-
-        // Poll for a new deployment so long-lived SPA sessions still update.
-        setInterval(() => {
-          reg.update();
-        }, 60000);
-      } catch (error) {
-        console.error('PWA: Service worker registration failed', error);
-      }
-    };
-
-    registerAndListen();
-
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!reloadOnControllerChange) return;
-      setUpdateInstalled(true);
-      setTimeout(() => {
-        setUpdateInstalled(false);
-        window.location.reload();
-      }, 1000);
-    });
-  }, [isDev]);
-
+  // index.html is never cached, so a reload boots the new bundle.
   const applyWaitingUpdate = useCallback(() => {
-    const reg = registrationRef.current;
-    if (reg?.waiting) {
-      reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-      setUpdateAvailable(false);
-    }
+    window.location.reload();
   }, []);
 
-  // Auto-apply a pending update at the next SAFE moment rather than forcing an
-  // immediate reload that could interrupt a bot-create or any in-progress form.
+  // During a maintenance window only: auto-apply a pending update at the next
+  // SAFE moment so stale clients pick up the maintenance UI before the outage.
   // "Safe" = the tab is hidden (user switched away) OR the user has been
-  // input-idle for `idleMs`. `applyWaitingUpdate` posts SKIP_WAITING; the SW's
-  // controllerchange handler above then reloads onto the fresh bundle. The
-  // manual "update now" button (PWAStatus) still applies immediately.
+  // input-idle for `urgentIdleMs`. Outside a window nothing happens until the
+  // user clicks "Update Now" (PWAStatus).
   useEffect(() => {
-    if (isDev || !updateAvailable) return;
+    if (isDev || !updateAvailable || urgentIdleMs == null) return;
 
-    const idleMs = urgentIdleMs ?? DEFAULT_IDLE_MS;
+    const idleMs = urgentIdleMs;
     let lastActivityMs = Date.now();
     const markActive = () => {
       lastActivityMs = Date.now();
@@ -190,8 +213,9 @@ export function usePWAUpdate(): PWAUpdateState {
   }, [updateAvailable, urgentIdleMs, isDev, applyWaitingUpdate]);
 
   return {
-    updateAvailable,
-    updateInstalled,
+    updateAvailable: !isDev && updateAvailable,
+    // No service worker installs anything any more.
+    updateInstalled: false,
     updateServiceWorker: applyWaitingUpdate,
   };
 }

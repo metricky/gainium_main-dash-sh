@@ -40,6 +40,17 @@ import { useHedgeComboBots } from '@/hooks/useHedgeComboBots';
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import { getLocalPrices } from '@/helper/price';
 import { useHedgeUnPnlMap } from '@/utils/bots/hedge/useHedgeUnPnlMap';
+import { useBotListPaging } from '@/hooks/useBotListPaging';
+import {
+  CANONICAL_DCA_STATUSES,
+  isPartialList,
+} from '@/lib/botList/botListWindow';
+import {
+  BOT_LIST_PARTIAL_TOOLTIP,
+  HEDGE_BOT_SERVER_FIELDS,
+} from '@/lib/botList/botListServerFields';
+import { withServerFields } from '@/components/ui/data-table/serverSide';
+import { PartialCount } from '@/components/ui/large-account';
 import { computeHedgeUnPnl } from '@/utils/bots/hedge/computeHedgeUnPnl';
 import { useHedgeLegUnrealized } from '@/hooks/useHedgeLegUnrealized';
 import type { DrawerBot } from '@/types/bots/drawer';
@@ -55,6 +66,8 @@ import { useDrawerBot } from '@/hooks/useDrawerBot';
 import { useBotModeGuard } from '@/hooks/bots/base/useBotModeGuard';
 import { useAuthStore } from '@/stores/authStore';
 import { useIsReadOnly } from '@/lib/demoMode';
+import { BOT_METRIC_DESCRIPTIONS } from '@/lib/botMetricDescriptions';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 
 const HEDGE_BOTS_WIDGET_MOTION = {
   initial: { opacity: 0, y: 20 },
@@ -170,9 +183,33 @@ const HedgeComboBots = () => {
     () => ({ status: showArchived ? (['archive'] as const) : [] }),
     [showArchived]
   );
-  const { bots, isLoading } = useHedgeComboBots(
-    hedgeBotsFilter as Parameters<typeof useHedgeComboBots>[0]
-  );
+  const {
+    bots: canonicalBots,
+    isLoading,
+    total: canonicalTotal,
+    data: canonicalResponse,
+  } = useHedgeComboBots(hedgeBotsFilter as Parameters<typeof useHedgeComboBots>[0]);
+  const canonicalLoaded = Array.isArray(
+    (canonicalResponse as { data?: unknown[] } | null)?.data
+  )
+    ? ((canonicalResponse as { data: unknown[] }).data.length as number)
+    : canonicalBots.length;
+  // Safety net: a capped hedge list pages on the server instead of being
+  // silently truncated.
+  const botListPaging = useBotListPaging({
+    type: 'hedgeCombo',
+    canonical: {
+      bots: canonicalBots,
+      total: canonicalTotal,
+      isPartial: isPartialList(canonicalLoaded, canonicalTotal),
+      loadedCount: canonicalLoaded,
+    },
+    statuses: showArchived ? ['archive'] : CANONICAL_DCA_STATUSES,
+    fields: HEDGE_BOT_SERVER_FIELDS,
+    tableId: 'hedge-combo-bots',
+    searchable: false,
+  });
+  const bots = botListPaging.bots;
   const privacyMode = useUIStore((s) => s.privacyMode);
   // Demo/read-only sessions can't create bots — gate "New" like the regular
   // bot lists do.
@@ -337,11 +374,18 @@ const HedgeComboBots = () => {
     [navigate]
   );
 
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the `filterType: 'date'` filter matches on — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   const columns = useMemo<ColumnDef<EnrichedHedgeBot>[]>(
     () => [
       {
         id: 'pair',
         header: 'Pair',
+        meta: {
+          filterType: 'array' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.pair,
+        },
         accessorFn: (row) => formatPair(row),
         cell: ({ getValue }) => (
           <span className="font-medium">{getValue() as string}</span>
@@ -350,6 +394,7 @@ const HedgeComboBots = () => {
       {
         id: 'name',
         header: 'Name',
+        meta: { description: BOT_METRIC_DESCRIPTIONS.hedge.name },
         // Hedge wrapper has no name of its own — surface whichever leg
         // has one so the user can tell their bots apart in the list.
         accessorFn: (row) => {
@@ -370,6 +415,10 @@ const HedgeComboBots = () => {
       {
         id: 'status',
         header: 'Status',
+        meta: {
+          filterType: 'array' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.status,
+        },
         accessorFn: (row) => row.status,
         cell: ({ getValue }) => (
           <StatusChip status={getValue() as string} size="sm" />
@@ -378,6 +427,10 @@ const HedgeComboBots = () => {
       {
         id: 'longExchange',
         header: 'Long exchange',
+        meta: {
+          filterType: 'array' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.longExchange,
+        },
         accessorFn: (row) => {
           const leg = row.bots?.find(
             (b) => b.settings?.strategy === StrategyEnum.long
@@ -402,6 +455,10 @@ const HedgeComboBots = () => {
       {
         id: 'shortExchange',
         header: 'Short exchange',
+        meta: {
+          filterType: 'array' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.shortExchange,
+        },
         accessorFn: (row) => {
           const leg = row.bots?.find(
             (b) => b.settings?.strategy === StrategyEnum.short
@@ -447,7 +504,10 @@ const HedgeComboBots = () => {
             </span>
           );
         },
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.deals,
+        },
       },
       {
         id: 'currentCost',
@@ -459,6 +519,7 @@ const HedgeComboBots = () => {
           </span>
         ),
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.currentCost,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -478,6 +539,7 @@ const HedgeComboBots = () => {
           </span>
         ),
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.maxCost,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -500,7 +562,10 @@ const HedgeComboBots = () => {
           const max = row.__maxCost ?? 0;
           return max > 0 ? (current / max) * 100 : 0;
         },
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.usage,
+        },
         cell: ({ row }) => {
           const current = row.original.__currentCost ?? 0;
           const max = row.original.__maxCost ?? 0;
@@ -524,7 +589,7 @@ const HedgeComboBots = () => {
       },
       {
         id: 'profitTotalUsd',
-        header: 'Total profit',
+        header: 'Realized PnL',
         accessorFn: (row) => row.__totalProfitUsd ?? row.profit?.totalUsd ?? 0,
         cell: ({ getValue }) => (
           <ProfitAndPerc
@@ -536,6 +601,7 @@ const HedgeComboBots = () => {
           />
         ),
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.realizedPnl,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -570,6 +636,52 @@ const HedgeComboBots = () => {
           />
         ),
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.unrealizedPnl,
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span
+            className={
+              privacyMode
+                ? 'text-sm text-muted-foreground font-bold'
+                : value >= 0
+                  ? 'text-sm text-success font-bold'
+                  : 'text-sm text-destructive font-bold'
+            }
+          >
+            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+          </span>
+        ),
+      },
+      {
+        id: 'netPnl',
+        header: 'Net PnL',
+        // Realized (the hedge wrapper's own profit) plus the long+short
+        // unrealized the parent enriched onto the row — the same two figures
+        // the columns beside this one show.
+        accessorFn: (row) =>
+          (row.__totalProfitUsd ?? row.profit?.totalUsd ?? 0) +
+          (row.__unPnl ?? 0),
+        cell: ({ row }) => {
+          const net =
+            (row.original.__totalProfitUsd ??
+              row.original.profit?.totalUsd ??
+              0) + (row.original.__unPnl ?? 0);
+          const cost = row.original.__currentCost ?? 0;
+          return (
+            <ProfitAndPerc
+              value={net}
+              percentage={cost > 0 ? (net / cost) * 100 : 0}
+              privacyMode={privacyMode}
+              size="sm"
+            />
+          );
+        },
+        meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.netPnl,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -604,6 +716,7 @@ const HedgeComboBots = () => {
         // Summing per-bot daily averages is meaningless; default to the
         // average across bots (min/max also available in the dropdown).
         meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.avgDaily,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'average',
@@ -630,23 +743,33 @@ const HedgeComboBots = () => {
         cell: ({ getValue }) => (
           <ProfitLossPercChip value={getValue() as number} size="sm" />
         ),
-        meta: { filterType: 'number' as const },
+        meta: {
+          filterType: 'number' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.annualizedReturn,
+        },
       },
       {
         id: 'created',
         header: 'Created',
+        meta: {
+          filterType: 'date' as const,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.created,
+        },
         accessorFn: (row) => row.created,
         cell: ({ getValue }) => {
           const v = getValue();
           if (!v) return '—';
           const d = new Date(v as string | number);
-          return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
+          return Number.isNaN(d.getTime())
+            ? '—'
+            : d.toLocaleDateString(undefined, { timeZone: accountTimeZone });
         },
       },
       {
         id: 'botId',
         accessorFn: (row) => row._id,
         header: 'BOT ID',
+        meta: { description: BOT_METRIC_DESCRIPTIONS.hedge.botId },
         enableSorting: false,
         cell: ({ row }) => {
           const value = row.original._id;
@@ -669,8 +792,14 @@ const HedgeComboBots = () => {
     ],
     // Column defs read each row's already-enriched bot, not unPnlMap directly
     // (the unrealized values are baked into `enrichedBots`). The only reactive
-    // dep is privacyMode, which the profit/PnL cells honor by masking values.
-    [privacyMode]
+    // dep is privacyMode, which the profit/PnL cells honor by masking values,
+    // plus the account zone the Created cell renders its day in.
+    [privacyMode, accountTimeZone]
+  );
+  // Server mode only honours sorts/filters with a server field.
+  const serverColumns = useMemo(
+    () => withServerFields(columns, HEDGE_BOT_SERVER_FIELDS),
+    [columns]
   );
 
   if (!isPremium) {
@@ -738,6 +867,17 @@ const HedgeComboBots = () => {
                 >
                   <div className="flex items-center justify-between gap-xs sm:hidden">
                     <h2 className="text-xl font-semibold">Hedge Combo Bots</h2>
+                    {botListPaging.partial && (
+                      <PartialCount
+                        shown={botListPaging.partial.shown}
+                        total={botListPaging.partial.total}
+                        noun="bots"
+                        tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                          botListPaging.partial.shown,
+                          botListPaging.partial.total
+                        )}
+                      />
+                    )}
                     {readOnly ? (
                       <span title="Creating bots is not available in demo mode">
                         <MotionButton variant="default" disabled={true}>
@@ -766,6 +906,17 @@ const HedgeComboBots = () => {
 
                   <div className="hidden sm:grid sm:grid-cols-[auto_1fr_auto] sm:items-center w-full">
                     <h2 className="text-xl font-semibold">Hedge Combo Bots</h2>
+                    {botListPaging.partial && (
+                      <PartialCount
+                        shown={botListPaging.partial.shown}
+                        total={botListPaging.partial.total}
+                        noun="bots"
+                        tooltip={BOT_LIST_PARTIAL_TOOLTIP(
+                          botListPaging.partial.shown,
+                          botListPaging.partial.total
+                        )}
+                      />
+                    )}
                     <div className="min-w-0 flex justify-end px-md">
                       <BotListStatsBoxes
                         stats={botListStats}
@@ -798,7 +949,8 @@ const HedgeComboBots = () => {
                 >
                     <DataTable
                       tableId="hedge-combo-bots"
-                      columns={columns}
+                      columns={serverColumns}
+                      serverSide={botListPaging.serverSide}
                       data={enrichedBots}
                       getRowId={(row) => row._id}
                       enableGlobalFilter

@@ -9,14 +9,20 @@ import SettingsRow, {
 } from '@/components/widgets/shared/SettingsRow';
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
 import StrategySelector from '@/components/widgets/bots/StrategySelector';
+import { TerminalButtonStack } from '@/components/ui/terminal-button-stack';
 import {
   useBotFormSelector,
-  useBotFormState,
+  useTrackedBotFormState,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
 import { GridBasicSettings } from '@/features/bots/bot-types/grid/form/sections/GridBasicSettings';
 import {
+  FUTURES_STRATEGY_OPTIONS,
+  mirroredSpotStrategy,
+} from '@/features/bots/bot-types/grid/form/positionSide';
+import {
   BotTypesEnum,
+  FuturesStrategyEnum,
   StrategyEnum,
   type ExchangeInUser,
   type Prices,
@@ -33,12 +39,18 @@ import { GridPresetsPicker } from './components/GridPresetsPicker';
 import {
   QUICK_GRID_PRESETS,
   getQuickGridPreset,
+  type GridRangeDirection,
 } from './components/quickGridPresets';
 import {
   useAutoNameFromPreset,
   useQuickBalance,
 } from './components/quick-setup/shared';
 import { useMarketStats } from './hooks/useMarketStats';
+import {
+  pickDefaultPair,
+  useBotFormQuery,
+} from './providers/BotFormQueryProvider';
+import { normalizePairKey, resolveNativePairSymbol } from '@/utils/pairs';
 
 const PRESET_LABELS = QUICK_GRID_PRESETS.map((p) => p.label);
 
@@ -61,7 +73,7 @@ interface QuickGridBotFormProps {
   currentExchange: ExchangeInUser | null;
   exchangesData?: ExchangeInUser[];
   exchangesLoading?: boolean;
-  errors: BotFormErrors;
+  errors?: BotFormErrors;
 }
 
 export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
@@ -70,11 +82,40 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
   exchangesLoading,
 }) => {
   const { formData, updateFormData, isFieldLocked, selectedPreset, mode } =
-    useBotFormState();
+    useTrackedBotFormState();
 
   const { openPanel: openAllStrategies } = useAllStrategiesPanel();
 
   const strategy = useBotFormSelector('strategy') as StrategyEnum | undefined;
+  const futures = useBotFormSelector('futures') as boolean | undefined;
+  const storedFuturesStrategy = useBotFormSelector('futuresStrategy') as
+    | FuturesStrategyEnum
+    | undefined;
+  // Futures grids choose a position side (Long / Neutral / Short) stored on
+  // `futuresStrategy`; spot grids choose a direction (Long / Short) stored on
+  // `strategy`. Same split as the Manual form's Strategy section — the engine
+  // reads `futuresStrategy` for a futures bot and only falls back to
+  // `strategy` when it is NEUTRAL (`core/src/bot/helper.ts` → `isShort`).
+  const futuresStrategy = storedFuturesStrategy ?? FuturesStrategyEnum.neutral;
+
+  // Keep `strategy` in step with the position side while on futures, so the
+  // engine's NEUTRAL fallback can never contradict the visible choice — this
+  // also covers switching from a spot pair (where Short may have been picked)
+  // to a futures one. Create only; Quick Setup never edits an existing bot.
+  useEffect(() => {
+    if (!futures || mode !== 'create') return;
+    const mirrored = mirroredSpotStrategy(futuresStrategy);
+    if (strategy !== mirrored) {
+      updateFormData('strategy' as Fields, mirrored);
+    }
+  }, [futures, mode, futuresStrategy, strategy, updateFormData]);
+
+  // What the Risk Profile calibration tilts the range towards. Neutral gets a
+  // symmetric range; long/short keep their asymmetric tilt.
+  const rangeDirection: GridRangeDirection = futures
+    ? futuresStrategy
+    : (strategy ?? StrategyEnum.long);
+
   const gridState = formData.grid;
   const budget = Number(gridState.budget ?? 0);
   const levels = Number(gridState.levels ?? 0);
@@ -100,11 +141,20 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
   // Resolve quote asset via pairMetadata when available — pairs are
   // stored without a separator (e.g. "ADAUSDT"), so a naïve split('/')
   // returns the full pair as base and leaves quote empty.
+  // With no pair selected, label the investment in the quote of the
+  // exchange's default pair (the chart shows that pair too) rather than a
+  // hardcoded USDT the account may not be able to trade.
+  const { pairMetadata: queryPairMetadata } = useBotFormQuery();
   const quoteAsset = useMemo(() => {
-    if (!firstPair) return '';
+    if (!firstPair) {
+      const defaultKey = pickDefaultPair(queryPairMetadata.byPair);
+      return defaultKey
+        ? (queryPairMetadata.byPair[defaultKey]?.quoteAsset?.name ?? '')
+        : '';
+    }
     const meta = formData.pairMetadata?.[firstPair];
     return meta?.quoteAsset?.name || splitPair(firstPair)[1];
-  }, [firstPair, formData.pairMetadata]);
+  }, [firstPair, formData.pairMetadata, queryPairMetadata.byPair]);
 
   const baseAsset = useMemo(() => {
     if (!firstPair) return '';
@@ -115,7 +165,12 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
   // Single-pair calibration. Grid never goes multi-pair, so no
   // "Recalculate across pairs" UI here.
   const { data: marketStats, isLoading: marketStatsLoading } = useMarketStats({
-    symbol: firstPair || null,
+    symbol: firstPair
+      ? resolveNativePairSymbol(
+          firstPair,
+          formData.pairMetadata?.[normalizePairKey(firstPair)]
+        )
+      : null,
     exchange: currentExchange?.provider ?? null,
     enabled: Boolean(firstPair && currentExchange?.provider),
   });
@@ -392,19 +447,36 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
         hideInitialPrice
       />
 
-      <SettingsRow
-        name="Direction"
-        tooltip="Long buys low and sells high; short sells high and buys low. Drives how the price range is positioned around the latest price."
-        navId="strategy"
-      >
-        <StrategySelector
-          strategy={strategy ?? StrategyEnum.long}
-          onStrategyChange={(next) =>
-            updateFormData('strategy' as Fields, next)
-          }
-          disabled={Boolean(isFieldLocked?.('strategy' as Fields))}
-        />
-      </SettingsRow>
+      {futures ? (
+        <SettingsRow
+          name="Position side"
+          tooltip="Long opens a long position at the start, short opens a short one, and neutral opens no position at all — the grid trades both sides from flat. Also drives how the price range is positioned around the latest price."
+          navId="futuresStrategy"
+        >
+          <TerminalButtonStack
+            value={futuresStrategy}
+            onValueChange={(next) =>
+              updateFormData('futuresStrategy' as Fields, next)
+            }
+            options={FUTURES_STRATEGY_OPTIONS}
+            disabled={Boolean(isFieldLocked?.('futuresStrategy' as Fields))}
+          />
+        </SettingsRow>
+      ) : (
+        <SettingsRow
+          name="Direction"
+          tooltip="Long buys low and sells high; short sells high and buys low. Drives how the price range is positioned around the latest price."
+          navId="strategy"
+        >
+          <StrategySelector
+            strategy={strategy ?? StrategyEnum.long}
+            onStrategyChange={(next) =>
+              updateFormData('strategy' as Fields, next)
+            }
+            disabled={Boolean(isFieldLocked?.('strategy' as Fields))}
+          />
+        </SettingsRow>
+      )}
 
       <SettingsRow
         name={`Investment${quoteAsset ? `, ${quoteAsset}` : ''}`}
@@ -449,7 +521,7 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
       </SettingsRow>
 
       <SettingsRow
-        name="Risk profile"
+        name="Preset"
         description="Pick a starting point. Customize later in Manual mode."
         tooltip="Range and grid spacing are auto-calculated from recent price data for the selected pair. They have not been validated and do not constitute trading advice — always review before launching."
         navId="risk-reward"
@@ -460,7 +532,7 @@ export const QuickGridBotForm: React.FC<QuickGridBotFormProps> = ({
         >
           <GridPresetsPicker
             marketStats={marketStats}
-            strategy={strategy ?? StrategyEnum.long}
+            strategy={rangeDirection}
             coin={baseAsset || null}
             exchange={currentExchange?.provider ?? null}
             fallbackLatestPrice={latestPairPrice}

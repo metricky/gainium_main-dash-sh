@@ -1,11 +1,20 @@
 import { ChevronDown, Search, Star, X as CloseIcon } from 'lucide-react';
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { type AssetClass } from '../../../hooks/useTradingPairs';
 import { formatExchangeProvider } from '../../../utils/exchangeUtils';
 import {
   isPairSymbolReconstructable,
   normalizePairKey,
+  splitPastedPairTokens,
 } from '../../../utils/pairs';
 import { Chip } from '../../ui/chip';
 import { Checkbox } from '../../ui/checkbox';
@@ -38,6 +47,9 @@ interface ListItem {
   // Human-readable base-asset name (e.g. "Apple Inc."), shown under the ticker
   // in pair rows. Optional: falls back to just the ticker when absent.
   baseDisplayName?: string;
+  // The base as the exchange spells it (`rMCD`); shown instead of the
+  // upper-cased `baseAsset` when present.
+  baseLabel?: string;
   // Exchange-specific properties
   isExchange?: boolean;
   isHelper?: boolean;
@@ -110,7 +122,13 @@ interface ListModalProps {
   searchPlaceholder?: string;
   isLoading?: boolean;
   loadingMessage?: string;
-  onPaste?: (raw: string) => void;
+  /**
+   * Bulk-add a paste that carries SEVERAL symbols. Only called for those — a
+   * single-symbol paste is a search and is left to the input. Return a message
+   * to show inside the dialog (the caller's own error slot is behind the
+   * overlay and unreadable while this modal is open).
+   */
+  onPaste?: (raw: string) => string | undefined;
   // Sort + favorites (optional — enabled by the pair selector)
   sortMode?: string;
   sortOptions?: ListModalSortOption[];
@@ -331,6 +349,170 @@ const DetailRow: React.FC<{
  * `onToggleFavorite` identities and stable `item` references. The
  * expand/collapse state is local to the row.
  */
+/**
+ * Searchable text of one item. The separator-stripped forms matter: a pair is
+ * displayed as `ETH/BTC` and identified as `ETH-BTC`, but users type — and the
+ * bot form STORES — the concatenated `ETHBTC`, which matches neither. Before
+ * this, searching `BTCUSDT` on a venue with dated futures returned the eight
+ * `BTCUSDT-<expiry>` contracts (whose native symbol contains that literal
+ * string) and hid the actual BTCUSDT perpetual.
+ */
+const searchableTextFor = (item: ListItem): string =>
+  [
+    item.name,
+    item.symbol,
+    normalizePairKey(item.name),
+    normalizePairKey(item.symbol),
+    item.subtitle || '',
+    // The company name shown under a stock's ticker (`Apple Inc.` for RAAPL),
+    // so a stock can be found by its name, not only its ticker.
+    item.baseDisplayName || '',
+  ]
+    .join(' ')
+    .toLowerCase();
+
+/** Row height used before a row has been measured (a collapsed pair row). */
+const ESTIMATED_ROW_HEIGHT = 60;
+/** Gap between rows (the former `space-y-1`). */
+const ROW_GAP = 4;
+/** Rows rendered above and below the visible window. */
+const OVERSCAN_ROWS = 8;
+
+/**
+ * Renders only the rows in (and just around) the visible part of the list.
+ * A venue can list thousands of pairs; mounting them all put tens of
+ * thousands of DOM nodes and hundreds of image loads behind every open of the
+ * picker. Rows keep their natural (variable) height: each rendered row is
+ * measured, and unmeasured rows are assumed to be a collapsed row.
+ */
+const WindowedRows: React.FC<{
+  items: ListItem[];
+  /**
+   * The element that scrolls. Passed as the element, not a ref: when the
+   * picker opens with its items already loaded, the scroll box and these rows
+   * mount in the same commit, and this component's layout effect runs before
+   * React attaches the parent's ref — a ref would still read null here, and
+   * nothing would ever re-run the effect to bind the scroll listener.
+   */
+  scrollElement: HTMLDivElement | null;
+  renderRow: (item: ListItem) => React.ReactNode;
+}> = ({ items, scrollElement, renderRow }) => {
+  const heightsRef = useRef(new Map<string, number>());
+  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  const [, setMeasureTick] = useState(0);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // Track scroll position and viewport size, at most once per frame.
+  useLayoutEffect(() => {
+    const el = scrollElement;
+    if (!el) return;
+    let frame: number | null = null;
+    const read = () => {
+      frame = null;
+      // Where the list starts inside the scroll container's content.
+      const offset = listRef.current
+        ? listRef.current.getBoundingClientRect().top -
+          el.getBoundingClientRect().top +
+          el.scrollTop
+        : 0;
+      setViewport((prev) => {
+        const top = Math.max(0, el.scrollTop - offset);
+        const height = el.clientHeight || prev.height;
+        return prev.top === top && prev.height === height
+          ? prev
+          : { top, height };
+      });
+    };
+    const onScroll = () => {
+      if (frame === null) frame = requestAnimationFrame(read);
+    };
+    read();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onScroll) : null;
+    ro?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      ro?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [scrollElement]);
+
+  const onRowHeight = useCallback((key: string, height: number) => {
+    if (heightsRef.current.get(key) !== height) {
+      heightsRef.current.set(key, height);
+      setMeasureTick((t) => t + 1);
+    }
+  }, []);
+
+  const heights = heightsRef.current;
+  let start = 0;
+  let offset = 0;
+  const rowSize = (item: ListItem) =>
+    (heights.get(item.symbol) ?? ESTIMATED_ROW_HEIGHT) + ROW_GAP;
+  // First row whose bottom is below the top of the viewport.
+  while (start < items.length && offset + rowSize(items[start]) < viewport.top) {
+    offset += rowSize(items[start]);
+    start += 1;
+  }
+  const firstVisible = start;
+  // Back up by the overscan.
+  let from = firstVisible;
+  let fromOffset = offset;
+  for (let i = 0; i < OVERSCAN_ROWS && from > 0; i += 1) {
+    from -= 1;
+    fromOffset -= rowSize(items[from]);
+  }
+  let to = firstVisible;
+  let end = offset;
+  while (to < items.length && end < viewport.top + viewport.height) {
+    end += rowSize(items[to]);
+    to += 1;
+  }
+  to = Math.min(items.length, to + OVERSCAN_ROWS);
+  let total = 0;
+  for (const item of items) total += rowSize(item);
+
+  return (
+    <div ref={listRef} style={{ position: 'relative', height: total }}>
+      <div style={{ position: 'absolute', top: fromOffset, left: 0, right: 0 }}>
+        {items.slice(from, to).map((item) => (
+          <MeasuredRow key={item.symbol} rowKey={item.symbol} onHeight={onRowHeight}>
+            {renderRow(item)}
+          </MeasuredRow>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const MeasuredRow: React.FC<{
+  rowKey: string;
+  onHeight: (key: string, height: number) => void;
+  children: React.ReactNode;
+}> = ({ rowKey, onHeight, children }) => {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // 0 means "not laid out" (hidden, or no layout engine): keep the estimate.
+    const report = () => {
+      if (el.offsetHeight > 0) onHeight(rowKey, el.offsetHeight);
+    };
+    report();
+    if (typeof ResizeObserver === 'undefined') return;
+    // A row grows when its details are expanded.
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [rowKey, onHeight]);
+  return (
+    <div ref={ref} style={{ marginBottom: ROW_GAP }}>
+      {children}
+    </div>
+  );
+};
+
 const ListModalRow = React.memo<ListModalRowProps>(
   ({ item, isSelected, enableFavorites, onToggle, onToggleFavorite }) => {
     const [expanded, setExpanded] = useState(false);
@@ -459,7 +641,7 @@ const ListModalRow = React.memo<ListModalRowProps>(
                   <>
                     <div className="flex items-baseline gap-1.5 min-w-0">
                       <span className="text-foreground font-semibold text-sm truncate leading-tight">
-                        {item.baseAsset}
+                        {item.baseLabel ?? item.baseAsset}
                       </span>
                       {/* Contract markets (`BTCUSD_261225`, `BTCUSDT-25SEP26`,
                           `BTCMU26`) are all `BASE / QUOTE` — the expiry lives in
@@ -660,6 +842,13 @@ export const ListModal: React.FC<ListModalProps> = ({
   onAssetClassChange,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  // Filtering runs on a deferred copy so typing stays responsive on venues
+  // with thousands of pairs; the input itself updates immediately.
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+  // What the last bulk-add paste reported, shown in this dialog. The bot form
+  // has its own error slot, but it sits behind the modal overlay — a message
+  // written there while the picker is open is one the user never sees.
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   // "Canonical only" filter — ON by default. Hides permissionless
   // (non-canonical) listings, currently Hyperliquid HIP-1 spot tokens. Only
   // relevant when the list actually contains non-canonical items.
@@ -686,6 +875,16 @@ export const ListModal: React.FC<ListModalProps> = ({
   const showSort =
     Boolean(sortOptions?.length && sortMode && onSortModeChange) && sortApplies;
 
+  // Searchable text per item, built once per item list instead of on every
+  // keystroke for every item.
+  const searchIndex = useMemo(() => {
+    const index = new Map<ListItem, string>();
+    for (const item of deferredItems) {
+      index.set(item, searchableTextFor(item));
+    }
+    return index;
+  }, [deferredItems]);
+
   const filteredItems = useMemo(() => {
     if (isLoading) {
       return [] as ListItem[];
@@ -711,46 +910,37 @@ export const ListModal: React.FC<ListModalProps> = ({
           )
         : canonicalFiltered;
 
-    if (!searchTerm.trim()) return classFiltered;
+    if (!deferredSearchTerm.trim()) return classFiltered;
 
-    const searchLower = searchTerm.toLowerCase().trim();
+    const searchLower = deferredSearchTerm.toLowerCase().trim();
 
     // Split search term into words for multi-term search
     const searchWords = searchLower
       .split(/\s+/)
       .filter((word) => word.length > 0);
 
+    // Normalize the query words once, not once per item.
+    const wordForms = searchWords.map((word) => [
+      word,
+      normalizePairKey(word).toLowerCase(),
+    ]);
+
     return classFiltered.filter((item) => {
-      // Combine all searchable text into one string. The separator-stripped
-      // forms matter: a pair is displayed as `ETH/BTC` and identified as
-      // `ETH-BTC`, but users type — and the bot form STORES — the concatenated
-      // `ETHBTC`, which matches neither. Before this, searching `BTCUSDT` on a
-      // venue with dated futures returned the eight `BTCUSDT-<expiry>`
-      // contracts (whose native symbol contains that literal string) and hid
-      // the actual BTCUSDT perpetual.
-      const searchableText = [
-        item.name,
-        item.symbol,
-        normalizePairKey(item.name),
-        normalizePairKey(item.symbol),
-        item.subtitle || '',
-      ]
-        .join(' ')
-        .toLowerCase();
+      const searchableText = searchIndex.get(item) ?? searchableTextFor(item);
 
       // All search words must appear somewhere in the combined text. Each word
       // is also tried separator-stripped, so `eth/btc`, `eth-btc` and `ethbtc`
       // are interchangeable in the query as well as in the haystack.
-      return searchWords.every(
-        (word) =>
-          searchableText.includes(word) ||
-          searchableText.includes(normalizePairKey(word).toLowerCase())
+      return wordForms.every(
+        ([word, stripped]) =>
+          searchableText.includes(word) || searchableText.includes(stripped)
       );
     });
   }, [
     deferredItems,
+    searchIndex,
     isLoading,
-    searchTerm,
+    deferredSearchTerm,
     showAssetFilter,
     selectedAssetClass,
     canonicalOnly,
@@ -790,6 +980,17 @@ export const ListModal: React.FC<ListModalProps> = ({
 
     return [...header, ...ordered];
   }, [filteredItems, showSort, sortMode, favoritesFirst]);
+
+  const [listScrollEl, setListScrollEl] = useState<HTMLDivElement | null>(
+    null
+  );
+  const selectedSet = useMemo(() => new Set(selectedItems), [selectedItems]);
+
+  // A paste message describes one paste in one dialog session — don't let it
+  // greet the next person who opens the picker.
+  useEffect(() => {
+    setPasteNotice(null);
+  }, [isOpen]);
 
   // Close on Escape for a better keyboard UX (hook called unconditionally)
   useEffect(() => {
@@ -930,7 +1131,10 @@ export const ListModal: React.FC<ListModalProps> = ({
               type="text"
               placeholder={searchPlaceholder}
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setPasteNotice(null);
+              }}
               disabled={isLoading}
               className="w-full pl-10 pr-3 py-2 text-sm bg-foreground/[0.04] hover:bg-foreground/[0.06] border border-border/50 rounded-md text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-colors"
               onPaste={(event) => {
@@ -941,8 +1145,17 @@ export const ListModal: React.FC<ListModalProps> = ({
                 if (!text?.trim()) {
                   return;
                 }
+                // Only a paste carrying SEVERAL symbols is a bulk add. One
+                // symbol is someone searching, and claiming it left the box
+                // empty and the list unfiltered — which made the clipboard
+                // useless for finding a pair, the only practical way in when
+                // the ticker isn't on your keyboard.
+                if (splitPastedPairTokens(text).length < 2) {
+                  setPasteNotice(null);
+                  return;
+                }
                 event.preventDefault();
-                onPaste(text);
+                setPasteNotice(onPaste(text) || null);
               }}
             />
           </div>
@@ -982,10 +1195,26 @@ export const ListModal: React.FC<ListModalProps> = ({
             </button>
           )}
           </div>
+
+          {/* Outcome of the last bulk-add paste. It belongs here, in the
+              dialog the paste happened in — the bot form's error slot is
+              behind this modal. */}
+          {pasteNotice && (
+            <p
+              data-testid="list-modal-paste-notice"
+              role="status"
+              className="text-xs text-destructive"
+            >
+              {pasteNotice}
+            </p>
+          )}
         </div>
 
         {/* Items List */}
-        <div className="flex-1 overflow-y-auto px-md pb-2">
+        <div
+          ref={setListScrollEl}
+          className="flex-1 overflow-y-auto px-md pb-2"
+        >
           {isLoading ? (
             <div className="flex flex-col items-center justify-center gap-sm py-12">
               <div className="w-8 h-8 border-2 border-muted-foreground/30 border-t-primary rounded-full animate-spin" />
@@ -998,18 +1227,19 @@ export const ListModal: React.FC<ListModalProps> = ({
               No items found
             </div>
           ) : (
-            <div className="space-y-1">
-              {sortedItems.map((item) => (
+            <WindowedRows
+              items={sortedItems}
+              scrollElement={listScrollEl}
+              renderRow={(item) => (
                 <ListModalRow
-                  key={item.symbol}
                   item={item}
-                  isSelected={selectedItems.includes(item.symbol)}
+                  isSelected={selectedSet.has(item.symbol)}
                   enableFavorites={enableFavorites}
                   onToggle={onItemToggle}
                   {...(onToggleFavorite ? { onToggleFavorite } : {})}
                 />
-              ))}
-            </div>
+              )}
+            />
           )}
         </div>
 

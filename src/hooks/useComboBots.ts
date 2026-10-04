@@ -15,6 +15,12 @@ import {
   type BotListStats,
 } from './useBotListStats';
 import { useGraphQL } from './useGraphQL';
+import {
+  BOT_LIST_WINDOW,
+  CANONICAL_DCA_STATUSES,
+  isPartialList,
+} from '../lib/botList/botListWindow';
+import { botListScope } from '../stores/live/botListMerge';
 import { useComboBotsStore } from '@/stores/live';
 import { useShareContext } from './useShareContext';
 import { useUIStore } from '@/stores/uiStore';
@@ -56,29 +62,44 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
   // Convert Record to array once (memoized by botsRecord reference)
   const botsFromStore = useMemo(() => Object.values(botsRecord), [botsRecord]);
 
-  // Build GraphQL input based on filter
-  const input: {
-    status?: BotStatus[];
-  } = useMemo(() => {
-    const input: {
-      status?: BotStatus[];
-    } = {};
-    if (filter?.status?.length) {
-      input.status = filter.status;
-    } else {
-      // Default status filter for active bots (archived fetched separately)
-      input.status = ['open', 'range', 'monitoring', 'error', 'closed'];
-    }
-    return input;
-  }, [filter?.status]);
+  // Status subset this caller wants; served client-side from the canonical
+  // list (see useDcaBots for why every store-sharing caller asks the same).
+  const requestedStatuses = useMemo(
+    () =>
+      filter?.status?.length && !filter.status.includes('archive')
+        ? filter.status
+        : null,
+    [filter?.status]
+  );
 
-  // The archived list must NOT share the global active-bots store (see the same
-  // note in useDcaBots): updateBots REPLACES the store and every active-bot
-  // caller (drawer widgets, stats) would clobber the archived list, flipping it
-  // to active bots while showArchived stays true. React Query keys by `status`,
-  // so the archived query reads/writes its OWN result and stays out of the store.
+  // The archived list must NOT share the global active-bots store (see the
+  // same note in useDcaBots): it reads its OWN React Query result.
   const isArchivedQuery =
     !!filter?.status?.length && filter.status.includes('archive');
+
+  // A caller pinned to the NON-selected trading context reads its own result
+  // too (see useDcaBots).
+  const isForeignContextQuery =
+    typeof filter?.paperContext === 'boolean' &&
+    filter.paperContext !== !isLiveTrading;
+
+  // Reads and writes its OWN React Query result instead of the shared store.
+  const isIsolatedQuery = isArchivedQuery || isForeignContextQuery;
+
+  // One canonical request per context (deduped by React Query), with an
+  // explicit page so the server returns a real `total` and a capped response
+  // is detectable instead of silently truncated at 500.
+  const input = useMemo(
+    () => ({
+      status: isArchivedQuery
+        ? (filter?.status as BotStatus[])
+        : isForeignContextQuery && requestedStatuses
+          ? requestedStatuses
+          : CANONICAL_DCA_STATUSES,
+      dataGridInput: { page: 0, pageSize: BOT_LIST_WINDOW },
+    }),
+    [isArchivedQuery, isForeignContextQuery, requestedStatuses, filter?.status]
+  );
 
   // Share-mode visitors must not fetch the visitor's combo bot list — the
   // share URL renders ONLY the shared bot.
@@ -98,9 +119,9 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
   );
 
   // Update store when query succeeds (React Query v5 pattern). Skip for the
-  // archived query so it never clobbers / is clobbered by the active store.
+  // isolated queries so they never clobber / are clobbered by the active store.
   useEffect(() => {
-    if (isArchivedQuery) return;
+    if (isIsolatedQuery) return;
     if (queryResult.data?.status === 'OK' && queryResult.data.data) {
       const bots = Array.isArray(queryResult.data.data)
         ? queryResult.data.data
@@ -112,9 +133,22 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
             ? bot.paperContext
             : currentPaperContext,
       }));
-      useComboBotsStore.getState().updateBots(normalizedBots);
+      useComboBotsStore
+        .getState()
+        .updateBots(
+          normalizedBots,
+          botListScope(
+            currentPaperContext,
+            input.status,
+            bots.length,
+            queryResult.data.total
+          )
+        );
     }
-  }, [currentPaperContext, queryResult.data, isArchivedQuery]);
+    // `isIsolatedQuery` MUST stay in the deps: it flips when the global trading
+    // mode settles after cold start, and a pinned query that becomes native
+    // would otherwise never write its bots to the store.
+  }, [currentPaperContext, queryResult.data, isIsolatedQuery, input.status]);
 
   // Additional debug logging
   if (import.meta.env.DEV) {
@@ -136,6 +170,9 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
         if (bot.paperContext !== currentPaperContext) {
           return false;
         }
+        if (requestedStatuses && !requestedStatuses.includes(bot.status)) {
+          return false;
+        }
 
         // Exclude terminal bots if filter.terminal is false
         if (filter?.terminal === false && bot.settings?.type === 'terminal') {
@@ -150,12 +187,13 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
 
         return true;
       }),
-    [botsFromStore, currentPaperContext, filter?.terminal]
+    [botsFromStore, currentPaperContext, filter?.terminal, requestedStatuses]
   );
 
-  // Archived list: derive bots from THIS query's own result (isolated).
-  const archivedBots = useMemo(() => {
-    if (!isArchivedQuery) return null;
+  // Isolated list (archived, or pinned to the non-selected trading context):
+  // derive bots from THIS query's own result rather than the shared store.
+  const isolatedBots = useMemo(() => {
+    if (!isIsolatedQuery) return null;
     const data = queryResult.data?.data;
     const arr = Array.isArray(data) ? data : [];
     return arr
@@ -172,7 +210,7 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
           return false;
         return true;
       });
-  }, [isArchivedQuery, queryResult.data, currentPaperContext, filter?.terminal]);
+  }, [isIsolatedQuery, queryResult.data, currentPaperContext, filter?.terminal]);
 
   // 3. Only show loading on initial load (when store is empty) OR while IDB
   // is still rehydrating — otherwise the table flashes empty on hard refresh
@@ -183,14 +221,22 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
   // 4. Return store data (real-time via WebSocket). In share mode, return
   //    an empty result regardless of cached store contents so a
   //    previously-logged-in visitor never sees their own bots.
+  const responseRows = Array.isArray(queryResult.data?.data)
+    ? queryResult.data.data.length
+    : 0;
+  const serverTotal = queryResult.data?.total;
+  const partial = isPartialList(responseRows, serverTotal);
+
   const result = useMemo(() => {
-    if (isArchivedQuery && !isDemo) {
-      const bots = archivedBots ?? [];
+    if (isIsolatedQuery && !isDemo) {
+      const bots = isolatedBots ?? [];
       return {
         ...queryResult,
         data: queryResult.data?.data || null,
         bots,
-        total: queryResult.data?.total || bots.length,
+        total: serverTotal || bots.length,
+        isPartial: partial,
+        loadedCount: responseRows,
         isLoading: queryResult.isLoading && !bots.length,
         isError: queryResult.isError,
         error: queryResult.error,
@@ -200,12 +246,18 @@ export function useComboBots(filter?: ComboBotsFilter, enabled?: boolean) {
       ...queryResult,
       data: isDemo ? null : queryResult.data?.data || null,
       bots: isDemo ? [] : filteredBots, // Always from store (real-time)
-      total: isDemo ? 0 : queryResult.data?.total || filteredBots.length,
+      total: isDemo
+        ? 0
+        : partial
+          ? (serverTotal as number)
+          : filteredBots.length,
+      isPartial: isDemo ? false : partial,
+      loadedCount: isDemo ? 0 : responseRows,
       isLoading: isDemo ? false : isInitialLoad,
       isError: isDemo ? false : queryResult.isError,
       error: isDemo ? null : queryResult.error,
     };
-  }, [isArchivedQuery, archivedBots, isDemo, queryResult, filteredBots, isInitialLoad]);
+  }, [isIsolatedQuery, isolatedBots, isDemo, queryResult, filteredBots, isInitialLoad, serverTotal, partial, responseRows]);
 
   return result;
 }

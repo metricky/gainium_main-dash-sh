@@ -5,10 +5,12 @@ import { TerminalButtonStack } from '@/components/ui/terminal-button-stack';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import { useTradingTerminalUtils } from '@/context/TradingTerminalUtilsContext';
 import { useBotFormSelector } from '@/contexts/bots/form/BotFormProvider';
+import { CustomPercentChip } from '@/features/bots/shared/components/CustomPercentChip';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import { useGridForm } from '@/hooks/bots/grid/useGridForm';
 import { cn } from '@/lib/utils';
 import type { BotFormAlert } from '@/types/bots/form';
+import { GRID_LEVELS_ERROR } from '@/utils/bots/grid/validation';
 import { Crosshair } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo } from 'react';
 
@@ -30,6 +32,9 @@ const parseNumber = (value: string | number | undefined): number => {
   const parsed = typeof value === 'number' ? value : parseFloat(value);
   return Number.isFinite(parsed) ? parsed : NaN;
 };
+
+const TOP_PRICE_PRESETS = [5, 10, 20, 30];
+const LOW_PRICE_PRESETS = [-5, -10, -20, -30];
 
 const computePriceFromPercent = (
   basePrice: number,
@@ -168,6 +173,8 @@ export const GridRangeSettings: React.FC = () => {
     }
   }, [coordinates, setCoordinates, updateFormData, activePickerField]);
 
+  const [levelsDraftInvalid, setLevelsDraftInvalid] = React.useState(false);
+
   const [topPercent, setTopPercent] = React.useState<string>(() =>
     computePercentFromPrice(startPrice, topPrice)
   );
@@ -287,11 +294,19 @@ export const GridRangeSettings: React.FC = () => {
                   applyPercentToTop(numeric);
                 }
               }}
-              options={[5, 10, 20, 30].map((percent) => ({
+              options={TOP_PRICE_PRESETS.map((percent) => ({
                 value: formatPercent(percent),
                 label: `+${percent}%`,
                 buttonClassName: 'min-w-[64px] px-2',
               }))}
+              trailing={
+                <CustomPercentChip
+                  sign={1}
+                  currentPercent={Number.parseFloat(topPercent)}
+                  presets={TOP_PRICE_PRESETS}
+                  onApply={applyPercentToTop}
+                />
+              }
             />
             <p className="text-xs text-muted-foreground max-w-[540px]">
               Quick adjustments use your start price ({startPrice || 'n/a'}) as
@@ -369,11 +384,19 @@ export const GridRangeSettings: React.FC = () => {
                   applyPercentToLow(numeric);
                 }
               }}
-              options={[-5, -10, -20, -30].map((percent) => ({
+              options={LOW_PRICE_PRESETS.map((percent) => ({
                 value: formatPercent(percent),
                 label: `${percent}%`,
                 buttonClassName: 'min-w-[64px] px-2',
               }))}
+              trailing={
+                <CustomPercentChip
+                  sign={-1}
+                  currentPercent={Number.parseFloat(lowPercent)}
+                  presets={LOW_PRICE_PRESETS}
+                  onApply={applyPercentToLow}
+                />
+              }
             />
           </div>
         </SettingsRow>
@@ -382,7 +405,11 @@ export const GridRangeSettings: React.FC = () => {
           name="Grid levels"
           tooltip="Specify how many buy and sell levels compose the grid. More levels increase sensitivity but spread capital thinner per order."
           navId="levels"
-          alerts={buildErrorAlerts(errors, 'levels')}
+          alerts={
+            levelsDraftInvalid
+              ? [{ variant: 'error', message: GRID_LEVELS_ERROR, navId: 'levels' }]
+              : buildErrorAlerts(errors, 'levels')
+          }
         >
           <div className="space-y-xs">
             <NumberInput
@@ -390,17 +417,22 @@ export const GridRangeSettings: React.FC = () => {
               inputMode="numeric"
               value={(levels ?? '').toString()}
               onChange={(value) => {
-                if (value === '') {
-                  updateFormData('levels', 0);
+                // Only a whole number reaches the form. An empty field or
+                // `20,` used to be stored as 0, which sends the chart's
+                // geometric ladder into an endless loop; `20.1` was stored
+                // as is. Anything else stays a draft with the message.
+                const text = `${value}`.trim();
+                if (!/^\d+$/.test(text) || Number(text) < 1) {
+                  setLevelsDraftInvalid(true);
                   return;
                 }
-
-                const parsed =
-                  typeof value === 'string' ? Number(value) : value;
-                const nextLevels = Number.isFinite(parsed) ? parsed : 0;
+                const nextLevels = Number(text);
+                setLevelsDraftInvalid(false);
                 updateFormData('levels', nextLevels);
                 recalcGridStepFromLevels(nextLevels);
               }}
+              // NumberInput drops its draft on blur and shows the stored count.
+              onBlur={() => setLevelsDraftInvalid(false)}
               placeholder="Number of levels"
               min={1}
               step={1}

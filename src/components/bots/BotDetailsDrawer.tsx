@@ -13,6 +13,7 @@ import {
   type AvgPrice,
   type BotStatus,
   type DCABot,
+  type BotVars,
   type DCABotSettings,
   type DCADeals,
   type HedgeBotSettings,
@@ -22,6 +23,8 @@ import { formatOrderForDisplay, useBotOrders } from '@/hooks/useBotOrders';
 import { indicatorStore } from '@/stores/indicatorStore';
 import { useDealStore } from '@/stores/live/dealStore';
 import { useDealSmartOrders } from '@/hooks/bots/dca/useDealSmartOrders';
+import { useUserFees } from '@/hooks/useUserFeesService';
+import { buildDealExitLines } from '@/utils/bots/dca/deal-exit-lines';
 import type { ViewOrder } from '@/types/bots';
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { GridBot } from '@/types/gridBot';
@@ -63,7 +66,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { TradeDetailContent } from '../../components/trades/TradeDetailContent';
 import { ShareBotDialog } from '../../features/bots/shared/runtime/dialogs/ShareBotDialog';
 import { useBotViewTracking } from '../../hooks/useBotAnalytics';
@@ -104,6 +107,7 @@ import StaleIndicator from '../widgets/shared/StaleIndicator';
 import { BotErrorWarningAlert } from './BotErrorWarningAlert';
 import { getDrawerWidgetsForBot } from './drawerWidgetConfig';
 import { UnfoldingChartPanel } from './panels/contents';
+import { buildDealLiquidationContext } from '@/utils/bots/dca/liquidation';
 import { TVChartPicker } from '@/components/widgets/shared/TradingViewChart';
 import type { TradingViewChartRef } from '@/components/widgets/shared/TradingViewChart/TradingViewChart';
 import {
@@ -320,12 +324,15 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
     // because the order list is filtered by `selectedTrade.dealId`,
     // which never matches a deal on the other leg's bot. Reset trade /
     // view state on bot id change so leg switch lands back on the
-    // overview of the new leg.
+    // overview of the new leg. The list pages share ONE drawer across bots,
+    // so the deal's pair goes too — otherwise the chart stays on the previous
+    // bot's pair.
     useEffect(() => {
       setViewMode('bot');
       setSelectedTrade(null);
       setEditingTrade(null);
       setChartTrade(null);
+      setDealSymbol(null);
     }, [bot._id]);
 
     // Get bot type for persistence
@@ -422,11 +429,17 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
     const [hedgeDealsStatus, setHedgeDealsStatus] = useState<'open' | 'closed'>(
       'open'
     );
-    // Settings is the only hedge tab with a sub-switch — Hedge (shared TP/SL)
-    // / Long / Short — mirroring the new hedge bot page's tab layout.
+    // Settings sub-switch — Hedge (shared TP/SL) / Long / Short — mirroring
+    // the new hedge bot page's tab layout.
     const [settingsLeg, setSettingsLeg] = useState<'hedge' | 'long' | 'short'>(
       'hedge'
     );
+    // Stats sub-switch. The hedge wrapper carries no stats of its own — each
+    // leg is a separate DCA/Combo bot with its own block — so the Stats tab
+    // must show one leg at a time, fetched with the LEG's type. Mounting it
+    // with the drawer's `bot` (the primary leg) under the hedge type showed
+    // the long leg's figures labelled as the whole hedge bot.
+    const [statsLeg, setStatsLeg] = useState<'long' | 'short'>('long');
     // Fetch ALL the user's hedge deals (the wrapper-id filter isn't reliable
     // server-side) and scope to THIS bot's legs client-side via their ids.
     // Enabled whenever the drawer is a hedge bot (not just on the Deals tab):
@@ -670,7 +683,6 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
 
     // Removed advanced mode preference saving
 
-    const navigate = useNavigate();
 
     const isControlled = typeof open === 'boolean';
     const [internalOpen, setInternalOpen] = useState(false);
@@ -821,8 +833,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
     // page — this is what fixes the old combo/grid "immediate copy" that
     // locked the pair), start/stop + delete (confirmation modals rendered by
     // <BotActionsModals> below), restart. Overrides preserve the drawer's
-    // caller-supplied onEdit/onClone hooks (used by hedge/list pages) and its
-    // bespoke "Duplicate to live/paper" staging. Archive is intentionally not
+    // caller-supplied onEdit/onClone hooks (used by hedge/list pages). Archive is intentionally not
     // passed — BotActionsMenuItems owns it.
     const botActions = useBotActions({
       botId: actionBotId,
@@ -846,23 +857,6 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
         : {}),
       ...(onEdit ? { onEdit: () => onEdit(actionBotId) } : {}),
       ...(onClone ? { onClone: () => onClone(actionBotId) } : {}),
-      // "Duplicate to live/paper" stages the config and opens a fresh create form.
-      onCopyToLive: () => {
-        const botConfig = {
-          name: `${bot.settings.name} (Live)`,
-          type,
-          exchange: bot.exchange,
-          symbol: bot.symbol,
-          settings: bot.settings,
-        };
-        try {
-          sessionStorage.setItem('botConfig', JSON.stringify(botConfig));
-          navigate('/bot/new');
-        } catch (error) {
-          console.error('Failed to stage config for live trading:', error);
-          toast.error('Failed to stage configuration');
-        }
-      },
     });
 
     // Thin aliases so the footer button-config array and the actions menu keep
@@ -967,7 +961,12 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
             sl: order.sl,
             clientOrderId: order.clientOrderId,
             reduceFundsId: order.reduceFundsId,
-            time: order.updateTime,
+            // The moment the order EXECUTED — what the chart plots its
+            // buy/sell markers on. Placement time is wrong for a limit that
+            // rested before filling, and `updateTime` is wrong for a partial
+            // fill whose remainder was cancelled later; see
+            // `getOrderExecutionTime`.
+            time: formatted.executionTime,
             executedQty: order.executedQty,
           };
         });
@@ -1019,6 +1018,11 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
 
     // Auto-select the most recent deal so TP/SL lines show on chart immediately
     const hasAutoSelectedDeal = useRef(false);
+    // Re-arm for the next bot before the effect below runs, so switching bots
+    // with the drawer open plots the new bot's latest deal too.
+    useEffect(() => {
+      hasAutoSelectedDeal.current = false;
+    }, [bot._id]);
     useEffect(() => {
       if (hasAutoSelectedDeal.current || isGrid || isLoadingOrders) {
         return;
@@ -1135,8 +1139,17 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
 
     // Raw deal (not the lossy TradeDetails): the projection below measures from
     // `lastPrice` / `levels`, which only the store copy keeps socket-fresh.
+    const { getCachedFee } = useUserFees();
     const chartRawDeal = useDealStore((s) =>
       chartDealId ? (s.deals[bot._id]?.[chartDealId] ?? null) : null
+    );
+
+    // Position + leverage behind the estimated liquidation line on the chart —
+    // shown while viewing a deal and while editing it (the Edit Deal form
+    // shares this chart). Null for spot, leverage <= 1, or no open position.
+    const chartLiquidationContext = useMemo(
+      () => buildDealLiquidationContext(bot.settings, chartRawDeal),
+      [bot.settings, chartRawDeal]
     );
 
     const chartDealOrders = useMemo(() => {
@@ -1157,6 +1170,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
       bot: {
         settings: bot.settings as DCABotSettings | undefined,
         exchangeUUID: bot.exchangeUUID ?? chartRawDeal?.exchangeUUID,
+        vars: (bot as { vars?: BotVars | null }).vars,
       },
       deal: chartRawDeal,
       pendingOrders: chartDealOrders.pending,
@@ -1164,6 +1178,30 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
       isCombo: type === BotTypesEnum.combo,
       enabled: !isGrid && Boolean(chartDealId),
     });
+
+    // Fee for the deal's pair — the engine adds 2x taker to every TP/SL/trailing
+    // threshold, so the drawn lines only match the engine's if we do too.
+    const chartDealTakerFee =
+      getCachedFee(
+        bot?.exchangeUUID ?? chartRawDeal?.exchangeUUID ?? '',
+        chartRawDeal?.symbol?.symbol ?? ''
+      )?.taker ?? 0;
+
+    // Exits the engine manages itself (trailing TP/SL, move SL, an unrested
+    // stop loss) never appear as exchange orders, so without these the chart
+    // shows a trailing deal with nothing but its breakeven line.
+    const dealExitLines = useMemo(
+      () =>
+        isGrid
+          ? []
+          : buildDealExitLines(
+              chartRawDeal,
+              bot?.settings as DCABotSettings | undefined,
+              chartDealTakerFee,
+              chartDealOrders.pending.map((o) => +o.price)
+            ),
+      [isGrid, chartRawDeal, bot?.settings, chartDealTakerFee, chartDealOrders.pending]
+    );
 
     const chartOrders = useMemo(
       () => [
@@ -1195,8 +1233,9 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                 ), // false = not real order for display
           })),
         ...dealProjectedOrders,
+        ...dealExitLines,
       ],
-      [pendingOrders, chartDealId, isGrid, dealProjectedOrders]
+      [pendingOrders, chartDealId, isGrid, dealProjectedOrders, dealExitLines]
     );
 
     const chartTransactions = useMemo(
@@ -1355,6 +1394,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
               enabled
               className="h-full"
               overrideSymbol={dealSymbol}
+              liquidationContext={chartLiquidationContext}
               chartRef={chartWidgetRef}
             />
             {/* Makes the TP/SL bullseyes in the Edit Deal form resolve a click
@@ -1372,6 +1412,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
         isLeftPanelCollapsed,
         bot,
         dealSymbol,
+        chartLiquidationContext,
         activePickerField,
         handleChartPick,
         onPickerActiveChanged,
@@ -1865,12 +1906,57 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                       exit={{ opacity: 0, y: -10 }}
                       transition={{ duration: 0.2 }}
                     >
-                      <BotStatsTab
-                        botId={bot._id}
-                        botType={type}
-                        bot={bot as unknown as BotStatsTabProps['bot']}
-                        active={activeTab === 'stats'}
-                      />
+                      {isHedge && hedge ? (
+                        (() => {
+                          const legBot =
+                            statsLeg === 'short'
+                              ? hedge.shortBot
+                              : hedge.longBot;
+                          return (
+                            <div className="space-y-4">
+                              <Tabs
+                                value={statsLeg}
+                                onValueChange={(v) =>
+                                  setStatsLeg(v as 'long' | 'short')
+                                }
+                              >
+                                <TabsList>
+                                  <TabsTrigger value="long">Long leg</TabsTrigger>
+                                  <TabsTrigger value="short">
+                                    Short leg
+                                  </TabsTrigger>
+                                </TabsList>
+                              </Tabs>
+                              {legBot ? (
+                                <BotStatsTab
+                                  key={legBot._id}
+                                  botId={legBot._id}
+                                  botType={
+                                    hedge.isCombo
+                                      ? BotTypesEnum.combo
+                                      : BotTypesEnum.dca
+                                  }
+                                  bot={
+                                    legBot as unknown as BotStatsTabProps['bot']
+                                  }
+                                  active={activeTab === 'stats'}
+                                />
+                              ) : (
+                                <div className="rounded-lg bg-muted p-sm text-sm text-muted-foreground">
+                                  This leg has no statistics.
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <BotStatsTab
+                          botId={bot._id}
+                          botType={type}
+                          bot={bot as unknown as BotStatsTabProps['bot']}
+                          active={activeTab === 'stats'}
+                        />
+                      )}
                     </motion.div>
                   </TabsContent>
                 )}
@@ -2182,9 +2268,13 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                       <TabsTrigger value="chart">Chart</TabsTrigger>
                     </TabsList>
                   </div>
+                  {/* Kept mounted while hidden: unmounting the deal's orders
+                      section on a switch to Chart clears the chart store's
+                      order lines, leaving only the breakeven line. */}
                   <TabsContent
                     value="details"
-                    className="flex-1 min-h-0 overflow-auto px-4 py-5 custom-scrollbar mt-0"
+                    forceMount
+                    className="flex-1 min-h-0 overflow-auto px-4 py-5 custom-scrollbar mt-0 data-[state=inactive]:hidden"
                   >
                     <motion.div
                       key="trade-view"
@@ -2225,6 +2315,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                       enabled
                       className="h-full"
                       overrideSymbol={dealSymbol}
+                      liquidationContext={chartLiquidationContext}
                     />
                   </TabsContent>
                 </Tabs>

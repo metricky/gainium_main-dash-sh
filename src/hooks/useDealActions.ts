@@ -9,13 +9,17 @@ import {
   type AddFundsSettings,
   type DCADealsSettings,
 } from '@/types';
-import { dealQueries } from '@/lib/api/GraphQLQueries-deal-queries';
+import {
+  dealQueries,
+  type DealSettingsInput,
+} from '@/lib/api/GraphQLQueries-deal-queries';
 import { toast } from '@/lib/toast';
 import type { AdjustFundsDialogMode } from '@/features/bots/shared/runtime';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useDealStore } from '@/stores/live';
 import { recordDealTombstone } from '@/stores/live/staleWriteGuard';
+import { requestDealResync } from '@/stores/live/dealResync';
 import {
   removeDealFromListCaches,
   invalidateListCaches,
@@ -46,6 +50,17 @@ interface AdjustFundsInput {
   botId: string;
   settings: AddFundsSettings;
   mode: AdjustFundsDialogMode;
+}
+
+interface ExecuteNextDcaInput {
+  dealId: string;
+  botId: string;
+  /**
+   * The level the confirmation dialog quoted. Passed through so the engine can
+   * refuse if the deal filled that level on its own in the meantime — a stale
+   * confirmation must never execute a level other than the one it priced.
+   */
+  expectedLevel?: number;
 }
 
 interface MoveDealToTerminalInput {
@@ -91,6 +106,14 @@ function optimisticallyMarkDealClosed(
   if (!newStatus || !botId || !dealId) {
     return;
   }
+  markDealEnded(botId, dealId, newStatus);
+}
+
+function markDealEnded(
+  botId: string,
+  dealId: string,
+  newStatus: DCADealStatusEnum.closed | DCADealStatusEnum.canceled
+) {
   const store = useDealStore.getState();
   const existing = store.getDeal(botId, dealId);
   if (existing) {
@@ -102,6 +125,85 @@ function optimisticallyMarkDealClosed(
   recordDealTombstone(botId, dealId, newStatus, existing?.updateTime ?? 0);
   removeDealFromListCaches(dealId, DEAL_LIST_QUERY_KEYS);
   invalidateListCaches(DEAL_LIST_QUERY_KEYS);
+}
+
+/**
+ * A close or cancel the server refused because the deal is no longer open.
+ *
+ * Reaching one means the list the user clicked in was out of date: it missed
+ * the deal's close event, so it kept offering a Close that can never succeed.
+ * The close hooks repair the list before rethrowing; callers show `message`
+ * as news rather than as a failure (see {@link toastDealCloseError}).
+ */
+export class DealNotOpenError extends Error {
+  /** How the deal ended, or null when the server no longer knows it. */
+  readonly endedAs: DCADealStatusEnum.closed | DCADealStatusEnum.canceled | null;
+
+  constructor(
+    endedAs: DCADealStatusEnum.closed | DCADealStatusEnum.canceled | null
+  ) {
+    super(
+      endedAs === DCADealStatusEnum.closed
+        ? 'This deal had already closed. The list has been refreshed.'
+        : endedAs === DCADealStatusEnum.canceled
+          ? 'This deal had already been canceled. The list has been refreshed.'
+          : 'This deal is no longer open. The list has been refreshed.'
+    );
+    this.name = 'DealNotOpenError';
+    this.endedAs = endedAs;
+  }
+}
+
+/**
+ * The server's answer to closing a deal that is not open (main-app
+ * `Bot.dealNotOpen`), or null for any other refusal.
+ */
+export function dealNotOpenFromReason(
+  reason: string | undefined
+): DealNotOpenError | null {
+  switch (reason) {
+    case 'Deal already closed':
+      return new DealNotOpenError(DCADealStatusEnum.closed);
+    case 'Deal already canceled':
+      return new DealNotOpenError(DCADealStatusEnum.canceled);
+    // Backends older than the two answers above report every finished deal
+    // this way; either way the deal is not open and must leave the list.
+    case 'Deal not found':
+      return new DealNotOpenError(null);
+    default:
+      return null;
+  }
+}
+
+/** Drop a deal the server says is not open, then refetch every deal list. */
+function settleDealNotOpen(
+  botId: string,
+  dealId: string,
+  error: DealNotOpenError
+) {
+  if (error.endedAs) {
+    markDealEnded(botId, dealId, error.endedAs);
+  } else {
+    useDealStore.getState().removeDeal(botId, dealId);
+    removeDealFromListCaches(dealId, DEAL_LIST_QUERY_KEYS);
+  }
+  requestDealResync('close answered: deal not open');
+}
+
+export function isDealNotOpenError(error: unknown): error is DealNotOpenError {
+  return error instanceof DealNotOpenError;
+}
+
+/**
+ * Toast for a failed close or cancel. A deal that had already ended is news,
+ * not a failure: the list was out of date and has been repaired.
+ */
+export function toastDealCloseError(error: unknown, fallback: string): void {
+  if (error instanceof DealNotOpenError) {
+    toast.info(error.message);
+  } else {
+    toast.error(fallback);
+  }
 }
 
 // Hook for closing DCA deals
@@ -132,7 +234,10 @@ export function useCloseDCADeal() {
       }>(query, variables);
 
       if (response.closeDCADeal.status !== 'OK') {
-        throw new Error(response.closeDCADeal.reason || 'Failed to close deal');
+        throw (
+          dealNotOpenFromReason(response.closeDCADeal.reason) ??
+          new Error(response.closeDCADeal.reason || 'Failed to close deal')
+        );
       }
 
       return response.closeDCADeal;
@@ -150,6 +255,9 @@ export function useCloseDCADeal() {
       );
     },
     onError: (error, variables) => {
+      if (error instanceof DealNotOpenError) {
+        settleDealNotOpen(variables.botId, variables.dealId, error);
+      }
       logger.error('[useCloseDCADeal] Failed to close DCA deal:', {
         dealId: variables.dealId,
         type: variables.type,
@@ -255,6 +363,69 @@ export function useAdjustFunds(options?: UseAdjustFundsOptions) {
   });
 }
 
+/**
+ * Fill a DCA deal's next safety order now, at market, rather than waiting for
+ * price (or its indicator signal) to reach it. The deal books it as that level
+ * and carries on with the next one at its original price.
+ * https://community.gainium.io/t/execute-next-dca-manually/5072
+ *
+ * Like adjust-funds this is a QUEUED request: an OK response means the engine
+ * accepted it, not that the order filled. The fill (or the exchange's refusal)
+ * arrives later over the websocket.
+ */
+export function useExecuteNextDca() {
+  const { tokens } = useAuthStore();
+
+  const isLiveTrading = useUIStore((s) => s.isLiveTrading);
+
+  const client = new GraphQLClient(
+    import.meta.env['VITE_API_ENDPOINT'],
+    tokens?.accessToken,
+    !isLiveTrading
+  );
+
+  return useMutation<DealResponse, Error, ExecuteNextDcaInput>({
+    meta: { errorToast: true },
+    mutationFn: async (input) => {
+      logger.info('[useExecuteNextDca] Executing next DCA level:', input);
+
+      const { query, variables } = dealQueries.executeNextDca(input);
+
+      const response = await client.request<{
+        executeNextDca: DealResponse;
+      }>(query, variables);
+
+      if (response.executeNextDca?.status !== 'OK') {
+        throw new Error(
+          response.executeNextDca?.reason || 'Failed to execute the next DCA'
+        );
+      }
+
+      return response.executeNextDca;
+    },
+    onSuccess: (response, variables) => {
+      logger.info('[useExecuteNextDca] Request accepted:', {
+        dealId: variables.dealId,
+        expectedLevel: variables.expectedLevel,
+        response,
+      });
+      // Echo the backend's "scheduled" wording rather than implying the level
+      // already filled — same reasoning as useAdjustFunds.
+      const scheduledMsg =
+        typeof response?.data === 'string' && response.data.trim()
+          ? response.data
+          : 'Execute next DCA scheduled';
+      toast.info(scheduledMsg);
+    },
+    onError: (error, variables) => {
+      logger.error('[useExecuteNextDca] Failed to execute next DCA level:', {
+        dealId: variables.dealId,
+        error: error.message,
+      });
+    },
+  });
+}
+
 // Hook for closing Combo deals
 export function useCloseComboDeal() {
   const { tokens } = useAuthStore();
@@ -282,8 +453,11 @@ export function useCloseComboDeal() {
       }>(query, variables);
 
       if (response.closeComboDeal.status !== 'OK') {
-        throw new Error(
-          response.closeComboDeal.reason || 'Failed to close combo deal'
+        throw (
+          dealNotOpenFromReason(response.closeComboDeal.reason) ??
+          new Error(
+            response.closeComboDeal.reason || 'Failed to close combo deal'
+          )
         );
       }
 
@@ -302,6 +476,9 @@ export function useCloseComboDeal() {
       );
     },
     onError: (error, variables) => {
+      if (error instanceof DealNotOpenError) {
+        settleDealNotOpen(variables.botId, variables.dealId, error);
+      }
       logger.error('[useCloseComboDeal] Failed to close combo deal:', {
         dealId: variables.dealId,
         type: variables.type,
@@ -649,7 +826,9 @@ export function useMoveDealToBot() {
 export type ChangeDealInput = {
   botId: string;
   dealId: string;
-  settings: Partial<DCADealsSettings>;
+  // Wire-shaped, not form-shaped: `ordersCount`/`activeOrdersCount` are `Int`
+  // on main-app's deal-settings input sets. See `DealSettingsInput`.
+  settings: DealSettingsInput;
 };
 export type UseEditDealOptions = ChangeDealInput & {
   type: BotTypesEnum;
@@ -659,7 +838,9 @@ export type ResetDealInput = { botId: string; dealId: string };
 export type UseResetDealOptions = ResetDealInput & {
   type: BotTypesEnum;
   terminal?: boolean;
-  originalSettings: Partial<DCADealsSettings>;
+  // Same shape the edit mutation carries; kept local to the optimistic store
+  // merge (resetDealSettings sends only botId/dealId over the wire).
+  originalSettings: DealSettingsInput;
 };
 type EditOptions = {
   onSuccess?: () => void;
@@ -723,7 +904,13 @@ export function useResetDeal(options?: EditOptions) {
           botId,
           {
             ...get,
-            settings: { ...get.settings, ...originalSettings },
+            // See the matching note in useEditDeal's onSuccess: the deal's
+            // `ordersCount`/`activeOrdersCount` really are numbers at runtime,
+            // `DCADealsSettings` just inherits the form's string label.
+            settings: {
+              ...get.settings,
+              ...originalSettings,
+            } as DCADealsSettings,
           },
           type === BotTypesEnum.combo ? 'combo' : terminal ? 'terminal' : 'dca'
         );
@@ -795,7 +982,14 @@ export function useEditDeal(options?: EditOptions) {
           botId,
           {
             ...get,
-            settings: { ...get.settings, ...settings },
+            // `DCADealsSettings` labels `ordersCount`/`activeOrdersCount` as
+            // `string` only because it picks from the form-shaped
+            // `DCABotSettings`; a deal read back over GraphQL carries them as
+            // numbers (`Int`), which is also what we just sent. The merge is
+            // right at runtime — only the label is off — and widening the
+            // shared bot-settings type would ripple through the whole bot
+            // form, so keep the cast on this optimistic store write.
+            settings: { ...get.settings, ...settings } as DCADealsSettings,
           },
           type === BotTypesEnum.combo ? 'combo' : terminal ? 'terminal' : 'dca'
         );

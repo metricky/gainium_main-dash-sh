@@ -123,6 +123,7 @@ const PROBE_OVERRIDES: Record<string, unknown> = {
   fixedSlPrice: '25000',
   minOpenDeal: '100',
   maxOpenDeal: '200',
+  reduceToAvailableMinSize: '20',
   startBotPriceValue: '100',
   stopBotPriceValue: '200',
   // Only 'tp' and 'avg' are valid here; the generic sibling lookup finds
@@ -244,6 +245,8 @@ const KNOWN_NOT_PERSISTED: Record<string, string> = {
   originalBot: 'client-only: the pre-edit snapshot',
   terminal: 'client-only: marks the terminal form, not a bot setting',
   avgPrice: 'deal-edit only; stripped from the bot payload by design',
+  tpSlTargetFilled:
+    'deal-edit only; filled multi-target uuids, stripped from the bot payload by design',
   useExperimental:
     'stripped from the payload by design (map-form-data-to-payload.ts)',
 };
@@ -255,11 +258,6 @@ const KNOWN_NOT_PERSISTED: Record<string, string> = {
  * so they stay visible instead of turning into a silent skip.
  */
 const KNOWN_DRIFT: Record<string, Record<string, string>> = {
-  grid: {
-    feeOrder:
-      'reaches the grid payload but no grid UI sets it; restoring it means deciding whether grid bots carry the setting at all',
-    skipBalanceCheck: 'same as feeOrder — payload-only, no grid control',
-  },
 };
 
 const numericString = (v: string): boolean => v.trim() !== '' && !isNaN(Number(v));
@@ -461,6 +459,8 @@ const VERDICT: Record<string, string> = {
 
   // --- Deliberately not sent. ---
   avgPrice: 'by-design: deal-edit breakeven override, stripped in map-form-data-to-payload',
+  tpSlTargetFilled:
+    'by-design: deal-edit filled multi-target uuids, stripped in map-form-data-to-payload',
   useExperimental: 'by-design: stripped alongside avgPrice',
   importFrom: 'by-design: client-only record of the preset a form was seeded from',
 
@@ -515,6 +515,9 @@ const VERDICT: Record<string, string> = {
   comboSlLimit: 'gated:combo bot — guard read, not executed',
   fixedTpPrice: 'gated:useFixedTPPrices (combo list only)',
   remainderFullAmount: 'gated:combo remainder handling — guard read, not executed',
+  allowRaiseToExchangeMin: 'gated:DCA only — the combo engine does not implement the exchange-minimum refusal',
+  reduceToAvailableBalance: 'gated:DCA only — the combo form does not offer a reduced deal',
+  reduceToAvailableMinSize: 'gated:DCA only — the combo form does not offer a reduced deal',
 };
 
 const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
@@ -531,10 +534,10 @@ const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
     'rrSlFixedValue', 'rrSlType', 'startBotPriceCondition',
     'startBotPriceValue', 'stopBotPriceCondition',
     'stopBotPriceValue', 'stopDealLogic', 'stopDealSlLogic', 'useActiveMinigrids',
-    'useExperimental', 'useRiskReward', 'volumeTop',
+    'tpSlTargetFilled', 'useExperimental', 'useRiskReward', 'volumeTop',
   ].sort(),
   combo: [
-    'avgPrice', 'baseOrderPrice', 'closeDealType', 'comboSmartGridsCount',
+    'allowRaiseToExchangeMin', 'avgPrice', 'baseOrderPrice', 'closeDealType', 'comboSmartGridsCount',
     'dcaCustom', 'dynamicArLockValue', 'dynamicPriceFilterOverValue',
     'fixedSlPrice', 'fixedTpPrice', 'hodlAt', 'hodlDay', 'hodlHourly',
     'hodlNextBuy', 'ignoreStartDeals', 'importFrom', 'maxOpenDeal', 'minOpenDeal',
@@ -544,8 +547,8 @@ const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
     'riskUseTpRatio', 'rrSlFixedValue', 'rrSlType',
     'startBotPriceCondition', 'startBotPriceValue',
     'stopBotPriceCondition', 'stopBotPriceValue', 'stopDealLogic',
-    'stopDealSlLogic', 'useExperimental', 'useRiskReward',
-    'volumeTop',
+    'stopDealSlLogic', 'tpSlTargetFilled', 'useExperimental', 'useRiskReward',
+    'volumeTop', 'reduceToAvailableBalance', 'reduceToAvailableMinSize',
   ].sort(),
 };
 
@@ -571,7 +574,10 @@ const NOT_IN_PAYLOAD: Record<Section, string[]> = {
     'startBotPriceValue',
     'stopBotPriceValue',
   ],
+  // Plus the DCA-only settings the combo inputs do not declare
+  // (DECLARED_BY_DCA_ONLY), which the mapper strips for combo.
   combo: [
+    'allowRaiseToExchangeMin',
     'dcaCustom',
     'fixedSlPrice',
     'fixedTpPrice',
@@ -579,6 +585,8 @@ const NOT_IN_PAYLOAD: Record<Section, string[]> = {
     'minOpenDeal',
     'multiSl',
     'multiTp',
+    'reduceToAvailableBalance',
+    'reduceToAvailableMinSize',
     'startBotPriceValue',
     'stopBotPriceValue',
   ],

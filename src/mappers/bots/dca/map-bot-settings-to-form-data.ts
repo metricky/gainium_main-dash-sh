@@ -533,14 +533,20 @@ export const mapBotSettingsToFormData = (
         ? rawUseLimitTimeout
         : Boolean(normalizedSeconds && normalizedSeconds > 0);
 
+    // Keep the stored seconds even when the toggle is off. Rewriting them to
+    // '0' made the edit form diverge from the new-bot form (default '20'),
+    // so any unrelated save wrote `limitTimeout: "0"` back to the bot.
+    const storedSeconds =
+      normalizedSeconds !== null && normalizedSeconds > 0
+        ? String(Math.min(normalizedSeconds, 600))
+        : DCA_FORM_DEFAULTS.limitTimeout;
+
     if (!isEnabled || normalizedSeconds === null || normalizedSeconds <= 0) {
-      return { seconds: '0', enabled: false } as const;
+      return { seconds: storedSeconds, enabled: false } as const;
     }
 
-    const boundedSeconds = Math.min(normalizedSeconds, 600);
-
     return {
-      seconds: String(boundedSeconds),
+      seconds: storedSeconds,
       enabled: true,
     } as const;
   };
@@ -869,11 +875,30 @@ export const mapBotSettingsToFormData = (
     comboSlLimit: getBoolean('comboSlLimit', false),
     useSmartOrders: getBoolean('useSmartOrders'),
     dcaByMarket: getBoolean('dcaByMarket', false),
+    allowRaiseToExchangeMin: getBoolean('allowRaiseToExchangeMin', false),
+    reduceToAvailableBalance: getBoolean('reduceToAvailableBalance', false),
+    // Stored '0' means no minimum; the form shows that as an empty field.
+    reduceToAvailableMinSize:
+      getString('reduceToAvailableMinSize', '') === '0'
+        ? ''
+        : getString('reduceToAvailableMinSize', ''),
     maxNumberOfOpenDeals: getString('maxNumberOfOpenDeals', '1'),
     type: getValue<DCATypeEnum>('type', DCATypeEnum.regular),
     startDealLogic,
     useMulti,
     maxDealsPerPair: getString('maxDealsPerPair', '1'),
+    useSeparateMaxDealsOverAndUnder: getBoolean(
+      'useSeparateMaxDealsOverAndUnder',
+      false
+    ),
+    maxDealsOver: getString('maxDealsOver', '1'),
+    maxDealsUnder: getString('maxDealsUnder', '1'),
+    useSeparateMaxDealsOverAndUnderPerSymbol: getBoolean(
+      'useSeparateMaxDealsOverAndUnderPerSymbol',
+      false
+    ),
+    maxDealsOverPerSymbol: getString('maxDealsOverPerSymbol', '1'),
+    maxDealsUnderPerSymbol: getString('maxDealsUnderPerSymbol', '1'),
     pairPrioritization: (() => {
       const rawPriority = getString('pairPrioritization', 'alphabetical');
       const allowedPriorities = Object.values(PairPrioritizationEnum);
@@ -1013,6 +1038,16 @@ export const mapBotSettingsToFormData = (
     closeAfterXwin: getString('closeAfterXwin', '20'),
     useCloseAfterXloss: getBoolean('useCloseAfterXloss', false),
     closeAfterXloss: getString('closeAfterXloss', '20'),
+    useCloseAfterXconsecutiveWin: getBoolean(
+      'useCloseAfterXconsecutiveWin',
+      false
+    ),
+    closeAfterXconsecutiveWin: getString('closeAfterXconsecutiveWin', '3'),
+    useCloseAfterXconsecutiveLoss: getBoolean(
+      'useCloseAfterXconsecutiveLoss',
+      false
+    ),
+    closeAfterXconsecutiveLoss: getString('closeAfterXconsecutiveLoss', '3'),
     useCloseAfterXprofit: getBoolean('useCloseAfterXprofit', false),
     closeAfterXprofitCond: getValue<IndicatorStartConditionEnum>(
       'closeAfterXprofitCond',

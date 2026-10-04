@@ -1,4 +1,5 @@
 import {
+  BotMarginTypeEnum,
   BotTypesEnum,
   type AvgPrice,
   type DCABotSettings as _DCABotSettingsCommon,
@@ -14,6 +15,10 @@ import {
   type ExampleOrdersStoreContext,
   type UpdateOrdersParams,
 } from './example-orders-core';
+import {
+  strategyToLiquidationSide,
+  type LiquidationParams,
+} from './liquidation';
 
 type ExampleOrdersListener = (
   orders: DCAGrid[],
@@ -102,6 +107,27 @@ export class ExampleOrdersStore {
    */
   getInputLatestPrice(): number {
     return this.context.inputLatestPrice;
+  }
+
+  /**
+   * Leverage / direction for the estimated-liquidation projection, or null
+   * when it does not apply (spot, leverage <= 1, cross margin, or a bot type
+   * without DCA settings). Cross margin is excluded because the free wallet
+   * balance also backs the position, so the estimate is not the exchange's
+   * figure. Exposed on the store because the bot CHART renders outside the
+   * BotFormProvider — the store is the only place it can read the form's
+   * futures settings from.
+   */
+  getLiquidationParams(): LiquidationParams | null {
+    const settings = this.context.settings;
+    if (!settings?.futures) return null;
+    if (settings.marginType === BotMarginTypeEnum.cross) return null;
+    const leverage = Number(settings.leverage ?? 0);
+    if (!(leverage > 1)) return null;
+    return {
+      side: strategyToLiquidationSide(settings.strategy),
+      leverage,
+    };
   }
   async updateOrders(params?: UpdateOrdersParams | undefined) {
     if (this.context.botType === BotTypesEnum.dca) {

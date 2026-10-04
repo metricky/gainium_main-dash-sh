@@ -29,13 +29,14 @@ import {
     formatTotalFunds,
     useDealOverviewData,
 } from '@/components/widgets/trading/DealOverview';
+import useLadderLiquidation from '@/hooks/bots/dca/useLadderLiquidation';
 import {
-    useBotFormSelector,
-    useBotFormState,
-    useOptionalBotFormState,
-    type BotFormMode,
-    type BotFormUpdateValue,
-    type Fields,
+  useBotFormSelector,
+  useOptionalBotFormState,
+  useTrackedBotFormState,
+  type BotFormMode,
+  type BotFormUpdateValue,
+  type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
 import { InputButtonsSlider } from '@/features/bots/shared/components/InputButtonsSlider';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
@@ -68,6 +69,7 @@ import {
     BotTypesEnum,
     DCAConditionEnum,
     DCAVolumeType,
+    DcaVolumeRequiredChangeRef,
     ExchangeIntervals,
     IndicatorAction,
     IndicatorEnum,
@@ -82,6 +84,7 @@ import {
     type SettingsIndicators,
 } from '@/types';
 import { CloseConditionEnum } from '@/types/bots/dealConditions';
+import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
 import type { BotFormData, BotFormErrors } from '@/types/bots/form';
 import type { GlobalVariable } from '@/types/globalVariables';
 import type { IndicatorConfig } from '@/types/indicators';
@@ -173,6 +176,172 @@ const canDisplayRequiredChange = ({
     closeCondition === CloseConditionEnum.tp &&
     !useMultiTp &&
     !['percFree', 'percTotal'].includes(orderSizeType)
+  );
+};
+
+/**
+ * "Volume based on" (legacy DcaModeSettings `DCAVolumeBasedOn`): size each DCA
+ * order either from the scale settings, or so that after it fills the deal
+ * needs only a set price change to reach its target. DCA bots only, and only
+ * with a single fixed-size take profit — the engine ignores it otherwise.
+ * Switching to "Required change" seeds TP, the required change and the cap
+ * (handle-settings), as legacy did.
+ */
+const DcaVolumeBasedOnSettings: React.FC<{
+  updateFormData: DCASettingsProps['updateFormData'];
+  tradingContext: DcaTradingContext;
+  isDealEdit: boolean;
+}> = ({ updateFormData, tradingContext, isDealEdit }) => {
+  const dealCloseCondition = useBotFormSelector('dealCloseCondition');
+  const useTp = useBotFormSelector('useTp');
+  const useMultiTp = useBotFormSelector('useMultiTp');
+  const orderSizeType = useBotFormSelector('orderSizeType');
+  const tpPerc = useBotFormSelector('tpPerc');
+  const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
+  const dcaVolumeRequiredChangeRef = useBotFormSelector(
+    'dcaVolumeRequiredChangeRef'
+  );
+  const dcaVolumeRequiredChange = useBotFormSelector('dcaVolumeRequiredChange');
+  const dcaVolumeMaxValue = useBotFormSelector('dcaVolumeMaxValue');
+  const { isBound: isRequiredChangeBound } = useBotVarBinding(
+    'dcaVolumeRequiredChange'
+  );
+  const { isBound: isMaxValueBound } = useBotVarBinding('dcaVolumeMaxValue');
+
+  if (
+    !canDisplayRequiredChange({
+      dealCloseCondition,
+      useTp,
+      useMultiTp,
+      orderSizeType,
+    })
+  ) {
+    return null;
+  }
+
+  const byChange = dcaVolumeBaseOn === DCAVolumeType.change;
+  const sizeUnit = resolveOrderSizeIconSymbol(
+    orderSizeType,
+    tradingContext.baseAsset,
+    tradingContext.quoteAsset
+  );
+  const applyVariable =
+    (field: 'dcaVolumeRequiredChange' | 'dcaVolumeMaxValue') =>
+    (variable: GlobalVariable | null) => {
+      const next = `${variable?.value ?? ''}`.trim();
+      if (next) {
+        updateFormData(field, next);
+      }
+    };
+  const requiredChangeInput = (
+    <NumberInput
+      id="dca-volume-required-change"
+      value={dcaVolumeRequiredChange ?? tpPerc ?? ''}
+      onChange={(value) =>
+        updateFormData('dcaVolumeRequiredChange', String(value ?? ''))
+      }
+      step={0.1}
+      showControls={false}
+      endAdornment={unitAdornment('%', { size: 'sm' })}
+      className="w-full"
+      disabled={isRequiredChangeBound}
+    />
+  );
+  const maxValueInput = (
+    <NumberInput
+      id="dca-volume-max-value"
+      value={dcaVolumeMaxValue ?? '-1'}
+      onChange={(value) =>
+        updateFormData('dcaVolumeMaxValue', String(value ?? ''))
+      }
+      min={-1}
+      showControls={false}
+      endAdornment={unitAdornment(sizeUnit, { size: 'sm' })}
+      className="w-full"
+      disabled={isMaxValueBound}
+    />
+  );
+
+  return (
+    <>
+      <SettingsRow
+        name="Volume based on (beta)"
+        tooltip="Scaled sizes each DCA order from the order size and volume scale. Required change sizes each DCA order so that, once it fills, the deal needs only the set price change to reach its target."
+        tooltipURL={
+          byChange ? '/help/dynamic-dca-volume-required-change' : undefined
+        }
+      >
+        <TerminalButtonStack
+          value={byChange ? DCAVolumeType.change : DCAVolumeType.scale}
+          onValueChange={(value) => updateFormData('dcaVolumeBaseOn', value)}
+          options={[
+            { value: DCAVolumeType.scale, label: 'Scaled' },
+            { value: DCAVolumeType.change, label: 'Required change' },
+          ]}
+        />
+      </SettingsRow>
+      {byChange && (
+        <>
+          <SettingsRow
+            name="Required change based on (beta)"
+            tooltip="Measure the required change from the take profit price, or from the deal's breakeven price."
+          >
+            <TerminalButtonStack
+              value={
+                dcaVolumeRequiredChangeRef === DcaVolumeRequiredChangeRef.avg
+                  ? DcaVolumeRequiredChangeRef.avg
+                  : DcaVolumeRequiredChangeRef.tp
+              }
+              onValueChange={(value) =>
+                updateFormData('dcaVolumeRequiredChangeRef', value)
+              }
+              options={[
+                { value: DcaVolumeRequiredChangeRef.tp, label: 'Take Profit' },
+                { value: DcaVolumeRequiredChangeRef.avg, label: 'Breakeven' },
+              ]}
+            />
+          </SettingsRow>
+          <SettingsRow
+            name="Required change"
+            tooltip="Specifies the percentage profit target after a DCA order is executed. The bot adjusts the volume to achieve this profit level. Set carefully, as a higher value may reduce the likelihood of quick exits, while a lower value may require more capital for frequent adjustments."
+          >
+            {isDealEdit ? (
+              requiredChangeInput
+            ) : (
+              <FieldVariableBinding
+                path="dcaVolumeRequiredChange"
+                varType="number"
+                tooltip="Bind required change"
+                variant="inline"
+                onVariableResolved={applyVariable('dcaVolumeRequiredChange')}
+                onVariableSelected={applyVariable('dcaVolumeRequiredChange')}
+              >
+                {requiredChangeInput}
+              </FieldVariableBinding>
+            )}
+          </SettingsRow>
+          <SettingsRow
+            name="Max volume per DCA"
+            tooltip="The largest size a single DCA order may reach while sizing for the required change, in the order size currency. Use -1 for no limit."
+          >
+            {isDealEdit ? (
+              maxValueInput
+            ) : (
+              <FieldVariableBinding
+                path="dcaVolumeMaxValue"
+                varType="number"
+                tooltip="Bind max volume per DCA"
+                variant="inline"
+                onVariableResolved={applyVariable('dcaVolumeMaxValue')}
+                onVariableSelected={applyVariable('dcaVolumeMaxValue')}
+              >
+                {maxValueInput}
+              </FieldVariableBinding>
+            )}
+          </SettingsRow>
+        </>
+      )}
+    </>
   );
 };
 
@@ -449,12 +618,33 @@ const useDcaOverviewSource = (
 ) => {
   const { summary: storeSummary } = useDealOverviewData();
   const isReadonly = mode === 'settings-readonly';
+  const ordersOverride = isReadonly ? projection.orders : undefined;
+
+  // Estimated liquidation projection across the ladder — drives the liq line on
+  // the graph and the two liq columns on the table. Null (and therefore
+  // invisible) for spot bots, leverage <= 1 and cross margin, where the free
+  // wallet balance also backs the position and the figure is not the real one.
+  const futures = useBotFormSelector('futures');
+  const leverage = useBotFormSelector('leverage');
+  const strategy = useBotFormSelector('strategy');
+  const marginType = useBotFormSelector('marginType');
+  const { liquidation, isCross } = useLadderLiquidation(
+    {
+      futures,
+      leverage: Number(leverage) || 0,
+      strategy: strategy as string | undefined,
+      marginType: marginType as string | undefined,
+    },
+    ordersOverride
+  );
+
   return {
     isReadonly,
     summary: isReadonly ? projection.summary : storeSummary,
     // Passed to the table/graph as an override only in read-only mode; the live
     // form leaves it undefined so those components read the store.
-    ordersOverride: isReadonly ? projection.orders : undefined,
+    ordersOverride,
+    liquidation: isCross ? null : liquidation,
   };
 };
 
@@ -475,7 +665,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     [mode]
   );
   const isDealMassEdit = useMemo(() => mode === 'deal-mass-edit', [mode]);
-  const { alerts } = useBotFormState();
+  const { alerts } = useTrackedBotFormState();
   const useTp = useBotFormSelector('useTp');
   const useMultiTp = useBotFormSelector('useMultiTp');
   const scaleDcaType = useBotFormSelector('scaleDcaType');
@@ -575,7 +765,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+  const {
+    summary: dealOverviewSummary,
+    ordersOverride,
+    liquidation: ladderLiquidation,
+  } = useDcaOverviewSource(
     mode,
     projection
   );
@@ -1783,6 +1977,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                       full
                       showTpLines={showTpLines}
                       orders={ordersOverride}
+                      liquidation={ladderLiquidation}
                     />
                   </TabsContent>
                 )}
@@ -1791,6 +1986,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                     className="h-full w-full"
                     widgetId="dca-settings-deal-overview-table"
                     orders={ordersOverride}
+                    liquidation={ladderLiquidation}
                   />
                 </TabsContent>
               </div>
@@ -2116,7 +2312,11 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+  const {
+    summary: dealOverviewSummary,
+    ordersOverride,
+    liquidation: ladderLiquidation,
+  } = useDcaOverviewSource(
     mode,
     projection
   );
@@ -2260,6 +2460,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                     full
                     showTpLines={showTpLines}
                     orders={ordersOverride}
+                    liquidation={ladderLiquidation}
                     indicatorMode
                     fallbackTpPercent={fallbackTpPercent}
                   />
@@ -2270,6 +2471,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                   className="h-full w-full"
                   widgetId="dca-settings-deal-overview-table"
                   orders={ordersOverride}
+                  liquidation={ladderLiquidation}
                 />
               </TabsContent>
             </div>
@@ -3293,7 +3495,11 @@ const CustomDCA: React.FC<DCASectionProps> = ({
   const { canTriggerBalanceRefresh, handleRefreshBalances } = balanceRefresh;
 
   // Shared deal overview data and summary for the stats boxes
-  const { summary: dealOverviewSummary, ordersOverride } = useDcaOverviewSource(
+  const {
+    summary: dealOverviewSummary,
+    ordersOverride,
+    liquidation: ladderLiquidation,
+  } = useDcaOverviewSource(
     mode,
     projection
   );
@@ -3412,6 +3618,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                     full
                     showTpLines={showTpLines}
                     orders={ordersOverride}
+                    liquidation={ladderLiquidation}
                   />
                 </TabsContent>
               )}
@@ -3420,6 +3627,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                   className="h-full w-full"
                   widgetId="dca-settings-deal-overview-table"
                   orders={ordersOverride}
+                  liquidation={ladderLiquidation}
                 />
               </TabsContent>
             </div>
@@ -3458,7 +3666,8 @@ const CustomDCA: React.FC<DCASectionProps> = ({
   );
 };
 
-export const DCASettings: React.FC<DCASettingsProps> = ({
+// The section reads the form from the store; hosts may still pass the rest.
+export const DCASettings: React.FC<Partial<DCASettingsProps>> = ({
   onUpdateBalances,
 }) => {
   const {
@@ -3467,7 +3676,7 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
     errors,
     setErrors: setFormErrors,
     mode,
-  } = useBotFormState();
+  } = useTrackedBotFormState();
   const useDca = useBotFormSelector('useDca');
   const dcaCondition = useBotFormSelector('dcaCondition');
   const dcaByMarket = useBotFormSelector('dcaByMarket');
@@ -3627,6 +3836,14 @@ export const DCASettings: React.FC<DCASettingsProps> = ({
             />
           </SettingsRow>
         )}
+
+      {!isComboBot && (
+        <DcaVolumeBasedOnSettings
+          updateFormData={updateFormData}
+          tradingContext={tradingContext}
+          isDealEdit={isDealEdit}
+        />
+      )}
 
       <div className="col-span-full space-y-md">{renderDCATypeContent()}</div>
     </>

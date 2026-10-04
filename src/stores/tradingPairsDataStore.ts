@@ -27,6 +27,10 @@ export interface TradingPair {
   // Canonical/curated-listing flag (HL spot only; absent elsewhere => canonical).
   // Preserved through the store for the pair-picker "Canonical only" toggle.
   isCanonical?: boolean;
+  // Clean ticker of the stock a tokenized-stock market tracks (`AAPL` for
+  // Bitget's `rAAPL`), set by the backend from the exchange's own flag or a
+  // hand-checked map. Absent => the base name is the ticker.
+  underlying?: string;
   // OKX account-origin owning this pair. `my` = OKX Europe (eea.okx.com) USDC/EUR
   // spot universe; unset for the global feed + all other exchanges. The bot form
   // serves an account its pairs by matching this to the account's okxSource.
@@ -41,6 +45,8 @@ export interface TradingPairsDataState {
   // Nested structure: {[provider]: {[pair]: TradingPair}}
   pairsByProvider: Record<string, Record<string, TradingPair>>;
   timestamp: number;
+  /** Trading context (live/paper/demo) the saved pairs were fetched for. */
+  context: string | null;
   isLoading: boolean;
   error: string | null;
   /** Whether pairs have been loaded at least once this session / since last stale-mark. */
@@ -52,7 +58,7 @@ export interface TradingPairsDataState {
   _hasHydrated: boolean;
 
   // Actions
-  setPairs: (pairs: TradingPair[]) => void;
+  setPairs: (pairs: TradingPair[], context?: string) => void;
   getPairsByExchange: (exchange?: ExchangeEnum) => TradingPair[];
   getAllPairs: () => TradingPair[];
   getPairsByExchangeFlat: () => TradingPairsByExchange; // For backward compatibility
@@ -108,18 +114,20 @@ export const useTradingPairsDataStore = create<TradingPairsDataState>()(
     (set, get) => ({
       pairsByProvider: {},
       timestamp: 0,
+      context: null,
       isLoading: false,
       error: null,
       initialLoaded: false,
       _hasHydrated: false,
 
-      setPairs: (newPairs: TradingPair[]) => {
+      setPairs: (newPairs: TradingPair[], context?: string) => {
         set(() => {
           const pairsByProvider = organizePairsByProvider(newPairs);
           return {
             pairsByProvider,
             error: null,
             timestamp: Date.now(),
+            context: context ?? null,
             initialLoaded: true,
           };
         });
@@ -247,6 +255,7 @@ export const useTradingPairsDataStore = create<TradingPairsDataState>()(
       partialize: (state) => ({
         pairsByProvider: state.pairsByProvider,
         timestamp: state.timestamp,
+        context: state.context,
       }),
       merge: (persistedState, currentState) => {
         return {

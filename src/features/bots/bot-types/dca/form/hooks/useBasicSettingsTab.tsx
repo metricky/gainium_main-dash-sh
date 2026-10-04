@@ -49,7 +49,7 @@ export const useBasicSettingsTab = (
   const { pairsByExchange, isLoading: tradingPairsLoading } =
     useTradingPairsFromContext();
 
-  const { pairMetadata } = useBotFormQuery();
+  const { pairMetadata, hasStoredPair } = useBotFormQuery();
   const { userProfile } = useUserProfile();
 
   const pairMetadataStringRef = useRef<string>('');
@@ -172,8 +172,13 @@ export const useBasicSettingsTab = (
   );
   const isComboBot = useMemo(() => formData.type === 'combo', [formData.type]);
   const planRestrictsMulti = useMemo(
-    () => shouldRestrictMulti(subscriptionPlanName, !!useMulti),
-    [useMulti, subscriptionPlanName]
+    () =>
+      shouldRestrictMulti(
+        subscriptionPlanName,
+        !!useMulti,
+        !!currentExchange?.affiliate
+      ),
+    [useMulti, subscriptionPlanName, currentExchange?.affiliate]
   );
   const multiToggleState = useMemo(
     () =>
@@ -219,8 +224,9 @@ export const useBasicSettingsTab = (
         externallyLocked: isFieldLocked?.('pair'),
         mode,
         useMulti: Boolean(useMulti),
+        hasStoredPair,
       }),
-    [useMulti, isFieldLocked, mode]
+    [useMulti, isFieldLocked, mode, hasStoredPair]
   );
 
   const isExchangeLocked = useMemo(() => !!id, [id]);
@@ -625,7 +631,9 @@ export const useBasicSettingsTab = (
   );
 
   const applyPairsInput = useCallback(
-    (rawValue: string) => {
+    // `surfaceError: false` for input coming from the pair dialog: the form's
+    // error slot is behind that modal, so the dialog shows the message itself.
+    (rawValue: string, options?: { surfaceError?: boolean }) => {
       if (pairLockState.locked) {
         return null;
       }
@@ -650,7 +658,7 @@ export const useBasicSettingsTab = (
         updateFormData('pair', result.nextPairs);
       }
 
-      if (result.error !== undefined) {
+      if (result.error !== undefined && options?.surfaceError !== false) {
         setPairError(result.error);
       }
 
@@ -823,9 +831,8 @@ export const useBasicSettingsTab = (
   );
 
   const handlePairsPaste = useCallback(
-    (raw: string) => {
-      applyPairsInput(raw);
-    },
+    (raw: string) =>
+      applyPairsInput(raw, { surfaceError: false })?.error || undefined,
     [applyPairsInput]
   );
 

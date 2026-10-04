@@ -3,12 +3,15 @@
 // the Trading dashboard Open Orders widget wrapper, and the Trading Terminal panel.
 // Not used in the bot drawer (see DrawerDealsTable for drawer deals UI).
 import { dealStartBlockedSummary } from '@/lib/utils/dealStartBlocked';
+import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import InlineNoteCell from '@/components/ui/InlineNoteCell';
 import { Tooltip as HelpTooltip } from '@/components/ui/tooltip';
 import {
     AdjustFundsDialog,
     ChangeDcaLevelsDialog,
     CloseOptionsDialog,
+    ExecuteNextDcaDialog,
+    canExecuteNextDca,
     type AdjustFundsDialogMode,
 } from '@/features/bots/shared/runtime';
 import { useMergeSmartOrders } from '@/features/bots/widgets/BotForm/hooks/useMergeSmartOrders';
@@ -17,8 +20,11 @@ import {
     useAdjustFunds,
     useDealActions,
     useEditDeal,
+    useExecuteNextDca,
     useMoveDealToTerminal,
     useRestoreDeal,
+    isDealNotOpenError,
+    toastDealCloseError,
 } from '@/hooks/useDealActions';
 import { fetchDealOrders } from '@/hooks/useDealOrders';
 import { useSetDealNote } from '@/hooks/useSetDealNote';
@@ -32,12 +38,21 @@ import { GraphQlQuery } from '@/lib/api'; */
 import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
 import {
     canAdjustDealFunds,
+    isComboFundsTarget,
     type BulkAdjustFundsTarget,
 } from '@/components/deals/actions/bulkAdjustFundsTargets';
 import { useBulkAdjustFunds } from '@/components/deals/actions/useBulkAdjustFunds';
+import type { PercentBasis } from '@/features/bots/shared/runtime/dialogs/adjustFundsAmount';
 import { DealEditDrawer } from '@/components/deals/DealEditDrawer';
 import { TradeDetailDrawer } from '@/components/trades/TradeDetailDrawer';
-import { useDcaDeals } from '@/hooks/useDcaDeals';
+import { useDealTablePaging } from '@/hooks/useDealTablePaging';
+import { PartialCount } from '@/components/ui/large-account';
+import { serverDealUnrealizedPnl } from '@/lib/utils/dealUnrealizedPnl';
+import {
+  withServerFields,
+  type ColumnServerFields,
+  type DataTableServerSide,
+} from '@/components/ui/data-table/serverSide';
 import { toast } from '@/lib/toast';
 import { formatTradingPair } from '@/lib/utils';
 import {
@@ -47,12 +62,17 @@ import {
     calculateDealValue,
     calculatePnlPercentage,
     calculatePnlPercentageNullable,
-    isLongStrategy,
+    dealGridProfitPercentageSortValue,
+    dealPercentStringSortValue,
+    dealWorkingMs,
+    dealWorkingTimeSortValue,
     isMetricUnavailable,
+    toDealSortEpochMs,
     toSortableMetricValue,
 } from '@/lib/utils/tradingMetrics';
 import { useTableCustomState } from '@/stores/tablePreferencesStore';
 import { useTradeJournalStore } from '@/stores/tradeJournalStore';
+import { isDealInJournal } from '@/utils/journalDealDedupe';
 import {
     BotTypesEnum,
     CloseDCATypeEnum,
@@ -61,12 +81,13 @@ import {
     type DCADeals,
     type DealStartBlock,
     type GetLatestPricesResult,
-    type Prices,
 } from '@/types';
 import type { TransformedTrade } from '@/types/dcaDeal';
 import { buildBotViewRoute } from '@/utils/bots/navigation';
+import { formatDuration } from '@/utils/formatters';
 import { formatNumber } from '@/utils/numberFormatter';
 import { extractPairAssets } from '@/utils/pairs';
+import { SYMBOL_COLUMN_FILTER_META } from '@/components/widgets/shared/symbolColumnFilterMeta';
 import { calculateExecutionsSummary } from '@/utils/tradeJournalMetrics';
 import { type ColumnDef } from '@tanstack/react-table';
 import {
@@ -84,6 +105,7 @@ import {
     SlidersHorizontal,
     X,
     XCircle,
+    Zap,
 } from 'lucide-react';
 import React, {
     useCallback,
@@ -247,6 +269,8 @@ export interface OpenTrade {
     };
     maxUsd?: number;
   };
+  /** Base a percentage add/reduce resolves to; see `percentBasis`. */
+  percentBasis?: PercentBasis | undefined;
   profit?: {
     total: number;
     totalUsd: number;
@@ -271,6 +295,8 @@ export interface OpenTrade {
   notes: string;
   pair: string;
   dealType: string;
+  /** Derivatives deal; see the note on `TransformedTrade.futures`. */
+  futures?: boolean | undefined;
   side: 'BUY' | 'SELL';
   orders: number;
   entryPrice: number;
@@ -407,6 +433,7 @@ const toAdjustFundsTarget = (trade: OpenTrade): BulkAdjustFundsTarget => ({
   quoteAsset: trade.quoteAsset,
   symbol: trade.symbol,
   exchange: trade.exchange,
+  percentBasis: trade.percentBasis,
 });
 
 const TradeTableActions: React.FC<TradeTableActionsProps> = ({
@@ -420,6 +447,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [moveToBotDialogOpen, setMoveToBotDialogOpen] = useState(false);
   const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
+  const [executeNextDcaOpen, setExecuteNextDcaOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
@@ -448,6 +476,31 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   const changeDcaMaxLevel = (trade.levels?.all || 1) - 1;
   const changeDcaBotType =
     trade.type === 'Combo' ? BotTypesEnum.combo : BotTypesEnum.dca;
+
+  // Add/Reduce Funds — not offered on combo deals, the same rule the bulk
+  // action below already applies. The mutation behind it resolves the bot out
+  // of the DCA bots only, so on a combo deal it can do nothing but fail.
+  const canShowAdjustFunds = !isComboFundsTarget(trade.type);
+
+  // Execute next DCA — see canExecuteNextDca (DCA only, open, not risk-based,
+  // and a level still left to execute).
+  const canShowExecuteNextDca = canExecuteNextDca(trade);
+  const executeNextDcaMutation = useExecuteNextDca();
+  const handleExecuteNextDcaConfirm = useCallback(
+    (expectedLevel: number) => {
+      if (!trade.botId) {
+        toast.error('Cannot execute the next DCA - missing bot ID');
+        return;
+      }
+      executeNextDcaMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        expectedLevel,
+      });
+      setExecuteNextDcaOpen(false);
+    },
+    [executeNextDcaMutation, trade.botId, trade.id]
+  );
   const editDealMutation = useEditDeal({
     onSuccess: () => {
       toast.success('DCA levels updated');
@@ -473,7 +526,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
         settings:
           newMax === 0
             ? { useDca: false }
-            : { useDca: true, ordersCount: `${newMax}` },
+            : { useDca: true, ordersCount: newMax },
       });
     },
     [editDealMutation, trade.botId, trade.id, changeDcaBotType]
@@ -489,6 +542,18 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
   const handleAddToJournal = async () => {
     try {
       const entryTime = trade.createdTime?.getTime() || Date.now();
+
+      if (
+        isDealInJournal(useTradeJournalStore.getState().trades, {
+          dealId: trade.dealId || trade.id,
+          symbol: trade.symbol,
+          exchange: trade.exchange,
+          entryTime,
+        })
+      ) {
+        toast.info(`Trade ${trade.symbol} is already in your journal`);
+        return;
+      }
 
       // Determine if trade is open (no valid exit data)
       const isOpenTrade =
@@ -533,6 +598,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
 
       // Only include exitTime/exitPrice/exitReason if the trade is closed and not cancelled
       const journalEntry: any = {
+        sourceDealId: trade.dealId || trade.id,
         symbol: trade.symbol,
         exchange: trade.exchange,
         direction: (trade.side === 'BUY' ? 'long' : 'short') as
@@ -635,7 +701,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
         dealId: trade.id,
         botId: trade.botId,
       });
-      toast.error('Failed to cancel deal');
+      toastDealCloseError(error, 'Failed to cancel deal');
       setCancelDialogOpen(false);
     }
   };
@@ -675,7 +741,7 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
         dealId: trade.id,
         botId: trade.botId,
       });
-      toast.error('Failed to close deal');
+      toastDealCloseError(error, 'Failed to close deal');
       setCloseDialogOpen(false);
     }
   };
@@ -780,6 +846,15 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
         quoteAsset={trade.quoteAsset}
         symbol={trade.symbol}
         exchange={trade.exchange}
+        percentBasis={trade.percentBasis}
+        exchangeUUID={trade.exchangeUUID}
+        // Two independent sources because the trade objects reaching this
+        // widget are built by three different mappers: some set a top-level
+        // `futures`, the Trading page carries it under `settings`. Reading
+        // only one of them silently mislabels a futures deal as spot — which
+        // is how the field came to show "BAL 0 USDT" on a futures short.
+        futures={!!(trade.futures ?? trade.settings?.futures)}
+        long={trade.side !== 'SELL'}
       />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -797,18 +872,34 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
             <BookOpen className="w-4 h-4 mr-2" />
             Add to Journal
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleAddFunds} disabled={!isDealOpen}>
-            <PlusCircle className="w-4 h-4 mr-2" />
-            Add Funds
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleReduceFunds} disabled={!isDealOpen}>
-            <MinusCircle className="w-4 h-4 mr-2" />
-            Reduce Funds
-          </DropdownMenuItem>
+          {canShowAdjustFunds && (
+            <>
+              <DropdownMenuItem onClick={handleAddFunds} disabled={!isDealOpen}>
+                <PlusCircle className="w-4 h-4 mr-2" />
+                Add Funds
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={handleReduceFunds}
+                disabled={!isDealOpen}
+              >
+                <MinusCircle className="w-4 h-4 mr-2" />
+                Reduce Funds
+              </DropdownMenuItem>
+            </>
+          )}
           <DropdownMenuItem onClick={handleEdit} disabled={!isDealOpen}>
             <Edit className="w-4 h-4 mr-2" />
             Edit
           </DropdownMenuItem>
+          {canShowExecuteNextDca && (
+            <DropdownMenuItem
+              onClick={() => setExecuteNextDcaOpen(true)}
+              disabled={!isDealOpen}
+            >
+              <Zap className="w-4 h-4 mr-2" />
+              Execute next DCA
+            </DropdownMenuItem>
+          )}
           {canShowChangeDca && (
             <DropdownMenuItem
               onClick={() => setChangeDcaDialogOpen(true)}
@@ -896,6 +987,15 @@ const TradeTableActions: React.FC<TradeTableActionsProps> = ({
           onConfirm={handleChangeDcaConfirm}
           isProcessing={editDealMutation.isPending}
         />
+        {canShowExecuteNextDca && (
+          <ExecuteNextDcaDialog
+            open={executeNextDcaOpen}
+            onOpenChange={setExecuteNextDcaOpen}
+            trade={trade}
+            onConfirm={handleExecuteNextDcaConfirm}
+            isProcessing={executeNextDcaMutation.isPending}
+          />
+        )}
         <MoveDealToBotDialog
           open={moveToBotDialogOpen}
           onOpenChange={setMoveToBotDialogOpen}
@@ -986,6 +1086,24 @@ export interface OpenTradesWidgetProps {
    *  The bot drawer passes the shared `DealsLoadingIndicator` so hedge bots
    *  show the same "Loading deals…" treatment as the single-bot deals table. */
   loadingIndicator?: React.ReactNode;
+  /**
+   * Server-paged mode (large accounts, or a deal list the server capped):
+   * `data.trades` is ONE page; paging/sort/search go to the server through
+   * `serverSide`. Only columns in `fields` are server-sortable; the rest show
+   * a greyed sort icon.
+   */
+  serverPaging?: {
+    serverSide: DataTableServerSide;
+    fields: Record<string, ColumnServerFields>;
+    /** Every deal matching the current query — makes exports complete. */
+    fetchAllDeals?: () => Promise<DCADeals[]>;
+  };
+  /** Maps a fetched deal to the row a caller-supplied `data.trades` holds
+   *  (for complete exports in server mode). Defaults to the widget's own. */
+  exportDealToTrade?: (deal: DCADeals) => OpenTrade;
+  /** The supplied trades are a capped subset: render "N of M" beside the
+   *  status toggle so the list never reads as complete. */
+  partial?: { shown: number; total: number } | null;
 }
 
 // Stable module-level defaults. Using inline `= []` / `= {}` defaults in the
@@ -1024,6 +1142,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   rawDeals,
   externalLoading,
   loadingIndicator,
+  serverPaging,
+  exportDealToTrade,
+  partial,
 }) => {
   const navigate = useNavigate();
   const colors = useChartColors();
@@ -1142,12 +1263,15 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     [liveOrdersData]
   );
 
-  const [latestPrices, setLatestPrices] = useState<Prices>([]);
+  // Only whether a price snapshot has arrived: the per-row values come from
+  // the deal list hook (or the parent), so holding every tick in state here only
+  // re-rendered the whole widget on each price refresh.
+  const [pricesLoaded, setPricesLoaded] = useState(false);
 
   useEffect(() => {
     const unsubscribe = getLatestPrices((result: GetLatestPricesResult) => {
       if (result.status === 'OK' && result.data) {
-        setLatestPrices(result.data);
+        if (result.data.length) setPricesLoaded(true);
       } else {
         logger.error(`${LOG_PREFIX}: Price fetch failed`, {
           reason: result.reason,
@@ -1158,33 +1282,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     return () => unsubscribe();
   }, []);
 
-  const getMarketPrice = useCallback(
-    (symbol: string, exchange?: string) => {
-      if (!symbol || !latestPrices.length) return undefined;
-      const normalizedExchange = exchange?.toLowerCase();
-
-      const byExchange = latestPrices.find(
-        (price) =>
-          price.symbol === symbol &&
-          (normalizedExchange
-            ? [normalizedExchange, 'all'].includes(
-                String(price.exchange).toLowerCase()
-              )
-            : true)
-      )?.price;
-
-      if (byExchange) return byExchange;
-
-      return latestPrices.find((price) => price.symbol === symbol)?.price;
-    },
-    [latestPrices]
-  );
-
   // Unrealized/net P&L are computed from the live-prices feed. Until it
   // arrives the values fall back to a stale/zero number, so gate the
   // price-dependent cells on a skeleton (legacy parity with main-dash's
   // per-row `loadedPrices`).
-  const pricesLoading = latestPrices.length === 0;
+  const pricesLoading = !pricesLoaded;
 
   // Helper function to determine gauge color based on percentage
   const getGaugeColor = useCallback(
@@ -1201,24 +1303,29 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const externalTrades = _data?.['trades'] as OpenTrade[] | undefined;
   const useExternalData = Array.isArray(externalTrades);
 
-  // Fetch DCA deals data using GraphQL only if no external data is provided.
-  // The fetch must follow the open/closed toggle even when enableStatusToggle
-  // is on: the backend defaults to open-only when no status is sent, so
-  // requesting `undefined` left the Closed view permanently empty.
-  const inputOptions = useMemo(
-    () => ({
-      terminal: true,
-      status: effectiveShowClosedTrades
-        ? DCADealStatusEnum.closed
-        : DCADealStatusEnum.open,
-    }),
-    [effectiveShowClosedTrades]
-  );
-  const {
-    deals: dcaDealsResponse,
-    isLoading: graphqlLoading,
-    error: graphqlError,
-  } = useDcaDeals(inputOptions);
+  // The fetch follows the open/closed toggle (the backend defaults to
+  // open-only when no status is sent).
+  // A parent that supplies both the trades and the raw deals needs nothing
+  // from this fetch (the drawer lookup is served by `rawDeals`); skipping it
+  // saves a whole terminal-deal list read on every Deals tab. The widget's own
+  // list (the Trading Terminal's open orders) pages on the server for large
+  // accounts, or once its first window comes back capped.
+  const internalDeals = useDealTablePaging({
+    status: effectiveShowClosedTrades ? 'closed' : 'open',
+    terminal: true,
+    tableId: enableStatusToggle
+      ? `${widgetId}-trades-${statusFilter}`
+      : `${widgetId}-trades`,
+    enabled: !(useExternalData && Array.isArray(rawDeals)),
+  });
+  const dcaDealsResponse = internalDeals.deals;
+  const graphqlLoading = internalDeals.isLoading;
+  const graphqlError = internalDeals.error;
+  // Server paging applies to the table only when it shows this widget's own
+  // list; a parent passing `data.trades` decides for its rows.
+  const effectiveServerPaging =
+    serverPaging ?? (useExternalData ? undefined : internalDeals.serverPaging);
+
   const activeDealsRaw = useMemo(() => {
     // Merge internally-fetched deals with caller-supplied rawDeals (de-duped
     // by _id) so the deal-drawer find covers both sources. Without this the
@@ -1466,11 +1573,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         executionSummary?.averageEntryPrice ??
         (deal.initialPrice ? Number(deal.initialPrice) : fallbackEntryPrice);
 
-      const currentMarketPrice = getMarketPrice(symbol, exchange);
-      const hasMarketPrice = Number.isFinite(currentMarketPrice);
-
       // Strategy-aware calculations matching legacy (terminal/utils.ts)
-      const isLong = isLongStrategy(deal.strategy);
       const isFutures = Boolean(deal.settings?.futures);
       const isCoinm = Boolean(deal.settings?.coinm);
       const avgPriceNum = Number(deal.avgPrice || entryPrice || 0);
@@ -1497,22 +1600,16 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       const size = calculateDealSize(metricsInput);
       const value = calculateDealValue(metricsInput);
 
-      // Unrealized PnL: legacy formula
-      // LONG:  (currentBase * price + currentQuote - initialQuote)
-      // SHORT: (currentQuote - (initialBase - currentBase) * price)
-      // Closed/canceled deals have no unrealized P&L (legacy parity with
-      // main-dash `isActiveDeal`); only compute it for live deals.
+      // Unrealized P&L in USD: the canonical fee-inclusive value computed
+      // live for the rows of a server page (useDealTablePaging overlays it as
+      // `unrealizedUsd`), otherwise the server's stored value. Closed/canceled
+      // deals have none. (Was a gross, quote-unit formula labelled in dollars.)
       const unrealizedPnl = !isActiveDealStatus(deal.status)
         ? 0
-        : hasMarketPrice
-          ? isLong
-            ? currentBaseAmount * Number(currentMarketPrice) +
-              currentQuoteAmount -
-              initialInvestment
-            : currentQuoteAmount -
-              (Number(deal.initialBalances.base || 0) - currentBaseAmount) *
-                Number(currentMarketPrice)
-          : undefined;
+        : ((deal as { unrealizedUsd?: number }).unrealizedUsd ??
+          serverDealUnrealizedPnl(
+            deal as unknown as Parameters<typeof serverDealUnrealizedPnl>[0]
+          )?.unrealizedUsd);
       // Realized P&L comes from the backend's authoritative `deal.profit`, the
       // same source `dcaDealToOpenTrade` / `comboDealToOpenTrade` use. Do NOT
       // derive it from `executionSummary` (same trap as `avgPrice` below):
@@ -1534,16 +1631,13 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         );
       }
 
-      // Generate working time based on creation time
-      const workingHours = Math.floor(
-        (Date.now() - createdTime.getTime()) / (1000 * 60 * 60)
-      );
-      const workingDays = Math.floor(workingHours / 24);
-      const remainingHours = workingHours % 24;
-      const workingTime =
-        workingDays > 0
-          ? `${workingDays}D ${remainingHours}H`
-          : `${remainingHours}H`;
+      // How long the deal ran. A closed/canceled one stops at its close instead
+      // of counting on to now — see `dealWorkingMs` (V1 parity, bug #567).
+      // Deliberately NOT derived from `createdTime` above: that falls back to a
+      // random date when `createTime` is missing, which would invent a runtime.
+      // Formatted through the shared `formatDuration` so a deal that ran under
+      // an hour reports the minutes it ran instead of flooring to "0H" (#567).
+      const workingTime = formatDuration(dealWorkingMs(deal));
 
       // Convert type to match our interface
       const getBotType = (strategy: string): OpenTrade['type'] => {
@@ -1661,7 +1755,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         transactionsSell: deal.transactions?.sell ?? 0,
         transactionsTotal:
           (deal.transactions?.buy ?? 0) + (deal.transactions?.sell ?? 0),
-        updateTime: new Date(deal.updateTime).toLocaleString(),
+        // ISO string, same reason as closeTime below: the Update Time column
+        // re-parses this value (to render it and to sort on it) and a locale
+        // string gets misparsed by new Date(), swapping day/month.
+        updateTime: new Date(deal.updateTime).toISOString(),
         // ISO string so the Close Time column re-parses it unambiguously;
         // a locale string gets misparsed by new Date() and swaps day/month.
         closeTime: deal.closeTime
@@ -1671,27 +1768,23 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         compoundBreakdown: computeCompoundBreakdown(deal.sizes),
       };
     },
-    [botTypeOverride, getMarketPrice, liveOrders]
+    [botTypeOverride, liveOrders]
   );
 
   // FLICKER DEBUG: track what causes transformDCADealToOpenTrade to be recreated
   // (cascades into baseTrades → trades → DataTable re-render)
   const prevBotTypeOverrideRef = useRef(botTypeOverride);
-  const prevGetMarketPriceRef = useRef(getMarketPrice);
   const prevLiveOrdersRef = useRef(liveOrders);
   const prevTransformRef = useRef(transformDCADealToOpenTrade);
   if (prevTransformRef.current !== transformDCADealToOpenTrade) {
     const changed = [];
     if (prevBotTypeOverrideRef.current !== botTypeOverride)
       changed.push('botTypeOverride');
-    if (prevGetMarketPriceRef.current !== getMarketPrice)
-      changed.push('getMarketPrice');
     if (prevLiveOrdersRef.current !== liveOrders) changed.push('liveOrders');
     logger.debug(
       `[flicker] transformDCADealToOpenTrade recreated. Changed deps: [${changed.join(', ')}]`
     );
     prevBotTypeOverrideRef.current = botTypeOverride;
-    prevGetMarketPriceRef.current = getMarketPrice;
     prevLiveOrdersRef.current = liveOrders;
     prevTransformRef.current = transformDCADealToOpenTrade;
   }
@@ -1830,6 +1923,36 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     return filtered;
   }, [baseTrades, enableStatusToggle, effectiveShowClosedTrades]);
 
+  // Server mode: the table holds only the page on screen, so exports fetch
+  // every deal matching the current status, filters, search and sort.
+  const fetchAllServerDeals = effectiveServerPaging?.fetchAllDeals;
+  const getExportData = useMemo(() => {
+    if (!fetchAllServerDeals) return undefined;
+    const toTrade = exportDealToTrade ?? transformDCADealToOpenTrade;
+    return async (): Promise<OpenTrade[] | null> => {
+      try {
+        toast.info('Preparing export — fetching all deals…');
+        const rows = (await fetchAllServerDeals()).map(toTrade);
+        return hideBotName && !exportDealToTrade
+          ? rows.map((t) => ({ ...t, botName: undefined }))
+          : rows;
+      } catch (error) {
+        logger.error(`${LOG_PREFIX}: Failed to fetch all deals for export`, {
+          error,
+        });
+        toast.error(
+          'Could not fetch all deals — the export will only include the loaded ones'
+        );
+        return null; // DataTable falls back to the loaded rows
+      }
+    };
+  }, [
+    fetchAllServerDeals,
+    exportDealToTrade,
+    transformDCADealToOpenTrade,
+    hideBotName,
+  ]);
+
   // FLICKER DEBUG: track what causes baseTrades / trades to change
   const prevBaseTradesRef = useRef(baseTrades);
   const prevTradesRef = useRef(trades);
@@ -1872,8 +1995,16 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       }
     });
 
+    // Server-paged: the page holds a slice; the server total is the count.
+    if (effectiveServerPaging) {
+      const n = effectiveServerPaging.serverSide.rowCount;
+      return {
+        openCount: statusFilter === 'open' ? n : open,
+        closedCount: statusFilter === 'closed' ? n : closed,
+      };
+    }
     return { openCount: open, closedCount: closed };
-  }, [baseTrades]);
+  }, [baseTrades, effectiveServerPaging, statusFilter]);
 
   // Only the currently-selected status is actually loaded, so only its count is
   // meaningful. Show the number on the selected option and omit it on the other
@@ -2029,10 +2160,22 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           try {
             const now = Date.now();
             let successCount = 0;
+            let skippedCount = 0;
 
             selectedTrades.forEach((trade) => {
               try {
                 const entryTime = trade.createdTime?.getTime() || now;
+                if (
+                  isDealInJournal(useTradeJournalStore.getState().trades, {
+                    dealId: trade.dealId || trade.id,
+                    symbol: trade.symbol,
+                    exchange: trade.exchange,
+                    entryTime,
+                  })
+                ) {
+                  skippedCount++;
+                  return;
+                }
                 const isOpenTrade =
                   !trade.exitTime ||
                   !trade.exitPrice ||
@@ -2047,6 +2190,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
                     : 0;
 
                 const journalEntry: any = {
+                  sourceDealId: trade.dealId || trade.id,
                   symbol: trade.symbol,
                   exchange: trade.exchange,
                   direction: (trade.side === 'BUY' ? 'long' : 'short') as
@@ -2095,9 +2239,14 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
             if (successCount > 0) {
               toast.success(`Added ${successCount} trade(s) to journal`);
             }
-            if (successCount < selectedTrades.length) {
+            if (skippedCount > 0) {
+              toast.info(
+                `${skippedCount} trade(s) already in your journal, skipped`
+              );
+            }
+            if (successCount + skippedCount < selectedTrades.length) {
               toast.error(
-                `Failed to add ${selectedTrades.length - successCount} trade(s)`
+                `Failed to add ${selectedTrades.length - successCount - skippedCount} trade(s)`
               );
             }
           } catch (error) {
@@ -2229,6 +2378,9 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   );
   handleAdjustFundsConfirmRef.current = handleAdjustFundsConfirm;
   // Define table columns
+  // Date columns bucket and render their day in the ACCOUNT's zone, the same
+  // boundary the daily-profit surfaces use — not the browser's.
+  const accountTimeZone = useAccountTimeZone();
   const columns: ColumnDef<OpenTrade>[] = useMemo(() => {
     const comboTypes = new Set(['Combo', 'Hedge Combo']);
     const hasComboFilter = filteredBotTypes.some((type) =>
@@ -2247,6 +2399,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         header: 'Type',
         meta: {
           filterType: 'array',
+          // Canonical value so picking "DCA" / "Combo" matches exactly instead
+          // of also substring-matching "Hedge DCA" / "Hedge Combo".
+          getOptionValue: (row: unknown) =>
+            ((row as Record<string, unknown>)['type'] as string) || '',
           getFilterValue: (row: unknown) => {
             const trade = row as Record<string, unknown>;
             return (trade['type'] as string) || '';
@@ -2268,25 +2424,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     baseCols.push({
       accessorKey: 'symbol',
       header: 'Symbol',
-      meta: {
-        filterType: 'array',
-        getFilterValue: (row: unknown) => {
-          const trade = row as Record<string, unknown>;
-          const symbol = (trade['symbol'] as string) || '';
-          const pair = (trade['pair'] as string) || '';
-
-          // Extract base and quote assets from symbol using shared helper
-          const { baseAsset, quoteAsset } = extractPairAssets(symbol);
-
-          return [
-            symbol,
-            pair,
-            baseAsset,
-            quoteAsset,
-            symbol.replace('/', ''),
-          ].filter(Boolean);
-        },
-      },
+      meta: SYMBOL_COLUMN_FILTER_META,
       cell: ({ row }) => {
         const symbol = row.getValue('symbol') as string;
         const { baseAsset, quoteAsset } = extractPairAssets(symbol);
@@ -2464,7 +2602,20 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         ),
       },
       {
-        accessorKey: 'realizedProfitPercentage',
+        // Nothing in the platform produces a `realizedProfitPercentage` field:
+        // the rows come from `dcaDealToOpenTrade` / `transformDealToTrade`,
+        // which emit `profit`/`pnl`/`cost` and no percentage. The old
+        // `accessorKey` therefore read `undefined` for every row, so sorting
+        // and the number filter were both silent no-ops while the cell still
+        // rendered the right value off `row.original`. Derive it the same way
+        // the cell does — and keep the column `id` the accessorKey used to
+        // imply, so persisted visibility/order/width settings still resolve.
+        id: 'realizedProfitPercentage',
+        accessorFn: (row) =>
+          calculatePnlPercentage(
+            Number(row.profit?.totalUsd || 0),
+            Number(row.cost || 0)
+          ),
         header: 'Realized P&L, %',
         meta: { filterType: 'number' },
         enableHiding: true,
@@ -2744,11 +2895,16 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           if (!value) return <span className="text-muted-foreground">-</span>;
           return (
             <div className="flex flex-col">
-              <span className="text-sm">{value.toLocaleDateString()}</span>
+              <span className="text-sm">
+                {value.toLocaleDateString(undefined, {
+                  timeZone: accountTimeZone,
+                })}
+              </span>
               <span className="text-xs text-muted-foreground">
                 {value.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
+                  timeZone: accountTimeZone,
                 })}
               </span>
             </div>
@@ -2850,33 +3006,45 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         },
       },
       {
-        accessorKey: 'timeInLoss',
+        id: 'timeInLoss',
+        accessorFn: (row) => dealPercentStringSortValue(row.timeInLoss),
         header: 'Time In Loss',
-        meta: { filterType: 'string' },
-        cell: ({ getValue }) => {
-          const value = getValue() as string;
+        // The accessor is the numeric percentage the cell renders ("12.3%"),
+        // so it both sorts and number-filters (`> 50`) in displayed units.
+        meta: { filterType: 'number' },
+        cell: ({ row }) => {
+          const value = row.original.timeInLoss;
           if (!value || value === '-')
             return <span className="text-muted-foreground">-</span>;
           return value;
         },
       },
       {
-        accessorKey: 'timeInProfit',
+        id: 'timeInProfit',
+        accessorFn: (row) => dealPercentStringSortValue(row.timeInProfit),
         header: 'Time In Profit',
-        meta: { filterType: 'string' },
-        cell: ({ getValue }) => {
-          const value = getValue() as string;
+        meta: { filterType: 'number' },
+        cell: ({ row }) => {
+          const value = row.original.timeInProfit;
           if (!value || value === '-')
             return <span className="text-muted-foreground">-</span>;
           return value;
         },
       },
       {
-        accessorKey: 'workingTime',
+        id: 'workingTime',
+        accessorFn: (row) => dealWorkingTimeSortValue(row),
         header: 'Working Time',
-        meta: { filterType: 'string' },
-        cell: ({ getValue }) => {
-          const value = getValue() as string;
+        // Numeric (minutes) accessor for sorting. The cell renders "3D 4H", so
+        // the number filter works in HOURS (`> 24` = ran longer than a day).
+        meta: {
+          filterType: 'number',
+          filterUnit: 'hours',
+          getNumericFilterValue: (row: unknown) =>
+            dealWorkingTimeSortValue(row as OpenTrade) / 60,
+        },
+        cell: ({ row }) => {
+          const value = row.original.workingTime;
           if (!value) return <span className="text-muted-foreground">-</span>;
           return value;
         },
@@ -2979,7 +3147,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         },
       },
       {
-        accessorKey: 'gridProfitPercentage',
+        id: 'gridProfitPercentage',
+        accessorFn: (row) => dealGridProfitPercentageSortValue(row),
         header: 'Grid Profit, %',
         meta: { filterType: 'number' },
         enableHiding: true,
@@ -3026,20 +3195,26 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         },
       },
       {
-        accessorKey: 'updateTime',
+        id: 'updateTime',
+        accessorFn: (row) => toDealSortEpochMs(row.updateTime),
         header: 'Update Time',
         meta: { filterType: 'date' },
-        cell: ({ getValue }) => {
-          const value = getValue() as string;
+        cell: ({ row }) => {
+          const value = row.original.updateTime;
           if (!value) return <span className="text-muted-foreground">-</span>;
           const date = new Date(value);
           return (
             <div className="flex flex-col">
-              <span className="text-sm">{date.toLocaleDateString()}</span>
+              <span className="text-sm">
+                {date.toLocaleDateString(undefined, {
+                  timeZone: accountTimeZone,
+                })}
+              </span>
               <span className="text-xs text-muted-foreground">
                 {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
+                  timeZone: accountTimeZone,
                 })}
               </span>
             </div>
@@ -3059,11 +3234,16 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           const date = new Date(value);
           return (
             <div className="flex flex-col">
-              <span className="text-sm">{date.toLocaleDateString()}</span>
+              <span className="text-sm">
+                {date.toLocaleDateString(undefined, {
+                  timeZone: accountTimeZone,
+                })}
+              </span>
               <span className="text-xs text-muted-foreground">
                 {date.toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
+                  timeZone: accountTimeZone,
                 })}
               </span>
             </div>
@@ -3226,7 +3406,14 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     handleEdit,
     allKnownDeals,
     openEditDrawerFor,
+    accountTimeZone,
   ]);
+  // Server-paged: only columns with a server field sort; others are greyed.
+  const serverFields = effectiveServerPaging?.fields;
+  const serverColumns = useMemo(
+    () => (serverFields ? withServerFields(columns, serverFields) : columns),
+    [columns, serverFields]
+  );
 
   // Wrapper component to adapt props for TradeCard.
   // IMPORTANT: useMemo with an empty dep array ensures the component *type* (function
@@ -3342,6 +3529,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
   const handleCancelConfirm = async () => {
     let successCount = 0;
     let errorCount = 0;
+    let endedCount = 0;
 
     for (const trade of cancelDialogOpen) {
       if (!trade.botId) {
@@ -3368,7 +3556,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         }
         successCount += 1;
       } catch (error) {
-        errorCount += 1;
+        if (isDealNotOpenError(error)) endedCount += 1;
+        else errorCount += 1;
         logger.error(`${LOG_PREFIX}: Failed bulk cancel`, {
           error,
           dealId: trade.id,
@@ -3385,11 +3574,17 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     if (errorCount > 0) {
       toast.error(`Failed to cancel ${errorCount} deal(s)`);
     }
+    if (endedCount > 0) {
+      toast.info(
+        `${endedCount} deal(s) had already ended. The list has been refreshed.`
+      );
+    }
   };
 
   const handleCloseConfirm = async (type: CloseDCATypeEnum) => {
     let successCount = 0;
     let errorCount = 0;
+    let endedCount = 0;
 
     for (const trade of closeDialogOpen) {
       if (!trade.botId) {
@@ -3416,7 +3611,8 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         }
         successCount += 1;
       } catch (error) {
-        errorCount += 1;
+        if (isDealNotOpenError(error)) endedCount += 1;
+        else errorCount += 1;
         logger.error(`${LOG_PREFIX}: Failed bulk close`, {
           error,
           dealId: trade.id,
@@ -3432,6 +3628,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
     }
     if (errorCount > 0) {
       toast.error(`Failed to close ${errorCount} deal(s)`);
+    }
+    if (endedCount > 0) {
+      toast.info(
+        `${endedCount} deal(s) had already ended. The list has been refreshed.`
+      );
     }
   };
 
@@ -3504,8 +3705,10 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
             ? `${widgetId}-trades-${statusFilter}`
             : `${widgetId}-trades`
         }
-        columns={columns}
+        columns={serverColumns}
         data={trades}
+        serverSide={effectiveServerPaging?.serverSide}
+        getExportData={getExportData}
         onRowClick={(row) => {
           // Match the card-click default: read-only details drawer unless
           // the parent passed an explicit `onTradeClick` override.
@@ -3515,7 +3718,20 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
             openDetailsRef.current(row);
           }
         }}
-        firstToolbarActions={statusToggleFull}
+        firstToolbarActions={
+          partial ? (
+            <div className="flex items-center gap-xs">
+              {statusToggleFull}
+              <PartialCount
+                shown={partial.shown}
+                total={partial.total}
+                noun={statusFilter === 'closed' ? 'closed deals' : 'open deals'}
+              />
+            </div>
+          ) : (
+            statusToggleFull
+          )
+        }
         firstToolbarActionsCompact={statusToggleCompact}
         enableGlobalFilter={true}
         enableColumnFilters={true}
@@ -3568,10 +3784,14 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       <ConfirmationDialog
         open={!!cancelDialogOpen.length}
         onOpenChange={() => setCancelDialogOpen([])}
-        title="Cancel Trade"
+        title={cancelDialogOpen.length > 1 ? 'Cancel Trades' : 'Cancel Trade'}
         description={`Are you sure you want to cancel ${cancelDialogOpen.length} ${cancelDialogOpen.length > 1 ? 'trades' : 'trade'}? This action cannot be undone.`}
-        confirmText="Cancel Trade"
-        cancelText="Keep Trade"
+        confirmText={
+          cancelDialogOpen.length > 1
+            ? `Cancel ${cancelDialogOpen.length} Trades`
+            : 'Cancel Trade'
+        }
+        cancelText={cancelDialogOpen.length > 1 ? 'Keep Trades' : 'Keep Trade'}
         variant="destructive"
         onConfirm={handleCancelConfirm}
       />
@@ -3582,6 +3802,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         defaultCloseType={CloseDCATypeEnum.closeByMarket}
         ignoreOptions={[CloseDCATypeEnum.leave]}
         mode="deal"
+        count={closeDialogOpen.length}
       />
       {bulkAdjustFundsDialog}
       <ConfirmationDialog

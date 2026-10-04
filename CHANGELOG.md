@@ -1,5 +1,2413 @@
 # Changelog
 
+## [2.69.4] - 2026-10-04
+
+### Fixed
+
+- Bot edit page (Grid, DCA, Combo): the chart opens on the bot's own pair instead of BTCUSDT while the exchange's pair list is still loading or failed to load.
+
+## [2.69.3] - 2026-10-04
+
+### Fixed
+
+- DCA bot form: Move SL is available again when the stop loss type is Indicators or Dynamic ATR/ADR, as it was in the legacy dashboard. Once the deal reaches the trigger profit, a percentage stop loss at the "Move to" level is armed alongside the indicator stop.
+
+## [2.69.2] - 2026-10-03
+
+### Fixed
+
+- Grid bot form: a local backtest now reads a decimal comma the way saving the bot does (`1,5` runs as 1.5 instead of 1 or not-a-number), and a value that is not a number (`1000abc`, `1,000.5`) stops the backtest with an error on the field instead of running with a silently wrong setting.
+
+## [2.69.1] - 2026-10-03
+
+### Fixed
+
+- Grid bot form: clearing the Grid levels field, or typing a value that is not a whole number (`20.1`, `20,`), no longer freezes the page on a geometric grid. The field now keeps only whole numbers of 1 or more and shows "Levels must be a positive integer." for anything else; leaving the field restores the last valid count.
+
+## [2.69.0] - 2026-10-03
+
+### Added
+
+- Bot form quick backtest: the period picker now has start and end time inputs, so a backtest can start and end at a time of day instead of only on whole days. The chosen times also carry into the Backtest settings dialog.
+
+### Fixed
+
+- Bot form quick backtest: the picked period's last day is now included. The end date was read as midnight UTC at the start of that day, so the final day was left out of the test.
+
+## [2.68.12] - 2026-10-03
+
+### Fixed
+
+- Hedge DCA and hedge combo bots now save their global-variable bindings. Creating, cloning or editing a hedge bot keeps each leg's bound fields bound to their variables instead of saving the variables' current values.
+
+## [2.68.11] - 2026-10-03
+
+### Fixed
+
+- Cloning a DCA, combo or grid bot now keeps its global-variable bindings: a field bound to a variable stays bound in the clone instead of being saved with the variable's current value.
+- Bot form: a base order sized in % of balance no longer shows a "Minimum order: 0 %" note. The note now appears only when there is a real minimum.
+
+## [2.68.10] - 2026-10-02
+
+### Fixed
+
+- Grid bot form: a number typed with a decimal comma (`1,5`) in a grid field such as Sell displacement, Grid step, Investment or Take profit % is now saved as `1.5` instead of `0`, and a value that is not a number shows an error on the field instead of being saved as `0`.
+
+## [2.68.9] - 2026-10-02
+
+### Fixed
+
+- Deal lists paged on the server (Trading Bots → Deals, the bot drawer): the Symbol column's "is any of" filter now offers every pair of the loaded deals and of the bots' configured pairs, not only the pairs on the page on screen, so a pair on another page can be found and several pairs picked at once.
+
+## [2.68.8] - 2026-10-02
+
+### Fixed
+
+- Grid bot list and drawer: on a neutral futures grid, Net PnL, Unrealized PnL, Run up and Drawdown now value the open position against the same entry the bot's percentage take-profit and stop-loss use, so a run-up no longer shows above the take-profit while the take-profit has correctly not fired. Futures grids also value the position as quantity × price change, the same measure the bot itself uses. Needs the matching backend release.
+
+## [2.68.7] - 2026-10-02
+
+### Fixed
+
+- DCA and combo bot lists: Net PnL % on a bot with nothing open now divides by max cost, as the column tooltip describes, instead of always reading 0%. The bot drawer's Net PnL % does the same.
+
+## [2.68.6] - 2026-10-01
+
+### Fixed
+
+- Cloning a DCA, combo or grid bot now opens the form with the source bot's settings. An older unsaved new-bot draft is no longer restored over the clone.
+
+## [2.68.5] - 2026-10-02
+
+### Fixed
+
+- Adding deals to the trade journal (from a bot's deals table or the trading terminal, one at a time or in bulk) no longer creates a second entry for a deal that is already in the journal. Deals already present are skipped, and the notice says how many.
+
+## [2.68.4] - 2026-10-01
+
+### Changed
+
+- Quick-mode bot forms: the "Risk profile" section is now called "Preset", since the values are calculated from the pair's price history, not from the user.
+- Preset descriptions no longer call deeper safety-order ladders "protection"; they state how deep each preset covers and how much capital it commits.
+- The calibration line under the presets now notes that it is based on past data and that future moves can be larger.
+
+## [2.68.3] - 2026-10-01
+
+### Fixed
+
+- A session that expires or is rejected by the server no longer ends silently: a "Your session expired — please log in again" notice is shown, the login page repeats it, and signing in returns you to the page you were on.
+- A request refused for authentication is reported as a failed load instead of an empty result (for example an empty list), and prompts a check of the session.
+- An expired session is no longer cleared without notice when a request finds it expired, and a temporary network failure while re-checking it no longer signs you out.
+
+## [2.68.2] - 2026-10-01
+
+### Added
+
+- Turning on "Disable all webhook actions" now lists the active bots that start or close deals by webhook and asks for confirmation first.
+- Bot forms warn under Deal start, Take profit and Stop loss when Webhook is selected while webhook actions are disabled for the account.
+
+## [2.68.1] - 2026-10-01
+
+### Fixed
+
+- Bot form: the multi-pair switch is no longer locked for free-plan users on a Hyperliquid connection with the builder fee approved. The server already accepted multi-pair bots on those connections; only the form refused them.
+
+## [2.68.0] - 2026-10-01
+
+### Added
+
+- Settings → Login & Security: "Disable all webhook actions" switch (cloud) that refuses every incoming webhook signal for all bots on the account.
+
+## [2.67.24] - 2026-09-30
+
+### Fixed
+
+- Trading Bots: the DCA bot list no longer stays empty ("No DCA bots yet") for an account that has never saved a live/paper preference. The list waited for the trading mode to be synced from the profile, and a profile with no saved mode is never synced, so the list was never requested.
+
+## [2.67.22] - 2026-09-30
+
+### Changed
+
+- Connect an app (OAuth consent): the app name shown is now the one the app registered with, looked up from the server, and the screen shows where you will be sent after you decide. A request whose return address the app did not register is shown as not valid, with no Authorize or Deny buttons.
+
+## [2.67.21] - 2026-09-30
+
+### Fixed
+
+- Trading Bots and Combo Bots: a bot whose details cannot be displayed no longer makes the whole page fail to load. The rest of the list renders, and a bot that was already showing keeps its last good values.
+- Grid Bots: a bot missing its stored pair details now reads its base and quote assets from its pair instead of failing to render.
+
+## [2.67.20] - 2026-09-29
+
+### Fixed
+
+- Bot form: with no trading pair selected, the chart and the Investment currency now follow the selected account's own default pair instead of always showing BTC/USDT. Accounts that cannot trade USDT pairs (for example OKX Europe, which lists USDC and EUR pairs) no longer see a USDT pair and a "0 USDT" balance that they cannot use.
+
+## [2.67.19] - 2026-09-29
+
+### Fixed
+
+- Backtest results: opening a deal from a fine-interval run (for example 1m) far in the past no longer leaves the chart loading while it fetches every candle between that deal and today. Deals too far back to load at the run's interval are shown at the finest coarser interval that loads in seconds; recent deals keep the run's interval.
+
+## [2.67.18] - 2026-09-29
+
+### Changed
+
+- Charts: the "chart never became ready" diagnostic now records how far the charting library got (script, chart frame, library start-up), counts only the time the page is visible so background tabs no longer produce inflated waits, and sends at most one report per page load. The 30-second threshold and the retry behaviour are unchanged.
+
+## [2.67.17] - 2026-09-29
+
+### Fixed
+
+- Bots: "Duplicate to paper" / "Duplicate to live" now switches to the other trading mode and opens that bot type's new-bot form in Manual with the source bot's settings, on a matching account of that mode, named "(Paper)" or "(Live)". It used to open a default Quick-setup bot in the same mode, and did nothing for combo and grid bots in the table view.
+
+## [2.67.16] - 2026-09-29
+
+### Fixed
+
+- Trading Bots: a bot whose stored pair details were empty made the whole page fail to load. The list now reads that bot's pairs from its settings and shows it normally.
+
+## [2.67.15] - 2026-09-28
+
+### Fixed
+
+- Deal orders (Trade Details → Orders → Pending): cancelling a placed safety or add-funds order with the red X works again. The request left out the bot the deal belongs to, so the server rejected it with a "botId was not provided" error and the order stayed open.
+
+## [2.67.14] - 2026-09-28
+
+### Fixed
+
+- Pair picker (Select Pairs / Change pair): scrolling the list shows every pair again. When the picker opened with its pairs already loaded, only the first screen of rows was drawn and the rest of the list scrolled as empty space, for any sort order and on any device.
+
+## [2.67.13] - 2026-09-28
+
+### Fixed
+
+- Deals lists (Trading Bots → Deals and the Trading Terminal's deals): "Export as CSV" and "Export as JSON" include every deal that matches the current open/closed view, filters, search and sort, not only the rows on the visible page, when the list is paged on the server. If the full fetch fails, the export falls back to the loaded rows and says so.
+
+## [2.67.12] - 2026-09-27
+
+### Fixed
+
+- Trading Bots → Deals: clicking or tapping a column header (Unrealized P&L, Net P&L %, Cost, …) sorts the open deals again. The table no longer switches to server paging for good when a deal closes while the page is open. A table that had switched to it on an earlier visit goes back to sorting on the device once its whole list is loaded. When the list is paged on the server, sorting by Unrealized P&L, Value or Cost asks the server instead of leaving the rows in place.
+
+## [2.67.11] - 2026-09-27
+
+### Fixed
+
+- A dashboard tab left open across an update no longer turns into the "Something went wrong" screen when an optional panel (such as the Max chat panel) or widget cannot be loaded: the page reloads once onto the new version, and if that is not possible the panel is simply left out while the rest of the page keeps working. A page that fails to load the same way reloads instead of spinning forever.
+
+## [2.67.10] - 2026-09-27
+
+### Changed
+
+- Moving Average indicator: the settings now read in the same order as the stored rule and the API/JSON: the moving average first, then the condition, then what it is compared to (e.g. "EMA 100 · Lower than · Current price"). The condition list uses the same labels as every other indicator, so "Greater than" is `gt` and "Crossing up" is `cu`. Previously the form put the reference first and swapped the condition labels to compensate. Existing bots are unchanged and behave exactly as before; only the wording of their MA conditions reads from the other side.
+
+## [2.67.9] - 2026-09-27
+
+### Changed
+
+- Exchanges page: a unified account shows as one card (account name, its markets, Edit / Delete per market) instead of one card per market
+- Portfolio Futures card: the futures markets of one unified account are one row with the shared wallet shown once
+
+## [2.67.8] - 2026-09-27
+
+### Fixed
+
+- Portfolio: the market connections of one unified account (Hyperliquid unified, Bitget UTA, Bybit / OKX unified) show as a single box in My Accounts with the shared wallet balance once; "All Exchanges" and the Futures card total no longer add that wallet again for every leg
+
+## [2.67.7] - 2026-09-26
+
+### Fixed
+
+- Large lists paged from the server: a saved or linked filter on a column that
+  cannot be filtered in that mode was still counted on the Filters button,
+  with nothing shown to clear it. Those filters are now ignored there and
+  dropped from the page link
+
+## [2.67.6] - 2026-09-26
+
+### Changed
+
+- Price polling sends plain requests, so browsers no longer make an extra
+  preflight request before each price refresh
+
+## [2.67.5] - 2026-09-26
+
+### Fixed
+
+- Hedge bots: the Stats tab showed only the long leg's statistics, presented
+  as the whole bot's. Each leg keeps its own statistics, so the tab now has a
+  Long leg / Short leg switch and shows the selected leg's figures
+
+## [2.67.4] - 2026-09-26
+
+### Fixed
+
+- Sign in: an email address filled in with capital letters (for example by a
+  password manager) was rejected as "Invalid email or password". The email
+  field is now lowercased, as on the legacy dashboard
+
+## [2.67.3] - 2026-09-26
+
+### Fixed
+
+- Bot Edit page: a paper bot opened from inside the app while the dashboard
+  was in live mode showed no safety orders and 0.00% coverage until the page
+  was refreshed. After a live/paper switch the previous mode's pair list was
+  saved as the new mode's list, so the new mode's pairs were never loaded;
+  the list for the new mode is now fetched
+
+## [2.67.2] - 2026-09-26
+
+### Fixed
+
+- Bot details: the chart could open on a pair from a different bot. Orders
+  saved in the browser without a bot id were shown on every non-hedge bot, and
+  the chart followed the newest of them. They are no longer read or saved, and
+  any already saved are dropped on load
+
+## [2.67.1] - 2026-09-26
+
+### Fixed
+
+- Time-based DCA/Combo bots: "Next deal" showed a day off from when the bot
+  actually runs for users away from UTC; it is now a date in the profile
+  timezone and matches the engine
+
+## [2.67.0] - 2026-09-26
+
+### Added
+
+- DCA and Combo bots: with the dynamic price filter on "Over and Under",
+  "Max open deals" (and "Max open deals per pair" on multi-pair bots) can be
+  split into separate limits for deals opened above and below the first
+  deal's price.
+- DCA bots: "Volume based on (beta)" controls — size each DCA order so the
+  deal needs only a set price change to reach its target, measured from the
+  take profit or breakeven price, with a max volume per DCA.
+- Hedge Combo bots: "Base take profit on" (Used DCA / Max DCA) for the
+  combined take profit.
+- Grid bots: saving new settings on a running bot that change the balances
+  the grid needs asks how to cover the difference (buy or sell it, or
+  proceed), as it does when the bot starts.
+
+### Fixed
+
+- The max volume per DCA seeded when switching to "Required change" no
+  longer shows floating-point noise.
+
+## [2.66.4] - 2026-09-26
+
+### Fixed
+
+- In Safari, a chart could draw its candles but never finish loading, so no
+  order, breakeven or fill lines appeared (since the previous release it
+  recovered after about 30 seconds). This happened whenever the charting
+  library was already in Safari's cache. The library announces that its chart
+  frame has loaded before the chart starts listening for that, and Safari
+  delivers the announcement too early to be heard. The chart now notices the
+  missed announcement and replays it, so it becomes ready immediately.
+
+## [2.66.3] - 2026-09-26
+
+### Fixed
+
+- The bot create and edit pages no longer load every backtest ever stored in
+  the browser. They now read only the 50 most recent of that bot type, the
+  same number the server list shows. Each stored backtest keeps its full
+  result, including a data point per candle, so a long backtest history could
+  freeze the page or crash the tab with "Out of memory".
+
+## [2.66.2] - 2026-09-26
+
+### Fixed
+
+- DCA and Combo bots keep their "DCA order type" (Limit/Market) and their
+  Risk:Reward stop-loss type and value when edited. These were not read
+  back, so a bot set to Market DCA orders or to a fixed Risk:Reward stop
+  loss was shown with the defaults and saved with them.
+- Editing a deal keeps its DCA order type, and changes to a deal's DCA order
+  type or close order type are now saved.
+- Grid bots have the "Fee Order" setting again (spot only, and only
+  while the bot is not running). Editing a grid bot no longer switches
+  it back on.
+- A changed initial purchase price on an existing grid bot is now saved.
+
+## [2.66.1] - 2026-09-26
+
+### Fixed
+
+- Grid bots have the "Skip Balance Check" setting again, in the Investment
+  section. A grid bot that already had it on keeps it when edited and saved,
+  instead of having it switched off.
+
+## [2.66.0] - 2026-09-25
+
+### Added
+
+- **Partly filled base orders are visible, and you can finish them at market.** When a DCA bot's LIMIT base order only partly fills and the bot is set never to enter at market, the rest of the base order now waits as a limit order. The deal's Orders card shows a "Partially filled" badge with how much of the base order has filled, and a "Buy rest at market" button ("Sell" on short bots) that cancels the waiting order and takes the rest at market after you confirm.
+
+## [2.65.2] - 2026-09-25
+
+### Fixed
+
+- "Load in settings" on the Backtests page and on a bot's edit page opens the
+  new bot form with the backtest's settings, in Manual, instead of a default
+  bot: the settings are mapped the same way as the new-bot page's own load,
+  and a stored unsaved-bot draft no longer overrides them.
+
+## [2.65.1] - 2026-09-25
+
+### Fixed
+
+- Backtest history "Load in settings" on a new bot form now fills the form
+  with the backtest's settings: a stored unsaved-bot draft no longer overrides
+  the load, and the form opens in Manual so the Quick risk profile does not
+  overwrite the loaded strategy.
+- Backtest history "Load details" on a new bot form opens the backtest results
+  instead of leaving the panel blank.
+
+## [2.65.0] - 2026-09-25
+
+### Added
+
+- Backtests page for every bot type (Trading, Grid, Combo, Hedge DCA, Hedge
+  Combo) at `/<bot>/backtests`, listing server and on-device backtests in one
+  table with results, share, export, delete, notes and "Load in settings", plus
+  a "New backtest" button that opens a new bot of that type.
+- "Backtests" sub-page under each bot type in the sidebar, above the recent
+  bots.
+
+## [2.64.3] - 2026-09-25
+
+### Fixed
+
+- Table column filters: numeric columns (profit, drawdown, cost, value,
+  counts, prices, percentages) offer number operators — greater/less than,
+  between — instead of text ones; dates offer date operators; statuses,
+  strategies, exchanges and pairs offer a multi-select. Covers the bots, deals,
+  backtests, orders, positions and balances tables. Duration columns filter in
+  days (hours on deal tables), shown in the filter box; percent columns filter
+  on the percentage shown rather than the stored ratio.
+- Number filters no longer match rows whose value is empty ("-").
+
+## [2.64.2] - 2026-09-25
+
+### Fixed
+
+- Charts: order lines, the Breakeven line, trade markers, past-order lines and
+  signals no longer go missing when a chart opens quickly (for example the
+  second bot opened in a session) or switches to another pair, resolution or
+  saved layout. Anything sent to the chart before it could draw it was dropped
+  and treated as drawn; the chart now keeps every overlay and draws it as soon
+  as the chart has loaded, retrying until it does.
+
+## [2.64.1] - 2026-09-25
+
+### Changed
+
+- Bot details → Statistics, per-pair table: "Max deal capital" becomes "Peak
+  capital", the most the pair had committed at once across all its deals open
+  at the same time, and return on capital is measured against it. On bots that
+  run several deals per pair, measuring against one deal overstated the return
+  many times over.
+- Against a server without per-pair statistics, columns it never recorded are
+  hidden instead of showing a dash on every row.
+
+## [2.64.0] - 2026-09-25
+
+### Added
+
+- Bot details → Statistics: the per-pair table of multi-pair bots now has one
+  row per pair instead of one column per pair, so a bot trading dozens of pairs
+  reads as a list. It can be sorted by any column, searched by pair, have
+  columns hidden, and be exported to CSV. Each pair shows its closed deals and
+  win rate, realized P&L, return on capital, average P&L per deal, profit
+  factor, deepest drawdown, largest deal capital, fees, average and longest
+  deal duration, and its open deals with their current P&L. A period picker
+  limits the closed deals to a date range; open deals always show the current
+  position. Pairs the bot has never traded are listed too. Against a server
+  without per-pair statistics the table falls back to the stored per-pair
+  summary.
+
+### Fixed
+
+- Bot details → Statistics: profit factor is gross profit divided by gross
+  loss. It was shown as the number of winning deals divided by the number of
+  losing deals.
+
+## [2.63.1] - 2026-09-25
+
+### Fixed
+
+- DCA deal chart and orders table: a safety order that had already filled could
+  still show as a pending "Smart order", most visibly once every safety order
+  had filled. Projected levels now skip the levels the deal has filled.
+
+## [2.63.0] - 2026-09-25
+
+### Added
+
+- Bot Controller: two new limits, **Stop after X consecutive winning deals** and
+  **Stop after X consecutive losing deals**. Unlike the total win and loss
+  counts next to them, these count a run — the bot stops only when its most
+  recently closed deals are that many in a row, and one result of the other
+  kind starts the count again. A deal that closes at exactly breakeven counts
+  as a loss, the same way the total counts treat it. Both are off by default.
+
+### Changed
+
+- Bot Controller: **Stop after X accumulated bot profit** is now labelled
+  **Stop after X accumulated bot profit or loss**, and its tooltip explains the
+  loss case. The setting already stopped a bot on accumulated loss — Less than
+  with a negative value, for example Less than -100 for $100 of loss — but
+  nothing in the row said so.
+
+## [2.62.8] - 2026-09-25
+
+### Fixed
+
+- Bot details: after opening another bot while the details panel is open, the
+  chart shows that bot's Breakeven line again. A Breakeven line requested while
+  the new pair was still loading was dropped, and the chart then treated it as
+  already drawn.
+
+## [2.62.7] - 2026-09-25
+
+### Fixed
+
+- Bot details: the Breakeven and Smart order lines of an open deal no longer
+  disappear a few seconds after the page opens. Restoring the saved deal and
+  order cache replaced the deals and orders already loaded for the page, so a
+  deal that was not in the saved cache (for example, one opened since the last
+  visit) was dropped. The saved cache now only fills in what the page has not
+  loaded, and a newer copy is kept over an older one.
+
+## [2.62.6] - 2026-09-25
+
+### Fixed
+
+- Bot details: opening another bot while the details panel is open now moves
+  the chart to that bot's pair and plots its latest deal. Before, the chart
+  kept the previous bot's pair. The previous bot's orders could be filed
+  under the new bot for a moment, and the deal auto-selection did not re-arm.
+- Charts: take-profit and DCA order lines of a deal on another pair appear
+  once that pair has loaded. A line requested while the new pair was still
+  loading was dropped and never redrawn.
+
+## [2.62.5] - 2026-09-24
+
+### Fixed
+
+- Settings → Shortcuts: typing in **Search shortcuts** no longer shows
+  "Something went wrong". Removing a shortcut that was never registered (for
+  example deleting a bot template that had no shortcut) saved an empty entry,
+  and the search crashed on it. Such entries are no longer created, and ones
+  saved by earlier versions are dropped when the page loads.
+
+## [2.62.4] - 2026-09-24
+
+### Fixed
+
+- Self-hosted: the **Email me a link to set a password** button added in
+  2.62.3 is no longer shown. Self-hosted accounts are created with a password
+  and the self-hosted server has no email reset, so the button could only fail.
+
+## [2.62.3] - 2026-09-24
+
+### Fixed
+
+- Settings → Change Password no longer insists on a current password. An
+  account created with an email sign-in link or Google never had a password
+  to enter, so the form could not be submitted and a password could not be
+  chosen. The current password is now optional; the server decides whether it
+  is needed and says what to do when it is.
+- Settings → Change Password has an **Email me a link to set a password**
+  button, which works for any account, including one whose owner does not know
+  the current password.
+
+## [2.62.2] - 2026-09-24
+
+### Added
+
+- Grid bot form: a **Custom %** field after the quick % buttons on Top price,
+  Low price, Take profit price and Stop loss price. Type the size of the move
+  (for example `50` on Low price for 50% below the start price); the direction
+  is fixed by the field. When a price matches no preset, the field shows its %.
+
+## [2.62.1] - 2026-09-24
+
+### Changed
+
+- The DCA setting is now labelled **Use available**, and its tooltip explains
+  that in a multi-pair bot the available balance goes to one deal: the first
+  pair to need it; the other pairs are skipped.
+
+## [2.62.0] - 2026-09-24
+
+### Added
+
+- DCA bot form: **Use available** under Strategy → More Settings. When the
+  free balance is insufficient for the full deal, the bot opens it
+  with what is available, reducing the Base Order and every Safety Order by
+  the same ratio, instead of skipping it. An optional **Minimum base order**
+  skips the deal when the reduced Base Order would be smaller. Shown for fixed
+  order sizes only (not % of balance, not Risk/Reward). Requires the matching
+  backend release (new GraphQL fields).
+
+## [2.61.3] - 2026-09-24
+
+### Fixed
+
+- A selected stock pair's chip in the bot form shows the exchange's spelling
+  again (`rSPY/USDT`), matching its row in the pair picker.
+
+## [2.61.2] - 2026-09-24
+
+### Fixed
+
+- In the bot form's pair picker, a selected pair whose exchange spells its
+  base in mixed case (Bitget stock tokens such as `rSPY`) shows as selected
+  and can be toggled again. Its row and its selected chip used identities
+  that differed only by letter case, so the row never matched.
+
+## [2.61.1] - 2026-09-24
+
+### Fixed
+
+- Editing a DCA or Combo bot no longer changes its Enter Market Timeout when
+  the timeout is switched off: the edit form now loads the saved seconds
+  (or the same default as a new bot) instead of 0, so saving an unrelated
+  change leaves the timeout as it was.
+
+## [2.61.0] - 2026-09-24
+
+### Added
+
+- Futures accounts with pooled collateral (OKX Multi-currency / Portfolio
+  margin, Kraken flex, Bitget Unified multi_assets) show and use the pool for
+  USD- and USDC-quoted contracts: the DCA and Combo forms' balance, the trading
+  terminal's balance check and the grid bot start dialog no longer read 0 on an
+  account funded in EUR or other coins.
+
+## [2.60.1] - 2026-09-24
+
+### Fixed
+
+- The pair picker shows a stock's ticker as the exchange spells it: Bitget
+  Reality tokens read `rMCD`, matching the selected pair, instead of `RMCD`.
+
+## [2.60.0] - 2026-09-24
+
+### Added
+
+- OKX Europe X-Perp futures are generally available: any OKX Europe account
+  (origin my.okx.com) can add the futures leg and build bots on X-Perp pairs.
+  The add-exchange notice now points out that X-Perps are USDC-margined.
+
+## [2.59.9] - 2026-09-24
+
+### Fixed
+
+- The pair search finds a stock by its company name as well as its ticker:
+  typing "apple" lists the Apple pairs.
+
+## [2.59.8] - 2026-09-24
+
+### Fixed
+
+- Charts: Bitget COIN-M perpetual pairs had no live candle updates. They now
+  stream live on every timeframe except 3D and 1M, with the daily and weekly
+  bars aligned to UTC like the chart history.
+
+## [2.59.7] - 2026-09-24
+
+### Fixed
+
+- Charts: Bitget USDT-M futures pairs updated their live candle from the spot
+  market, so the last bar showed the spot price instead of the contract's.
+  USDT-M and USDC-M perpetuals and COIN-M delivery contracts now stream from
+  their own futures market; USDC-M and COIN-M delivery charts previously had
+  no live updates at all.
+
+## [2.59.6] - 2026-09-24
+
+### Fixed
+
+- Trading terminal: on an account that pools its collateral — a Bitget
+  Unified Trading Account in multi-assets mode — an inverse (coin-margined)
+  pair showed a balance of 0 and a maximum order of 0 whenever the wallet held
+  none of the contract's own coin, although the account funds such orders from
+  its whole wallet. The balance under the order fields and the Buy/Sell
+  buttons now shows the pooled margin in USD, and the maximum amount, maximum
+  total and percentage buttons are sized from it.
+
+## [2.59.5] - 2026-09-24
+
+### Fixed
+
+- Combo bot form: the safety-order preview on pairs with a coarse price step
+  now shows each order at the percentage you set, the same fix as the DCA
+  preview. Each level's mini-grid keeps its width. The preview matches where
+  the bot now places the orders.
+
+## [2.59.4] - 2026-09-24
+
+### Fixed
+
+- DCA bot form: the safety-order preview on pairs with a coarse price step
+  now shows each order at the percentage you set. It used to let rounding
+  build up from one order to the next, so the last order could show well
+  above or below the configured depth (for example 35.7% for 30 × 1%).
+  The preview matches where the bot now places the orders.
+
+## [2.59.3] - 2026-09-24
+
+### Fixed
+
+- A chart whose page learns its pair only after the chart has started — the
+  trading terminal restoring an unsaved bot, for one — now opens straight on
+  that pair. The chart used to start on a default pair and could switch only
+  once that pair's history had finished loading, which for a pair with little
+  history includes asking for the years before it listed; the chart sat on
+  "Loading chart…" for a pair nobody chose, for up to half a minute. A pair
+  that arrives before the chart is ready now rebuilds the chart on it instead.
+
+## [2.59.2] - 2026-09-24
+
+### Fixed
+
+- Trading terminal: an inverse (coin-margined) order on a pooled-collateral
+  account is checked against the pooled margin on isolated margin too. The
+  terminal defaults to isolated, and the previous release only consulted the
+  pool for cross margin, so the default order was still refused with "Not
+  enough assets to place order". The exchange decides whether it funds the
+  position.
+
+## [2.59.1] - 2026-09-24
+
+### Fixed
+
+- Charts on Bitget Reality stock tokens (`RAAPLUSDT` and the rest) update
+  live. Bitget accepts the usual candle subscription for these pairs and then
+  sends nothing, so their charts showed history but never moved until
+  reloaded. They now stream from the exchange's unified kline feed at 1m, 5m,
+  15m, 1h and 4h, and the 30m, 6h, 12h, daily and weekly charts are built from
+  the next finer stream into the same UTC-aligned bars the history uses.
+
+## [2.59.0] - 2026-09-24
+
+### Added
+
+- Pairs carry `underlying`, the ticker of the stock a tokenized stock tracks,
+  and stock icons use it first. Bitget Reality tokens show the logo of the
+  company they track, including one-letter tickers such as `rT` (AT&T).
+  Against a backend that does not serve the field yet, the pair list loads
+  without it.
+
+### Fixed
+
+- Bitget stock perpetuals whose ticker starts with R (`RDDT`, `RKLB`) showed
+  the logo of a different ticker: a leading R was removed from every Bitget
+  stock as if it were a Reality-token prefix. Bitget tickers are no longer
+  inferred from the symbol's shape.
+
+## [2.58.0] - 2026-09-24
+
+### Added
+
+- Trading terminal: an inverse (coin-margined) futures order on an account that
+  pools its collateral — a Bitget Unified Trading Account in multi-assets mode —
+  is no longer refused with "Not enough assets to place order" just because the
+  wallet holds none of the contract's own coin. When the coin balance falls
+  short, the terminal asks the connection for its pooled margin and lets the
+  order through if that covers it. Isolated-margin orders and accounts that do
+  not pool collateral keep the per-coin check.
+
+## [2.57.9] - 2026-09-24
+
+### Fixed
+
+- Bot Edit page: changes you have not saved yet (a new name, a Custom volume
+  filter size, any setting) no longer snap back to the saved values a few
+  seconds later while the bot is running. They stay until you save or leave
+  the page. What the form shows after saving is unchanged.
+
+## [2.57.8] - 2026-09-24
+
+### Fixed
+
+- Combo bots with smart orders on now show the DCA levels a deal has not
+  placed yet as grey lines on the deal chart, and as smart-order rows in the
+  deal's orders list. Previously these levels were only projected when smart
+  grids were also on, and then only the minigrid levels, so the chart showed
+  just the one resting DCA order. Minigrid levels still show when smart grids
+  are on.
+
+## [2.57.7] - 2026-09-24
+
+### Fixed
+
+- Backtests: Share is no longer offered on a backtest result that is saved
+  only in this browser (its save to your account did not complete), where it
+  could only fail with "Backtest not found". The option is greyed out with a
+  note to run the backtest again. Sharing a saved backtest is unchanged.
+
+## [2.57.6] - 2026-09-24
+
+### Fixed
+
+- App updates are applied only when you click "Update Now"; a new version
+  no longer reloads the page on its own after the update notice appears.
+
+## [2.57.5] - 2026-09-24
+
+### Changed
+
+- Portfolio Futures card: net exposure values read "Long $428" / "Short $300"
+  (Total: "Net long …") in neutral text instead of a green "+$428", which
+  looked like profit. Green and red remain on the bars, meaning long and
+  short.
+
+## [2.57.4] - 2026-09-24
+
+### Changed
+
+- Portfolio Futures card: each coin's exposure bar now shows its total long
+  and total short as faint bars behind the solid net, so hedged coins are
+  visible at a glance. The gross Long / Short / Net figures moved from above
+  the list into a Total row under "Other", drawn the same way on its own
+  scale.
+
+## [2.57.3] - 2026-09-24
+
+### Changed
+
+- Portfolio Futures card: net exposure now opens with a gross Long / Short /
+  Net line, so a hedged book (large on both sides, small per coin) reads
+  correctly at a glance. Net exposure is its own titled section, and
+  "Manage in Terminal" is a button.
+
+## [2.57.2] - 2026-09-24
+
+### Fixed
+
+- Portfolio Futures card: net exposure bars are scaled to the largest single
+  coin. The "Other" row shows its total without a bar, so a long tail of small
+  positions no longer flattens every other bar to a sliver.
+
+## [2.57.1] - 2026-09-24
+
+### Fixed
+
+- Portfolio: the Futures card now follows the account selection in My
+  Accounts like the other Portfolio widgets, and hides when the selection
+  holds no futures account.
+
+### Changed
+
+- Portfolio: My Accounts makes it obvious when it is filtering the page. A
+  "Filtered: N accounts" line with a Show all shortcut appears above the list,
+  selected accounts are checked and highlighted, and the rest are muted.
+
+## [2.57.0] - 2026-09-24
+
+### Added
+
+- Portfolio: a Futures card for users with a futures account. It lists each
+  futures account's wallet balance, unrealized PnL and equity, and the net
+  exposure per asset across all open positions (notional at mark; the five
+  largest are shown and the rest fold into an expandable "Other" row).
+  Unrealized PnL uses the same live prices and calculation as the terminal's
+  Positions tab. Venues whose reported balance already includes unrealized PnL
+  are not counted twice. The card is read-only and links to the terminal to
+  manage positions.
+
+## [2.56.6] - 2026-09-24
+
+### Fixed
+
+- DCA Analysis: a finished deal that filled more DCA orders than the bot is
+  set to now (the bot's order count was lowered after the deal ran) is shown
+  in its own "Finished Deals by DCA Count" bar and counts towards "Max DCAs"
+  and "Avg DCAs" with its real number, instead of being folded into the bar
+  for the bot's current order count. Its coverage is measured against the
+  ladder it actually ran.
+
+## [2.56.5] - 2026-09-23
+
+### Fixed
+
+- A chart whose candle request never answered stayed on "Loading chart..."
+  forever, and none of its order, breakeven or fill lines were drawn:
+  TradingView only reports the chart ready once the main series' history
+  requests are answered. Every candle request now answers within 45 seconds,
+  with an error if it has to, and the local candle cache can no longer hold
+  one up: a cache read or write that does not finish within 5 seconds is
+  skipped (a skipped read counts as a miss) instead of being waited on.
+- A chart that is still not ready 30 seconds after it was created now shows
+  "Chart failed to load." with a Retry button instead of spinning
+  indefinitely. It also sends one diagnostic error report describing what
+  the chart was still waiting on. If the chart's data did load and only the
+  ready signal is missing, it finishes loading and draws its lines.
+
+## [2.56.4] - 2026-09-23
+
+### Fixed
+
+- Kraken spot charts stopped updating live after a timeframe change (e.g. 1h
+  to 1m). Kraken streams only one candle interval per pair on a connection,
+  and the chart subscribes to the new timeframe before it drops the old one,
+  so the new subscription was rejected and never retried. Each timeframe now
+  streams on its own connection. Charts sharing a pair and timeframe share
+  one subscription, so closing one no longer stops the others updating.
+
+## [2.56.3] - 2026-09-23
+
+### Fixed
+
+- Kraken spot charts no longer replay the day's candles as live updates when
+  a chart subscribes (on open, pair change or timeframe change). Kraken
+  answers each subscription with a snapshot of recent candles, oldest first;
+  all of them were forwarded to TradingView, which rejected every one older
+  than its newest bar and logged a "time violation" console error for each.
+  Only the forming candle is forwarded now, and candles of another interval
+  on the shared socket are ignored. The chart datafeed also drops any
+  realtime bar older than the newest bar the chart already has.
+
+## [2.56.2] - 2026-09-23
+
+### Fixed
+
+- Trading page: bulk Stop never stopped anything and bulk Start re-sent
+  Start to bots that were already running. Both now ask for confirmation
+  (Stop offers the usual options for active deals) and send each bot's own
+  type, so selected Combo and Grid bots are started and stopped correctly.
+- Bot lists: bulk Delete no longer shows "Bot Name: N bots" and a placeholder
+  "Last Activity", and its copy is pluralised.
+- Bot lists: bulk Restart and Archive / Unarchive now ask for confirmation and
+  say how many selected bots are skipped. Archive skips running bots instead of
+  sending requests the server rejects.
+- Closing several deals at once now shows the number of deals in the dialog.
+  The bulk Cancel dialog in the deals widget uses plural wording.
+
+## [2.56.1] - 2026-09-23
+
+### Fixed
+
+- Bulk Start/Stop confirmation on the DCA, Combo and Grid bot lists showed
+  the bot count as if it were a bot's name ("stop \"1 bot\"") and did not
+  mention selected bots that would be skipped. It now reads "Stop N bots" and
+  says how many selected bots are already in that state.
+
+## [2.56.0] - 2026-09-23
+
+### Changed
+
+- The DCA bot setting is now "Allow increasing orders to exchange minimum",
+  off by default for new bots. With it off, a deal whose Base or Safety Order
+  is below the pair's exchange minimum is not opened and you are notified.
+  Bots created before this change have it on, so they keep increasing orders
+  as before. Not shown for Hedge DCA or Combo bots. Requires main-app 2.97.0.
+
+## [2.55.0] - 2026-09-23
+
+### Added
+
+- DCA bot setting "Reject Orders Below Exchange Minimum" (Strategy → advanced).
+  When a Base or Safety Order is smaller than the pair's exchange minimum, the
+  bot skips the deal on that pair and notifies you, instead of increasing the
+  order to the minimum. Off by default. Requires main-app 2.96.0.
+
+## [2.54.54] - 2026-09-23
+
+### Fixed
+
+- The indicator interval list for a Kraken spot bot now includes 3m, 2h and 8h.
+  Kraken spot does not serve these widths directly, but the platform builds
+  them from a shorter width Kraken does serve. The list was never updated to
+  include them, so they could not be chosen. Kraken futures still offers only
+  the widths its own candle feed provides.
+
+## [2.54.53] - 2026-09-23
+
+### Fixed
+
+- The Portfolio Allocation widget showed "No portfolio data available" under an
+  "All exchanges" title when its saved exchange selection was empty. An empty
+  selection now shows the whole portfolio, the same as "All exchanges".
+- The Portfolio Allocation widget's exchange filter is now available while the
+  widget is loading or has nothing to show. Previously the filter area was an
+  empty strip in those states, so a selection that showed nothing could not be
+  changed from the widget.
+
+## [2.54.52] - 2026-09-22
+
+### Fixed
+
+- The Deal History widget's per-deal "Add funds" and "Reduce funds" buttons now
+  actually adjust the deal. Both opened a confirmation dialog whose confirm
+  button re-ran the same handler with the same action, which only re-opened the
+  dialog, so it stayed on screen and no order was ever placed — for every bot
+  type. They now open the same funds dialog the deal card, the open-orders table
+  and the bot drawer use, and are hidden on combo bots for the same reason those
+  surfaces hide them.
+
+### Removed
+
+- The Deal History widget's per-deal "Edit" button. It had no edit flow behind
+  it and shared the dialog loop above, so it could never do anything.
+
+## [2.54.51] - 2026-09-22
+
+### Fixed
+
+- Combo bot deals no longer offer "Add Funds" / "Reduce Funds". Adjusting a
+  deal's funds is a DCA capability — it resolves the bot among the DCA bots, so
+  on a combo deal it could only ever answer "Bot not found" — and the bot
+  drawer's deal list and the bulk deal actions already left it out. The deal
+  card's menu and the deals table's row menu did not, so on the combo bots page
+  and everywhere else they are used the action looked available and then failed
+  once confirmed.
+
+## [2.54.50] - 2026-09-22
+
+### Fixed
+
+- Keyboard-shortcut hints no longer appear on tablets. The "Next time, press
+  ..." toast was suppressed only below 768px, so a tablet — which has no
+  keyboard to press the shortcut on — still got the hint every time it used a
+  button that has one. The hint is now held back for the whole phone and
+  tablet range, and for a touch-only screen in landscape that is wider than
+  that range; a touchscreen laptop still sees its hints.
+
+## [2.54.49] - 2026-09-22
+
+### Fixed
+
+- Starting or stopping a combo, DCA or hedge bot no longer records a "Manual
+  buy" entry in the bot's event log. The status toggle sent a manual-buy mode
+  of "all" on every call, even though only grid bots act on one, so an
+  ordinary Start or Stop was logged as a buy the user never made — including
+  on the way down, where a stop appeared alongside "Buy type: all". The buy
+  mode is now sent only for grid bots, or when the user actually picked one in
+  the start dialog. The orders a bot places on restart are unaffected.
+
+## [2.54.48] - 2026-09-22
+
+### Fixed
+
+- Searching the notifications panel no longer brings dismissed bot
+  notifications back. The panel's default load asks for the unread bot feed,
+  but as soon as the search box held a term — or a page past the first was
+  requested — it asked for the full archive instead, so notifications that had
+  already been marked as read reappeared in the results wearing the "New"
+  chip, counted toward the unread badge, and offered a mark-as-read control
+  that could never remove them. Every path now requests the same unread feed
+  the default load does.
+- "Mark all as read" on bot notifications no longer reports success when the
+  backend rejected the request; the single-message action already checked.
+
+## [2.54.47] - 2026-09-21
+
+### Fixed
+
+- The dashboard profit charts now name each day in the account's time zone
+  rather than the browser's. Daily profit is bucketed by the account's calendar
+  day, but the axis labels and tooltips were rendered in whatever zone the
+  browser was in, so on a browser west of UTC every bar carried its day's
+  profit under the previous day's name and disagreed with the Deals list
+  filtered for that date. The 30-day window is now built from account calendar
+  days too, so a day can no longer drop out of it when that zone changes
+  offset. The same correction applies to the Accumulated profit widget — which
+  additionally requested its series in UTC regardless of the account setting,
+  drawing different day boundaries than the Profit widget beside it — and to
+  the daily chart in the bot drawer, whose buckets were keyed by UTC day while
+  its slots were named in the browser's.
+
+## [2.54.46] - 2026-09-21
+
+### Fixed
+
+- Typing a letter while a dropdown is open no longer triggers a single-letter
+  navigation shortcut. The global shortcuts stood down only for text fields, so
+  in a picker — the Settings time zone list, for example — pressing `p` to reach
+  a `Pacific/…` entry left the page for Portfolio instead, and the list's own
+  type-ahead never ran because the keystroke was consumed before it arrived.
+  Dropdowns, select menus and their triggers now keep the keys they use, and the
+  shortcuts resume as soon as focus leaves the field.
+
+## [2.54.45] - 2026-09-21
+
+### Fixed
+
+- The "Columns" menu on a table toolbar now sizes itself to the column names it
+  lists, instead of sitting at a fixed 150px that cut longer names off mid-word
+  with no ellipsis. Where several columns share a long prefix and differ only
+  at the end — the market screener's price-change columns, which differ only by
+  their trailing timeframe — the truncated rows read as the same string, so
+  there was no way to tell which column a checkbox toggled. Menus whose names
+  already fit are unchanged, and the menu never grows wider than the screen.
+
+## [2.54.44] - 2026-09-21
+
+### Fixed
+
+- Settings → Time Zone is now chosen from the list of known time zones instead
+  of typed in. Anything typed was previously saved as-is, and a spelling the
+  app cannot recognise ("Chicago" rather than "America/Chicago") was then
+  quietly ignored: every surface that keys off the account time zone — the
+  overview Profit and Balance figures, table date columns, deal start
+  schedules — fell back to the browser's zone while the field kept showing
+  what had been typed, so there was no way to tell the setting was not in
+  effect. An unrecognised zone that is already stored is now called out on the
+  page, naming the zone actually in use and offering the browser's own as a
+  one-click replacement, and it can no longer be re-saved by changing Week
+  Start alone. A recognised zone that is already stored stays selectable even
+  when it is an alias the bundled list does not spell out.
+
+## [2.54.43] - 2026-09-21
+
+### Fixed
+
+- Date columns in tables now treat a day as the day in your account's time
+  zone (Settings → Time Zone) rather than the one your browser happens to be
+  in. That is the same boundary the Profit and Balance figures on the overview
+  already use, so a deal is no longer counted on one day there and shown on
+  another by the deals table — and filtering a date column for the day those
+  figures put it on now returns it. Accounts that have not set a time
+  zone, or stored one that cannot be recognised, are unaffected and keep using
+  the browser's. Filtering a day that changes clocks covers the whole real
+  day, whether it is 23, 24 or 25 hours long.
+
+## [2.54.42] - 2026-09-21
+
+### Fixed
+
+- Coin icons no longer stretch into ovals when a row's text needs more room
+  than the column gives it. The icon was a flex item that was allowed to
+  shrink, so its width was compressed while its height stayed fixed; it now
+  holds its size. Larger-than-default browser font sizes made this obvious,
+  because the icon scales with the root font size while the column width does
+  not.
+
+## [2.54.41] - 2026-09-21
+
+### Fixed
+
+- The change-password form in Settings now lists the same password rules as
+  the rest of the app, including the lowercase letter it never mentioned. It
+  carried its own separate copy of the rules, so a password such as
+  `PASSWORT123` showed a full set of green ticks and was still refused with
+  "Password not valid". All three password forms now read from one rule set
+  rather than each keeping their own.
+
+## [2.54.40] - 2026-09-21
+
+### Fixed
+
+- The password rules shown while signing up or resetting a password now match
+  the ones the server actually applies. The checklist asked for 6 characters
+  and never mentioned a lowercase letter, while the reset endpoint requires 8
+  and the change-password endpoint requires a lowercase letter — so a password
+  such as `Haus12` could tick every rule on screen and still be refused on
+  submit, with nothing on the form to explain why. The checklist is now the
+  strictest of the three: 8 to 200 characters, with an uppercase letter, a
+  lowercase letter and a digit. The case rules stay ASCII-only, matching the
+  server, so an accented capital is not counted as an uppercase letter by one
+  side and rejected by the other.
+
+## [2.54.39] - 2026-09-21
+
+### Fixed
+
+- Filter a date column by a single day and get that day. The date filters take
+  their value from a date picker, so what is chosen is always a calendar day,
+  never a moment within it — but each operator compared the row's full
+  timestamp against midnight of that day. `=` could therefore match nothing at
+  all: no deal closes at exactly midnight, so picking a day on Close Time
+  emptied the table. The rest of the set was skewed the same way — `≤ a day`
+  dropped that whole day, `> a day` still returned rows from it (leaving it
+  indistinguishable from `≥`), and a range of one day against itself spanned a
+  zero-width instant and returned nothing. Every date operator now bounds the
+  day as the column displays it: `=` anywhere inside it, `>` past its end, `<`
+  before its start, `≥` from its start, `≤` to its end, and a range from the
+  start of its first day to the end of its last. A range with one side still
+  blank stays open-ended instead of emptying the table while it is being typed,
+  and a row with no date is no longer returned by `<`.
+
+## [2.54.38] - 2026-09-21
+
+### Fixed
+
+- Reject a grid take profit or stop loss price that every price in the grid's
+  own range already satisfies. The two `priceReached` triggers are prices, and
+  which side of the range each belongs on depends on the grid's direction: a
+  long grid takes profit as the price rises and stops out as it falls, a short
+  grid the other way round. Entered the wrong way round — a long grid's take
+  profit at the bottom of its range, say — the trigger is true at every price
+  the bot could trade at, so the bot stops on its first candle without filling
+  a single level. There was nothing to see afterwards: a backtest of such a bot
+  returns no results and no transactions, which reads as a backtest that
+  failed rather than a bot that did exactly what it was configured to do. The
+  form now names the problem while the bot is being set up. A trigger placed
+  inside the range is still allowed — ending early is a legitimate choice, and
+  only the always-true case is refused.
+
+## [2.54.37] - 2026-09-21
+
+### Fixed
+
+- Stop the bot editor showing a trading pair a bot was never configured with.
+  When a bot's saved pair list came back empty against the exchange's current
+  listings, the form substituted a default pair from that venue — helpful while
+  creating a bot, where the exchange is still being chosen, but in the editor it
+  presented an invented contract as if it were the bot's own setting. The editor
+  now shows no pair when the bot has none.
+- Let a single-pair bot whose saved pair was removed be given one back. The pair
+  field is read-only when editing a single-pair bot, because a configured bot's
+  pair cannot be changed. A bot left with no pair at all was caught by the same
+  rule, so the one change that would make it able to trade again was the one
+  change the form refused to offer. Such a bot now gets an editable pair field
+  and its choice is sent on save; a bot that still has its pair is unaffected.
+
+## [2.54.36] - 2026-09-21
+
+### Fixed
+
+- Let the grid bots and combo bots lists filter on several statuses at once.
+  Their status column filtered as free text, so the only way to ask for two
+  statuses was to add two conditions to the column — and conditions on one
+  column are combined with AND, which no single bot can satisfy, so the table
+  came back empty. Status is a closed set of values, and the column now filters
+  like one: `Is any of` selects open and range together as a single condition,
+  matching how the DCA bots list has always behaved.
+
+## [2.54.35] - 2026-09-21
+
+### Fixed
+
+- Tell the chat what the server decided about a confirmation it answered. The
+  assistant's confirmation cards were answered optimistically — the card
+  changed state on the click — but the backend refuses an answer that arrives
+  after the confirmation window has closed, and said so only on socket events
+  nothing subscribed to. A late answer therefore vanished without a word while
+  the card claimed it had gone through and nothing ran. The two verdict events
+  are relayed to subscribers, and the card now carries the deadline the
+  backend stops waiting at, so it can retire its buttons instead of offering
+  one that is discarded on arrival.
+
+## [2.54.34] - 2026-09-20
+
+### Fixed
+
+- Let a pasted symbol land in the pair picker's search box. The box claimed
+  every paste for the bulk "add several pairs" feature, so pasting a single
+  symbol left the field unchanged and the list unfiltered — which made the
+  clipboard useless for finding a pair, and that is the only practical way in
+  when the ticker is not on your keyboard. Only a paste carrying more than one
+  symbol is treated as a bulk add now. Bulk add is also no longer offered in
+  the single-pair "Change pair" dialog, where the one-pair limit meant it could
+  never add anything and could only answer that the maximum had been reached —
+  and a message from a paste made in the picker is now shown in the picker,
+  instead of on the form behind it where the open dialog covered it.
+
+## [2.54.33] - 2026-09-20
+
+### Fixed
+
+- Show the bot drawer's DCA Analysis — deviation covered, averaging power,
+  total funds and the projected order table — using the current value of any
+  global variable the bot's settings are bound to. It was built from the
+  literal each field held before it was bound, so a bound bot reported capital
+  and coverage figures no deal on it would ever have. The same figures in the
+  read-only view of a bot's settings are fixed with it, and they now follow a
+  rebind without a reload.
+
+## [2.54.32] - 2026-09-20
+
+### Fixed
+
+- Stop offering "Hide column" in a table's column header menu on tables that
+  have no Columns dropdown. That dropdown — and the Reset Table item nested
+  inside it — is the only way to bring a hidden column back, so on those tables
+  hiding a column was a one-way door and it persisted across reloads. A column
+  already hidden this way is shown again on the next load. The Orders table in
+  a deal's details is the one users could walk into.
+
+## [2.54.31] - 2026-09-20
+
+### Fixed
+
+- Resolve a global-variable binding made directly on a bot setting — base
+  order size, DCA order size, take profit, minimum take profit and the like.
+  Only bindings inside the indicator, custom DCA and multi take-profit /
+  stop-loss lists were being resolved, so the projected order ladder and the
+  funds, coverage and chart levels derived from it were built from the literal
+  the binding had superseded instead of the variable's value.
+- Keep a deal's own settings ahead of the variable's current value in that
+  projection. A deal is sized from the snapshot taken when it opened, so
+  editing a variable applies to new deals only.
+
+## [2.54.30] - 2026-09-20
+
+### Fixed
+
+- Stop the column header menu from offering "Hide column" on tables that do
+  not expose the Columns dropdown. That dropdown — which also holds Reset
+  Table — is the only way to bring a hidden column back, so on those tables
+  hiding one was permanent: the choice is saved per table and survived
+  reloads with nothing in the interface able to undo it. Those tables now
+  also ignore a column-visibility preference saved by an earlier build, so a
+  column already lost this way comes back on the next load.
+
+## [2.54.29] - 2026-09-20
+
+### Fixed
+
+- Restore the dashboard build. The data-table column filter anchors its
+  multi-select dropdown to the whole filter cell through a virtual anchor,
+  but handed the positioning library a cell reference that is empty until
+  the cell is attached — which that library's type does not permit. The
+  type check that gates the build rejected it, so the build stopped before
+  bundling. The anchor is now built from the cell element once it exists;
+  the dropdown still spans the column exactly as before.
+
+## [2.54.28] - 2026-09-20
+
+### Fixed
+
+- The deal's Orders table no longer offers "Execute now" beside an order that
+  has already executed. The action belongs to the next resting safety order,
+  but it was matched to a row by id alone using a column set the Completed tab
+  shares with Pending, so an order that reached the section twice lit the
+  button on its own 100%-filled row. It is now offered only on the Pending tab
+  and only on a level that is still working.
+- An order could be listed twice, once as still resting and once as executed.
+  Live and executed orders are held separately and were combined without
+  matching them up, so replaying a cached fetch after a fill left a stale copy
+  behind: a level that had already filled kept a phantom entry on the deal's
+  order list and a phantom line on its chart for the rest of the session.
+- The `TIME` column of a deal's Orders table now shows when each order
+  executed rather than when it was placed. A resting limit order — every DCA
+  safety order and every take profit — fills long after it is placed, so the
+  column disagreed with the marker the same order has on the deal's chart.
+  Placement time is still shown as "Created" when a row is expanded.
+
+## [2.54.27] - 2026-09-20
+
+### Fixed
+
+- The Symbol filter's dropdown on the deals tables now opens across the width
+  of the column instead of squeezing into the gap beside the values already
+  chosen. The list took its width and position from the small text field left
+  over to the right of the selected chips, so each further selection shrank it
+  — at two symbols it was a sliver a couple of characters wide, and the column
+  had to be dragged wider to read the options at all. It is now measured and
+  aligned against the whole filter cell and will not render narrower than a
+  legible minimum. The chips still absorb the shrinking rather than the field,
+  so they stay readable in a narrow column.
+
+## [2.54.26] - 2026-09-19
+
+### Fixed
+
+- Picking a symbol in the Symbol filter on the deals tables now returns that
+  symbol and nothing else. Every selected value was matched as a substring, so
+  choosing a short ticker also returned any longer symbol containing it —
+  `AKE-USD` also brought back `CAKE-USD`, and `BTC/USDT` also brought back
+  `WBTC/USDT` — with nothing in the table to show why. "Is none of" is the
+  inverse of the same test and so silently hid those rows instead. A value
+  chosen from the dropdown is now compared exactly against the symbol the row
+  actually holds; a term typed by hand still matches loosely — against the
+  pair, the base and quote assets and the unslashed symbol — as before. Columns
+  that do not offer a fixed list of choices are unchanged.
+
+## [2.54.25] - 2026-09-19
+
+### Fixed
+
+- The Symbol filter on the deals tables now offers one entry per symbol in the
+  table, and its search box searches all of them. The dropdown was built from
+  the column's search-matching helper, which deliberately returns several
+  strings per row — the symbol, the pair, the base asset, the quote asset — so
+  a table of N symbols produced roughly 3N entries, most of them bare assets
+  rather than anything the column holds. That list was then sorted and cut to
+  its first 100 entries, and the search box filtered the cut list rather than
+  the full one, so a symbol sorting past the cut point could be reached neither
+  by scrolling nor by typing. Options now come from a dedicated accessor, the
+  cut applies only to how many rows are drawn at once (with a "keep typing to
+  narrow" hint when more match), and typing always searches every option.
+- Deal rows derived the base leg of their display pair by deleting the quote
+  asset from the symbol as a substring, which left the separator behind on
+  venues whose symbols are hyphenated: `ABC-USD` became `ABC-/USD`. The base
+  asset reported alongside the symbol is used instead, falling back to the
+  shared pair-splitting helper.
+
+## [2.54.24] - 2026-09-18
+
+### Fixed
+
+- Bot settings bound to a global variable at the top level of the bot — base
+  order size, DCA order amount, take profit, minimum take profit, price step
+  and the rest — are now resolved before any projection is computed. Only
+  bindings on indicators, custom DCA levels and multi take-profit/stop-loss
+  targets were resolved; a binding on a plain setting was skipped, so the
+  projected ladder and the figures derived from it were built from the literal
+  the bot document still carries rather than the variable's value the engine
+  spends. A running deal keeps sizing from the values it froze when it opened,
+  so those are applied over the resolved settings, in the same order the engine
+  aggregates them — moving a variable changes new deals, not open ones.
+
+## [2.54.23] - 2026-09-18
+
+### Fixed
+
+- Projected DCA levels now follow the bot's global variables. A setting that is
+  bound to a global variable keeps its superseded literal in the bot's own
+  document, and the client-side ladder — the grey projected levels on a deal's
+  chart, and the figures the "Execute next DCA" confirmation quotes — was built
+  from those literals instead of from the variables' current values. A bot whose
+  safety-order size or minimum-% distance is driven by a variable was therefore
+  shown a budget and rungs its engine would not use. The bindings are now
+  resolved before the ladder is computed, and the resolved settings are what the
+  projection reports.
+- Amounts in the "Execute next DCA" confirmation are shown in units of the
+  asset. A quantity below 0.01 was rendered in scientific notation
+  (`3.70e-3 BTC`), which cannot be compared against an exchange screen; it now
+  reads `0.00407 BTC`. Prices keep their compact form.
+
+## [2.54.22] - 2026-09-18
+
+### Fixed
+
+- Table filters now survive leaving the page and coming back. A table mirrors
+  its filters into a `filters_<table>` link parameter so that a reload or a
+  shared link restores them, but that mirror is written on a short delay and the
+  delay is cancelled by the very navigation that leaves the page — so the last
+  change made before leaving never reached it. Every later mount read the mirror
+  back and saved it, overwriting the real filters with an older copy of
+  themselves and deleting outright any column the link did not mention. The link
+  is now read once, on the page load it arrives with, and a column it does not
+  mention keeps its saved filter.
+
+## [2.54.21] - 2026-09-18
+
+### Fixed
+
+- "Execute next DCA" now quotes the order the bot will actually send. A safety
+  order sized in the quote currency spends its configured order size whatever
+  the price does — the quantity floats — but the confirmation took the quantity
+  the level was drawn with, at its own ladder price, and then priced that at the
+  current market, counting the price move twice. On a deal whose ladder sits far
+  from today's price the amount, the estimated cost and the projected new
+  average were all overstated. For an indicator-triggered deal the level after
+  it is now stated as the budget it will still spend, rather than as a quantity
+  at a trigger price that condition never uses.
+
+## [2.54.20] - 2026-09-18
+
+### Fixed
+
+- Changing a running deal's take-profit percentage keeps it a percentage of the
+  deal's average price. It was being stored as the fixed price that percentage
+  resolved to at that moment, so each further safety order moved the average
+  while the close order stayed put and the percentage read back higher every
+  time. Setting a take-profit by price — typing it, dragging the chart line or
+  picking it — still pins that price, and the trading terminal is unchanged.
+
+## [2.54.19] - 2026-09-18
+
+### Fixed
+
+- A running deal on an indicator-DCA bot now shows the safety-order sizes and
+  distances it will actually use. After a bot's indicator order sizes were
+  changed, the deal view projected the next safety order at the size meant for
+  new deals. Needs the matching backend release.
+
+## [2.54.18] - 2026-09-18
+
+### Fixed
+
+- Watchlist rows for Binance USD-M pairs sat on "Connecting..." forever while
+  rows for other venues in the same widget updated normally. The widget dialled
+  a Binance USD-M address that accepts a subscription but never sends any
+  market data, so no price could ever arrive and nothing reported an error. It
+  now uses the same USD-M feed the chart streams from.
+
+## [2.54.17] - 2026-09-18
+
+### Fixed
+
+- Deal lists could keep showing a deal as open after it had closed. The lists
+  are updated live, so a deal that closed while the connection was down, the
+  computer was asleep or the tab was in the background stayed listed until
+  the page was reloaded, and its Close button kept failing. Deal lists now
+  refresh when the live connection comes back and when you return to a tab
+  that has been in the background for more than 30 seconds.
+- Closing or canceling a deal that has already finished now says so ("This
+  deal had already closed") and removes it from the list, instead of
+  reporting "Failed to close deal" and leaving it there to be tried again.
+
+## [2.54.16] - 2026-09-17
+
+### Fixed
+
+- Quick Setup's risk profiles always fell back to default values on
+  Hyperliquid builder-deployed (HIP-3) markets such as `xyz:GOLD-USDC`,
+  because the past year of daily candles was requested under the upper-cased
+  symbol, which the exchange does not recognise. The request now uses the
+  market's native symbol, as backtests do since 2.54.15.
+
+## [2.54.15] - 2026-09-17
+
+### Fixed
+
+- Bot backtests on Hyperliquid builder-deployed (HIP-3) markets such as
+  `xyz:EUR-USDC` always returned 0 deals. The backtester asked for the pair's
+  candles in upper case, and the exchange only recognises these markets under
+  their exact native symbol, so no candles loaded and nothing could trade. The
+  chart was unaffected because it already used the native symbol. Backtests
+  now request candles under the native symbol too; every other pair is
+  requested exactly as before.
+
+## [2.54.14] - 2026-09-15
+
+### Fixed
+
+- A "greater than" or "less than" indicator condition shaded only as far as
+  the indicator's nominal range instead of continuing past it. Because
+  Bollinger Bands %B drops below 0 whenever price closes under the lower
+  band, a condition such as "less than 0.05" left most of the bars it selects
+  outside the shaded region; at the other end, ATR and ADR are quoted in
+  price units and run well above 100, so a "greater than" condition on them
+  produced an empty or inverted band. The shading now continues past the
+  level without limit, matching the legacy dashboard. Conditions were always
+  evaluated against the real values; only the drawing was affected.
+
+## [2.54.13] - 2026-09-15
+
+### Fixed
+
+- The chart ignored an indicator's threshold levels unless the indicator was
+  one of fifteen listed types. On Bollinger Bands %B, Keltner Channel %B,
+  Bollinger Bands Width Percentile, ATR and ADR a condition such as
+  "crosses up 0.03" drew no level line at all, and a range condition such as
+  "less than 0.05" shaded the study's full default range instead of the range
+  the condition actually names. The threshold now follows the condition for
+  every study, as it does in the legacy dashboard; price overlays still show
+  no threshold lines.
+
+## [2.54.12] - 2026-09-15
+
+### Fixed
+
+- Backtests could run with a 0% exchange fee while the backtest settings showed
+  the real fee. Loading a bot's settings into the edit form reset the fee that
+  had already been looked up for the account, and the lookup does not repeat
+  for the same pair, so it stayed empty for the rest of the session. The
+  quick "Run backtest" button then fell back to 0%; runs started from the
+  settings dialog used the fee shown there and were unaffected, which is why
+  identical-looking settings could give very different results. The form now
+  keeps the looked-up fee across reloads. Quick runs also use the fee of the
+  last run from the settings dialog, and a backtest whose fee is unknown no
+  longer runs as 0% — the settings dialog opens instead, with the fee field
+  empty. Hedge bots' quick run, which always ran at 0%, now uses the fee as
+  well.
+
+## [2.54.11] - 2026-09-15
+
+### Fixed
+
+- Bollinger Bands %B and Keltner Channel %B were drawn on top of the candles
+  instead of in their own pane below the chart. Both plot a unitless 0–1
+  ratio rather than a price, so the chart showed two unrelated vertical
+  scales at once and the indicator line ran through the price series. They
+  were flagged as price overlays alongside Bollinger Bands and Keltner
+  Channel themselves, which overrode the studies' own declaration that they
+  are not price studies. Both now get their own pane, as the other
+  oscillators do.
+
+## [2.54.10] - 2026-09-14
+
+### Fixed
+
+- "Change DCA levels" failed on an open deal for every level count except 0.
+  The dialog sent the new count as text while the API declares it as a whole
+  number, so the request was rejected before it reached the deal — nothing was
+  changed either way, and the only value that worked was 0, which takes a
+  different branch and simply turns further DCA orders off. The deal-edit
+  mutations now convert the order-count fields where they build the request,
+  so every entry point is fixed together: the dialog in the deal card, the
+  deals table in the bot drawer, the open-orders widget, and the Edit Deal
+  drawer, which sent the same count as text when saving a single deal.
+
+## [2.54.9] - 2026-09-14
+
+### Fixed
+
+- The "Execute next DCA" confirmation still showed no amount, estimated cost
+  or average price when opened from the deals list, and on bots that don't
+  rest their safety orders on the exchange — DCA by market and DCA triggered
+  by indicators. It was sizing the level from the bot settings carried on the
+  deal, which the deals list only fetches in part. It now reads the bot's full
+  settings and picks the level by its position in the ladder, the same way the
+  bot does, so figures appear on every eligible deal and a deal that has
+  already bought some levels at market is never quoted an earlier level again.
+- A pending limit "Add funds" order is no longer mistaken for the next DCA
+  level in that confirmation.
+
+## [2.54.7] - 2026-09-14
+
+### Fixed
+
+- A bot's Performance chart no longer stretches its time axis back to 1969.
+  A daily chart point stored with an invalid date was plotted as the series'
+  first point, so under the default "All" range the real history was squeezed
+  into a thin sliver at the right edge. Points dated before 2001 are now
+  ignored by both bot performance charts.
+
+## [2.54.6] - 2026-09-12
+
+### Fixed
+
+- Quick Setup's Investment field can be typed into again. The figure was
+  re-derived from the per-order sizes it had been split into and written back
+  over the text as you typed, so a keystroke landed on a number you had not
+  entered and the field settled on something else entirely.
+- Quick Setup now funds a bot with the investment you asked for. The base
+  order and every safety order were given the same rounded share, which
+  restricted the reachable total to multiples of the whole ladder — the base
+  order now carries the remainder, so the total matches what you set and the
+  investment slider deploys the share of your balance it reports.
+
+## [2.54.5] - 2026-09-12
+
+### Added
+
+- Saved bot templates are now reachable from the bot form itself: the save-row
+  options menu lists them under "Load template", next to "Save as template".
+  Previously the only ways back to a template were the Quick Setup picker —
+  which also reapplies a risk profile on top of your settings — and a hotkey
+  you had to assign while saving, so a template saved from Manual mode looked
+  like it had never been saved.
+
+### Changed
+
+- Saving a bot template now confirms with a message naming the template and
+  where to reopen it, and both template dialogs state that templates are kept
+  in the current browser.
+
+## [2.54.4] - 2026-09-12
+
+### Fixed
+
+- Editing a take profit or stop loss on an open SHORT deal no longer computes
+  the target price in the long direction. The Edit Deal form never carried the
+  deal's direction, so it fell back to long: typing a take profit percentage on
+  a short deal produced a price ABOVE the breakeven instead of below it, and
+  saving stored that price as the deal's fixed take profit. Long deals are
+  unaffected.
+
+## [2.54.3] - 2026-09-11
+
+### Changed
+
+- Cross-margin futures bots no longer show an estimated liquidation price.
+  Cross margin liquidates against the whole wallet — free balance and every
+  other open position — so the estimate, which counted only the bot's own
+  margin, printed a figure much closer than the real one along with a risk
+  rating and cascade warning derived from it. The Margin & Leverage section
+  now shows a short note instead, and the liquidation line is no longer drawn
+  on the bot chart, the deal chart or the order ladder graph. Isolated margin
+  is unchanged.
+
+## [2.54.2] - 2026-09-11
+
+### Fixed
+
+- A take profit, safety order or grid level that rested on the order book before
+  filling was drawn on the chart at the moment it was placed, not the moment it
+  filled, so a sell could appear on a candle that never traded at its price.
+  Chart buy and sell markers now sit on the fill for orders that filled their
+  whole size; an order that only partly filled keeps its placement time, because
+  its last update is the later cancel of the unfilled remainder.
+
+## [2.54.1] - 2026-09-10
+
+### Fixed
+
+- Settings no longer fails to open for anyone who had used the page before.
+  Notification preferences are stored in the browser, and a stored copy written
+  before a notification type existed did not contain it; the page then read
+  through a missing entry while drawing that row and stopped rendering. Stored
+  preferences are now merged with the current set, so a newly added type arrives
+  with its default and existing choices are kept, and a missing entry can no
+  longer break the page.
+
+## [2.54.0] - 2026-09-10
+
+### Added
+
+- Settings → Notifications has a new "Safety Order Filled" row, so a DCA bot
+  can tell you over Telegram each time one of its safety orders fills and which
+  one it was. It sits with the other order-fill rows, is off by default, and
+  offers no Email column — a deal fills one of these per level, so an email per
+  fill would be a mailbox flood.
+- A Template column on the same table lets you rewrite the wording of any
+  notification, in Markdown — `**bold**`, `*italic*`, `` `code` ``,
+  `[text](url)`, `||spoiler||`, and a new line where you type one. The editor
+  previews the message with the same renderer the notes widget uses, lists the
+  variables you can use, and flags a variable that does not exist. Nothing else
+  can be got wrong: anything that is not Markdown is shown exactly as typed, so
+  a template can never break a notification. Anything you leave alone keeps the
+  maintained default, so wording you never changed keeps improving.
+
+## [2.53.10] - 2026-09-10
+
+### Fixed
+
+- The "Execute next DCA" confirmation now always shows the order's size, its
+  estimated cost and where the deal's average price lands. It read those from
+  an order resting on the exchange, so it showed none of them on bots that
+  never rest their safety orders — DCA-by-market bots and bots whose DCA is
+  triggered by indicators — leaving the confirmation with no figures at all.
+  It now falls back to the same projected ladder the deal chart draws.
+
+### Added
+
+- The same confirmation now names the level that comes *after* the one being
+  executed, with its price and size, so it is visible that executing early
+  does not move the levels below: every level is worked out from the deal's
+  opening price and the bot's settings, not from where an earlier one filled.
+
+## [2.53.9] - 2026-09-10
+
+### Fixed
+
+- Portfolio balances: with "Aggregate" on and one or more accounts selected,
+  every token held on more than one exchange disappeared from the table while
+  tokens held on a single exchange stayed. Aggregating sums a token across
+  venues, so the summed row can no longer name one and its exchange field is
+  blank — and the table then filtered those rows out by that same blank field.
+  The selection is now applied before the sum, so the totals mean "across the
+  selected accounts" and nothing is dropped afterwards.
+
+## [2.53.8] - 2026-09-09
+
+### Fixed
+
+- The take-profit "Close order type" now shows the value the bot actually has.
+  It was never requested when a bot's settings were loaded, so the form fell
+  back to its Limit default no matter what was stored, and — because the
+  setting is written on every save — the next save persisted that default over
+  the user's choice. Combo bots were affected silently, having no control for
+  it, and a deal's own override is now shown in the deal editor.
+
+## [2.53.7] - 2026-09-09
+
+### Fixed
+
+- The bot details panel can now be expanded to full screen from every tab. The
+  Deals, Stats, Events and Settings tabs rendered no expand control at all — on
+  a touch device, where there is no hover and no triple-click, that left their
+  content permanently confined to the panel's width, the deals table worst of
+  all. Overview and Webhook already had it, and are unchanged.
+
+## [2.53.6] - 2026-09-09
+
+### Fixed
+
+- The deal chart no longer draws a stop-loss line for a stop the bot engine
+  will not act on. When a deal's stop loss closes on an external signal
+  (webhook or indicator condition) rather than on price, the stop-loss
+  percentage is not a price level — it only becomes one after Move SL fires
+  and replaces it. The chart drew it anyway, showing a stop far below the
+  entry that nothing would ever execute. The Move stop loss trigger line is
+  unchanged, and the moved stop still appears once Move SL has fired.
+
+## [2.53.5] - 2026-09-09
+
+### Fixed
+
+- Adaptive Close is no longer offered on futures bots. The setting re-sizes a
+  closing order the exchange refused for lack of funds down to the amount of
+  the traded coin held in the wallet, which is only a meaningful quantity on a
+  spot account — a futures wallet holds collateral rather than the coin. The
+  engine now applies it to spot bots only, but the toggle was shown on every
+  DCA and combo bot regardless, so a futures bot could switch on a setting
+  that could never take effect. Spot bots are unchanged.
+
+## [2.53.4] - 2026-09-08
+
+### Fixed
+
+- Widgets: on touch devices the expand/full-screen control is now visible as
+  soon as the widget is, on both dashboard widgets and the bot details
+  drawer. It was previously drawn only while a finger was on the widget and
+  hidden again a few seconds later, so on a tablet there was nothing on
+  screen to indicate the control existed. Behaviour on devices with a mouse
+  is unchanged — the controls still appear on hover.
+
+## [2.53.3] - 2026-09-08
+
+### Added
+
+- DCA and combo deal queries now request `feeByAsset` (per-asset fee
+  breakdown) alongside the existing `feePaid` field, matching the field
+  app-sh now records. Not surfaced in any view yet — data plumbing only.
+
+## [2.53.2] - 2026-09-08
+
+### Fixed
+
+- Tables: a column switched on from the Columns menu could not be moved until
+  the page was left and reopened, and dragging any column reset the saved
+  position of every column that was switched off. A drag now reads the column
+  layout as it is actually rendered at that moment, and puts hidden columns
+  back beside the column they were left next to.
+- Bot form: the credits chip could quote a fractional cost slightly above the
+  whole number of credits a bot is actually charged, when extra pairs put the
+  cost on a half credit. It now shows the charged figure; the hover breakdown
+  still itemises the unrounded parts.
+
+## [2.53.1] - 2026-09-08
+
+### Fixed
+
+- Subscription: the Active Bots breakdown counted zero live bots for accounts
+  with no paper bots (and vice versa). The panel loads both trading contexts at
+  once, and each list replaced the other's cached bots as it arrived, so the
+  empty context wiped the populated one. A list pinned to a context other than
+  the one currently selected now reads its own result and leaves the shared
+  cache alone.
+
+## [2.53.0] - 2026-09-07
+
+### Added
+
+- Execute a DCA deal's next safety order on demand, at market, instead of
+  waiting for price to reach it. The action sits on the deal actions menu
+  (deals list, bot drawer and open-orders widget) and inline on the deal's
+  own ladder, on the one row it applies to — the next unfilled safety order.
+  A confirmation shows the level's ladder price against the current market
+  price, the size and cost, how far from the ladder the fill would be, and
+  where the deal's average moves to; it is withheld on combo and risk-based
+  deals, whose levels are not ladder slots.
+
+## [2.52.5] - 2026-09-07
+
+### Fixed
+
+- A bot's own Deals tab no longer stops at 500 trades. Opening a bot and
+  switching its deals to Closed loaded at most 500 rows however many the bot
+  had — the footer even said "500 of 1,000" — so older deals were reachable
+  only through the CSV export. The tab now loads every deal the server reports.
+
+## [2.52.4] - 2026-09-07
+
+### Fixed
+
+- Trading Bots → Deals no longer stops at 500 trades. The Closed view fetched a
+  single page and reported that page's length as the total, so an account with
+  more than 500 closed deals always read "Closed (500)" and could not reach
+  anything older than the newest 500. The list now pages until the server's own
+  count is reached.
+
+## [2.52.3] - 2026-09-06
+
+### Fixed
+
+- Widgets can be opened full-screen on a tablet again. A tablet is wide enough
+  to get the desktop layout but cannot hover, so the widget controls were
+  hidden with no way to reveal them, leaving a fast triple-tap as the only
+  route into full-screen. The controls now appear on touch.
+- Bot details drawer panels (Basic, Profit, Performance, ...) now carry their
+  own expand button, so they can be opened full-screen directly instead of only
+  by triple-tapping the panel.
+- The full-screen header no longer auto-hides on a touch device, where nothing
+  could bring it back — that left no reachable Exit button whenever the
+  widget's content was too short to scroll.
+
+## [2.52.2] - 2026-09-06
+
+### Fixed
+
+- Grid bots table: the Drawdown column was coloured and read as a gain — a 9%
+  drawdown showed as a green 9.06%. It is now shown in the loss colour, like
+  drawdown everywhere else in the app. Drawdown and Run Up can also be sorted
+  and filtered again; both columns previously ignored sorting and showed no
+  filter input.
+- Chart trade markers were placed at the order's update time instead of the
+  fill time.
+
+## [2.52.1] - 2026-09-06
+
+### Fixed
+
+- Column filters returned no results on several tables. Filtering the Portfolio
+  TOKEN column for a coin you hold, or the Symbol, Side, Status, Type, Bot, Bot
+  Type, Coin, Exchange, Category or Strategy columns on Portfolio Balances,
+  Latest Orders, Edit Orders, the Market Screener and the curated presets list,
+  silently matched nothing. Those columns now filter as expected.
+
+## [2.52.0] - 2026-09-04
+
+### Added
+
+- Estimated liquidation price for leveraged DCA and Combo bots, in four places:
+  a dashed line on the price chart, a line on the DCA ladder graph, two columns
+  on the ladder table (the liquidation price after each safety order fills and
+  how far that order sits from it), and a readout under Margin & Leverage. The
+  readout also warns about a cascade — a safety order whose fill would push
+  liquidation past the trigger of the next one, so the ladder liquidates before
+  it finishes deploying. The line is shown when viewing and editing an open
+  deal too, measured from the position the deal already holds.
+
+  The figure is an estimate and labelled as one: exchanges do not expose their
+  maintenance-margin tiers to us, so a 0.5% rate is assumed, and funding and
+  fees are excluded. Cross-margin positions are additionally backed by the free
+  wallet balance, so their real liquidation sits further away than shown.
+
+### Fixed
+
+- An order line with no quantity no longer draws an unreadable solid block on
+  the chart where the quantity chip would be.
+## [2.51.8] - 2026-09-04
+
+### Fixed
+
+- Short deals opened from the Trading Terminal drew their stop loss BELOW the
+  entry price — inside the profit zone — instead of above it, and their trailing
+  take-profit start above the entry instead of below. The chart was reading the
+  deal's direction from a field a terminal deal never carries and falling back to
+  "long", so every engine-managed exit line came out mirrored. The bot itself was
+  always stopping out on the correct side; only the chart was wrong.
+
+## [2.51.7] - 2026-09-04
+
+### Fixed
+
+- Take-profit targets that have already executed are now shown as executed when
+  you edit an open deal. A multi-target deal used to keep listing a target it
+  had already taken as an ordinary, editable row — often with a nonsensical
+  negative percentage, because taking the target moves the deal's breakeven
+  underneath it. Filled targets are now labelled "Filled" and locked, and they
+  no longer set the minimum distance for the targets that are still live, so
+  lowering a remaining target is no longer silently raised to a value above the
+  market (where it would never trigger).
+
+## [2.51.6] - 2026-09-04
+
+### Fixed
+
+- The per-pair table at the bottom of a bot's Statistics tab no longer goes
+  missing. On a busy multi-pair bot the tab could open with every other block
+  present but no Pairs breakdown at all, because a live stats update from the
+  bot made the tab skip fetching the per-pair rows. Live updates now carry the
+  per-pair figures too, so the table also refreshes as deals close.
+
+## [2.51.5] - 2026-09-04
+
+### Fixed
+
+- Table search boxes now match the text you actually typed. Searching the
+  Deals table for `sui` no longer returns SUSHI, and `near` no longer returns
+  practically every deal — the search used to match your letters scattered
+  anywhere in a row, including in columns you had hidden (a `1%` take-profit
+  config was enough to match `near`). Applies to every table with a search box.
+
+## [2.51.4] - 2026-09-03
+
+### Added
+
+- Stale-balance marker on the portfolio balances widget: a clock next to any asset whose backend balance row is older than 15 minutes, with the last-fetched time and a one-click REST refresh for that venue (or all venues for a summed asset). Reads the new `getBalances.updated` field (main-app core ≥ 1.57.1); older backends show no marker.
+
+## [2.51.3] - 2026-09-03
+
+### Added
+
+- Grid bots get an **Unrealized PnL** column and hedge bots get a **Net
+  PnL** column, so all five bot lists now decompose profit the same way:
+  Realized + Unrealized = Net.
+- The bot drawer, the bot-list stat boxes, the dashboard KPIs and the grid
+  data page explain every figure on hover, the way the list columns already
+  do.
+
+### Changed
+
+- One vocabulary everywhere a bot's money is shown, not just in the lists:
+  the drawer, the grid Funds Overview ("Total P&L" → Net PnL), the
+  Performance and Profit Analysis widgets, the per-list stat boxes ("Total
+  P&L" → Realized PnL) and the dashboard KPIs ("uPnL" → Unrealized PnL,
+  "Total profit" → Realized PnL).
+- The drawer's Performance Analysis widget showed a figure labelled "Total
+  Profit" and captioned "Realized + Unrealized" that was neither — it is the
+  bot's realized profit. It now says Realized PnL, beside its Unrealized and
+  Net counterparts.
+- Unrealized PnL is no longer repeated in the drawer's Current Positions
+  section; it sits once, next to the realized and net figures it decomposes.
+
+### Fixed
+
+- A grid bot's Net PnL read as NaN, and sorted as text, once it passed
+  $10,000. The figure was formatted for display ("12.3K") before anything
+  numeric consumed it.
+- The grid **Realized PnL** column paired a total-profit dollar figure with
+  a free-profit percentage, so the percentage under-reported the amount
+  printed beside it on any running bot holding unreleased profit.
+
+## [2.51.2] - 2026-09-03
+
+### Changed
+
+- The bot lists now name their money columns the same way on every bot type:
+  **Realized PnL** (closed deals only), **Unrealized PnL** (what is still
+  open) and **Net PnL** (the two added together). This retires "Total
+  profit", the DCA/Combo "Value" column — which held unrealized PnL, not a
+  value — and the grid "Value change" column, which was already Net PnL
+  under another name. The grid bot's own worth is now "Current value".
+  Numbers, sorting and filtering are unchanged; only the labels moved.
+- Card view follows the same names as the table it belongs to.
+
+### Added
+
+- Every column in the DCA, Combo, Grid and Hedge bot lists explains itself
+  on hover: what the number is made of, and what its percentage divides by.
+  The three PnL percentages deliberately use different denominators (max
+  cost, current cost, initial balance) and each now says which.
+
+## [2.51.1] - 2026-09-03
+
+### Added
+
+- Quick Setup now offers the same three-way **Position side** as the full
+  form when the grid runs on a futures exchange: Long, Neutral or Short.
+
+### Fixed
+
+- A futures grid created from Quick Setup now trades the side that was
+  picked. Quick Setup wrote the spot direction field, which the engine only
+  reads as a fallback, so the bot ran neutral regardless.
+- The Risk Profile ranges now centre symmetrically around the current price
+  for a Neutral futures grid, instead of tilting to one side as they do for
+  Long and Short.
+
+## [2.51.0] - 2026-09-03
+
+### Added
+
+- Grid bots on a futures exchange now offer the full three-way **Position
+  side** — Long, Neutral or Short — instead of only Long/Short. Neutral opens
+  no position at the start and works the grid from flat, matching the option
+  the previous dashboard offered.
+
+### Fixed
+
+- A futures grid bot's direction now actually reaches the bot. The control was
+  writing the spot `strategy` field, which the engine only consults as a
+  fallback, so every futures grid was created Neutral no matter which side was
+  picked.
+- Direction / Position side is no longer clickable when editing an existing
+  grid bot. It is fixed at creation and the change was silently dropped on
+  save.
+
+## [2.50.27] - 2026-09-03
+
+### Fixed
+
+- Notifications panel: an already-read Update or News item no longer shows a
+  "Mark as read" button that does nothing. Read items are now dimmed and
+  carry a "Read" marker, so it is clear there is nothing left to clear.
+  Previously every card offered that button regardless of read state, which
+  made a fully-read Updates tab look permanently unclearable.
+
+## [2.50.26] - 2026-09-02
+
+### Added
+
+- Connecting an exchange now ends in a success moment instead of the dialog
+  silently closing: a confetti celebration names the account(s) that were
+  created (an "All" provider creates several) and offers a "Create a bot"
+  button that opens the bot wizard, with the new account preselected in the
+  form. Reached from the Exchanges page, the Portfolio page and
+  /add-exchange.
+
+## [2.50.25] - 2026-09-02
+
+### Fixed
+
+- The Deals table in the bot details drawer now offers proper filter operators
+  on its numeric and date columns. Cost, Avg/Entry/Close Price, Size, Notional
+  Value, Orders, Drawdown, Run Up, Transactions, Grid Profit and the P&L columns
+  filter with Equals / Greater than / Less than / Between instead of substring
+  matching, and Created, Update Time and Close Time filter with After / Before /
+  Between. Previously only Usage was typed, so every other column matched filter
+  text against the rendered value.
+- Column filter operator menus now close when you open another one. In the bot
+  details drawer they used to stack up, leaving one menu open per column.
+
+## [2.50.24] - 2026-09-01
+
+### Fixed
+
+- Picking a single exchange in the Portfolio Balances widget now works on the
+  Dashboards page. The widget treated "this page has no portfolio-wide exchange
+  selection" as "the page selected All exchanges" and immediately reset your
+  choice, so the Select Exchanges dialog appeared to do nothing. Cross-widget
+  syncing on the Portfolio and Overview pages is unchanged.
+
+## [2.50.23] - 2026-09-01
+
+### Fixed
+
+- Signing in via an emailed magic link now completes for accounts with
+  two-factor authentication enabled: the link hands off to the standard 2FA
+  code step instead of failing with "Sign-in failed — Cannot access". Requires
+  main-app 2.87.17 (the consume mutation's new `isOTP` field).
+
+## [2.50.22] - 2026-09-01
+
+### Added
+
+- **Add / Reduce funds shows what bounds the amount.** The field carries the
+  balance it is capped by, with 25/50/75% shortcuts. The two directions are
+  capped by different things and are resolved separately: an ADD is capped by
+  the asset it spends — quote for a long, base for a short — converted into
+  whatever unit is being typed, and withheld when no usable price exists to
+  convert through. A REDUCE is capped by the position the deal holds. A bulk
+  selection shows no figure, since several deals resolve differently.
+- **"% of available" sizing on Add funds**, alongside "% of position". It is
+  resolved in the dialog against the balance beside it and submitted as a fixed
+  amount, because the engine has no percent-of-balance path — `addDealFunds`
+  reads `asset === base` as a base quantity and everything else as quote, so a
+  raw percentage would place a wildly different order. The dialog says the
+  figure is pinned at confirm rather than re-read at execution.
+
+### Fixed
+
+- **Settings → Notification Preferences shows its Telegram and Email columns
+  again.** They disappeared when the page moved into core: the extra channels
+  became extension slots and the cloud build never registered a filler, so the
+  table silently rendered Type / In-App / Sound — an unfilled slot renders
+  nothing and reports nothing. Two further slots (`…channels.panel` and
+  `…channels.actions`) let the channels bring their own account-link card and
+  Save / Reset row. Self-hosted has no Telegram integration and leaves all four
+  empty, as before.
+- The deals-list query never selected `avgPrice`, so the percentage basis
+  divided by zero, came back `Infinity`, and the guard turned that into "no
+  basis at all". `dcaDealToOpenTrade` never attached `percentBasis` either,
+  though `transformDealToTrade` always has. Between them, the "% of position"
+  preview had never resolved for a deal opened from the trades list or the
+  Hedge DCA deals tab.
+- Add funds on a futures deal no longer shows a spot-wallet ceiling — in
+  practice "BAL 0", since futures collateral sits in margin — and no longer
+  offers "% of available". Both trade transforms now carry an explicit
+  `futures` flag: `dealType` could not be used, because it means the market
+  type in one mapper, the bot type in another, and "Hedge or not" in a third.
+- `BalanceInput` rendered its stacked-layout row — a `border-t` with padding —
+  even when the currency dropdown inside it was absent, leaving an empty
+  bordered strip between the field and its percentage buttons.
+- The funds amount field showed a generic `$` placeholder instead of the
+  asset's own logo.
+
+## [2.50.21] - 2026-09-01
+
+### Fixed
+
+- **A Moving Averages or Crossing Oscillator condition set to compare against a
+  second series now actually crosses.** When the Reference was anything other
+  than "Current price", the form never created the internal id that addresses
+  that second moving average / oscillator, so neither the editor's backtest nor
+  the running bot ever built it: the comparison value stayed at zero, no
+  crossing could fire, and the backtest reported zero deals while both averages
+  still drew correctly on the chart. Only the Bot controller section minted the
+  id; deal start, take profit, stop loss, risk:reward, dynamic AR and the DCA
+  ladder all left it out. It is now created for every indicator, and filled in
+  on save for bots that were built without one.
+
+## [2.50.20] - 2026-08-31
+
+### Fixed
+
+- **Editing an exchange connection now asks for the passphrase once the key or
+  secret changes.** The field is blank on open and the placeholder said "leave
+  blank to keep current" — advice that is correct for a rename and actively
+  wrong for a key rotation, because a new API key comes with its own
+  passphrase and the backend would otherwise pair the new key with the old one.
+  The field becomes required, with a matching placeholder, exactly when the
+  credentials it belongs to have been changed; a metadata-only edit still
+  leaves it optional.
+
+## [2.50.19] - 2026-08-31
+
+### Fixed
+
+- Grid bot form: pairs whose quote asset isn't one of the common tickers were parsed by chopping the last three characters off the symbol, so an OKX X-Perp pair (`ARB-USD_UM_XPERP`) came out as base `ARB-USD_UM_XP` / quote `ERP` and every field in the form — investment, range, balance — was labelled and funded in "ERP". The form now uses the app's shared pair resolver, which understands the X-Perp contract suffix (`ARB/USDC`), slash- and dash-separated symbols and the concatenated form.
+
+## [2.50.18] - 2026-09-01
+
+### Fixed
+
+- Bots using indicators in the Bot Controller can be saved again. Saving failed
+  with a server error for two reasons. Every Bot Controller indicator carried a
+  hidden duplicate copy of its own settings that the server has no field for,
+  which by itself broke any bot with a start condition — including a brand-new
+  one. And when the controller was set to start *and* stop the bot on
+  indicators, the start indicators were sent exactly as typed, so a length of
+  "50" arrived as text where a number was expected and the "keep condition for
+  N bars" setting arrived as a number where text was expected.
+
+## [2.50.17] - 2026-08-31
+
+### Fixed
+
+- The Watchlist now opens each pair's chart on the exchange that pair was added
+  from. Clicking a row told the chart the symbol but never the venue, so the
+  chart guessed: it either drew candles from some other exchange that happens to
+  list the same symbol, or — when none does — an empty Binance chart. A
+  Bybit-linear HYPEUSDT row opened an empty "HYPE / USDT · BINANCE" chart, and
+  in another layout charted Binance.US prices roughly 3% away from the price the
+  row itself was showing.
+
+## [2.50.16] - 2026-08-31
+
+### Fixed
+
+- The Profit widget no longer crashes the Overview page on browsers whose date
+  parser cannot read back their own locale-formatted dates (seen on Chrome 110
+  for Android). The daily chart worked out your timezone by formatting a date to
+  text and parsing it back; where that round-trip failed the widget threw and
+  took the whole landing page down with it. The timezone is now resolved without
+  that round-trip, and one that still cannot be resolved falls back to UTC
+  midnight rather than failing the page.
+- Daily profit labels are no longer shifted by an hour on the two days a year
+  your own device switches to or from daylight saving time. The same round-trip
+  resolved the offset against the device's clock instead of your configured
+  timezone, which moved the labels even for timezones that have no daylight
+  saving at all.
+
+## [2.50.15] - 2026-08-30
+
+### Changed
+
+- Crash reports now carry the form's configuration (bot type, mode, active tab,
+  quick/manual setup, pair count, which fields were erroring) alongside the
+  existing breadcrumb trail, so a crash that only reproduces with one specific
+  setup can be diagnosed from the report instead of needing the user to
+  reproduce it on request. Enum-like values only — no form values, names, or
+  balances are captured.
+- The render-loop tripwire, which records a component's changed-prop history
+  just before an infinite-render crash, now also covers the bot form shell, the
+  trading terminal's order entry panel, and every data table. It previously
+  watched a single component. Still opt-out via
+  `localStorage['gainium:tripwire'] = 'off'`.
+
+## [2.50.14] - 2026-08-29
+
+### Fixed
+
+- A deal that ran for less than an hour no longer reports its Working Time as
+  "0H". Deal working times are now shown to the minute (and to the second for
+  very short deals), so a deal that ran 28 minutes reads "28m 26s" instead of
+  claiming it never ran. Affects the Working Time column on every deal table,
+  the deal cards, and the deal history on the bot edit page.
+
+## [2.50.13] - 2026-08-29
+
+### Added
+
+- Trading Terminal → Exchange Orders → Positions now shows the mark price and
+  the unrealized P&L over the whole position, as an amount in the quote asset
+  and as a return on the margin posted. Computed from the entry price against
+  the live ticker, so it works the same on every venue.
+- A "Positions" entry under Terminal in the sidebar, opening the terminal
+  straight on that table.
+
+### Fixed
+
+- Closing a position by market now actually leaves it flat. Adopting a position
+  rounds the order to the exchange's step, so one pass could leave a fraction
+  open, which then re-appeared as its own unowned row; the remainder is now
+  closed out reduce-only.
+- A bot sitting in an error state is no longer treated as dormant when warning
+  that it will re-open a deal after the close — the error clears on the next
+  cycle and the bot starts again.
+
+### Changed
+
+- Replaced the positions "Source" column with "Linked bots". A single exchange
+  position can be shared by several bots — the exchange nets them into one —
+  and the old column showed just one of them and attributed the entire position
+  to it. It now lists every bot on the position, and a popover breaks the
+  quantity down per bot with the part no bot holds shown separately.
+- "Close by market" now flattens the whole position through Gainium: each
+  linked bot closes its own deal, then the remainder is imported as a terminal
+  deal and closed, so every part of the position lands in the deal history. It
+  replaces both the old raw exchange close, which recorded nothing and left
+  every linked bot thinking it still held a position, and the separate
+  import-and-close action.
+- The close confirmation now lists what is being closed per bot, offers to
+  pause bots that start deals ASAP (they would otherwise re-open the position
+  immediately), and warns when other orders are resting on the pair — closing a
+  deal only cancels that deal's own orders, never everything on the symbol.
+- Renamed the positions "Price" column to "Entry price", so it can't be read as
+  the current price now that the mark price sits beside it.
+
+## [2.50.12] - 2026-08-29
+
+### Fixed
+
+- A closed deal's "Working Time" kept counting up forever instead of stopping
+  when the deal closed. Every finished deal reported how long ago it had
+  started rather than how long it ran, and the number grew by another day every
+  day — a deal that ran twelve minutes read "1D 4H". Affected the Working Time
+  column on the Trading Bots → Deals list, the bot details drawer's deals
+  table, the Trades page and the bot edit page's deal history, and the deal
+  tables' Working Time sort, which ordered closed deals by age rather than by
+  how long they ran. Open deals still count up to now.
+
+## [2.50.11] - 2026-08-28
+
+### Fixed
+
+- Four more deal-table columns did not sort correctly, on the Trading Bots →
+  Deals list (open and closed) and in the bot details drawer's deals table.
+  "Grid Profit, %" did not sort at all. "Update Time" ordered deals by the text
+  of the displayed date, so December 2025 landed between January and August
+  2026. "Working Time" compared "3D 4H" with "4H" as text, ranking a three-day
+  deal as shorter than a four-hour one. "Time In Loss" and "Time In Profit"
+  compared percentages as text, ranking 12.3% below 9.5%. All of them now sort
+  by the underlying value; the displayed text and the column filters are
+  unchanged.
+
+## [2.50.10] - 2026-08-28
+
+### Fixed
+
+- The "Realized P&L, %" column did not sort. Clicking its header on the
+  Trading Bots → Deals list (open or closed) and in the bot details drawer's
+  deals table left the rows in exactly the order they were already in, in both
+  directions. Filtering that column by a number was silently ignored for the
+  same reason. Sorting and filtering now use the percentage the column
+  displays.
+
+## [2.50.9] - 2026-08-28
+
+### Fixed
+
+- A custom link added to the sidebar showed the recent-bots pills underneath
+  it whenever its URL started with a built-in bot page's path (e.g. a link to
+  `/bots`). The link inherited the Trading Bots category and repeated that
+  row's recent-bot shortcuts under itself. Custom links now never carry a
+  recents drop-down; the built-in Trading / Grid / Combo / Hedge bot rows keep
+  theirs.
+
+## [2.50.8] - 2026-08-28
+
+### Fixed
+
+- The Usage ring on a DCA or Combo bot card was labelled with the bot's deal
+  counts — the same "1 / 35" already printed under **Deals — Open / Total**
+  further down the same card — so it read as "1 of 35 DCA orders" and said
+  nothing about usage. It now shows the DCA ladder: filled / total orders
+  across the bot's open deals, matching what the deal card and the deals table
+  have always printed under their own Usage rings. A bot with no open deal is
+  left unlabelled rather than reading `0/0`.
+- The USAGE column in the DCA and Combo bots tables showed only a percentage,
+  with no way to see how many safety orders had triggered. It now carries the
+  same filled / total DCA orders label, and a tooltip spelling it out.
+
+## [2.50.7] - 2026-08-28
+
+### Fixed
+
+- Editing a DCA deal failed outright. Every save — one deal or a bulk edit of
+  many, and whatever was actually changed — came back as
+  `Failed to edit deal: HTTP error! status: 400 … Field "gridLevel" is not
+  defined by type "dcaDealSettingsInputSet"`, so open DCA deals could not have
+  their take profit or stop loss turned off, or anything else adjusted.
+
+  The deal-edit drawer decides what to send from one hand-written list of
+  fields that is shared by both bot types. `gridLevel` is on it for the combo
+  "DCA grid levels" control, but it is declared only on the combo mutation's
+  input — and GraphQL rejects the whole operation over one undeclared field,
+  rather than ignoring it. It was reasoned safe because the control is
+  read-only while editing a deal, which holds for combo (where the value
+  matches the bot's and so never counts as a change) but not for DCA, where
+  nothing supplies the field at all and the drawer's own default therefore
+  looked like an edit on every save. It is now sent for combo deals only.
+
+  Combo deal edits were never affected.
+
+## [2.50.6] - 2026-08-28
+
+### Added
+
+- Deals table and deal cards show a "Trailing TP" / "Trailing SL" marker under
+  the status dot while the bot is riding a trailing exit, with the current
+  trailing price on hover. Nothing said a deal was trailing before.
+- The deal chart draws the exits the bot manages itself, which never rest as
+  exchange orders and so were invisible: the live trailing take-profit /
+  stop-loss level, the price trailing take profit starts at, the stop loss, and
+  the price that triggers Move SL. A deal with trailing take profit on used to
+  show only its breakeven line.
+
+## [2.50.5] - 2026-08-28
+
+### Changed
+
+- Deal cards: the P/L range bar reads as a scale. "Worst" and "Best" sit above
+  each end with their percentage beneath, and the live value is printed under
+  the marker, centred on it.
+
+## [2.50.4] - 2026-08-28
+
+### Changed
+
+- Deal cards: the P/L range bar under "Unrealized" now says what it is
+  measuring. The two ends carry "Worst" / "Best" captions and the break-even
+  hairline names the deal's average price on hover — previously it was two
+  unlabelled percentages with nothing to read them against.
+- Deal cards: clicking the Usage ring opens that deal's order list, the same
+  as clicking the Usage ring in the deals table.
+
+## [2.50.2] - 2026-08-28
+
+### Fixed
+
+- Add/Reduce funds by percent sized the order off the wrong price, so "% of
+  position" did not mean the position. The amount was derived from the deal's
+  cost basis divided by its `lastPrice`, which reads like a current price but
+  is the best price the deal ever filled at — the lowest for a long, the
+  highest for a short. Dividing by it resolved a long to more base than the
+  deal actually held, and the error grew each time a safety order filled: a
+  deal three levels deep resolved 100% to about 1.9% more than it owned, one
+  eight levels deep to about 8% more. Past that the engine treats the request
+  as covering the whole position and closes the deal, so on a deep ladder a
+  93% reduce was a full exit. Percentages now resolve against the deal's
+  average entry price, so 100% is the position and 20% is a fifth of it, as
+  the help article has always described. Shorts on futures were wrong in the
+  opposite direction and are corrected too; spot shorts and coin-M deals were
+  never affected. The amount preview in the dialog mirrors the engine, so it
+  changes with it.
+
+## [2.49.6] - 2026-08-28
+
+### Fixed
+
+- The bot drawer's Performance chart left a band of empty space at both ends
+  instead of filling the plot. It shares one time axis with the Deal Returns
+  panel below it, but its equity, realized-profit and buy & hold lines are a
+  once-daily midnight snapshot, so they stopped short of an axis that runs to
+  the exact time of the first and last deal — on a four-day-old bot that left
+  roughly a quarter of the chart blank. The lines now reach both edges: the
+  leading edge is seeded from the bot's starting balance and the trailing edge
+  carries the last daily reading forward. Bots whose history is longer than the
+  90-day series the backend keeps still show the leading gap, because there the
+  missing stretch is real history rather than a sampling artifact.
+
 ## [2.49.5] - 2026-08-27
 
 ### Fixed
@@ -79,8 +2487,8 @@
 - The Net P&L column on the trades table no longer double-counts profit a deal
   has already banked. Unrealized P&L already includes realized grid profit
   while a deal is open, so adding the realized figure on top counted every
-  completed grid sell twice — one open combo deal read $163.01 against a true
-  $80.52. Deals that bank nothing before closing (plain DCA) were unaffected.
+  completed grid sell twice — one open combo deal read roughly double its
+  true profit. Deals that bank nothing before closing (plain DCA) were unaffected.
 
 ## [2.48.5] - 2026-08-26
 
@@ -123,8 +2531,8 @@
 ### Fixed
 
 - The Portfolio Value chart's tooltip reported the wrong day and value on the
-  12M range — hovering the latest point at $141k showed the 1st of the month at
-  $115k. The X axis was keyed on the visible label, which repeats (every 12M
+  12M range — hovering the latest point showed the 1st of the month's value
+  instead. The X axis was keyed on the visible label, which repeats (every 12M
   point is just "Aug"), and the tooltip resolves its row by matching that label,
   so it always found the month's first point. The axis is now keyed per point.
   This also fixes the same mismatch on any range where several points share one
@@ -366,7 +2774,7 @@
 
 ### Fixed
 
-- OKX Europe paper accounts no longer offer "USD" as funding (no such asset on the EU venue); X-Perp paper margin defaults to USDC, matching the USDC-quoted X-Perp pairs, so paper bots can actually open deals (reported by discord2020, forum topic 4925).
+- OKX Europe paper accounts no longer offer "USD" as funding (no such asset on the EU venue); X-Perp paper margin defaults to USDC, matching the USDC-quoted X-Perp pairs, so paper bots can actually open deals.
 - X-Perp pair parsing fallback reports USDC as the quote, consistent with pair metadata.
 
 ## [2.45.1] - 2026-08-21
@@ -900,7 +3308,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Exchanges and Portfolio pages show a "Replace key" chip on any exchange connection whose API key was still in place before 31 July, when unauthorised access to one of our servers was detected. Clicking it opens the edit dialog. Hyperliquid connections get the Web3-wallet wording instead of the create-a-new-key steps. The chip disappears once the key is replaced.
+- Exchanges and Portfolio pages show a "Replace key" chip on any exchange connection whose API key was still in place before 31 July, recommending it be replaced. Clicking it opens the edit dialog. Hyperliquid connections get the Web3-wallet wording instead of the create-a-new-key steps. The chip disappears once the key is replaced.
 
 ### Fixed
 
@@ -937,11 +3345,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- OKX Europe X-Perp futures support: the EU origin (my.okx.com) now allows Spot & Futures / Linear Futures adds (Inverse auto-corrects to Linear — the EU venue has no coin-margined product), paper OKX accounts gain the origin selector, and OKX-EU paper funding uses USDC/EUR/USD lists (no USDT on the EU venue). Based on work contributed by community member discord2020 (forum topic 4925).
+- OKX Europe X-Perp futures support: the EU origin (my.okx.com) now allows Spot & Futures / Linear Futures adds (Inverse auto-corrects to Linear — the EU venue has no coin-margined product), paper OKX accounts gain the origin selector, and OKX-EU paper funding uses USDC/EUR/USD lists (no USDT on the EU venue). Based on work contributed by a community member.
 
 ### Fixed
 
-- X-Perp pairs no longer break the quick-backtest symbol resolution (pairMetadata lookups now use the normalized pair key; asset fallback uses the suffix-aware parser instead of a midpoint slice) — previously every USD-denominated backtest stat rendered as $0.00 (fix by discord2020).
+- X-Perp pairs no longer break the quick-backtest symbol resolution (pairMetadata lookups now use the normalized pair key; asset fallback uses the suffix-aware parser instead of a midpoint slice) — previously every USD-denominated backtest stat rendered as $0.00.
 - `extractPairAssets` strips the X-Perp contract-family suffix so display/icon lookups get the real quote asset (`USD`, not `USD_UM_XPERP`).
 
 ## [2.40.1] - 2026-07-30
@@ -1265,7 +3673,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now send the dashed pair (`BTC-USDC`) the exchange actually lists instead of
   the concatenated internal form (`BTCUSDC`), which the backend could never
   resolve — those flows showed no candles on Hyperliquid, and each attempt
-  burnt ~90s of retries server-side (bug #153). Saved-bot charts were
+  burnt ~90s of retries server-side. Saved-bot charts were
   unaffected.
 - Hyperliquid charts now have their own data handler. They previously fell
   back to the Binance chart handler, whose live-update stream subscribes to
@@ -1569,7 +3977,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Active sessions** section in Login & Security: see every device and browser signed in to your account (device, approximate location, IP, login method and sign-in time), log out an individual session, or log out all other sessions at once. Sessions opened by support to check your account are not shown.
+- **Active sessions** section in Login & Security: see every device and browser signed in to your account (device, approximate location, IP, login method and sign-in time), log out an individual session, or log out all other sessions at once.
 
 ## [2.34.1] - 2026-07-17
 
@@ -2030,7 +4438,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Bot create/edit forms (`/bot/new`, `/combo/new`, `/grid/edit`, …): the form footer's action buttons no longer re-render on every live-price tick. `useDcaTradingContext` returned a brand-new object each render, which cascaded into the footer's button-config array and re-rendered the button row ~26×/second — the largest source of the render-loop tripwire in production. The trading context is now referentially stable, which also benefits every other consumer of that hook.
+- Bot create/edit forms (`/bot/new`, `/combo/new`, `/grid/edit`, …): the form footer's action buttons no longer re-render on every live-price tick. `useDcaTradingContext` returned a brand-new object each render, which cascaded into the footer's button-config array and re-rendered the button row ~26×/second — the largest source of render-loop tripwire reports. The trading context is now referentially stable, which also benefits every other consumer of that hook.
 - Bot detail drawer (`/bot/view`, `/combo/view`, `/hedge/combo/view`): the footer Start/Stop/Restart/Edit buttons no longer rebuild on every live bot-stats/deal update — the button list and its handlers are now memoized, so the drawer stays idle while the bot streams data.
 - Deal edit drawer: the Save/Reset action buttons no longer rebuild every render (the callbacks depended on the whole react-query mutation object instead of its stable `mutate` function).
 

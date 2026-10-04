@@ -3,6 +3,7 @@ import {
   StrategyEnum,
   type AddFundsSettings,
   type DCAGrid,
+  type PendingAddFundsEntry,
   type TransactionChart,
 } from '@/types';
 import type { ViewOrder } from '@/types/bots';
@@ -23,6 +24,12 @@ import {
   StrategyChip,
 } from '../ui/chip';
 import { DealOrdersSection } from './DealOrdersSection';
+import {
+  ExecuteNextDcaDialog,
+  canExecuteNextDca,
+} from '@/features/bots/shared/runtime';
+import { useExecuteNextDca } from '@/hooks/useDealActions';
+import { toast } from '@/lib/toast';
 
 interface TradeDetailContentProps {
   trade: {
@@ -80,6 +87,12 @@ interface TradeDetailContentProps {
     };
     created?: number | undefined;
     compoundBreakdown?: CompoundBreakdownEntry[] | undefined;
+    /** Risk-based DCA deal — its levels are engine-managed, so the manual
+     *  "Execute next DCA" action is withheld (same rule as Change DCA levels). */
+    riskBased?: boolean | undefined;
+    /** Where the deal's take profit currently sits; used to project where it
+     *  moves to after an early DCA level. */
+    takeProfitPrice?: number | undefined;
   };
   privacyMode?: boolean;
   showChips?: boolean;
@@ -90,7 +103,7 @@ interface TradeDetailContentProps {
   chartTransactions?: TransactionChart[];
   smartOrders?: SmartViewOrder[];
   strategy?: StrategyEnum;
-  pendingAddFunds?: (AddFundsSettings & { id: string })[];
+  pendingAddFunds?: PendingAddFundsEntry[];
   pendingReduceFunds?: (AddFundsSettings & { id: string })[];
 }
 
@@ -108,6 +121,27 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
   pendingAddFunds,
   pendingReduceFunds,
 }) => {
+  // Execute next DCA — the deal-detail ladder is the one place that shows the
+  // level being acted on, so the action is offered inline on that row.
+  const [executeNextDcaOpen, setExecuteNextDcaOpen] = React.useState(false);
+  const canShowExecuteNextDca = canExecuteNextDca(trade);
+  const executeNextDcaMutation = useExecuteNextDca();
+  const handleExecuteNextDcaConfirm = React.useCallback(
+    (expectedLevel: number) => {
+      if (!trade.botId) {
+        toast.error('Cannot execute the next DCA - missing bot ID');
+        return;
+      }
+      executeNextDcaMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        expectedLevel,
+      });
+      setExecuteNextDcaOpen(false);
+    },
+    [executeNextDcaMutation, trade.botId, trade.id]
+  );
+
   const progressPercentage =
     trade.levels.all > 0 ? (trade.levels.complete / trade.levels.all) * 100 : 0;
 
@@ -512,6 +546,10 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
           {...(strategy && { strategy })}
           {...(pendingAddFunds && { pendingAddFunds })}
           {...(pendingReduceFunds && { pendingReduceFunds })}
+          {...(baseAsset && { baseAsset })}
+          {...(canShowExecuteNextDca && {
+            onExecuteNextDca: () => setExecuteNextDcaOpen(true),
+          })}
         />
       ) : (
         import.meta.env.DEV && (
@@ -523,6 +561,16 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
             </div>
           </Card>
         )
+      )}
+
+      {canShowExecuteNextDca && (
+        <ExecuteNextDcaDialog
+          open={executeNextDcaOpen}
+          onOpenChange={setExecuteNextDcaOpen}
+          trade={trade}
+          onConfirm={handleExecuteNextDcaConfirm}
+          isProcessing={executeNextDcaMutation.isPending}
+        />
       )}
     </div>
   );

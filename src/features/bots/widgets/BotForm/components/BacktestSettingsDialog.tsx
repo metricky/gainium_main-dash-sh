@@ -112,9 +112,11 @@ export const BacktestSettingsDialog: React.FC<{
   );
   const [running, setRunning] = useState(false);
   const [userFee, setUserFee] = useState<string | number>(
+    // Empty, not 0, while the account fee is unknown: a 0% field reads as a
+    // real fee and runs as one.
     (initialData?.userFee as string | number) ??
       formData?.userFee?.takerCommission ??
-      0
+      ''
   );
 
   useEffect(() => {
@@ -181,9 +183,9 @@ export const BacktestSettingsDialog: React.FC<{
     if (appliedInitialRef.current === key) return;
     appliedInitialRef.current = key;
     if (tf) setTimeframe(tf as ExchangeIntervals);
-    // The footer emits `YYYY-MM-DD`; these inputs are `datetime-local` and
-    // need `YYYY-MM-DDTHH:mm`. Round-trip through the local-time helpers
-    // rather than `new Date(str)`, which would read a bare date as UTC.
+    // The footer emits `YYYY-MM-DDTHH:mm` (older callers a bare `YYYY-MM-DD`).
+    // Round-trip through the local-time helpers rather than `new Date(str)`,
+    // which would read a bare date as UTC.
     if (sd !== undefined) setStartDate(formatLocalDateTime(parseLocalDateTime(sd)));
     if (ed !== undefined) setEndDate(formatLocalDateTime(parseLocalDateTime(ed)));
     if (pid !== undefined) setPeriodId(pid);

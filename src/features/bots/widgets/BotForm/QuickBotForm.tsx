@@ -11,8 +11,8 @@ import CoinIcon from '@/components/widgets/shared/CoinIcon';
 import StrategySelector from '@/components/widgets/bots/StrategySelector';
 import {
   useBotFormSelector,
-  useBotFormState,
   useBotFormTopLevelSelector,
+  useTrackedBotFormState,
   type BotFormUpdateValue,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
@@ -49,7 +49,12 @@ import {
   useQuickBalance,
 } from './components/quick-setup/shared';
 import { useMarketStats } from './hooks/useMarketStats';
+import { normalizePairKey, resolveNativePairSymbol } from '@/utils/pairs';
 import { useMultiPairMarketStats } from './hooks/useMultiPairMarketStats';
+import {
+  pickDefaultPair,
+  useBotFormQuery,
+} from './providers/BotFormQueryProvider';
 
 const PRESET_LABELS = QUICK_SETUP_PRESETS.map((p) => p.label);
 
@@ -81,7 +86,7 @@ interface QuickBotFormProps {
   currentExchange: ExchangeInUser | null;
   exchangesData?: ExchangeInUser[];
   exchangesLoading?: boolean;
-  errors: BotFormErrors;
+  errors?: BotFormErrors;
   /**
    * Which form slice this Quick Setup is driving. Combo bots reuse the
    * DCA presets verbatim (same calibration math, same investment math)
@@ -99,7 +104,7 @@ export const QuickBotForm: React.FC<QuickBotFormProps> = ({
   slice = 'dca',
 }) => {
   const { formData, updateFormData, isFieldLocked, selectedPreset, mode } =
-    useBotFormState();
+    useTrackedBotFormState();
 
   const { openPanel: openAllStrategies } = useAllStrategiesPanel();
   const moreStrategiesBotType =
@@ -134,11 +139,20 @@ export const QuickBotForm: React.FC<QuickBotFormProps> = ({
   // calibrates on the first pair only. DCA keeps its multi-pair opt-in.
   const isMultiPair = slice === 'dca' && pairList.length > 1;
 
+  // With no pair selected, label the investment in the quote of the
+  // exchange's default pair (the chart shows that pair too) rather than a
+  // hardcoded USDT the account may not be able to trade.
+  const { pairMetadata: queryPairMetadata } = useBotFormQuery();
   const quoteAsset = useMemo(() => {
-    if (!firstPair) return '';
+    if (!firstPair) {
+      const defaultKey = pickDefaultPair(queryPairMetadata.byPair);
+      return defaultKey
+        ? (queryPairMetadata.byPair[defaultKey]?.quoteAsset?.name ?? '')
+        : '';
+    }
     const meta = formData.pairMetadata?.[firstPair];
     return meta?.quoteAsset?.name || splitPair(firstPair)[1];
-  }, [firstPair, formData.pairMetadata]);
+  }, [firstPair, formData.pairMetadata, queryPairMetadata.byPair]);
 
   const baseAsset = useMemo(() => {
     if (!firstPair) return '';
@@ -251,7 +265,12 @@ export const QuickBotForm: React.FC<QuickBotFormProps> = ({
   // can show stats even before the user opts into multi-pair mode.
   const { data: singlePairStats, isLoading: singlePairLoading } =
     useMarketStats({
-      symbol: firstPair || null,
+      symbol: firstPair
+        ? resolveNativePairSymbol(
+            firstPair,
+            formData.pairMetadata?.[normalizePairKey(firstPair)]
+          )
+        : null,
       exchange: currentExchange?.provider ?? null,
       enabled: Boolean(firstPair && currentExchange?.provider),
     });
@@ -293,7 +312,9 @@ export const QuickBotForm: React.FC<QuickBotFormProps> = ({
     isLoading: multiPairLoading,
     refetch: refetchMultiPair,
   } = useMultiPairMarketStats({
-    symbols: submittedSymbols ?? [],
+    symbols: (submittedSymbols ?? []).map((p) =>
+      resolveNativePairSymbol(p, formData.pairMetadata?.[normalizePairKey(p)])
+    ),
     exchange: currentExchange?.provider ?? null,
     // Combo never opts into multi-pair calibration — keep the hook idle.
     enabled:
@@ -531,7 +552,7 @@ export const QuickBotForm: React.FC<QuickBotFormProps> = ({
       </SettingsRow>
 
       <SettingsRow
-        name="Risk profile"
+        name="Preset"
         description="Pick a starting point. Customize later in Manual mode."
         tooltip="Values are auto-calculated from recent price data for the selected pair (14-day ATR). They have not been validated and do not constitute trading advice — always review before launching."
         navId="risk-reward"

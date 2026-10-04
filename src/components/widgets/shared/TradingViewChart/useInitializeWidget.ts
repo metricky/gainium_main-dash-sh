@@ -8,8 +8,18 @@ import {
 import { useResolvedTheme } from '@/stores/visualSettingsStore';
 import { custom_indicators_getter as getCustomIndicators } from '@/utils/tradingView/customIndicators.js';
 import { createDatafeed } from '@/utils/tradingViewDatafeed';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCSSVar } from '../../../../lib/utils/chart';
+import {
+  CHART_READY_WATCHDOG_MS,
+  canRecoverWithoutReady,
+  collectChartStallDiagnostics,
+  reportChartStall,
+  startVisibleTimer,
+  traceChartBoot,
+  traceLibraryScript,
+} from './chartReadyWatchdog';
+import { replayMissedInnerWindowLoad } from './innerWindowLoadReplay';
 import { ZustandSaveLoadAdapter } from './TradingViewSaveLoadAdapter';
 import { getCustomThemeColors } from './themeColors';
 import type { TradingViewWidgetInstance } from './types';
@@ -172,6 +182,12 @@ export function useInitializeWidget({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isChartReady, setIsChartReady] = useState(false);
+  // Set by the chart-ready watchdog when the chart neither became ready nor
+  // could be recovered; the overlay then offers a retry instead of spinning.
+  const [stalled, setStalled] = useState(false);
+  // Bumped by retry() to tear the widget down and build a fresh one.
+  const [attempt, setAttempt] = useState(0);
+  const retryingRef = useRef(false);
   const layoutStateRef = useRef<{ id: string | null; name: string | null }>({
     id: initialLayoutId ?? null,
     name: initialLayoutName ?? null,
@@ -179,8 +195,18 @@ export function useInitializeWidget({
 
   useEffect(() => {
     if (isInitializedRef.current) return;
+    retryingRef.current = false;
     let isMounted = true;
     const containerElement = containerRef.current;
+    let readyHandled = false;
+    let stopWatchdog: () => void = () => undefined;
+    let stopLoadReplay: () => void = () => undefined;
+    // What TradingView restored through `load_last_chart` before it became
+    // ready — reported by the watchdog, since a stored layout is per-browser.
+    let bootLayout: {
+      symbol: string | null;
+      resolution: string | null;
+    } | null = null;
 
     const emitLayoutChange = (
       layout: { id: string; name?: string | null } | null
@@ -270,6 +296,7 @@ export function useInitializeWidget({
         };
         script.onerror = () =>
           reject(new Error('Failed to load TradingView charting library'));
+        traceLibraryScript(script);
         document.head.appendChild(script);
       });
     const findOffset = (timeZone?: string) => {
@@ -319,8 +346,19 @@ export function useInitializeWidget({
               .getState()
               .setLastSavedLayoutId(layout.id, layoutPersistenceKey);
           },
-          onLayoutLoaded: (layout: { id: string; name?: string | null }) => {
+          onLayoutLoaded: (layout: {
+            id: string;
+            name?: string | null;
+            symbol?: string | null;
+            resolution?: string | null;
+          }) => {
             if (!layout?.id) return;
+            if (!readyHandled) {
+              bootLayout = {
+                symbol: layout.symbol ?? null,
+                resolution: layout.resolution ?? null,
+              };
+            }
             emitLayoutChange({ id: layout.id, name: layout.name ?? null });
             useTradingViewStore
               .getState()
@@ -448,16 +486,19 @@ export function useInitializeWidget({
 
       widgetRef.current = widget;
       isInitializedRef.current = true;
-      widget.onChartReady(async () => {
-        logger.info('[JournalEntryChart] onChartReady callback fired', {
-          isMounted,
-          hasInitialTimeframe: !!initialTimeframe,
-          initialTimeframe,
-        });
+      const createdAt = Date.now();
+      const boot = traceChartBoot(widget, containerElement, createdAt);
+      // Safari can boot the chart frame before the widget listens for it,
+      // which would leave the chart without onChartReady for good.
+      stopLoadReplay = replayMissedInnerWindowLoad(widget, containerElement);
 
-        if (!isMounted) return;
+      const handleChartReady = async () => {
+        if (readyHandled || !isMounted) return;
+        readyHandled = true;
+        stopWatchdog();
         setIsChartReady(true);
         setIsLoading(false);
+        setStalled(false);
 
         const widgetAny = widget as unknown as {
           subscribe?: (event: string, cb: () => void) => void;
@@ -637,6 +678,45 @@ export function useInitializeWidget({
         } catch (e) {
           logger.warn('Subscription setup failed', e);
         }
+      };
+
+      widget.onChartReady(() => {
+        logger.info('[JournalEntryChart] onChartReady callback fired', {
+          isMounted,
+          hasInitialTimeframe: !!initialTimeframe,
+          initialTimeframe,
+        });
+        void handleChartReady();
+      });
+
+      // onChartReady waits for the main series' history, so a datafeed call
+      // that never answers — or a ready signal lost on the way — leaves the
+      // chart loading forever with nothing thrown. Say what it was waiting on.
+      stopWatchdog = startVisibleTimer(CHART_READY_WATCHDOG_MS, (hiddenMs) => {
+        if (readyHandled) return;
+        const diagnostics = collectChartStallDiagnostics({
+          widget,
+          container: containerElement,
+          symbol: initialSymbol,
+          interval: initialInterval,
+          createdAt,
+          attempt,
+          mounted: isMounted,
+          loadLastChart: enableLoadLastChart,
+          customDatafeed: Boolean(datafeedProp),
+          bootLayout,
+          boot,
+          hiddenMs,
+        });
+        // An ordinary unmount leaves nothing on screen to explain.
+        if (!diagnostics.mounted && !diagnostics.containerConnected) return;
+        const recovered = canRecoverWithoutReady(diagnostics);
+        reportChartStall(diagnostics, recovered);
+        if (recovered) {
+          void handleChartReady();
+        } else if (isMounted) {
+          setStalled(true);
+        }
       });
     };
 
@@ -648,6 +728,10 @@ export function useInitializeWidget({
 
     return () => {
       isMounted = false;
+      stopLoadReplay();
+      // Kept on an ordinary teardown so the watchdog can still report a chart
+      // that was torn down yet left on screen; a retry replaces it instead.
+      if (retryingRef.current) stopWatchdog();
       try {
         widgetRef.current?.remove?.();
       } catch {
@@ -657,7 +741,23 @@ export function useInitializeWidget({
       isInitializedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
+
+  const retry = useCallback(() => {
+    retryingRef.current = true;
+    setStalled(false);
+    setError(null);
+    setIsChartReady(false);
+    setIsLoading(true);
+    setAttempt((n) => n + 1);
   }, []);
 
-  return { widgetRef, isLoading, error, isChartReady } as const;
+  return {
+    widgetRef,
+    isLoading,
+    error,
+    isChartReady,
+    stalled,
+    retry,
+  } as const;
 }

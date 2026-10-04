@@ -160,6 +160,46 @@ export const enforceMultiTargetLimit = (
   };
 };
 
+/** Minimum distance, in percent, between two consecutive live TP targets. */
+export const MULTI_TARGET_MIN_GAP_PERCENT = 0.5;
+
+/**
+ * The floor a newly typed target percentage has to respect: half a percent
+ * above the nearest EARLIER target that the deal has not already taken, or
+ * `null` when there is no such target and the value stands as typed.
+ *
+ * Filled targets are skipped on purpose. A target's percentage is stored
+ * relative to the deal's breakeven at the time it was set, and taking a target
+ * moves that breakeven — so a spent target's percentage is a stale number that
+ * can even read as negative (deal 6a95a875…ca67 shows a filled `single-target`
+ * at -1.590% after the deal averaged up). Letting that stale number set the
+ * floor silently raises the user's new target above what they typed, which
+ * lands the take-profit above the market and it never triggers.
+ */
+export const resolveMultiTargetPercentageFloor = (
+  targets: MultiTP[] | null | undefined,
+  index: number,
+  filledTargetIds?: ReadonlySet<string> | null
+): number | null => {
+  if (!Array.isArray(targets) || index <= 0) {
+    return null;
+  }
+
+  const previousLiveTarget = targets
+    .slice(0, index)
+    .filter((entry) => !filledTargetIds?.has(entry.uuid))
+    .pop();
+
+  if (!previousLiveTarget) {
+    return null;
+  }
+
+  const previousPercentage = Number.parseFloat(previousLiveTarget.target);
+  return Number.isFinite(previousPercentage)
+    ? previousPercentage + MULTI_TARGET_MIN_GAP_PERCENT
+    : null;
+};
+
 interface ExpectedAverageProfitInput {
   useTp?: boolean | null;
   useMultipleTpTargets?: boolean | null;
@@ -718,6 +758,64 @@ export const derivePriceValueChangeEffects = ({
     priceValue,
     shouldUpdateTimestamp,
   };
+};
+
+interface SingleTargetPercentageSyncParams {
+  /** The sanitized percentage the user just typed. */
+  percentage: string;
+  /** The absolute price that percentage resolves to, when the form has one. */
+  fixedPrice?: string | undefined;
+  /** The trading terminal form (`formData.terminal`). */
+  isTerminalForm: boolean;
+  /** Editing exactly ONE deal (`mode === 'deal-edit'`). */
+  isSingleDealEdit: boolean;
+  useFixedTPPrices: boolean;
+  fixedTpPrice: string;
+}
+
+/**
+ * The single (legacy) take-profit target was edited as a PERCENTAGE — decide
+ * what that means for the absolute-price fields.
+ *
+ * A DEAL's take-profit is a percentage of the deal's AVERAGE price: the engine
+ * re-derives the close order from `avgPrice` every time the average moves.
+ * Storing the price that percentage happened to resolve to pins the close order
+ * to one number while further safety orders keep moving the average under it, so
+ * the percentage the user typed reads back larger after every fill. Typing a
+ * percentage therefore returns the deal to percentage mode and drops the stale
+ * price.
+ *
+ * The trading terminal is the opposite case — it has no average to measure
+ * against and its chart line IS the absolute price — so it keeps storing the
+ * resolved price. Absolute-price intent is expressed by the price input, the
+ * chart drag and the coordinate picker in every mode; none of them go through
+ * here.
+ */
+export const deriveSingleTargetPercentageSyncEffects = ({
+  percentage,
+  fixedPrice,
+  isTerminalForm,
+  isSingleDealEdit,
+  useFixedTPPrices,
+  fixedTpPrice,
+}: SingleTargetPercentageSyncParams): FormUpdateInstruction[] => {
+  const updates: FormUpdateInstruction[] = [['tpPerc', percentage]];
+
+  if (isSingleDealEdit) {
+    if (useFixedTPPrices || fixedTpPrice) {
+      updates.push(['useFixedTPPrices', false]);
+      updates.push(['fixedTpPrice', '']);
+    }
+
+    return updates;
+  }
+
+  if (isTerminalForm) {
+    updates.push(['useFixedTPPrices', true]);
+    updates.push(['fixedTpPrice', fixedPrice || '']);
+  }
+
+  return updates;
 };
 
 interface PresetClickParams {

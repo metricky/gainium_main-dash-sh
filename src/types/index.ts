@@ -915,6 +915,9 @@ export type DCABacktestingResultHistory = DCABacktestingResultShort & {
   sent?: boolean;
   config?: BacktestingSettings;
   note?: string;
+  /** Local rows only: this browser holds the full result (deals, charts),
+   *  loaded on open. List rows never carry it. */
+  hasLocalDetails?: boolean;
 };
 
 //TODO: install github:Gainium/backtester
@@ -1033,6 +1036,8 @@ export type GRIDBacktestingResultHistory = GRIDBacktestingResultShort & {
   sent?: boolean;
   config?: BacktestingSettings;
   note?: string;
+  /** See DCABacktestingResultHistory.hasLocalDetails. */
+  hasLocalDetails?: boolean;
 };
 
 export type UserNotifications = {
@@ -1125,7 +1130,17 @@ export enum AlertType {
   dca80 = 'dca80',
   dca100 = 'dca100',
   priceOutOfRange = 'priceOutOfRange',
+  safetyOrderFilled = 'safetyOrderFilled',
 }
+
+/**
+ * Alert types the backend only ever delivers over Telegram — a safety-order
+ * fill happens once per DCA level, so an email per fill would be a mailbox
+ * flood. The preferences table renders no Email cell for these.
+ */
+export const telegramOnlyAlertTypes: AlertType[] = [
+  AlertType.safetyOrderFilled,
+];
 
 export type UserAlerts = {
   type: AlertType;
@@ -1134,6 +1149,51 @@ export type UserAlerts = {
 
 export type ChangeAlertsInput = {
   data: UserAlerts;
+};
+
+/** The three editable parts of an alert template. */
+export type AlertTemplateFields = {
+  subject: string | null;
+  header: string | null;
+  body: string | null;
+};
+
+export type AlertTemplate = {
+  type: AlertType;
+  terminal: boolean;
+  /** Admin-managed wording — what the user falls back to. */
+  default: AlertTemplateFields | null;
+  /** The user's own wording; null for any field they have not overridden. */
+  custom: AlertTemplateFields | null;
+};
+
+export type AlertTemplateVariable = {
+  name: string;
+  description: string;
+  /** Stand-in value the preview and a test send both use. */
+  sample: string | null;
+};
+
+export type SendTestAlertInput = {
+  header: string;
+  body: string;
+};
+
+export type GetAlertTemplatesData = {
+  templates: AlertTemplate[];
+  variables: AlertTemplateVariable[];
+};
+
+export type UserAlertTemplateInput = {
+  type: AlertType;
+  terminal?: boolean;
+  subject?: string;
+  header?: string;
+  body?: string;
+};
+
+export type ChangeAlertTemplatesInput = {
+  data: UserAlertTemplateInput[];
 };
 
 export enum ActionsEnum {
@@ -1702,6 +1762,16 @@ export enum DCAConditionEnum {
   dynamicAr = 'dynamicAr',
 }
 
+/**
+ * One indicator-DCA ladder level as it stood when the deal opened (level N is
+ * the N-th startDca indicator). Frozen per deal by main-app, so a bot-settings
+ * save does not resize or move a running deal's safety orders.
+ */
+export type DCAIndicatorLevel = {
+  orderSize?: string | null;
+  minPercFromLast?: string | null;
+};
+
 export type DCACustom = {
   _id?: string;
   step: string;
@@ -1746,6 +1816,12 @@ export interface DCABotSettings extends BaseSettings {
   dcaVolumeRequiredChangeRef?: DcaVolumeRequiredChangeRef;
   dcaVolumeMaxValue?: string;
   dcaByMarket?: boolean;
+  /** Raise BO/SO to the exchange minimum. Off/missing: refuse the deal and notify. */
+  allowRaiseToExchangeMin?: boolean;
+  /** Shortfall at deal start: open the deal scaled down to the free balance (BO and SOs by the same ratio) instead of skipping it. */
+  reduceToAvailableBalance?: boolean;
+  /** Smallest base order a reduced deal may open with, in the base order size unit. Empty/0: no floor. */
+  reduceToAvailableMinSize?: string;
   dcaCustom?: DCACustom[] | undefined;
   strategy: StrategyEnum;
   baseOrderSize: string;
@@ -1797,6 +1873,15 @@ export interface DCABotSettings extends BaseSettings {
   trailingTp?: boolean | undefined;
   trailingTpPerc?: string | undefined;
   maxDealsPerPair?: string | undefined;
+  /** With the dynamic price filter on "over and under": cap deals opened
+   *  above and below the first deal's price separately. Single-pair bots. */
+  useSeparateMaxDealsOverAndUnder?: boolean | undefined;
+  maxDealsOver?: string | undefined;
+  maxDealsUnder?: string | undefined;
+  /** The same split, per pair, for multi-pair bots. */
+  useSeparateMaxDealsOverAndUnderPerSymbol?: boolean | undefined;
+  maxDealsOverPerSymbol?: string | undefined;
+  maxDealsUnderPerSymbol?: string | undefined;
   useCloseAfterX?: boolean | undefined;
   closeAfterX?: string | undefined;
   pair: string[];
@@ -1808,6 +1893,10 @@ export interface DCABotSettings extends BaseSettings {
   closeAfterXwin?: string | undefined;
   useCloseAfterXloss?: boolean | undefined;
   closeAfterXloss?: string | undefined;
+  useCloseAfterXconsecutiveWin?: boolean | undefined;
+  closeAfterXconsecutiveWin?: string | undefined;
+  useCloseAfterXconsecutiveLoss?: boolean | undefined;
+  closeAfterXconsecutiveLoss?: string | undefined;
   useCloseAfterXprofit?: boolean | undefined;
   closeAfterXprofitValue?: string | undefined;
   closeAfterXprofitCond?: IndicatorStartConditionEnum | undefined;
@@ -2036,6 +2125,10 @@ export interface MultiPairDCABotSettings extends BaseSettings {
   closeAfterXwin?: string;
   useCloseAfterXloss?: boolean;
   closeAfterXloss?: string;
+  useCloseAfterXconsecutiveWin?: boolean;
+  closeAfterXconsecutiveWin?: string;
+  useCloseAfterXconsecutiveLoss?: boolean;
+  closeAfterXconsecutiveLoss?: string;
   useCloseAfterXprofit?: boolean;
   closeAfterXprofitValue?: string;
   closeAfterXprofitCond?: IndicatorStartConditionEnum;
@@ -2488,6 +2581,17 @@ export interface Bot extends MainBot<BotSettings> {
     qty: number;
     price: number;
   };
+  /**
+   * The entry the bot's value-changed TP/SL values `position` against (a
+   * neutral futures grid's unpaired fills), keyed to the position it was
+   * computed for. Only valid while side, qty and price match `position`.
+   */
+  closeEntry?: {
+    side: PositionSide;
+    qty: number;
+    price: number;
+    entry: number;
+  } | null;
   stats: ProfitLossStats;
   liveStats?: GridLiveStats;
 }
@@ -2643,6 +2747,12 @@ export type Asset = {
    */
   price?: string | null;
   usdValue?: string | null;
+  /**
+   * ISO time the backend last wrote this row (stream event or REST refresh);
+   * the oldest venue's time when summed. Requires main-app core >= 1.57.1;
+   * absent on older backends, which the stale marker treats as "unknown".
+   */
+  updated?: string | null;
 };
 
 export type Profit = {
@@ -3153,6 +3263,7 @@ export type DCADealsSettings = Pick<
 > & {
   avgPrice: number;
   changed: boolean;
+  dcaIndicatorLevels?: DCAIndicatorLevel[] | null;
   orderSizePercQty?: number;
   slChangedByUser?: boolean;
   updatedComboAdjustments?: boolean;
@@ -3228,6 +3339,7 @@ export type DCADeals = {
     base?: number;
     quote?: number;
   };
+  feeByAsset?: { asset: string; total: number; totalUsd: number }[];
   avgPrice: number;
   displayAvg?: number;
   commission: number;
@@ -3280,7 +3392,7 @@ export type DCADeals = {
     qty: number;
   }[];
   combo?: boolean;
-  pendingAddFunds?: (AddFundsSettings & { id: string })[];
+  pendingAddFunds?: PendingAddFundsEntry[];
   pendingReduceFunds?: (AddFundsSettings & { id: string })[];
   blockOrders?: BlockOrder[];
   moveSlActivated?: boolean;
@@ -3384,6 +3496,18 @@ export type AddFundsSettings = {
   limitPrice?: string;
   asset: OrderSizeTypeEnum;
   type?: AddFundsTypeEnum;
+};
+/**
+ * A deal's pending "add funds" entry as the API returns it. `baseRemainder`
+ * marks the unfilled rest of a part-filled LIMIT base order, resting as a
+ * LIMIT add-funds order: its `qty` is the resting base quantity and
+ * `baseTotal` the base order's full requested quantity. Both are nullable
+ * (older backends omit them) — treat missing as "not a remainder".
+ */
+export type PendingAddFundsEntry = AddFundsSettings & {
+  id: string;
+  baseRemainder?: boolean | null;
+  baseTotal?: string | null;
 };
 export interface ComboBotSettings extends DCABotSettings {
   gridLevel?: string;
@@ -3517,6 +3641,19 @@ export type AdditionalBotData = {
   workingTime?: string;
   workingTimeNumber?: number;
   valueChangeUsd?: string;
+  /**
+   * Net PnL in USD, unformatted.
+   *
+   * `valueChangeUsd` above is passed through `math.friendly`, which
+   * abbreviates anything from 10,000 up ("12.3K"). Every consumer coerced
+   * that string back to a number, so grid bots past five figures rendered
+   * NaN and sorted as text. Read these two instead.
+   */
+  valueChangeUsdNumber?: number;
+  /** Open PnL on the inventory the grid still holds: net − realized. */
+  unrealizedPnlUsd?: number;
+  /** What the grid started with, in USD — the basis its percentages use. */
+  initialBalanceUsd?: number;
   profitTodayPerc?: string;
   avgDaily?: number;
   avgDailyFriendly?: string;
@@ -4226,10 +4363,31 @@ export type GeneralOpenPosition = {
   baseAssetName?: string;
   quoteAssetName?: string;
   positionId: string;
+  /** First claim only — kept for legacy callers. Prefer `linkedBots`. */
   botId?: string;
+  /** First claim only — kept for legacy callers. Prefer `linkedBots`. */
   botName?: string;
+  /** First claim only — kept for legacy callers. Prefer `linkedBots`. */
   botType?: 'dca' | 'grid' | 'terminal' | 'combo' | 'hedgeDca' | 'hedgeCombo';
+  /**
+   * Every Gainium deal mapping onto this venue position. More than one bot can
+   * share a position (the venue nets them into one), and whatever is left after
+   * their sizes is held outside Gainium.
+   */
+  linkedBots?: LinkedPositionBot[];
   marginType: BotMarginTypeEnum;
+};
+
+export type LinkedPositionBot = {
+  botId: string;
+  botName?: string | null;
+  botType?: 'dca' | 'grid' | 'terminal' | 'combo' | 'hedgeDca' | 'hedgeCombo';
+  dealId?: string | null;
+  /** Base quantity this deal currently holds. */
+  size?: number | null;
+  /** `ASAP` bots re-open a deal as soon as one closes. */
+  startCondition?: string | null;
+  botStatus?: string | null;
 };
 
 export type BacktestingSettings = {
@@ -5009,6 +5167,9 @@ export interface CoinListItem {
   // resolved backend-side. Optional: absent until resolved; the UI falls back
   // to the ticker (`baseAsset`). Shown alongside the ticker in the pair picker.
   baseDisplayName?: string;
+  // The base as the exchange spells it (`rMCD`), for display; `baseAsset`
+  // stays upper-cased because matching and market lookups key on it.
+  baseLabel?: string;
   subtitle?: string;
   isHelper?: boolean;
   // The base pair's exchange (ExchangeEnum value). Forwarded to CoinIcon so it

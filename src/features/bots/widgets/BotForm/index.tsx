@@ -1,4 +1,6 @@
 import { motion } from 'framer-motion';
+import GridStartBotDialog from '@/features/bots/shared/runtime/dialogs/GridStartBotDialog';
+import { gridEditNeedsRebalance } from '@/utils/bots/grid/rebalance-on-edit';
 import {
   Archive,
   ArchiveRestore,
@@ -36,10 +38,15 @@ import WidgetWrapper, {
   type WidgetMenuActionItem,
 } from '@/components/widgets/WidgetWrapper';
 import {
-  createDefaultFormState,
+  useBotFormActiveTab,
+  useBotFormContext,
   useBotFormEditing,
+  useBotFormGetFormData,
+  useBotFormIsDirty,
   useBotFormSelector,
-  useBotFormState,
+  useBotFormStoreApi,
+  useBotFormStoreSelector,
+  useBotFormTopLevelSelector,
   type BotFormMode,
   type BotFormTabId,
   type Fields,
@@ -77,7 +84,11 @@ import {
   type ExchangeMinimumBumpEvent,
 } from '@/hooks/bots/forms/useExchangeMinimumBump';
 import { useBacktestPersistence } from '@/hooks/useBacktestPersistence';
-import { extractPairAssets, normalizePairKey } from '@/utils/pairs';
+import {
+  extractPairAssets,
+  normalizePairKey,
+  resolveNativePairSymbol,
+} from '@/utils/pairs';
 import { useBotArchive } from '@/hooks/useBotMutations';
 import { useBotTemplateShortcuts } from '@/hooks/useBotTemplatesSync';
 import { getLocalPrices } from '@/helper/price';
@@ -86,13 +97,7 @@ import DCABacktesting from '@/lib/backtester/wrapper';
 import logger from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import {
-  mapFormDataToPayload,
-  type MapFormDataToPayloadOptions,
-  type MapFormDataToPayloadResult,
-  type MapGridFormDataToPayloadResult,
-  type UpdateDCABotPayload,
-} from '@/mappers/bots/dca/map-form-data-to-payload';
+import { mapFormDataToPayload } from '@/mappers/bots/dca/map-form-data-to-payload';
 import {
   mapGridBotSettingsToFormData,
   type MapGridBotSettingsOptions,
@@ -119,13 +124,13 @@ import {
   TerminalDealTypeEnum,
   type BacktestingSettings,
   type BacktestProgress,
+  type Bot,
+  BuyTypeEnum,
   type BotChartData,
-  type BotVars,
   type DCABacktestingInput,
   type DCABacktestingResult,
   type DCABot,
   type DCABotSettings,
-  type ExchangeInUser,
   type GRIDBacktestingInput,
   type GRIDBacktestingResultHistory,
   type GridBacktestingResult,
@@ -140,13 +145,21 @@ import type { GridBot } from '@/types/gridBot';
 import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
 import type { ExampleOrdersStoreContext } from '@/utils/bots/dca/example-orders-core';
 import { validateDcaFormData } from '@/utils/bots/dca/validation';
-import { validateGridFormData } from '@/utils/bots/grid/validation';
-import { buildBotCloneRoute, buildBotEditRoute } from '@/utils/bots/navigation';
+import {
+  readGridBacktestNumbers,
+  validateGridFormData,
+} from '@/utils/bots/grid/validation';
+import {
+  buildBotCloneRoute,
+  buildBotListRoute,
+  buildBotViewRoute,
+} from '@/utils/bots/navigation';
 import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { COMBO_BOT_TYPE_ID } from '../../registry';
 import BacktestSettingsDialog, {
   type BacktestConfig,
 } from './components/BacktestSettingsDialog';
+import { toBacktestFee } from '@/utils/bots/backtestFee';
 import {
   BacktestResultsFullModal,
   buildBacktestViewModel,
@@ -169,11 +182,18 @@ import {
 } from './components/allStrategiesPanelContext';
 import { Slot } from '@/lib/extensions';
 import { useContainerWidth } from '@/hooks/useContainerWidth';
+import { useRenderLoopTripwire } from '@/hooks/useRenderLoopTripwire';
+import { registerCrashStateProvider } from '@/lib/crashBreadcrumbs';
 import { useBotFormRegistryContext } from './context';
 import type { BotSettingsMapperContext } from './hooks/useBotFormInitialization';
 /* import { useBotSmartOrders } from './hooks/useBotSmartOrders';
 import { useMergeSmartOrders } from './hooks/useMergeSmartOrders'; */
-import { useBotFormQuery } from './providers/BotFormQueryProvider';
+import { resolveChartSymbol } from './chartSymbol';
+import { buildBotFormPayloadMapper } from './payloadMapper';
+import {
+  pickDefaultPair,
+  useBotFormQuery,
+} from './providers/BotFormQueryProvider';
 import type {
   BotFormProps,
   BotFormTabComponentProps,
@@ -461,6 +481,47 @@ const evaluateAskToReset = (
   };
 };
 
+/**
+ * Import / export dialog with its export JSON built from the CURRENT form —
+ * but only while it is open. Closed, it subscribes to nothing (the shell used
+ * to rebuild the whole export payload on every render, i.e. every keystroke).
+ */
+const ImportExportDialogHost: React.FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  botTypeLabel: string;
+  mode: BotFormMode;
+  exportSettings: (formData: BotFormData) => string | null;
+  onImport: React.ComponentProps<
+    typeof BotSettingsImportExportDialog
+  >['onImport'];
+}> = ({ open, onOpenChange, botTypeLabel, mode, exportSettings, onImport }) => {
+  const openFormData = useBotFormStoreSelector((s) =>
+    open ? s.formData : null
+  );
+  const getFormData = useBotFormGetFormData();
+  const initialJson = useMemo(
+    () => (openFormData ? (exportSettings(openFormData) ?? undefined) : undefined),
+    [openFormData, exportSettings]
+  );
+  return (
+    <BotSettingsImportExportDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      botTypeLabel={botTypeLabel}
+      mode={mode}
+      initialJson={initialJson}
+      onImport={onImport}
+      onExport={() => {
+        const result = exportSettings(getFormData());
+        if (!result)
+          throw new Error('Failed to generate bot settings export payload.');
+        return result;
+      }}
+    />
+  );
+};
+
 const BotForm: React.FC<BotFormProps> = ({
   widgetId = 'bot-form',
   isEditable = true,
@@ -497,6 +558,33 @@ const BotForm: React.FC<BotFormProps> = ({
   const debugEnabled =
     debugProp ?? import.meta.env[NEW_SHELL_DEBUG_FLAG] === 'true';
 
+  // Render-loop tripwire (additive, non-fatal). This component is the innermost
+  // app frame of the React #185 crashes reported as Claus #575 / #503 / #425 —
+  // by the time the boundary catches one, the oscillating prop is gone, so the
+  // report can only name the component. The wire captures the changed-prop
+  // history BEFORE the crash. Kill via localStorage['gainium:tripwire']='off'.
+  useRenderLoopTripwire('BotFormShell', {
+    widgetId,
+    isEditable,
+    mode: propMode,
+    defaultTab,
+    onCollapse,
+    onTabMove,
+    menuActions,
+    data,
+    debug: debugProp,
+    variant,
+    hideSectionNavigation,
+    forceSubmitDisabled,
+    hideFooter,
+    footerOverride,
+    initialBot,
+    onPanelMenuChange,
+    onFormDataChange,
+    tabDescriptorsFilter,
+    onBacktestComplete,
+  });
+
   const { botExperience } = useBotFormRegistryContext();
   const experienceAdapters = botExperience.adapters;
   const experienceFormContract = botExperience.form;
@@ -530,17 +618,18 @@ const BotForm: React.FC<BotFormProps> = ({
     useBacktestPersistence();
   const getPeriod = useBacktestPeriodStore((state) => state.getPeriod);
 
+  // The shell reads the STABLE context plus a handful of narrow slices. It
+  // never subscribes to the whole form state: a keystroke must not re-render
+  // the shell (and through it every section). Callbacks that need the whole
+  // form (save, backtest, export, chart drag) read it at call time through
+  // `getFormData()`.
   const {
-    activeTab,
     setActiveTab,
     isLoading,
-    errors,
     setErrors,
-    setAlerts,
-    isDirty,
     setIsDirty,
-    formData,
     setFormData,
+    resetFormData,
     isFieldLocked,
     features,
     updateFormData,
@@ -552,8 +641,65 @@ const BotForm: React.FC<BotFormProps> = ({
     dismissDraftNotice,
     discardDraft,
     clearDraft,
-  } = useBotFormState();
+  } = useBotFormContext();
+  const activeTab = useBotFormActiveTab();
+  const isDirty = useBotFormIsDirty();
+  const botFormStore = useBotFormStoreApi();
+  const getFormData = useBotFormGetFormData();
+  const formExchangeUUID = useBotFormTopLevelSelector('exchangeUUID');
+  const formBotType = useBotFormTopLevelSelector('type');
+  const formTerminal = useBotFormTopLevelSelector('terminal');
+  const formPair = useBotFormTopLevelSelector('pair');
+  const formName = useBotFormTopLevelSelector('name');
+  const formPairMetadata = useBotFormTopLevelSelector('pairMetadata');
+  const formAskToReset = useBotFormTopLevelSelector('askToReset');
+  const formUserFee = useBotFormTopLevelSelector('userFee');
+  const terminalDealType = useBotFormStoreSelector(
+    (s) => s.formData.dca?.terminalDealType
+  );
+  const dcaStrategy = useBotFormStoreSelector((s) => s.formData.dca?.strategy);
+  const dcaFutures = useBotFormStoreSelector((s) => s.formData.dca?.futures);
   const { isReadOnly } = useBotFormEditing();
+
+  // Contribute the form's CONFIGURATION to any crash report raised while this
+  // form is mounted. Breadcrumbs already record what the user did; this records
+  // what the form was set to, which is the half that made #575 and its
+  // predecessors unreproducible — a componentStack cannot say which tab, bot
+  // type or preset was selected.
+  //
+  // Enum-ish values and error/alert FIELD NAMES only. Deliberately no formData
+  // values: it carries the bot name and other free text, and this payload lands
+  // in a long-lived feed readable by anything holding `userErrorsRead`.
+  const crashStateRef = useRef<Record<string, unknown>>({});
+  crashStateRef.current = {
+    botType: botExperience.id,
+    mode,
+    variant,
+    activeTab,
+    quickSetupMode,
+    isNestedLeg,
+    isDirty,
+    isReadOnly,
+    isLoading,
+    isEditable,
+    hasRestoredDraft: draftRestoredAt !== null,
+    hasActiveChartPair: activeChartPair !== null,
+  };
+  useEffect(
+    () =>
+      registerCrashStateProvider(`botForm:${resolvedWidgetId}`, () => {
+        // Read the hot values at crash time instead of subscribing to them.
+        const { formData, errors } = botFormStore.getState();
+        return {
+          ...crashStateRef.current,
+          pairCount: Array.isArray(formData?.['pair'])
+            ? (formData['pair'] as unknown[]).length
+            : undefined,
+          errorFields: Object.keys(errors ?? {}),
+        };
+      }),
+    [resolvedWidgetId, botFormStore]
+  );
 
   const {
     bot: queryBot,
@@ -635,21 +781,19 @@ const BotForm: React.FC<BotFormProps> = ({
   const [showCelebration, setShowCelebration] = useState(false);
   const [createdBotId, setCreatedBotId] = useState<string | undefined>();
 
-  const validationKeysRef = useRef<Set<string>>(new Set());
-
   const exchangeUUIDForMutations = useMemo(() => {
     if (bot?.exchangeUUID) {
       return bot.exchangeUUID;
     }
 
     const exchangeValue =
-      typeof formData.exchangeUUID === 'string' &&
-      formData.exchangeUUID.trim().length > 0
-        ? formData.exchangeUUID
+      typeof formExchangeUUID === 'string' &&
+      formExchangeUUID.trim().length > 0
+        ? formExchangeUUID
         : undefined;
 
     return exchangeValue;
-  }, [bot?.exchangeUUID, formData.exchangeUUID]);
+  }, [bot?.exchangeUUID, formExchangeUUID]);
 
   const {
     updateMutation,
@@ -663,7 +807,7 @@ const BotForm: React.FC<BotFormProps> = ({
       ? { exchangeUUID: exchangeUUIDForMutations }
       : {}),
     debug: debugEnabled,
-    botType: formData.type,
+    botType: formBotType,
   });
 
   // The exchange whose balances the form should hydrate. In edit mode the
@@ -672,16 +816,16 @@ const BotForm: React.FC<BotFormProps> = ({
   // from a source on another exchange must NOT keep reading the source's
   // balances, which left the base order showing $0 for the picked exchange.
   const effectiveBalanceExchangeUUID = useMemo(() => {
-    const formExchangeUUID =
-      typeof formData.exchangeUUID === 'string' &&
-      formData.exchangeUUID.trim().length > 0
-        ? formData.exchangeUUID.trim()
+    const trimmedExchangeUUID =
+      typeof formExchangeUUID === 'string' &&
+      formExchangeUUID.trim().length > 0
+        ? formExchangeUUID.trim()
         : undefined;
 
     return mode === 'edit'
-      ? (bot?.exchangeUUID ?? formExchangeUUID)
-      : (formExchangeUUID ?? bot?.exchangeUUID);
-  }, [mode, bot?.exchangeUUID, formData.exchangeUUID]);
+      ? (bot?.exchangeUUID ?? trimmedExchangeUUID)
+      : (trimmedExchangeUUID ?? bot?.exchangeUUID);
+  }, [mode, bot?.exchangeUUID, formExchangeUUID]);
 
   useEffect(() => {
     // Load balances for the currently-selected exchange. A clone seeds a
@@ -799,16 +943,29 @@ const BotForm: React.FC<BotFormProps> = ({
     [debugEnabled, refetchExchanges, getBalances, clearDraft]
   );
 
+  // Post-create dialog actions. Celebration calls onClose after each one,
+  // which clears createdBotId — so read it before navigating.
   const handleCelebrationStartBot = useCallback(() => {
     if (!createdBotId) return;
     statusToggleMutation.mutate(
       { id: createdBotId, status: 'open' },
-      {
-        onSuccess: () => toast.success('Bot started'),
-      }
+      { onSuccess: () => toast.success('Bot started') }
     );
-    navigate(buildBotEditRoute(botExperience.id, createdBotId));
+    // Don't wait for the mutation: `{base}/view/:id` is the list page with
+    // the bot open in its sidebar, which reflects the status once it lands.
+    navigate(buildBotViewRoute(botExperience.id, createdBotId));
   }, [createdBotId, botExperience.id, navigate, statusToggleMutation]);
+
+  const handleCelebrationAllBots = useCallback(() => {
+    navigate(buildBotListRoute(botExperience.id));
+  }, [botExperience.id, navigate]);
+
+  const handleCelebrationNewBot = useCallback(() => {
+    // Already on the create page, so the route alone would not remount the
+    // form — clear the just-submitted settings explicitly.
+    resetFormData();
+    navigate(`${buildBotListRoute(botExperience.id)}/new`);
+  }, [botExperience.id, navigate, resetFormData]);
 
   const handleCelebrationClose = useCallback(() => {
     setShowCelebration(false);
@@ -1053,127 +1210,69 @@ const BotForm: React.FC<BotFormProps> = ({
     });
   }, [shouldTrackGridEdit, gridBot, debugEnabled, setFormData]);
 
+  // Grid edit: flag `askToReset` when a tracked field moves away from the
+  // snapshot, and re-baseline the snapshot while the form is clean. Driven by a
+  // store subscription (same order and conditions as the two former
+  // formData-keyed effects) so the shell does not re-render per keystroke.
   useEffect(() => {
     if (!shouldTrackGridEdit) {
       initialSnapshotRef.current = null;
       return;
     }
 
-    if (!initialSnapshotRef.current) {
-      initialSnapshotRef.current = createSnapshot(formData);
-      return;
-    }
+    const evaluate = (formData: BotFormData, isDirtyNow: boolean) => {
+      if (!initialSnapshotRef.current) {
+        initialSnapshotRef.current = createSnapshot(formData);
+      } else {
+        const { askToReset } = evaluateAskToReset(
+          initialSnapshotRef.current,
+          formData
+        );
+        if (formData.askToReset !== askToReset) {
+          setFormData((previous) => {
+            if (previous.askToReset === askToReset) {
+              return previous;
+            }
 
-    const snapshot = initialSnapshotRef.current;
-    const { askToReset } = evaluateAskToReset(snapshot, formData);
+            if (debugEnabled) {
+              console.log('[BotForm] Updated grid askToReset flag', {
+                askToReset,
+              });
+            }
 
-    if (formData.askToReset === askToReset) {
-      return;
-    }
-
-    setFormData((previous) => {
-      if (previous.askToReset === askToReset) {
-        return previous;
+            return {
+              ...previous,
+              askToReset,
+            };
+          });
+        }
       }
 
-      if (debugEnabled) {
-        console.log('[BotForm] Updated grid askToReset flag', {
-          askToReset,
-        });
-      }
-
-      return {
-        ...previous,
-        askToReset,
-      };
-    });
-  }, [shouldTrackGridEdit, formData, debugEnabled, setFormData]);
-
-  useEffect(() => {
-    if (!shouldTrackGridEdit) {
-      return;
-    }
-
-    if (!initialSnapshotRef.current) {
-      return;
-    }
-
-    if (!isDirty) {
-      initialSnapshotRef.current = createSnapshot(formData);
-    }
-  }, [shouldTrackGridEdit, isDirty, formData]);
-
-  const payloadMapper = useMemo<
-    | ((
-        formState: BotFormData,
-        options: MapFormDataToPayloadOptions,
-        vars?: BotVars | undefined | null,
-        exchange?: ExchangeInUser | undefined | null
-      ) => MapFormDataToPayloadResult | MapGridFormDataToPayloadResult)
-    | undefined
-  >(() => {
-    if (isGridBot) {
-      return (
-        formState: BotFormData,
-        options: MapFormDataToPayloadOptions,
-        vars?: BotVars | undefined | null,
-        exchange?: ExchangeInUser | undefined | null
-      ) => mapGridFormDataToPayload(formState, options, vars, exchange);
-    }
-
-    if (!experienceAdapters?.mapFormToBackend) {
-      return undefined;
-    }
-
-    return (
-      formState: BotFormData,
-      options: MapFormDataToPayloadOptions,
-      vars?: BotVars | undefined | null,
-      exchange?: ExchangeInUser | undefined | null
-    ) => {
-      if (options.mode === 'create') {
-        return mapFormDataToPayload(formState, options, vars, exchange);
-      }
-
-      try {
-        const updatePayload = (experienceAdapters.mapFormToBackend?.(
-          formState,
-          vars,
-          exchange
-        ) ?? {}) as Partial<DCABotSettings>;
-        const up: UpdateDCABotPayload = {
-          ...updatePayload,
-          ordersCount: updatePayload.ordersCount
-            ? Number(updatePayload.ordersCount)
-            : 0,
-          activeOrdersCount: updatePayload.activeOrdersCount
-            ? Number(updatePayload.activeOrdersCount)
-            : 0,
-        };
-
-        return {
-          success: true,
-          updatePayload: up,
-          errors: [],
-          warnings: [],
-        };
-      } catch (error) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : 'Failed to generate bot payload.';
-
-        return {
-          success: false,
-          errors: [message],
-          warnings: [],
-        };
+      if (initialSnapshotRef.current && !isDirtyNow) {
+        initialSnapshotRef.current = createSnapshot(
+          botFormStore.getState().formData
+        );
       }
     };
-  }, [experienceAdapters, isGridBot]);
+
+    let prev = botFormStore.getState();
+    evaluate(prev.formData, prev.isDirty);
+    return botFormStore.subscribe((state) => {
+      if (state.formData === prev.formData && state.isDirty === prev.isDirty) {
+        return;
+      }
+      prev = state;
+      evaluate(state.formData, state.isDirty);
+    });
+  }, [shouldTrackGridEdit, debugEnabled, setFormData, botFormStore]);
+
+  const payloadMapper = useMemo(
+    () => buildBotFormPayloadMapper(isGridBot, experienceAdapters),
+    [experienceAdapters, isGridBot]
+  );
 
   const formHandlerOptions = useMemo(() => {
-    const options: Parameters<typeof useFormHandlers>[7] = { mode };
+    const options: Parameters<typeof useFormHandlers>[5] = { mode };
 
     if (createMutationAdapter) {
       options.createMutation = createMutationAdapter;
@@ -1205,15 +1304,11 @@ const BotForm: React.FC<BotFormProps> = ({
     payloadMapper,
   ]);
 
-  const isTerminal = useMemo(() => !!formData.terminal, [formData.terminal]);
-  const isTerminalSimpleSelected = useMemo(
-    () => formData?.dca?.terminalDealType === TerminalDealTypeEnum.simple,
-    [formData?.dca?.terminalDealType]
-  );
-  const isTerminalImportSelected = useMemo(
-    () => formData?.dca?.terminalDealType === TerminalDealTypeEnum.import,
-    [formData?.dca?.terminalDealType]
-  );
+  const isTerminal = !!formTerminal;
+  const isTerminalSimpleSelected =
+    terminalDealType === TerminalDealTypeEnum.simple;
+  const isTerminalImportSelected =
+    terminalDealType === TerminalDealTypeEnum.import;
   // Legacy parity: the terminal order entry has no Quick/Manual mode for
   // Simple (plain buy/sell) or Import (manual position declaration). Only
   // Smart keeps the redesign's Quick mode. Force Manual when those deal
@@ -1239,11 +1334,9 @@ const BotForm: React.FC<BotFormProps> = ({
     handleBacktest: handleFormBacktest,
     backtestPending,
   } = useFormHandlers(
-    formData,
     setFormData,
     setIsDirty,
     setErrors,
-    errors,
     bot,
     updateMutation,
     formHandlerOptions,
@@ -1268,77 +1361,9 @@ const BotForm: React.FC<BotFormProps> = ({
     [setShowBacktestDialog]
   );
 
-  useEffect(() => {
-    if (!isGridBot) {
-      if (validationKeysRef.current.size === 0) {
-        return;
-      }
-
-      setErrors((prevErrors) => {
-        const prevEntries = Object.entries(prevErrors);
-        if (prevEntries.length === 0) {
-          return prevErrors;
-        }
-
-        const filteredEntries = prevEntries.filter(
-          ([key]) => !validationKeysRef.current.has(key)
-        );
-
-        if (filteredEntries.length === prevEntries.length) {
-          return prevErrors;
-        }
-
-        return Object.fromEntries(filteredEntries) as Record<string, string>;
-      });
-
-      validationKeysRef.current = new Set();
-      return;
-    }
-
-    const validation = validateGridFormData(formData) as unknown as {
-      errors: Record<string, string>;
-      alerts?: import('@/types/bots/form').BotFormAlerts;
-    };
-    const validationErrors = validation.errors ?? {};
-    const validationAlerts = validation.alerts ?? {};
-    const validationKeys = Object.keys(validationErrors);
-    const validationEntries = Object.entries(validationErrors);
-
-    // Update alerts state derived from grid validation
-    setAlerts(validationAlerts);
-
-    setErrors((prevErrors) => {
-      const prevEntries = Object.entries(prevErrors);
-      const preservedEntries = prevEntries.filter(
-        ([key]) => !validationKeysRef.current.has(key)
-      );
-
-      let changed = preservedEntries.length !== prevEntries.length;
-
-      for (const [field, message] of validationEntries) {
-        const existingIndex = preservedEntries.findIndex(
-          ([key]) => key === field
-        );
-        if (existingIndex >= 0) {
-          if (preservedEntries[existingIndex][1] !== message) {
-            preservedEntries[existingIndex] = [field, message];
-            changed = true;
-          }
-        } else {
-          preservedEntries.push([field, message]);
-          changed = true;
-        }
-      }
-
-      if (!changed) {
-        return prevErrors;
-      }
-
-      return Object.fromEntries(preservedEntries) as Record<string, string>;
-    });
-
-    validationKeysRef.current = new Set(validationKeys);
-  }, [isGridBot, formData, setErrors, setAlerts]);
+  // Grid validation is the provider's debounced pass (same validator, same
+  // fields). The synchronous per-keystroke copy that used to run here also
+  // cancelled that pass, so the two fought on every keystroke.
 
   const handleLoadTemplate = useCallback(
     (template: BotTemplate) => {
@@ -1422,7 +1447,7 @@ const BotForm: React.FC<BotFormProps> = ({
           );
         }
       }
-      let resolvedForm: Partial<typeof formData> | null = null;
+      let resolvedForm: Partial<BotFormData> | null = null;
 
       // When importing raw DCA/Combo settings (not grid, not envelope) we
       // do a direct‑set like the legacy system: spread the raw JSON straight
@@ -1435,7 +1460,7 @@ const BotForm: React.FC<BotFormProps> = ({
 
       const formSection = payload['form'];
       if (isPlainRecord(formSection)) {
-        resolvedForm = formSection as Partial<typeof formData>;
+        resolvedForm = formSection as Partial<BotFormData>;
       } else {
         const settingsSection = isPlainRecord(payload['settings'])
           ? payload['settings']
@@ -1567,7 +1592,7 @@ const BotForm: React.FC<BotFormProps> = ({
               ...(importedExchangeUUID !== undefined
                 ? { exchangeUUID: importedExchangeUUID }
                 : {}),
-            } as Partial<typeof formData>;
+            } as Partial<BotFormData>;
 
             directSettingsImport = { slice, raw };
           }
@@ -1579,7 +1604,7 @@ const BotForm: React.FC<BotFormProps> = ({
           typeof payload['name'] === 'string' ||
           Array.isArray(payload['pair'])
         ) {
-          resolvedForm = payload as Partial<typeof formData>;
+          resolvedForm = payload as Partial<BotFormData>;
         }
       }
 
@@ -1624,7 +1649,7 @@ const BotForm: React.FC<BotFormProps> = ({
     ]
   );
 
-  const handleExportToDialog = useCallback(() => {
+  const handleExportToDialog = useCallback((formData: BotFormData) => {
     let exportedSettings: Record<string, unknown> | null = null;
 
     // Shape the export so it matches the legacy dashboard's
@@ -1749,7 +1774,6 @@ const BotForm: React.FC<BotFormProps> = ({
     botSettings,
     debugEnabled,
     experienceAdapters,
-    formData,
     isGridBot,
     mode,
   ]);
@@ -1833,6 +1857,28 @@ const BotForm: React.FC<BotFormProps> = ({
     setCollapsedSections((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
+  // On/off state of every section toggle, as one string ("1010…") so the
+  // shell re-renders only when a toggle flips — never on a value keystroke.
+  const sectionToggleBits = useBotFormStoreSelector((s) => {
+    const slice = (
+      isComboBot
+        ? s.formData.combo
+        : isGridBot
+          ? s.formData.grid
+          : s.formData.dca
+    ) as Record<string, unknown> | undefined;
+    return Object.values(sectionToggleMap)
+      .map((field) => (slice?.[field] ? '1' : '0'))
+      .join('');
+  });
+  const isSectionToggleOn = useCallback(
+    (toggleField: string) => {
+      const index = Object.values(sectionToggleMap).indexOf(toggleField);
+      return index >= 0 && sectionToggleBits[index] === '1';
+    },
+    [sectionToggleMap, sectionToggleBits]
+  );
+
   const navigationTabs = useMemo<ScrollableTabItem[]>(() => {
     // Filter out disabled tabs completely (user requested removal instead of just disabling)
     return visibleDescriptors
@@ -1841,15 +1887,7 @@ const BotForm: React.FC<BotFormProps> = ({
         // If no toggle field, always show the tab
         if (!toggleField) return true;
         // Only show the tab if the toggle is enabled
-        return Boolean(
-          (
-            (isComboBot
-              ? formData.combo
-              : isGridBot
-                ? formData.grid
-                : formData.dca) as Record<string, unknown>
-          )[toggleField]
-        );
+        return isSectionToggleOn(toggleField);
       })
       .map(({ id, label, icon, description }) => ({
         id,
@@ -1857,15 +1895,7 @@ const BotForm: React.FC<BotFormProps> = ({
         icon,
         ...(description ? { description } : {}),
       }));
-  }, [
-    visibleDescriptors,
-    formData.dca,
-    sectionToggleMap,
-    isComboBot,
-    formData.combo,
-    isGridBot,
-    formData.grid,
-  ]);
+  }, [visibleDescriptors, sectionToggleMap, isSectionToggleOn]);
 
   const getBalanceFn = useMemo<GetBalanceFn>(
     () => getBalance as unknown as GetBalanceFn,
@@ -1905,8 +1935,8 @@ const BotForm: React.FC<BotFormProps> = ({
         }`;
 
   const widgetValue = useMemo(
-    () => resolveWidgetValue(mode, formData, bot),
-    [mode, formData, bot]
+    () => resolveWidgetValue(mode, { name: formName, pair: formPair }, bot),
+    [mode, formName, formPair, bot]
   );
 
   const submitIsPending =
@@ -1931,6 +1961,8 @@ const BotForm: React.FC<BotFormProps> = ({
 
 
   const [showRestartDialog, setShowRestartDialog] = useState(false);
+  const [showGridRebalanceDialog, setShowGridRebalanceDialog] =
+    useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   /* const [showSmartOrderMergeDialog, setShowSmartOrderMergeDialog] =
     useState(false);
@@ -2011,8 +2043,8 @@ const BotForm: React.FC<BotFormProps> = ({
     mergeEligibleCount < 2; */
 
   const primaryPair = useMemo(() => {
-    if (Array.isArray(formData.pair) && formData.pair.length > 0) {
-      return formData.pair[0];
+    if (Array.isArray(formPair) && formPair.length > 0) {
+      return formPair[0];
     }
 
     const gridPairCandidate = gridBotForOperations?.settings?.pair;
@@ -2032,7 +2064,7 @@ const BotForm: React.FC<BotFormProps> = ({
     }
 
     return undefined;
-  }, [formData.pair, gridBotForOperations?.settings?.pair, botSettings]);
+  }, [formPair, gridBotForOperations?.settings?.pair, botSettings]);
 
   const [baseAsset, quoteAsset] = useMemo(() => {
     if (!primaryPair || typeof primaryPair !== 'string') {
@@ -2067,8 +2099,8 @@ const BotForm: React.FC<BotFormProps> = ({
     if (isTerminalImportSelected) {
       return 'Import deal';
     }
-    const terminalStrategy = formData.dca?.strategy;
-    const terminalFutures = formData.dca?.futures;
+    const terminalStrategy = dcaStrategy;
+    const terminalFutures = dcaFutures;
     const sideLabel =
       terminalStrategy === StrategyEnum.long
         ? terminalFutures
@@ -2083,14 +2115,14 @@ const BotForm: React.FC<BotFormProps> = ({
     submitIsPending,
     isTerminal,
     isTerminalImportSelected,
-    formData.dca?.strategy,
-    formData.dca?.futures,
+    dcaStrategy,
+    dcaFutures,
     baseAsset,
   ]);
 
   const fundsTargetName = useMemo(() => {
-    if (typeof formData.name === 'string' && formData.name.trim()) {
-      return formData.name.trim();
+    if (typeof formName === 'string' && formName.trim()) {
+      return formName.trim();
     }
 
     const gridNameCandidate = gridBotForOperations?.settings?.name;
@@ -2110,7 +2142,7 @@ const BotForm: React.FC<BotFormProps> = ({
     }
 
     return undefined;
-  }, [formData.name, gridBotForOperations?.settings?.name, botSettings]);
+  }, [formName, gridBotForOperations?.settings?.name, botSettings]);
 
   const fundsActionsDisabled = !botId || mode !== 'edit';
 
@@ -2128,6 +2160,9 @@ const BotForm: React.FC<BotFormProps> = ({
   // blowing away form-driven chart updates.
   const dragHandlerRef = useRef<ExampleOrdersStoreContext['onDrag']>(undefined);
   dragHandlerRef.current = (price, type, index, meta) => {
+    // Read the form at drag time: the handler must see the latest values,
+    // and the shell does not subscribe to them.
+    const formData = getFormData();
     const strategy = formData.dca?.strategy;
     const long = strategy !== StrategyEnum.short;
     const latestPrice = meta?.latestPrice;
@@ -2267,11 +2302,11 @@ const BotForm: React.FC<BotFormProps> = ({
     // the current selection — otherwise it falls back to the first pair.
     const primaryPair =
       activeChartPair &&
-      Array.isArray(formData.pair) &&
-      formData.pair.includes(activeChartPair)
+      Array.isArray(formPair) &&
+      formPair.includes(activeChartPair)
         ? activeChartPair
-        : Array.isArray(formData.pair) && formData.pair.length > 0
-          ? formData.pair[0]
+        : Array.isArray(formPair) && formPair.length > 0
+          ? formPair[0]
           : undefined;
 
     // pairMetadata is keyed by the normalized `${base}${quote}` (no dash),
@@ -2280,16 +2315,24 @@ const BotForm: React.FC<BotFormProps> = ({
     // back to scanning values for a match by `.pair`. This matters for
     // hedge create-mode where the chart reports the dashed pair via
     // setOnChangeSymbol and a strict-key lookup would miss it.
-    const realPair = primaryPair
-      ? (formData.pairMetadata[primaryPair] ??
-        Object.values(formData.pairMetadata).find(
-          (p) => p.pair === primaryPair
-        ))
+    const selectedPair = primaryPair
+      ? (formPairMetadata[primaryPair] ??
+        Object.values(formPairMetadata).find((p) => p.pair === primaryPair))
       : undefined;
+    // With no pair selected, show the exchange's default pair rather than
+    // letting the chart fall back to a hardcoded BTCUSDT. `byPair` is already
+    // scoped to what the account can trade, so an OKX Europe account gets a
+    // USDC/EUR pair instead of a USDT one it cannot trade.
+    const defaultPairKey = primaryPair
+      ? null
+      : pickDefaultPair(pairMetadata.byPair);
+    const chartPair =
+      selectedPair ??
+      (defaultPairKey ? pairMetadata.byPair[defaultPairKey] : undefined);
 
-    if (realPair) {
+    if (selectedPair) {
       exampleOrdersStore.setContext({
-        symbol: { ...realPair, maxOrders: 200 },
+        symbol: { ...selectedPair, maxOrders: 200 },
       });
     }
 
@@ -2299,11 +2342,15 @@ const BotForm: React.FC<BotFormProps> = ({
 
     const payload: BotChartData = {};
 
-    if (
-      realPair?.exchange === currentExchange?.provider &&
-      typeof realPair?.pair === 'string'
-    ) {
-      payload.symbol = realPair.pair;
+    const symbol = resolveChartSymbol({
+      mode,
+      primaryPair,
+      selectedPair,
+      chartPair,
+      provider: currentExchange?.provider,
+    });
+    if (symbol) {
+      payload.symbol = symbol;
     }
 
     if (currentExchange) {
@@ -2317,12 +2364,13 @@ const BotForm: React.FC<BotFormProps> = ({
 
     onFormDataChange(payload);
   }, [
-    formData.pair,
+    formPair,
     activeChartPair,
     botId,
     mode,
     onFormDataChange,
-    formData.pairMetadata,
+    formPairMetadata,
+    pairMetadata.byPair,
     currentExchange,
     exampleOrdersStore,
   ]);
@@ -2703,8 +2751,8 @@ const BotForm: React.FC<BotFormProps> = ({
       return false;
     }
 
-    return Boolean(formData.askToReset);
-  }, [isGridBot, mode, formData.askToReset]);
+    return Boolean(formAskToReset);
+  }, [isGridBot, mode, formAskToReset]);
 
   const requiresActiveRestartConfirmation = useMemo(() => {
     if (!shouldWarnRestart) {
@@ -2720,17 +2768,46 @@ const BotForm: React.FC<BotFormProps> = ({
   }, [shouldWarnRestart, botStatus]);
 
   const handleSubmit = useCallback(() => {
+    // Legacy parity: when the edited grid needs different balances than the
+    // bot holds, ask how to cover the difference first (start dialog in
+    // update mode). Its answer rides on the changeBot call, so the restart
+    // confirmation is not asked on top of it.
+    if (
+      shouldWarnRestart &&
+      bot &&
+      gridEditNeedsRebalance(getFormData(), bot as unknown as Bot)
+    ) {
+      setShowGridRebalanceDialog(true);
+      return;
+    }
     if (requiresActiveRestartConfirmation) {
       setShowRestartDialog(true);
       return;
     }
 
     void handleSave();
-  }, [requiresActiveRestartConfirmation, handleSave]);
+  }, [
+    requiresActiveRestartConfirmation,
+    handleSave,
+    shouldWarnRestart,
+    bot,
+    getFormData,
+  ]);
 
   const resumeSaveAfterConfirmation = useCallback(() => {
     void handleSave();
   }, [handleSave]);
+
+  const handleGridRebalanceConfirm = useCallback(
+    (buyType: BuyTypeEnum, _buyCount?: string, buyAmount?: number) => {
+      setShowGridRebalanceDialog(false);
+      void handleSave(undefined, {
+        buyType,
+        ...(typeof buyAmount === 'number' ? { buyAmount } : {}),
+      });
+    },
+    [handleSave]
+  );
 
   useEffect(() => {
     if (!shouldWarnRestart && showRestartDialog) {
@@ -2790,12 +2867,19 @@ const BotForm: React.FC<BotFormProps> = ({
     }, 50);
   }, [quickSetupMode]);
 
-  // Update active tab based on scroll position
+  // Update active tab based on scroll position. At most one measurement pass
+  // per animation frame (a scroll event can fire several times per frame),
+  // and the current tab is read from a ref so the listener is not torn down
+  // and re-attached on every section change.
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer) return;
 
-    const handleScroll = () => {
+    let frame: number | null = null;
+    const measure = () => {
+      frame = null;
       if (isScrolling.current) return;
 
       const containerRect = scrollContainer.getBoundingClientRect();
@@ -2829,17 +2913,29 @@ const BotForm: React.FC<BotFormProps> = ({
       });
 
       // Update active tab only if we have a clear winner and it's different
-      if (activeSection && activeSection !== activeTab && maxVisibleArea > 0) {
+      if (
+        activeSection &&
+        activeSection !== activeTabRef.current &&
+        maxVisibleArea > 0
+      ) {
         setActiveTab(activeSection as BotFormTabId);
+      }
+    };
+    const handleScroll = () => {
+      if (frame === null) {
+        frame = requestAnimationFrame(measure);
       }
     };
 
     // Initial check
-    handleScroll();
+    measure();
 
     scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
-    return () => scrollContainer.removeEventListener('scroll', handleScroll);
-  }, [activeTab, setActiveTab, visibleDescriptors]);
+    return () => {
+      scrollContainer.removeEventListener('scroll', handleScroll);
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [setActiveTab, visibleDescriptors]);
 
   const loadingContent = (
     <div className="flex h-full flex-col items-center justify-center space-y-md">
@@ -2850,8 +2946,37 @@ const BotForm: React.FC<BotFormProps> = ({
     </div>
   );
 
+  // Fee of the last settings-dialog run, keyed by exchange + pair. The footer's
+  // quick-run hands over no fee, so it used to ignore what the dialog shows and
+  // fall back to the looked-up account fee — or to 0 whenever that lookup had
+  // failed, silently backtesting without fees.
+  const lastDialogFeeRef = useRef<{ key: string; fee: number } | null>(null);
+
   const onRunBacktest = useCallback(
     async (cfg: BacktestConfig) => {
+      // The form as it is now, read once at run time (the shell does not
+      // subscribe to it).
+      const formData = getFormData();
+      const feeKey = `${currentExchange?.uuid ?? ''}::${[formData.pair].flat().join(',')}`;
+      // A dialog run always carries its field (possibly cleared); quick-run
+      // carries none and reuses the dialog's last fee, then the account fee.
+      const fromDialog = cfg.userFee !== undefined;
+      const userFee = fromDialog
+        ? toBacktestFee(cfg.userFee)
+        : lastDialogFeeRef.current?.key === feeKey
+          ? lastDialogFeeRef.current.fee
+          : toBacktestFee(formData.userFee?.takerCommission);
+      if (userFee === null) {
+        toast.error(
+          'Exchange fee is unknown for this pair. Set it in the backtest settings, then run again.'
+        );
+        setShowBacktestDialog(true);
+        return;
+      }
+      if (fromDialog) {
+        lastDialogFeeRef.current = { key: feeKey, fee: userFee };
+      }
+
       if (cfg.mode === 'server') {
         // Use the existing handler from useFormHandlers which runs the server
         // mutation — and hand it what the dialog collected. Calling it bare
@@ -2862,7 +2987,7 @@ const BotForm: React.FC<BotFormProps> = ({
           startDate: cfg.startDate,
           endDate: cfg.endDate,
           slippagePercent: cfg.slippagePercent,
-          userFee: cfg.userFee,
+          userFee,
         });
       } else {
         try {
@@ -2873,6 +2998,16 @@ const BotForm: React.FC<BotFormProps> = ({
             throw new Error(
               'Manual Backtesting exchange cannot run local backtests'
             );
+          }
+          // The grid inputs are free text and the engine reads them with
+          // `parseFloat` / `+`, so read them the way save does: `1,5` is 1.5,
+          // and text that is not a number refuses the run.
+          const { grid: gridNumbers, errors: gridNumberErrors } =
+            readGridBacktestNumbers(formData.grid);
+          if (isGridBot && Object.keys(gridNumberErrors).length > 0) {
+            setErrors((prev) => ({ ...prev, ...gridNumberErrors }));
+            toast.error(Object.values(gridNumberErrors).join(' '));
+            return;
           }
           const resolvedPeriodName =
             cfg.periodId && !['auto', 'custom'].includes(cfg.periodId)
@@ -2913,7 +3048,9 @@ const BotForm: React.FC<BotFormProps> = ({
             const base = meta?.baseAsset?.name ?? fallback.baseAsset;
             const quote = meta?.quoteAsset?.name ?? fallback.quoteAsset;
             return {
-              pair: p,
+              // Case-sensitive venues (HIP-3 `xyz:EUR-USDC`) reject the
+              // upper-cased stored pair: 0 candles, 0 deals.
+              pair: resolveNativePairSymbol(p, meta),
               baseAsset: {
                 name: base,
                 minAmount: meta?.baseAsset?.minAmount,
@@ -2951,7 +3088,7 @@ const BotForm: React.FC<BotFormProps> = ({
           const lastDataTime = new Date(cfg.endDate).getTime();
 
           const resolvedBacktestConfig: BacktestingSettings = {
-            userFee: `${cfg.userFee ?? formData.userFee?.takerCommission ?? 0}`,
+            userFee: `${userFee}`,
             slippage: `${cfg.slippagePercent ?? 0}`,
             RFR: cfg.RFR ?? '2',
             MAR: cfg.MAR ?? '7',
@@ -2985,7 +3122,7 @@ const BotForm: React.FC<BotFormProps> = ({
           if (isGridBot) {
             // ── Grid Bot Local Backtest ──
             const gridSettings = {
-              ...formData.grid,
+              ...gridNumbers,
               pair: primaryPair,
               name: formData.name || 'New Bot',
               // Legacy forces this flag true at backtest time (gridbot
@@ -3001,7 +3138,7 @@ const BotForm: React.FC<BotFormProps> = ({
               exchange: currentExchange.provider,
               symbols,
               settings: gridSettings,
-              userFee: +(cfg.userFee ?? formData.userFee?.takerCommission ?? 0),
+              userFee,
               prices: getLocalPrices(),
               balances: queryBalances ?? [],
               interval: cfg.timeframe,
@@ -3195,10 +3332,29 @@ const BotForm: React.FC<BotFormProps> = ({
               symbols,
               settings: {
                 ...backtestSettings,
+                // The raw form slice keeps every indicator NUMBER param as a
+                // STRING: `InlineIndicatorConfig` stores `newValue.toString()`
+                // so a `$var` expression can share the field. It is
+                // `mapFormDataToPayload` that coerces them back (its
+                // `fieldsAsNumber` list), so a SAVED bot holds
+                // `indicatorLength: 14` while the form the user is still
+                // editing holds `'14'` — and the engine is not tolerant:
+                // `new RSI('14')` returns `null` for every bar, so no crossing
+                // ever fires and the run reports 0 deals. That is bug #559,
+                // and it explains the reporter's own workaround (save, reopen
+                // in Edit, backtest works) — reloading re-reads the coerced
+                // values from the API.
+                // Take the indicators from the mapped payload instead: it is
+                // normalised exactly the way the backend receives them, and
+                // pruned of the close indicators the active close condition
+                // cannot use. `mapIndicatorGroupsFields` reads the combo slice
+                // for combo bots, so this is correct for both bot types.
+                indicators: settingsFromMapping.indicators,
+                indicatorGroups: settingsFromMapping.indicatorGroups,
                 name: formData.name,
                 pair: [formData.pair].flat(),
               },
-              userFee: +(cfg.userFee ?? formData.userFee?.takerCommission ?? 0),
+              userFee,
               prices: getLocalPrices(),
               balances: queryBalances ?? [],
               interval: cfg.timeframe,
@@ -3372,7 +3528,7 @@ const BotForm: React.FC<BotFormProps> = ({
     },
     [
       currentExchange,
-      formData,
+      getFormData,
       getPeriod,
       handleFormBacktest,
       isGridBot,
@@ -3381,10 +3537,17 @@ const BotForm: React.FC<BotFormProps> = ({
       persistGridBacktestResult,
       queryBalances,
       onBacktestComplete,
+      setErrors,
     ]
   );
 
   const isContentReadOnly = mode === 'edit' ? isReadOnly : false;
+
+  // The settings dialog only reads the account fee off the form.
+  const backtestDialogFormData = useMemo(
+    () => ({ userFee: formUserFee }) as BotFormData,
+    [formUserFee]
+  );
 
   // Memoized so unrelated re-renders of BotFormShell don't hand every
   // section a fresh props object. Identity still changes when formData
@@ -3392,13 +3555,14 @@ const BotForm: React.FC<BotFormProps> = ({
   // for renders that don't touch these values. The functions below
   // (updateFormData, isFieldLocked, getBalanceFn, handleUpdateBalances,
   // handleTabChangeWithScroll) are already stable references.
+  // No hot state in here: sections read formData / errors from the store
+  // through their own narrow selectors, so these props keep their identity
+  // while the user types and every section's memo holds.
   const componentProps = useMemo<BotFormTabComponentProps>(
     () => ({
       currentExchange,
-      formData,
       updateFormData:
         updateFormData as BotFormTabComponentProps['updateFormData'],
-      errors,
       mode,
       isFieldLocked,
       getBalance: getBalanceFn,
@@ -3406,15 +3570,12 @@ const BotForm: React.FC<BotFormProps> = ({
       handleUpdateBalances,
       exchangesData: exchanges,
       exchangesLoading,
-      activeTab,
       onTabChange: handleTabChangeWithScroll,
       features,
     }),
     [
       currentExchange,
-      formData,
       updateFormData,
-      errors,
       mode,
       isFieldLocked,
       getBalanceFn,
@@ -3422,7 +3583,6 @@ const BotForm: React.FC<BotFormProps> = ({
       handleUpdateBalances,
       exchanges,
       exchangesLoading,
-      activeTab,
       handleTabChangeWithScroll,
       features,
     ]
@@ -3564,7 +3724,6 @@ const BotForm: React.FC<BotFormProps> = ({
                         {...(exchangesLoading !== undefined
                           ? { exchangesLoading }
                           : {})}
-                        errors={errors}
                       />
                     ) : (
                       <QuickBotForm
@@ -3575,7 +3734,6 @@ const BotForm: React.FC<BotFormProps> = ({
                         {...(exchangesLoading !== undefined
                           ? { exchangesLoading }
                           : {})}
-                        errors={errors}
                         slice={isComboBot ? 'combo' : 'dca'}
                       />
                     ))}
@@ -3586,15 +3744,7 @@ const BotForm: React.FC<BotFormProps> = ({
                     ] as keyof BotFormData['dca'];
                     const hasToggle = toggleField !== undefined;
                     const toggleEnabled = hasToggle
-                      ? isComboBot
-                        ? Boolean(formData['combo'][toggleField])
-                        : isGridBot
-                          ? Boolean(
-                              formData['grid'][
-                                toggleField as unknown as keyof BotFormData['grid']
-                              ]
-                            )
-                          : Boolean(formData['dca'][toggleField])
+                      ? isSectionToggleOn(toggleField)
                       : false;
 
                     return (
@@ -3695,9 +3845,7 @@ const BotForm: React.FC<BotFormProps> = ({
                       ? BotTypesEnum.combo
                       : BotTypesEnum.dca
                 }
-                formData={formData}
                 mode={mode}
-                errors={errors}
                 submitLabel={footerOverride?.submitLabel ?? submitLabel}
                 submitDisabled={
                   footerOverride?.submitDisabled ??
@@ -3787,6 +3935,15 @@ const BotForm: React.FC<BotFormProps> = ({
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
       />
+      {isGridBot && mode === 'edit' && (
+        <GridStartBotDialog
+          update
+          open={showGridRebalanceDialog}
+          onOpenChange={setShowGridRebalanceDialog}
+          onConfirm={handleGridRebalanceConfirm}
+          isProcessing={submitIsPending}
+        />
+      )}
       <ConfirmationDialog
         open={showResetConfirm}
         onOpenChange={setShowResetConfirm}
@@ -3795,23 +3952,17 @@ const BotForm: React.FC<BotFormProps> = ({
         confirmText="Reset"
         variant="destructive"
         onConfirm={() => {
-          setFormData(createDefaultFormState(mode, isTerminal));
+          resetFormData();
           toast.success('Settings reset to defaults');
         }}
       />
-      <BotSettingsImportExportDialog
+      <ImportExportDialogHost
         open={showImportExportDialog}
         onOpenChange={setShowImportExportDialog}
         botTypeLabel={botExperience.label ?? 'Bot'}
         mode={mode}
-        initialJson={handleExportToDialog() ?? undefined}
+        exportSettings={handleExportToDialog}
         onImport={handleImportFromDialog}
-        onExport={() => {
-          const result = handleExportToDialog();
-          if (!result)
-            throw new Error('Failed to generate bot settings export payload.');
-          return result;
-        }}
       />
 
       {/* Templates now rendered inside the footer as a dedicated dropdown */}
@@ -3828,7 +3979,7 @@ const BotForm: React.FC<BotFormProps> = ({
         open={showBacktestDialog}
         initialData={backtestDialogInitial}
         onClose={() => setShowBacktestDialog(false)}
-        formData={formData}
+        formData={backtestDialogFormData}
         backtestProgress={backtestProgress}
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
@@ -3878,15 +4029,16 @@ const BotForm: React.FC<BotFormProps> = ({
           open={showCelebration}
           onClose={handleCelebrationClose}
           title="🎉 Bot Created Successfully!"
-          description="Your new bot is ready to go. You can start it now or make additional adjustments first."
-          primaryAction={{
-            label: 'Start bot',
-            onClick: handleCelebrationStartBot,
-          }}
-          secondaryAction={{
-            label: 'Close',
-            variant: 'outline',
-          }}
+          description="Your new bot is ready to go."
+          actions={[
+            { label: 'To all bots', onClick: handleCelebrationAllBots },
+            { label: 'New bot', onClick: handleCelebrationNewBot },
+            {
+              label: 'Start',
+              onClick: handleCelebrationStartBot,
+              variant: 'default',
+            },
+          ]}
         />
       )}
     </>
@@ -3964,7 +4116,6 @@ const BotForm: React.FC<BotFormProps> = ({
                   {...(exchangesLoading !== undefined
                     ? { exchangesLoading }
                     : {})}
-                  errors={errors}
                 />
               ) : (
                 <QuickBotForm
@@ -3975,7 +4126,6 @@ const BotForm: React.FC<BotFormProps> = ({
                   {...(exchangesLoading !== undefined
                     ? { exchangesLoading }
                     : {})}
-                  errors={errors}
                   slice={isComboBot ? 'combo' : 'dca'}
                 />
               ))}
@@ -3987,15 +4137,7 @@ const BotForm: React.FC<BotFormProps> = ({
               ] as keyof BotFormData['dca'];
               const hasToggle = toggleField !== undefined;
               const toggleEnabled = hasToggle
-                ? isComboBot
-                  ? Boolean(formData['combo'][toggleField])
-                  : isGridBot
-                    ? Boolean(
-                        formData['grid'][
-                          toggleField as unknown as keyof BotFormData['grid']
-                        ]
-                      )
-                    : Boolean(formData['dca'][toggleField])
+                ? isSectionToggleOn(toggleField)
                 : false;
               return (
                 <div
@@ -4133,9 +4275,7 @@ const BotForm: React.FC<BotFormProps> = ({
                   ? BotTypesEnum.combo
                   : BotTypesEnum.dca
             }
-            formData={formData}
             mode={mode}
-            errors={errors}
             submitLabel={footerOverride?.submitLabel ?? submitLabel}
             submitDisabled={footerOverride?.submitDisabled ?? submitDisabled}
             submitIsPending={footerOverride?.submitIsPending ?? submitIsPending}
@@ -4207,6 +4347,15 @@ const BotForm: React.FC<BotFormProps> = ({
         cancelText="Cancel"
         onConfirm={resumeSaveAfterConfirmation}
       />
+      {isGridBot && mode === 'edit' && (
+        <GridStartBotDialog
+          update
+          open={showGridRebalanceDialog}
+          onOpenChange={setShowGridRebalanceDialog}
+          onConfirm={handleGridRebalanceConfirm}
+          isProcessing={submitIsPending}
+        />
+      )}
       <ConfirmationDialog
         open={showResetConfirm}
         onOpenChange={setShowResetConfirm}
@@ -4215,23 +4364,17 @@ const BotForm: React.FC<BotFormProps> = ({
         confirmText="Reset"
         variant="destructive"
         onConfirm={() => {
-          setFormData(createDefaultFormState(mode, isTerminal));
+          resetFormData();
           toast.success('Settings reset to defaults');
         }}
       />
-      <BotSettingsImportExportDialog
+      <ImportExportDialogHost
         open={showImportExportDialog}
         onOpenChange={setShowImportExportDialog}
         botTypeLabel={botExperience.label ?? 'Bot'}
         mode={mode}
-        initialJson={handleExportToDialog() ?? undefined}
+        exportSettings={handleExportToDialog}
         onImport={handleImportFromDialog}
-        onExport={() => {
-          const result = handleExportToDialog();
-          if (!result)
-            throw new Error('Failed to generate bot settings export payload.');
-          return result;
-        }}
       />
       <ShareBotDialog
         open={showShareDialog}
@@ -4246,7 +4389,7 @@ const BotForm: React.FC<BotFormProps> = ({
         open={showBacktestDialog}
         initialData={backtestDialogInitial}
         onClose={() => setShowBacktestDialog(false)}
-        formData={formData}
+        formData={backtestDialogFormData}
         backtestProgress={backtestProgress}
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
@@ -4295,15 +4438,16 @@ const BotForm: React.FC<BotFormProps> = ({
         open={showCelebration}
         onClose={handleCelebrationClose}
         title="🎉 Bot Created Successfully!"
-        description="Your new bot is ready to go. You can start it now or make additional adjustments first."
-        primaryAction={{
-          label: 'Start bot',
-          onClick: handleCelebrationStartBot,
-        }}
-        secondaryAction={{
-          label: 'Close',
-          variant: 'outline',
-        }}
+        description="Your new bot is ready to go."
+        actions={[
+          { label: 'To all bots', onClick: handleCelebrationAllBots },
+          { label: 'New bot', onClick: handleCelebrationNewBot },
+          {
+            label: 'Start',
+            onClick: handleCelebrationStartBot,
+            variant: 'default',
+          },
+        ]}
       />
     </div>
   );

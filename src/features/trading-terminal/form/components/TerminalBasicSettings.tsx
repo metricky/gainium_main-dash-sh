@@ -16,8 +16,10 @@ import LeverageSlider from '@/components/widgets/shared/LeverageSlider';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import { useTradingTerminalUtils } from '@/context/TradingTerminalUtilsContext';
 import {
+  useBotFormErrorsOr,
   useBotFormSelector,
-  useBotFormState,
+  useTrackedBotFormData,
+  useTrackedBotFormState,
   type BotFormMode,
   type BotFormUpdateValue,
   type Fields,
@@ -247,9 +249,10 @@ const LimitPriceInput: React.FC<{
 
 interface TerminalBasicSettingsProps {
   currentExchange: ExchangeBotForm | null;
-  formData: BotFormData;
+  /** Omitted by the bot form shell: read from the form store instead. */
+  formData?: BotFormData;
   updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
-  errors: BotFormErrors;
+  errors?: BotFormErrors;
   exchangesData?: ExchangeBotForm[] | undefined;
   exchangesLoading?: boolean;
   onUpdateBalances?: () => void;
@@ -262,15 +265,19 @@ interface TerminalBasicSettingsProps {
 }
 
 export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
-  props
+  rawProps
 ) => {
+  const formData = useTrackedBotFormData(rawProps.formData);
+  const errors = useBotFormErrorsOr(rawProps.errors);
+  const props = useMemo(
+    () => ({ ...rawProps, formData, errors }),
+    [rawProps, formData, errors]
+  );
   const {
-    formData,
     currentExchange,
     updateFormData,
     exchangesLoading,
     exchangesData,
-    errors,
   } = props;
   // Normalize the shell's refresher onto the prop name the strategy hook (and
   // therefore `useBalanceRefreshControl`) expects, so the terminal's balance
@@ -316,7 +323,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
   const baseOrderPrice = useBotFormSelector('baseOrderPrice');
   const tradingContext = useDcaTradingContext(formData, { bot: null });
   const latestPrice = tradingContext.latestPrice;
-  const { alerts } = useBotFormState();
+  const { alerts } = useTrackedBotFormState();
   const {
     baseOrderLocked,
     showBaseOrderSection,
@@ -357,6 +364,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
     amountUsdEquivalent,
     maxAmount,
     maxTotal,
+    pooledMarginUsd,
     derivedAmountPrecision,
     derivedTotalPrecision,
     providerIsBybit,
@@ -434,6 +442,12 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
     const quoteFree = tradingContext.aggregatedBalances.quote.free;
     const longUsesBase = coinm;
     const shortUsesBase = futures ? coinm : true;
+    // A pooled-collateral COIN-M account funds both directions from the
+    // whole wallet, not the base coin: show the pool instead.
+    if (coinm && pooledMarginUsd !== null) {
+      const pooled = `${formatBalance(pooledMarginUsd, 'USD')} USD`;
+      return { longBalanceLabel: pooled, shortBalanceLabel: pooled };
+    }
     return {
       longBalanceLabel: longUsesBase
         ? `${formatBalance(baseFree, displayBaseAsset)} ${displayBaseAsset}`
@@ -447,6 +461,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
     tradingContext.aggregatedBalances.quote.free,
     coinm,
     futures,
+    pooledMarginUsd,
     displayBaseAsset,
     displayQuoteAsset,
   ]);
@@ -491,7 +506,7 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
         <SettingsRow
           name="Trading Pairs"
           tooltip="Configure the trading pairs used by this bot"
-          alerts={useBotFormState().alerts?.pair ?? []}
+          alerts={useTrackedBotFormState().alerts?.pair ?? []}
           navId="pair"
         >
           <div className="space-y-xs">
@@ -718,8 +733,17 @@ export const TerminalBasicSettings: React.FC<TerminalBasicSettingsProps> = (
                     derivedAmountPrecision={derivedAmountPrecision}
                     derivedTotalPrecision={derivedTotalPrecision}
                     disabled={isBaseOrderVarBound || baseOrderLocked}
-                    fundingBalanceAmount={baseOrderContext.balanceAmount}
-                    fundingBalanceCurrency={baseOrderContext.balanceCurrency}
+                    // A pooled-collateral COIN-M account funds the order
+                    // from its whole wallet: show that pool, in USD, rather
+                    // than the (usually empty) base-coin wallet.
+                    fundingBalanceAmount={
+                      pooledMarginUsd ?? baseOrderContext.balanceAmount
+                    }
+                    fundingBalanceCurrency={
+                      pooledMarginUsd !== null
+                        ? 'USD'
+                        : baseOrderContext.balanceCurrency
+                    }
                     onRefreshBalance={handleRefreshBalances}
                     showRefreshButton={
                       canTriggerBalanceRefresh &&

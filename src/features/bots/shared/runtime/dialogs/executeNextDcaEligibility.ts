@@ -1,0 +1,227 @@
+/**
+ * Eligibility + level arithmetic for "Execute next DCA".
+ * https://community.gainium.io/t/execute-next-dca-manually/5072
+ *
+ * Kept out of `ExecuteNextDcaDialog.tsx` so that file only exports a component
+ * (react-refresh), matching how `adjustFundsAmount.ts` sits beside
+ * `AdjustFundsDialog.tsx`.
+ */
+
+/** What the eligibility check reads off a deal. Deliberately structural: the
+ *  four call sites carry near-identical but separately declared deal shapes. */
+export interface ExecuteNextDcaEligibilityTrade {
+  type?: string;
+  status?: string;
+  terminal?: boolean | undefined;
+  riskBased?: boolean | undefined;
+  levels?: { complete: number; all: number } | undefined;
+}
+
+/**
+ * `levels.complete` counts the base order as 1, and the engine numbers safety
+ * orders from 1 — so the next safety order's level number IS `levels.complete`.
+ * (The engine relies on the same identity: `addDCAOrderByIndicator` matches
+ * `levels.complete === index + 1` against `levelNumber === index + 1`.)
+ *
+ * The count a user sees, "2 / 5", is `levels.complete - 1` of `levels.all - 1`,
+ * because both totals include the base order. Same arithmetic
+ * `ChangeDcaLevelsDialog` uses.
+ */
+export function nextDcaLevelNumber(trade: {
+  levels?: { complete: number; all: number } | undefined;
+}) {
+  return trade.levels?.complete || 1;
+}
+
+/**
+ * Whether "Execute next DCA" is offered at all for this deal. Mirrors
+ * `canShowChangeDca` — DCA deals only, open, not terminal, not risk-based
+ * (those levels are engine-managed) — plus "there is a level left to execute".
+ *
+ * Combo is excluded deliberately, and not merely for scope: combo levels are
+ * minigrid-managed, so the engine's `executeNextDcaLevel` returns early on
+ * `this.combo` and the action could never do anything there.
+ */
+export function canExecuteNextDca(trade: ExecuteNextDcaEligibilityTrade) {
+  const complete = trade.levels?.complete ?? 0;
+  const all = trade.levels?.all ?? 0;
+  return (
+    !trade.terminal &&
+    trade.type === 'DCA' &&
+    String(trade.status ?? '').toLowerCase() === 'open' &&
+    !trade.riskBased &&
+    complete > 0 &&
+    complete < all
+  );
+}
+
+/**
+ * One rung of the deal's remaining DCA ladder, normalised from whichever source
+ * knew about it.
+ */
+export interface LadderLevel {
+  price: number;
+  qty: number;
+  baseAsset?: string | undefined;
+  quoteAsset?: string | undefined;
+  /**
+   * True when nothing rests on the venue for this level and the figures come
+   * from the client-side projection. That is the normal state for a
+   * `dcaByMarket` deal and for every indicator-triggered deal — their safety
+   * orders are never placed until they trigger — and it is also true of any
+   * level past `activeOrdersCount` when smart orders are on.
+   */
+  projected: boolean;
+}
+
+/**
+ * The deal's remaining ladder, nearest rung first.
+ *
+ * "Nearest" is by price and depends on direction: a long's safety orders sit
+ * BELOW the current price and deepen downwards, so the highest is next; a
+ * short's mirror that. Sorting rather than trusting input order matters
+ * because the two sources arrive separately — real resting orders from the
+ * exchange, projected rungs from the client-side ladder — and neither knows
+ * about the other's positions.
+ *
+ * Levels at the same price are the same level counted twice (a resting order
+ * and the projection that predicted it), so the real one wins: it carries the
+ * venue's own assets and quantity.
+ */
+export function ladderAhead(
+  levels: LadderLevel[],
+  isLong: boolean
+): LadderLevel[] {
+  const byPrice = new Map<number, LadderLevel>();
+  for (const level of levels) {
+    if (!Number.isFinite(level.price) || level.price <= 0) {
+      continue;
+    }
+    if (!Number.isFinite(level.qty) || level.qty <= 0) {
+      continue;
+    }
+    const existing = byPrice.get(level.price);
+    // A real order beats a projection at the same price; otherwise first wins.
+    if (!existing || (existing.projected && !level.projected)) {
+      byPrice.set(level.price, level);
+    }
+  }
+  return [...byPrice.values()].sort((a, b) =>
+    isLong ? b.price - a.price : a.price - b.price
+  );
+}
+
+/**
+ * The deal's configured DCA levels, in level order, from a full generated
+ * ladder. Non-DCA entries (start order, take profit, stop loss) are dropped;
+ * everything else is kept — including a level carrying a "won't be placed"
+ * note — because the engine numbers levels by position, and skipping one here
+ * would shift every level after it by one.
+ */
+export function dcaLadderLevels(
+  fullLadder: ReadonlyArray<{
+    type?: string | undefined;
+    price: number;
+    qty: number;
+  }>,
+  dcaType: string
+): LadderLevel[] {
+  return fullLadder
+    .filter((o) => o.type === dcaType)
+    .map((o) => ({ price: o.price, qty: o.qty, projected: true }));
+}
+
+/**
+ * What a level is configured to spend, in quote.
+ *
+ * Every rung the ladder produces was sized by dividing its order size by its own
+ * price, so `price * qty` gives that order size back — for a quote-denominated
+ * level it IS the configured budget, whether the rung came from the client-side
+ * projection or from the resting exchange order the engine placed the same way.
+ */
+export function levelQuoteBudget(
+  level: Pick<LadderLevel, 'price' | 'qty'> | undefined
+): number | undefined {
+  if (!level) {
+    return undefined;
+  }
+  const budget = level.price * level.qty;
+  return Number.isFinite(budget) && budget > 0 ? budget : undefined;
+}
+
+/**
+ * The quantity the engine will actually send for a level filled NOW, at market.
+ *
+ * A level is drawn on the ladder at its own price, but executing it early does
+ * not fill it there. `executeNextDcaLevel` regenerates the ladder with the
+ * current price as `createInitialDealOrders`' sizing argument, which for a
+ * quote-denominated level makes the quantity `budget / market` and keeps the
+ * quote spend at the level's budget — the engine's own comment calls this
+ * "keeping an early execution from overspending the level's budget". Quoting the
+ * ladder quantity at the market price instead counts the price move twice, once
+ * in the size and once in the price.
+ *
+ * `resizesWithPrice` is the caller's reading of `orderSizeType`, and only
+ * `quote` qualifies: `base` is a fixed quantity, `usd` divides by the deal's
+ * opening price on both sides, and the two percent-of-balance types divide by the
+ * level's own ladder price on both sides. Without a market price there is nothing
+ * to re-size against, so the configured quantity stands.
+ */
+export function levelSizeAtMarket(
+  level: Pick<LadderLevel, 'price' | 'qty'> | undefined,
+  market: number | undefined,
+  resizesWithPrice: boolean
+): number | undefined {
+  if (!level) {
+    return undefined;
+  }
+  if (!resizesWithPrice || !market || !Number.isFinite(market) || market <= 0) {
+    return level.qty;
+  }
+  const budget = levelQuoteBudget(level);
+  if (budget === undefined) {
+    return level.qty;
+  }
+  return budget / market;
+}
+
+/**
+ * Which level "Execute next DCA" is about to fill, and which one comes after.
+ *
+ * Identity comes from the level's position, exactly as the engine selects it
+ * (`levelNumber === levels.complete`, where `levels.complete` counts the start
+ * order as 1): the next level is `ladder[complete - 1]`, the one after it
+ * `ladder[complete]`. Choosing by position rather than by price proximity is
+ * what keeps this right on bots that rest nothing on the venue — by-market and
+ * indicator-triggered DCA — where levels already filled at market prices no
+ * longer line up with their ladder prices and would otherwise be quoted again.
+ *
+ * Where orders DO rest, the nearest resting ones supply price and size instead,
+ * because the venue's quantity is authoritative. A resting order at a pending
+ * add-funds limit price is not a ladder level at all and is ignored — it is
+ * also a `dealRegular` order, and would otherwise be offered as "the next DCA".
+ */
+export function resolveNextLevels({
+  resting,
+  ladder,
+  levelsComplete,
+  isLong,
+  excludePrices = [],
+}: {
+  resting: LadderLevel[];
+  ladder: LadderLevel[];
+  levelsComplete: number;
+  isLong: boolean;
+  excludePrices?: ReadonlyArray<number>;
+}): { current: LadderLevel | undefined; after: LadderLevel | undefined } {
+  const excluded = new Set(excludePrices.filter((p) => Number.isFinite(p)));
+  const restingAhead = ladderAhead(
+    resting.filter((l) => !excluded.has(l.price)),
+    isLong
+  );
+  const nextIndex = Math.max(0, Math.floor(levelsComplete) - 1);
+  return {
+    current: restingAhead[0] ?? ladder[nextIndex],
+    after: restingAhead[1] ?? ladder[nextIndex + 1],
+  };
+}
