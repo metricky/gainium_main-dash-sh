@@ -45,6 +45,7 @@ import { useBulkAdjustFunds } from '@/components/deals/actions/useBulkAdjustFund
 import type { PercentBasis } from '@/features/bots/shared/runtime/dialogs/adjustFundsAmount';
 import { DealEditDrawer } from '@/components/deals/DealEditDrawer';
 import { TradeDetailDrawer } from '@/components/trades/TradeDetailDrawer';
+import { TrailingBadge } from '@/components/trades/TrailingBadge';
 import { useDealTablePaging } from '@/hooks/useDealTablePaging';
 import { PartialCount } from '@/components/ui/large-account';
 import { serverDealUnrealizedPnl } from '@/lib/utils/dealUnrealizedPnl';
@@ -2522,7 +2523,7 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
         meta: { filterType: 'array' },
         cell: ({ getValue, row }) => {
           const status = getValue() as string;
-          const chip = <StatusChip status={status} size="xs" />;
+          let chip = <StatusChip status={status} size="xs" />;
           // A deal the venue refused to open looks identical to one that is
           // simply waiting: same status, no orders, all-zero numbers. This is
           // the list a user scans when a signal produced nothing, so the reason
@@ -2530,19 +2531,38 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
           const startBlocked = (
             row.original as { startBlocked?: DealStartBlock }
           ).startBlocked;
-          if (!startBlocked?.reason) {
+          if (startBlocked?.reason) {
+            chip = (
+              <HelpTooltip tooltip={dealStartBlockedSummary(startBlocked)}>
+                <span
+                  className="relative inline-flex items-center gap-0.5"
+                  data-testid="deal-start-blocked-dot"
+                >
+                  {chip}
+                  <PauseCircle className="size-3 text-amber-500" />
+                </span>
+              </HelpTooltip>
+            );
+          }
+          const trade = row.original;
+          if (!trade.trailingMode || trade.trailingLevel === undefined) {
             return chip;
           }
           return (
-            <HelpTooltip tooltip={dealStartBlockedSummary(startBlocked)}>
-              <span
-                className="relative inline-flex items-center gap-0.5"
-                data-testid="deal-start-blocked-dot"
-              >
-                {chip}
-                <PauseCircle className="size-3 text-amber-500" />
-              </span>
-            </HelpTooltip>
+            <div className="flex flex-col items-start gap-0.5">
+              {chip}
+              <TrailingBadge
+                mode={trade.trailingMode}
+                level={trade.trailingLevel}
+                levelUnit={
+                  (trade.type === 'Combo' || trade.type === 'Hedge Combo') &&
+                  trade.trailingMode === 'ttp'
+                    ? 'percent'
+                    : 'price'
+                }
+                quoteAsset={trade.quoteAsset}
+              />
+            </div>
           );
         },
       },
