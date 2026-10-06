@@ -100,6 +100,8 @@ import {
 } from '../ui/detail-drawer';
 import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
+import { getBotDrawerTabs } from '@/lib/extensions/botDrawerTabs';
+import { useBotHeaderDecoration } from '@/lib/extensions/botFormExtensions';
 import DrawerWidgetRenderer from '../widgets/bots/drawer/DrawerWidgetRenderer';
 import { DealsLoadingIndicator } from '../widgets/bots/drawer/DealsLoadingIndicator';
 import OpenOrdersWidget from '../widgets/shared/OpenOrdersWidget';
@@ -265,13 +267,26 @@ const mapDrawerBotTypeToBotType = (type: BotTypesEnum): BotType => {
 
 const statusNew = { status: 'NEW', autoPaginate: true };
 const statusFilled = { status: 'FILLED', autoPaginate: true };
-type BotTab =
+type BuiltInBotTab =
   | 'deals'
   | 'performance'
   | 'stats'
   | 'events'
   | 'settings'
   | 'webhook';
+/** Built-in tabs plus host-registered ones (see botDrawerTabs). */
+type BotTab = BuiltInBotTab | (string & {});
+
+// Static class names so Tailwind keeps them.
+const TAB_GRID_COLS: Record<number, string> = {
+  3: 'grid-cols-3',
+  4: 'grid-cols-4',
+  5: 'grid-cols-5',
+  6: 'grid-cols-6',
+  7: 'grid-cols-7',
+  8: 'grid-cols-8',
+  9: 'grid-cols-9',
+};
 
 const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
   ({
@@ -344,9 +359,20 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
 
     // Get tab from URL or default to 'deals'
     const tabParam = useMemo(() => searchParams.get('tab'), [searchParams]);
+    // Host-registered tabs, appended after the built-in ones.
+    const extensionTabs = useMemo(
+      () => getBotDrawerTabs({ bot, botType: type, viewOnly, isHedge }),
+      [bot, type, viewOnly, isHedge]
+    );
+    // Host decorations for the title bar (e.g. a bot an extension manages).
+    const headerDecoration = useBotHeaderDecoration({
+      botId: isHedge ? undefined : bot._id,
+      botType: type,
+      surface: 'drawer',
+    });
     const validTabs: BotTab[] = useMemo(
-      () =>
-        (
+      () => [
+        ...(
           [
             'performance',
             'deals',
@@ -355,12 +381,15 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
             'settings',
             'webhook',
           ] as BotTab[]
+        )
           // Grid bots have no deals, no webhooks, and the backend produces no
           // `stats` block for them — so those three tabs never apply.
-        ).filter((t) =>
-          isGrid ? t !== 'deals' && t !== 'webhook' && t !== 'stats' : true
-        ),
-      [isGrid]
+          .filter((t) =>
+            isGrid ? t !== 'deals' && t !== 'webhook' && t !== 'stats' : true
+          ),
+        ...extensionTabs.map((t) => t.key),
+      ],
+      [isGrid, extensionTabs]
     );
     const activeTab: BotTab = useMemo(
       () =>
@@ -411,17 +440,24 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
       };
     }, [isHedge, hedge, bot, type]);
 
-    // Deep-link the alert's "review events" action to the Events tab.
+    // Deep-link the alert's "review events" action to the Events tab,
+    // pre-filtered to the alert's severity (the events widget consumes
+    // `eventsType`). Works from the Events tab too, re-applying the filter.
+    const errorWarningSeverity = errorWarning?.severity;
     const goToEvents = useCallback(() => {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
           next.set('tab', 'events');
+          next.set(
+            'eventsType',
+            errorWarningSeverity === 'warning' ? 'warnings' : 'errors'
+          );
           return next;
         },
         { replace: false }
       );
-    }, [setSearchParams]);
+    }, [setSearchParams, errorWarningSeverity]);
 
     // Combined hedge deals (both legs of THIS hedge bot). Fetched only while
     // the Deals tab is active, via the dedicated hedge query that keeps its
@@ -1637,7 +1673,9 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
               paramSync={true}
               className="flex flex-col h-full"
             >
-              <DetailDrawerHeader className="relative">
+              <DetailDrawerHeader
+                className={cn('relative', headerDecoration.className)}
+              >
                 <div className="flex w-full flex-col gap-md">
                   {/* Top row: Title and actions */}
                   <div className="flex w-full items-center justify-between gap-md">
@@ -1652,6 +1690,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                       <DetailDrawerTitle className="text-balance text-2xl leading-tight sm:text-3xl min-w-0 truncate">
                         {bot.settings.name}
                       </DetailDrawerTitle>
+                      {headerDecoration.adornment}
                       <StaleIndicator
                         componentId={`bot-details-${bot._id}`}
                         className="ml-2 shrink-0"
@@ -1742,7 +1781,7 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                     <TabsList
                       className={cn(
                         'grid w-full',
-                        isGrid ? 'grid-cols-3' : 'grid-cols-6'
+                        TAB_GRID_COLS[validTabs.length] ?? 'grid-cols-6'
                       )}
                       breakpoint={640}
                       value={activeTab}
@@ -1760,19 +1799,28 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                       {!isGrid && (
                         <TabsTrigger value="webhook">Webhook</TabsTrigger>
                       )}
+                      {extensionTabs.map((tab) => (
+                        <TabsTrigger key={tab.key} value={tab.key}>
+                          {tab.label}
+                        </TabsTrigger>
+                      ))}
                     </TabsList>
                   </div>
                 </div>
               </DetailDrawerHeader>
 
-              <DetailDrawerBody className="px-4 py-5 sm:px-6 sm:py-6">
+              <DetailDrawerBody
+                className="px-4 py-5 sm:px-6 sm:py-6"
+                fill={
+                  !!extensionTabs.find((tab) => tab.key === activeTab)
+                    ?.fillHeight
+                }
+              >
                 {errorWarning && (
                   <BotErrorWarningAlert
                     severity={errorWarning.severity}
                     targets={errorWarning.targets}
-                    onReviewEvents={
-                      activeTab === 'events' ? undefined : goToEvents
-                    }
+                    onReviewEvents={goToEvents}
                     className=""
                   />
                 )}
@@ -2145,6 +2193,26 @@ const BotDetailsDrawerInner: React.FC<BotDetailsDrawerProps> = React.memo(
                     )}
                   </motion.div>
                 </TabsContent>
+
+                {extensionTabs.map((tab) => (
+                  <TabsContent
+                    key={tab.key}
+                    value={tab.key}
+                    className={cn(
+                      'mt-0',
+                      tab.fillHeight &&
+                        'flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden'
+                    )}
+                  >
+                    {tab.render({
+                      bot,
+                      botType: type,
+                      viewOnly,
+                      isHedge,
+                      active: activeTab === tab.key,
+                    })}
+                  </TabsContent>
+                ))}
               </DetailDrawerBody>
 
               {/* Bottom action bar — Stop (left), Restart, and a full-width

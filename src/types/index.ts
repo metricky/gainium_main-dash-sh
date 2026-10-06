@@ -898,6 +898,8 @@ export type DCABacktestingResultShort = Omit<DCABacktestingResult, 'deals'> & {
 };
 
 export type DCABacktestingResultHistory = DCABacktestingResultShort & {
+  /** The process that produced it, when not a plain backtest (extensions/backtestSources). */
+  source?: import('@/lib/extensions/backtestSources').BacktestResultSourceRef | null;
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
@@ -1461,6 +1463,8 @@ export enum IndicatorStartConditionEnum {
   cu = 'cu',
   gt = 'gt',
   lt = 'lt',
+  /** value-type indicators only: indicatorValue < value < indicatorValue2 */
+  bw = 'bw',
 }
 export enum rsiValueEnum {
   k = 'k',
@@ -1555,6 +1559,8 @@ export type SettingsIndicators = {
   type: IndicatorEnum;
   indicatorLength: number;
   indicatorValue: string;
+  /** upper bound for IndicatorStartConditionEnum.bw */
+  indicatorValue2?: string;
   indicatorCondition: IndicatorStartConditionEnum;
   groupId: string;
   uuid: string;
@@ -3738,7 +3744,8 @@ export type TransactionChart = {
   pnlPercent?: number;
   // Optional: precomputed Risk:Reward ratio for the trade
   // If provided, the chart will use this instead of calculating from prices
-  rrRatio?: number;
+  rrRatio?: number;  // Optional: draw as a note pin (hover shows `text`) instead of a fill icon.
+  note?: { text: string; color: string; active?: boolean } | undefined;
 };
 
 export type PositionChart = {
@@ -4709,6 +4716,8 @@ export type StoreBacktest = {
   quoteAsset: string;
   symbol: string;
   type: string;
+  /** A downloaded copy of a result the server stores (not listed locally). */
+  fromServer?: boolean;
 };
 
 export type StoreHedgeSideBacktest = {

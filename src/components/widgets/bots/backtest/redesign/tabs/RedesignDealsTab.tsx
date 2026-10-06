@@ -7,7 +7,9 @@
  *  - Left: a scrollable RAIL listing every deal (no, pair, outcome dot,
  *    SO filled/max, duration, P&L % + USD). Clicking a row selects it; the
  *    active row reads via surface elevation (`bg-popover`) + a thin primary
- *    ring (no heavy border, per DESIGN_SYSTEM §3).
+ *    ring (no heavy border, per DESIGN_SYSTEM §3). Its header
+ *    (`DealRailControls`) sorts, filters (outcome tabs + ranges) and exports
+ *    the shown deals as CSV; prev/next follow the shown order.
  *  - Right: deal header (status chip, time range, working prev/next + "N/total"),
  *    the per-deal price chart (a real `TradingViewChart` embed showing candles,
  *    buy/sell execution markers, and DCA/avg/TP lines via `dealToTradingView`),
@@ -55,8 +57,24 @@ import {
 } from '../dealToTradingView';
 import type { BacktestViewModel, DealVM } from '../viewModel';
 import Candles from '@/utils/candles';
-import type { ExchangeIntervals } from '@/types';
+import { timeIntervalMap, type ExchangeIntervals } from '@/types';
+import type {
+  BacktestDealFocus,
+  BacktestDealsExtension,
+} from '@/lib/extensions/backtestSources';
 import logger from '@/lib/loggerInstance';
+import { toast } from '@/lib/toast';
+
+import {
+  DEFAULT_DEAL_SORT,
+  EMPTY_DEAL_FILTERS,
+  dealsToCsv,
+  visibleDealIndices,
+  type DealFilters,
+  type DealOutcomeFilter,
+  type DealSort,
+} from '../dealListControls';
+import { DealRailControls } from './DealRailControls';
 
 // ── formatters (mirror the prototype's GX.fmt* helpers) ─────────────────────
 
@@ -153,6 +171,24 @@ function pickDefaultIndex(deals: DealVM[]): number {
   return sel;
 }
 
+/** The candle holding `time` (its open ≤ time < next open), else nearest. */
+function barAt(candles: ClipCandle[], time: number): ClipCandle | null {
+  let lo = 0;
+  let hi = candles.length - 1;
+  if (hi < 0) return null;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    const c = candles[mid];
+    if (c && candleTime(c) <= time) lo = mid;
+    else hi = mid - 1;
+  }
+  return candles[lo] ?? null;
+}
+
+function candleTime(c: ClipCandle): number {
+  return c.time < 1e12 ? c.time * 1000 : c.time;
+}
+
 // ── inset panel ───────────────────────────────────────────────────────────--
 
 /**
@@ -179,9 +215,10 @@ interface RailRowProps {
   deal: DealVM;
   active: boolean;
   onSelect: () => void;
+  badge?: ReactNode;
 }
 
-function RailRow({ deal, active, onSelect }: RailRowProps) {
+function RailRow({ deal, active, onSelect, badge }: RailRowProps) {
   return (
     <button
       type="button"
@@ -215,8 +252,9 @@ function RailRow({ deal, active, onSelect }: RailRowProps) {
             —
           </span>
         )}
-        <span className="block text-xs tabular-nums text-muted-foreground/70">
+        <span className="flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground/70">
           {deal.filled}/{deal.maxSo} DCA · {fmtDur(deal.durationH)}
+          {badge}
         </span>
       </span>
       <span className="text-right">
@@ -316,34 +354,128 @@ function LadderRow({ lvl, dev, price, filled, label }: LadderRowProps) {
 
 export interface RedesignDealsTabProps {
   vm: BacktestViewModel;
+  /** Extra markers, a card and deal badges (a result source's extension). */
+  extension?: BacktestDealsExtension | undefined;
+  /** Select this deal and frame the chart on this time. */
+  focus?: BacktestDealFocus | null | undefined;
 }
 
-export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
+/** Index of the deal holding `time` (start ≤ time ≤ close), else -1. */
+function dealIndexAt(deals: DealVM[], time: number): number {
+  return deals.findIndex(
+    (d) => d.startTime <= time && (d.closeTime == null || time <= d.closeTime),
+  );
+}
+
+export function RedesignDealsTab({
+  vm,
+  extension,
+  focus,
+}: RedesignDealsTabProps) {
   const deals = vm.dealList;
   const total = deals.length;
 
+  // `sel` is an ORIGINAL index into `deals` / `vm.raw.deals`; the rail's
+  // sort + filters only change which indices are shown and in what order.
   const [sel, setSel] = useState<number>(() => pickDefaultIndex(deals));
+  const [outcome, setOutcome] = useState<DealOutcomeFilter>('all');
+  const [sort, setSort] = useState<DealSort>(DEFAULT_DEAL_SORT);
+  const [filters, setFilters] = useState<DealFilters>(EMPTY_DEAL_FILTERS);
 
-  // Chart overlay visibility toggles (order lines / fill icons).
+  const visible = useMemo(
+    () => visibleDealIndices(deals, outcome, filters, sort),
+    [deals, outcome, filters, sort],
+  );
+  const pos = visible.indexOf(sel);
+  const shown = visible.length;
+
+  const pairs = useMemo(
+    () => [...new Set(deals.map((d) => d.pair).filter(Boolean))],
+    [deals],
+  );
+
+  // Chart overlay visibility toggles (order lines / fill icons / extension
+  // markers).
   const [showLines, setShowLines] = useState(true);
   const [showIcons, setShowIcons] = useState(true);
+  const [showMarkers, setShowMarkers] = useState(true);
 
-  // Re-seat the selection if the deal list identity changes (new run).
+  // A focus request frames the chart on its time once the deal is shown.
+  const focusTimeRef = useRef<number | null>(null);
+
+  // Re-seat the selection and clear the rail controls on a new run. Keyed on
+  // the result's own deal array: the parent rebuilds `vm` (and `dealList`)
+  // whenever its settings object changes, which is not a new run.
+  const runDeals = vm.raw.deals;
   useEffect(() => {
     setSel(pickDefaultIndex(deals));
-  }, [deals]);
+    setOutcome('all');
+    setSort(DEFAULT_DEAL_SORT);
+    setFilters(EMPTY_DEAL_FILTERS);
+    // `deals` is derived from `runDeals`; reset only when the run changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runDeals]);
 
+  // A filter that hides the selected deal moves the selection to the first
+  // deal still shown (the inspector keeps the old one while nothing matches).
+  useEffect(() => {
+    const first = visible[0];
+    if (pos < 0 && first != null) setSel(first);
+  }, [visible, pos]);
+
+  // Keep the selected row in view when the order changes or prev/next moves.
+  const railRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    railRef.current
+      ?.querySelector('[aria-current="true"]')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [sel, visible]);
+
+  const exportCsv = useCallback(() => {
+    try {
+      const csv = dealsToCsv(visible.map((i) => deals[i] as DealVM));
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const name = (vm.pair || 'backtest').replace(/[^\w.-]+/g, '_');
+      a.download = `backtest-deals-${name}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      logger.error('[RedesignDealsTab] CSV export failed', error);
+      toast.error('Failed to export CSV');
+    }
+  }, [visible, deals, vm.pair]);
+
+  useEffect(() => {
+    if (!focus) return;
+    let i = focus.dealId ? deals.findIndex((d) => d.id === focus.dealId) : -1;
+    if (i < 0 && focus.time != null) i = dealIndexAt(deals, focus.time);
+    focusTimeRef.current = focus.time;
+    if (i >= 0 && !visible.includes(i)) {
+      // The focused deal is filtered out — show every deal again.
+      setOutcome('all');
+      setFilters(EMPTY_DEAL_FILTERS);
+    }
+    if (i >= 0) setSel(i);
+    if (focus.time != null && i < 0) {
+      chartRef.current?.centerAtTimestampMs(focus.time - 1, focus.time + 1);
+    }
+    // a new request is a new nonce; the deal list is read at that moment
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
+
+  // Prev / next walk the rail's shown order, not the deal numbers.
   const go = useCallback(
     (dir: -1 | 1) => {
-      if (total === 0) return;
-      setSel((cur) => {
-        const next = cur + dir;
-        if (next < 0) return 0;
-        if (next > total - 1) return total - 1;
-        return next;
-      });
+      if (shown === 0) return;
+      const next = visible[Math.min(Math.max(pos + dir, 0), shown - 1)];
+      if (next != null) setSel(next);
     },
-    [total],
+    [visible, pos, shown],
   );
 
   // ArrowLeft / ArrowRight nav — skipped while typing in a form control.
@@ -436,15 +568,104 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
     [rawDeal, intervalResolution, vm.to, candles],
   );
 
+  // Extension markers as chart notes. A marker without a price sits on its
+  // bar's close (or its deal's entry until the candles are in).
+  const barMs = timeIntervalMap[vm.raw.interval as ExchangeIntervals] ?? 60_000;
+  const markers = extension?.markers;
+  const activeMarkerId = extension?.activeMarkerId ?? null;
+  const notes = useMemo(() => {
+    if (!markers?.length) return [];
+    const out: NonNullable<NonNullable<typeof chartProps>['transactions']> = [];
+    for (const m of markers) {
+      let price = m.price ?? null;
+      if (price == null && candles?.length) {
+        const bar = barAt(candles, m.time);
+        if (bar) {
+          price =
+            (bar as ClipCandle & { close?: number }).close ??
+            (bar.high + bar.low) / 2;
+        }
+      }
+      if (price == null) {
+        const d = m.dealId ? deals.find((x) => x.id === m.dealId) : null;
+        price = d?.entry ?? null;
+      }
+      if (price == null || !Number.isFinite(price)) continue;
+      out.push({
+        id: `note-${m.id}`,
+        side: 'note',
+        time: m.time,
+        price,
+        note: {
+          text: m.text,
+          color: m.color,
+          active: m.id === activeMarkerId,
+        },
+      });
+    }
+    return out;
+  }, [markers, candles, deals, activeMarkerId]);
+
+  const chartTransactions = useMemo(
+    () => [
+      ...(showIcons ? (chartProps?.transactions ?? []) : []),
+      ...(showMarkers ? notes : []),
+    ],
+    [showIcons, showMarkers, chartProps?.transactions, notes],
+  );
+
   // On deal switch, frame the existing widget to the new deal's entry→close
   // span (open deals fall back to the run end) so short deals stay readable.
+  // A focus request widens the frame to include its time.
   useEffect(() => {
     if (!rawDeal?.startTime) return;
+    const t = focusTimeRef.current;
+    focusTimeRef.current = null;
+    const end = rawDeal.closedTime ?? vm.to;
     chartRef.current?.centerAtTimestampMs(
-      rawDeal.startTime,
-      rawDeal.closedTime ?? vm.to,
+      t != null ? Math.min(rawDeal.startTime, t) : rawDeal.startTime,
+      t != null ? Math.max(end, t) : end,
     );
-  }, [rawDeal?.startTime, rawDeal?.closedTime, sel, vm.to]);
+  }, [rawDeal?.startTime, rawDeal?.closedTime, sel, vm.to, focus?.nonce]);
+
+  // A click on the chart near a marker's bar picks that marker.
+  const onMarkerClick = extension?.onMarkerClick;
+  const clickState = useRef({ markers, onMarkerClick, barMs, showMarkers });
+  clickState.current = { markers, onMarkerClick, barMs, showMarkers };
+  const hasMarkerClick = !!onMarkerClick;
+  useEffect(() => {
+    if (!hasMarkerClick) return;
+    let unsub: (() => void) | null = null;
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      const core = chartRef.current?.getCoreRef();
+      if (!core?.isReady()) {
+        if (++tries > 120) window.clearInterval(timer);
+        return;
+      }
+      window.clearInterval(timer);
+      unsub = core.subscribeClick(({ time }) => {
+        const st = clickState.current;
+        if (time == null || !st.showMarkers || !st.markers?.length) return;
+        const ms = time < 1e12 ? time * 1000 : time;
+        let best: { id: string; d: number } | null = null;
+        for (const m of st.markers) {
+          const d = Math.abs(m.time - ms);
+          if (d <= st.barMs && (!best || d < best.d)) best = { id: m.id, d };
+        }
+        if (best) st.onMarkerClick?.(best.id);
+      });
+    }, 250);
+    return () => {
+      window.clearInterval(timer);
+      // The widget may already be gone (a new result removes it first).
+      try {
+        unsub?.();
+      } catch {
+        /* nothing left to unsubscribe from */
+      }
+    };
+  }, [hasMarkerClick, chartProps?.interval]);
 
   // Empty state — no deals on this result (saved/stripped history) or the
   // selected deal lacks a resolvable symbol/pair.
@@ -464,8 +685,8 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
     );
   }
 
-  const atFirst = sel <= 0;
-  const atLast = sel >= total - 1;
+  const atFirst = pos <= 0;
+  const atLast = pos < 0 || pos >= shown - 1;
   const pnlTone: DetailRowProps['tone'] =
     deal.out === 'win' ? 'up' : deal.out === 'loss' ? 'down' : 'neutral';
 
@@ -473,22 +694,38 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
     <div className="flex flex-col gap-3.5 lg:h-full lg:flex-row">
       {/* ── left rail (full-width above the inspector on mobile) ────────── */}
       <Inset className="flex max-h-56 w-full shrink-0 flex-col overflow-hidden lg:max-h-none lg:w-[296px]">
-        <div className="flex items-center justify-between border-b border-border/60 px-3.5 py-3">
-          <span className="text-sm font-extrabold text-foreground">
-            Deals
-            <span className="ml-1.5 text-muted-foreground/70">{total}</span>
-          </span>
-          <span className="rounded-md bg-foreground/[0.06] px-2 py-0.5 text-xs font-medium text-muted-foreground">
-            All
-          </span>
-        </div>
-        <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-          {deals.map((dd, i) => (
+        <DealRailControls
+          total={total}
+          shown={shown}
+          pairs={pairs}
+          outcome={outcome}
+          onOutcome={setOutcome}
+          sort={sort}
+          onSort={setSort}
+          filters={filters}
+          onFilters={setFilters}
+          onExport={exportCsv}
+        />
+        <div
+          ref={railRef}
+          className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2"
+        >
+          {shown === 0 && (
+            <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+              No deals match these filters.
+            </p>
+          )}
+          {visible.map((i) => deals[i] as DealVM).map((dd, i) => (
             <RailRow
               key={dd.id || i}
               deal={dd}
-              active={i === sel}
-              onSelect={() => setSel(i)}
+              active={visible[i] === sel}
+              onSelect={() => setSel(visible[i] as number)}
+              badge={extension?.dealBadge?.({
+                id: dd.id || null,
+                startTime: dd.startTime,
+                closeTime: dd.closeTime,
+              })}
             />
           ))}
         </div>
@@ -536,6 +773,15 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
               />
               Icons
             </label>
+            {extension && (
+              <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-muted-foreground">
+                <Checkbox
+                  checked={showMarkers}
+                  onCheckedChange={(v) => setShowMarkers(v === true)}
+                />
+                {extension.markersLabel}
+              </label>
+            )}
             <button
               type="button"
               onClick={() => go(-1)}
@@ -546,7 +792,7 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
               <ChevronLeft className="size-4" />
             </button>
             <span className="text-sm tabular-nums text-muted-foreground/70">
-              {sel + 1} / {total}
+              {pos < 0 ? '–' : pos + 1} / {shown}
             </span>
             <button
               type="button"
@@ -575,20 +821,25 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
             availableSymbols={chartProps.availableSymbols}
             interval={chartProps.interval}
             initialTimeframe={chartProps.initialTimeframe}
-            transactions={chartProps.transactions}
+            transactions={chartTransactions}
             ordersForDrawing={chartProps.ordersForDrawing}
             enableAutoSave={false}
             enableLoadLastChart={false}
             enableSeparateDrawingsStorage={false}
             showPastOrders={showLines}
-            showTransactions={showIcons}
+            showTransactions
           />
         </div>
 
         {/* detail + execution + ladder — stacked on mobile, 3 fixed-height
             columns ≥md (170px; the ladder scrolls internally) so the chart
             above takes the remaining height. */}
-        <div className="flex flex-none flex-col gap-3.5 md:h-[170px] md:flex-row">
+        <div
+          className={cn(
+            'flex flex-none flex-col gap-3.5 md:h-[170px] md:flex-row',
+            extension?.renderCard && 'lg:h-[190px]',
+          )}
+        >
           {/* col 1 — P&L + prices */}
           <Inset className="min-w-0 flex-1 p-3.5">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -647,6 +898,17 @@ export function RedesignDealsTab({ vm }: RedesignDealsTabProps) {
               ))}
             </div>
           </Inset>
+
+          {/* col 4 — a result source's card for this deal */}
+          {extension?.renderCard && (
+            <Inset className="flex min-w-0 flex-[1.4] flex-col overflow-hidden p-3.5">
+              {extension.renderCard({
+                id: deal.id || null,
+                startTime: deal.startTime,
+                closeTime: deal.closeTime,
+              })}
+            </Inset>
+          )}
         </div>
       </div>
     </div>

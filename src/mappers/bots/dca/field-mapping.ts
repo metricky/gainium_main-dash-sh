@@ -152,6 +152,7 @@ const normalizeIndicatorParamsRecord = (
 
   const fieldsAsString: (keyof IndicatorConfig)[] = [
     'indicatorValue',
+    'indicatorValue2',
     'groupId',
     'uuid',
     'maUUID',
@@ -2889,6 +2890,12 @@ export const mapRiskRewardFields = (
           indicatorPayload.find((i) => i.uuid === indicator.uuid) ?? indicator
       );
 
+      fieldsMapped.push('indicators');
+    } else if (normalizedRrSlType === RRSlTypeEnum.fixed) {
+      // A fixed SL is derived from rrSlFixedValue, not an indicator — the
+      // backtester and main-app's v2 validator only require one for
+      // `indicator`. Pass the other roles' indicators through unchanged.
+      riskRewardFields['indicators'] = indicators;
       fieldsMapped.push('indicators');
     } else {
       errors.push(

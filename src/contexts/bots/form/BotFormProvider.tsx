@@ -77,6 +77,7 @@ import {
   type HandleSettingsUpdateResult,
 } from '@/utils/bots/dca/handle-settings';
 import { hotValidateDcaFormData } from '@/utils/bots/dca/validation';
+import { computeGridBudgetRangeFromForm } from '@/utils/bots/grid/budget-ranges';
 import { validateGridFormData } from '@/utils/bots/grid/validation';
 import { parseIndicatorFavoriteCodes } from '@/utils/indicators';
 import {
@@ -111,7 +112,9 @@ export type BotFormTabId =
   | 'automation'
   | 'grid-settings'
   | 'grid-budget'
-  | 'grid-range';
+  | 'grid-range'
+  /** Sections registered by a host build (`registerBotFormSection`). */
+  | `ext-${string}`;
 
 export type BotFormUpdateValue =
   | string
@@ -712,6 +715,8 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
   const disableEditing = useCallback(() => setIsEditLocked(true), []);
   const toggleEditing = useCallback(() => {
     setIsEditLocked((prev) => !prev);
+    // Extension drafts are re-seeded from their saved state by their owners.
+    store.setState({ extensionState: {} });
     if (store.getState().formData.originalBot) {
       setFormData((prev) => {
         const b = prev.originalBot;
@@ -1100,7 +1105,25 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
     let newErrors: BotFormErrors = {};
     let newAlerts: BotFormAlerts = {};
     if (formData.type === BotTypesEnum.grid) {
+      // Same minimum as the "Min budget is X" hint under the budget input,
+      // and gated the same way (create only).
+      const primaryPair = Array.isArray(formData.pair)
+        ? formData.pair[0]
+        : formData.pair;
+      const seedPrice = Number(formData.initialPrice ?? 0) || undefined;
+      const minBudget =
+        mode === 'create' && primaryPair
+          ? (computeGridBudgetRangeFromForm({
+              grid: formData.grid,
+              primaryPair,
+              pairPrecisionMap: formData.pairPrecisionMap,
+              userFee: formData.userFee,
+              latestPrice: seedPrice,
+              initialPrice: seedPrice,
+            })?.min ?? null)
+          : null;
       const { errors: _newErrors, alerts: _newAlerts } = validateGridFormData({
+        minBudget,
         name: formData.name,
         exchangeUUID: formData.exchangeUUID,
         pair: formData.pair,
@@ -1120,6 +1143,7 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
           slLowPrice: formData.grid.slLowPrice,
           slPerc: formData.grid.slPerc,
           strategy: formData.grid.strategy,
+          futuresStrategy: formData.grid.futuresStrategy,
           useStartPrice: formData.grid.useStartPrice,
           startPrice: formData.grid.startPrice,
           useOrderInAdvance: formData.grid.useOrderInAdvance,
@@ -2273,6 +2297,10 @@ export const useBotFormTopLevelSelector = <
  */
 export const useBotFormStoreApi = (): BotFormStore =>
   useBotFormInternalContext('useBotFormStoreApi').store;
+
+/** The form store, or `null` outside a `BotFormProvider`. */
+export const useOptionalBotFormStoreApi = (): BotFormStore | null =>
+  useContext(BotFormStateContext)?.store ?? null;
 
 /**
  * Stable getter for the CURRENT form data. Use it in callbacks that need the

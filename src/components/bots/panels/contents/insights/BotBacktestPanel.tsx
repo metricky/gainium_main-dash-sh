@@ -48,6 +48,15 @@ import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
 import { useTablePreferencesStore } from '@/stores/tablePreferencesStore';
+import {
+  backtestSourceKindOf,
+  isBacktestRowListed,
+  subscribeOpenBacktest,
+  useBacktestListExtraFields,
+  useBacktestResultsExtension,
+  type BacktestSourceRow,
+} from '@/lib/extensions/backtestSources';
+import { decorateBacktestColumns } from './backtestSourceColumns';
 import type { DCABacktestingResultHistory, DCABotSettings } from '@/types';
 import { loadLocalBacktestHistory } from '@/utils/backtest/localRows';
 import { removePaperPrefix } from '@/utils/exchangeUtils';
@@ -174,6 +183,20 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
   // Clicking a backtest row opens the redesigned full-screen results modal
   // instead of rendering Overview/Stats/Deals/Analysis inline in the widget.
   const [resultsModalOpen, setResultsModalOpen] = useState(false);
+  // Tab the modal is asked to open on (a result source's row action).
+  const [resultsTab, setResultsTab] = useState<string | undefined>(undefined);
+  // Expanded rows of result sources (see backtestSourceColumns).
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const toggleExpanded = useCallback((id: string) => {
+    setExpandedRows((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
   // Track a newly completed backtest ID so we can auto-select it once it appears in the list
   const [pendingBacktestId, setPendingBacktestId] = useState<string | null>(
     null
@@ -225,10 +248,19 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
   // Per-type backtest list for the table. Descriptor is a stable module
   // constant per page, so calling descriptor.useList() here is hooks-safe.
   const {
-    backtests: rows,
+    backtests: allRows,
     isLoading: rowsLoading,
     error: rowsError,
   } = descriptor.useList();
+  // A result source's row is listed once its kind says so (e.g. a run only
+  // appears when it is done, like a normal backtest).
+  const rows = useMemo(
+    () =>
+      allRows.filter((r) =>
+        isBacktestRowListed(r as unknown as BacktestSourceRow)
+      ),
+    [allRows]
+  );
 
   // List rows carry only the list fields. When a backtest is opened, merge in
   // its full local result (deals, equity curves, …) if this browser has one.
@@ -590,9 +622,22 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
     ]
   );
 
+  // Rows carry their source only once the host asks the list for it.
+  const sourcesServed = useBacktestListExtraFields() !== '';
+  const decoratedColumns = useMemo(
+    () =>
+      decorateBacktestColumns(backtestColumns, {
+        enabled: sourcesServed,
+        isExpanded: (id) => expandedRows.has(id),
+        toggle: toggleExpanded,
+      }),
+    [backtestColumns, sourcesServed, expandedRows, toggleExpanded]
+  );
+
   // Handle row click to select a backtest and open the full-screen results modal
-  const handleBacktestSelect = useCallback(
-    (backtest: TResult) => {
+  const openBacktest = useCallback(
+    (backtest: TResult, tab?: string) => {
+      setResultsTab(tab);
       setSelectedBacktest(backtest);
       // Open the full-screen results modal right away; the details merge in
       // below and the modal's view model rebuilds once they arrive.
@@ -616,6 +661,59 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
     // Stable mutate handle, not the mutation object — see handleExportBacktests.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [loadBacktestDetailsMutation.mutateAsync, hydrateFromLocal]
+  );
+
+  // "View results" elsewhere (e.g. the form's backtest box) opens a row here
+  // once it is listed.
+  const [openRequest, setOpenRequest] = useState<{
+    id: string;
+    tab?: string | undefined;
+  } | null>(null);
+  useEffect(() => subscribeOpenBacktest((r) => setOpenRequest(r)), []);
+  useEffect(() => {
+    if (!openRequest) return;
+    const found = rows.find((b) => b._id === openRequest.id);
+    if (!found) return;
+    setOpenRequest(null);
+    openBacktest(found, openRequest.tab);
+  }, [openRequest, rows, openBacktest]);
+
+  // A sourced row with nothing to open yet (running, failed, cancelled)
+  // expands in place instead.
+  const handleBacktestSelect = useCallback(
+    (backtest: TResult) => {
+      const kind = backtestSourceKindOf(backtest as unknown as BacktestSourceRow);
+      if (
+        kind?.canOpen &&
+        !kind.canOpen(backtest as unknown as BacktestSourceRow)
+      ) {
+        toggleExpanded(backtest._id);
+        return;
+      }
+      openBacktest(backtest);
+    },
+    [openBacktest, toggleExpanded]
+  );
+
+  const renderRowDetail = useCallback(
+    (backtest: TResult) => {
+      if (!expandedRows.has(backtest._id)) return null;
+      const row = backtest as unknown as BacktestSourceRow;
+      const Detail = backtestSourceKindOf(row)?.Detail;
+      if (!Detail) return null;
+      return (
+        <Detail row={row} openResults={(tab) => openBacktest(backtest, tab)} />
+      );
+    },
+    [expandedRows, openBacktest]
+  );
+
+  // What a result source adds to the results modal for the open row.
+  const resultsExtension = useBacktestResultsExtension(
+    resultsModalOpen && selectedBacktest
+      ? (selectedBacktest as unknown as BacktestSourceRow)
+      : null,
+    { initialTab: resultsTab }
   );
 
   const insightsTabs = useMemo<BotPanelInsightsTab[]>(() => {
@@ -659,7 +757,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
         ) : (
           <DataTable
             tableId={tableId}
-            columns={backtestColumns}
+            columns={decoratedColumns}
             data={rows}
             enableGlobalFilter={true}
             enableSorting={true}
@@ -670,6 +768,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
             emptyMessage="No backtests available"
             className="h-full"
             onRowClick={handleBacktestSelect}
+            renderRowDetail={renderRowDetail}
             bulkActions={bulkActions}
             defaultPinnedColumns={{ left: [], right: ['actions'] }}
             defaultColumnVisibility={descriptor.defaultColumnVisibility}
@@ -687,8 +786,9 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
     rows,
     rowsLoading,
     rowsError,
-    backtestColumns,
+    decoratedColumns,
     handleBacktestSelect,
+    renderRowDetail,
     handleExportBacktests,
     handleDeleteBacktests,
     descriptor.tabKey,
@@ -871,6 +971,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
                 quoteAsset: selectedBacktest.quoteAsset,
               }}
               botName={selectedBacktest.settings?.name}
+              extension={resultsExtension}
             />
           )}
         </>

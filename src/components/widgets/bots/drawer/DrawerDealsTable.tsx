@@ -25,6 +25,7 @@ import {
     X,
     XCircle,
     Zap,
+    RefreshCw,
 } from 'lucide-react';
 import React, {
     useCallback,
@@ -76,6 +77,7 @@ import {
     useDealActions,
     useEditDeal,
     useExecuteNextDca,
+    useRestartDeal,
     useMoveDealToTerminal,
     useRestoreDeal,
     isDealNotOpenError,
@@ -131,6 +133,7 @@ import {
 } from '../../../ui/select';
 import { Skeleton } from '../../../ui/skeleton';
 import CoinPair from '../../../widgets/shared/CoinPair';
+import { Slot } from '../../../../lib/extensions';
 import { DealOrdersDialog } from '../../../widgets/shared/DealOrdersDialog';
 import { SYMBOL_COLUMN_FILTER_META } from '../../../widgets/shared/symbolColumnFilterMeta';
 import { DealsLoadingIndicator } from './DealsLoadingIndicator';
@@ -280,6 +283,7 @@ const DealActionsMenu: React.FC<{
   const [moveDialogOpen, setMoveDialogOpen] = useState(false);
   const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
   const [executeNextDcaOpen, setExecuteNextDcaOpen] = useState(false);
+  const [restartDialogOpen, setRestartDialogOpen] = useState(false);
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
   const [adjustFundsDialog, setAdjustFundsDialog] =
     useState<AdjustFundsDialogMode | null>(null);
@@ -602,6 +606,33 @@ const DealActionsMenu: React.FC<{
     [executeNextDcaMutation, trade.botId, trade.id]
   );
 
+  // Restart deal — DCA / Combo deals, hedge ones included (the backend routes
+  // a hedge deal to the long or short child that owns it); re-places this
+  // deal's orders only.
+  const canShowRestartDeal = [
+    'DCA',
+    'Combo',
+    'Hedge DCA',
+    'Hedge Combo',
+  ].includes(trade.type);
+  const restartDealMutation = useRestartDeal();
+  const handleRestartConfirm = useCallback(() => {
+    if (!trade.botId) {
+      toast.error('Cannot restart the deal - missing bot ID');
+      return;
+    }
+    restartDealMutation.mutate({
+      dealId: trade.id,
+      botId: trade.botId,
+      combo:
+        trade.type === 'Combo' ||
+        trade.type === 'Hedge Combo' ||
+        botType === BotTypesEnum.combo ||
+        botType === BotTypesEnum.hedgeCombo,
+    });
+    setRestartDialogOpen(false);
+  }, [restartDealMutation, trade.botId, trade.id, trade.type, botType]);
+
   const editDealMutation = useEditDeal({
     onSuccess: () => {
       toast.success('DCA levels updated');
@@ -701,6 +732,15 @@ const DealActionsMenu: React.FC<{
               Execute next DCA
             </DropdownMenuItem>
           )}
+          {canShowRestartDeal && (
+            <DropdownMenuItem
+              onClick={() => setRestartDialogOpen(true)}
+              disabled={!isDealOpen}
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Restart deal
+            </DropdownMenuItem>
+          )}
           {canShowChangeDca && (
             <DropdownMenuItem
               onClick={() => setChangeDcaDialogOpen(true)}
@@ -751,6 +791,15 @@ const DealActionsMenu: React.FC<{
         cancelText="Keep Deal"
         variant="destructive"
         onConfirm={handleCancelConfirm}
+      />
+      <ConfirmationDialog
+        open={restartDialogOpen}
+        onOpenChange={setRestartDialogOpen}
+        title="Restart deal"
+        description={`Restart the deal for ${symbolString}? Its open safety orders and take profit are cancelled and placed again from the deal's current state. The bot's other deals are not touched.`}
+        confirmText="Restart"
+        cancelText="Cancel"
+        onConfirm={handleRestartConfirm}
       />
       <ConfirmationDialog
         open={restoreDialogOpen}
@@ -2337,14 +2386,22 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           }
 
           return (
-            <CoinPair
-              baseAsset={baseAsset}
-              quoteAsset={quoteAsset}
-              pair={symbolString}
-              iconSize="sm"
-              showText={true}
-              className="font-medium"
-            />
+            <span className="inline-flex items-center gap-xs">
+              <CoinPair
+                baseAsset={baseAsset}
+                quoteAsset={quoteAsset}
+                pair={symbolString}
+                iconSize="sm"
+                showText={true}
+                className="font-medium"
+              />
+              <Slot
+                name="deal.badges"
+                dealId={trade.id}
+                botId={trade.botId ?? botId}
+                botType={isComboBot ? 'combo' : 'dca'}
+              />
+            </span>
           );
         },
         enableSorting: true,
@@ -2757,6 +2814,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'closeTrigger',
         accessorKey: 'closeTrigger',
         header: 'Close Trigger',
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) =>
+            ((row as Record<string, unknown>)['closeTrigger'] as string) || '',
+        },
         cell: ({ row }) => {
           const value = (row.original as any).closeTrigger;
           const status = row.original.status?.toLowerCase();
@@ -3231,6 +3293,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     handleEdit,
     handleMoveToTerminal,
     accountTimeZone,
+    botId,
   ]);
   // Server-paged drawer: only columns with a server field sort.
   const pagedFields = pagedDeals.serverPaging?.fields;

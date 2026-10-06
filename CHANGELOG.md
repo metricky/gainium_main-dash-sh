@@ -1,5 +1,214 @@
 # Changelog
 
+## [2.82.1] - 2026-10-06
+
+### Fixed
+
+- Backtesting a DCA or Combo bot with Risk:Reward enabled and a Fixed % stop loss no longer fails with "At least one indicator is required"; a Risk:Reward indicator is only required when the stop loss type is Indicator.
+
+## [2.82.0] - 2026-10-06
+
+### Added
+
+- Indicator condition "Between" for value-type indicators (RSI, CCI, MFI, Williams %R, ADX, AO, UO, MOM, VO, BBW, BBWP, %B, Keltner %B, MA ratio, ATR, ADR, ATH): pick "Between" and an "Upper value" field appears next to Value; the condition holds while the indicator is strictly inside the range. Replaces a "Greater than" + "Lower than" pair with one indicator. Not offered with percentile. The chart shades the band between the two bounds, and editor backtests evaluate it (needs `@gainium/backtester` 1.11.0).
+
+## [2.81.0] - 2026-10-06
+
+### Added
+
+- Bot Events: filter events by time range, type (orders, deals, errors, warnings) and pair, search by order ID together with those filters, and export the filtered events as CSV. Wider widgets show the events as a table with an order/deal column; filters move into a two-column panel when the widget is narrow.
+
+### Changed
+
+- The bot error/warning banner's "Review the bot events" link now opens the Events tab filtered to errors (or warnings), also when the Events tab is already open.
+
+## [2.80.1] - 2026-10-06
+
+### Fixed
+
+- Charts show prices with the exchange's own precision. Low-priced pairs quoted in USD, EUR, GBP or JPY were rounded to 2 decimals on the price axis and crosshair, so for example every price from 0.065 to 0.075 read "0.07".
+
+## [2.80.0] - 2026-10-06
+
+### Added
+
+- Backtest results, Deals tab: sort the deal list (deal number, start/close time, P&L %, P&L $, duration, safety orders filled, volume), filter it by outcome (all/wins/losses/open), P&L, duration, safety orders filled, start date and pair, and export the shown deals as CSV. Prev/next follow the shown order.
+
+### Fixed
+
+- Backtest results, Deals tab: the selected deal no longer jumps back to the default one when the bot form behind the results re-renders.
+
+## [2.79.1] - 2026-10-06
+
+### Fixed
+
+- Bot Statistics tab, Lifetime / Since views: the confidence grade and its deal count now follow the selected view. They showed the count since the last stats reset in both views, often zero deals.
+
+## [2.79.0] - 2026-10-06
+
+### Added
+
+- "Restart deal" is offered on hedge DCA and hedge Combo deals too.
+
+## [2.78.1] - 2026-10-06
+
+### Fixed
+
+- Bot Statistics tab, Lifetime / Since views: "Win, %" now matches the Win Rate donut (break-even deals count as neither), and in the Since view the per-pair table's range chip shows the since-change period instead of "All time".
+
+## [2.78.0] - 2026-10-06
+
+### Added
+
+- "Restart deal" in the deal actions menu (bot deals table and trade cards) for open DCA and Combo deals. It cancels and re-places that deal's safety orders and take profit without restarting the bot or touching its other deals. Needs a backend with the `restartDeal` mutation.
+
+## [2.77.0] - 2026-10-06
+
+### Added
+
+- Bot Statistics tab: a Lifetime / Since-last-change toggle for bots whose statistics were reset by a settings change. Lifetime figures are derived from all of the bot's deals and keep counting across sizing and profit-currency changes; return and drawdown are measured against the peak capital the bot used at once. An info icon explains what each view counts. Run-up, ratios, buy-and-hold and DCA usage show in the Since view only. The toggle is hidden for bots that were never reset and on backends without the lifetime query.
+
+## [2.76.5] - 2026-10-06
+
+### Fixed
+
+- Deal tables on large accounts: when every deal of the list was already loaded, a Symbol filter showed no deals at all, and Cost and date filters were ignored (the whole list was shown). Symbol and date filters are now applied to the loaded deals; Cost, which the loaded deals do not carry, is answered by the server.
+
+## [2.76.4] - 2026-10-06
+
+### Added
+
+- Bot name columns (deals, bot lists, latest orders, terminal orders) and the Global Variables name column offer "Is any of" / "Is none of" with a dropdown of the names in the table, alongside the text operators. A picked name matches that name only, not every longer name containing it.
+- Close Trigger columns in the deal tables offer the same dropdown.
+
+### Fixed
+
+- On large accounts whose deals page on the server, "Not contains" and "Is none of" on Bot Name and Symbol were shown as not applied; they are now sent to the server. The Bot Name dropdown there lists the account's bots, not only those on the page on screen.
+
+## [2.76.3] - 2026-10-06
+
+### Changed
+
+- Includes the fixes released in 2.69.10–2.69.11 (listed below).
+
+## [2.76.2] - 2026-10-06
+
+### Changed
+
+- Includes the fix released in 2.69.9 (listed below).
+
+## [2.76.1] - 2026-10-06
+
+### Changed
+
+- Includes the fixes released in 2.68.4–2.69.8 (listed below).
+
+## [2.76.0] - 2026-10-05
+
+### Added
+
+- Bot form: host extensions can render a block under the base order size (`BotFieldExtensionPanel` for `baseOrderSize`).
+- Deals: a `deal.badges` slot after a bot deal's pair on the deal card, in the bot drawer's deals table and in the deal detail.
+
+## [2.75.1] - 2026-10-05
+
+### Fixed
+
+- Backtests list: a browser copy of a server-stored result (downloaded to show its deals) replaced the server's row, so the row lost its name, "server side" and source; the server's row now wins, and a downloaded copy is never listed as a row of its own (one with a variant id showed as a new backtest created "now").
+- Backtests list: a backtest where no deal closed shows "No deal closed" instead of 0% for its returns.
+
+## [2.75.0] - 2026-10-03
+
+### Added
+
+- A bot form backtest action's finished-run summary can carry a `note` that replaces the net / win figures in the "View results" chip when they are not a result (e.g. no deal closed).
+
+## [2.74.0] - 2026-10-03
+
+### Added
+
+- A results extension can report that its replacement result failed to load (`resultError`, with an optional retry): the results modal shows an error state with Retry in the content area and keeps the row's own header, instead of an empty result.
+
+## [2.73.0] - 2026-10-03
+
+### Added
+
+- A bot form backtest action can report a run in progress (`running`: progress, text, detail, cancel) and a finished one (`done`: summary, view, dismiss); the footer's backtest box shows them with the same progress bar and "View results" chip as a normal backtest.
+- Backtest source kinds can keep a row out of the list until it is ready (`listed`), and a row's results can be opened from outside the backtests panel (`requestOpenBacktest` / `subscribeOpenBacktest`).
+- `MultiSelect` takes a `contentClassName` for its list (e.g. to open above a dialog).
+
+## [2.72.0] - 2026-10-03
+
+### Added
+
+- Bot form backtest actions can render their own UI inside the form (`element`, e.g. the dialog the action opens), so it can use the form's pickers.
+- The pair picker can offer only a given set of pairs (`allowedPairs`), let its caller handle the "change pair" of the last chip (`onReplaceCoin`) instead of writing the form's pair, and open its list above another dialog (`modalZIndex`); the list dialog takes a `zIndex`.
+
+## [2.71.0] - 2026-10-03
+
+### Added
+
+- Extension points for host builds around backtests: buttons next to the bot form's Backtest button (run on the form's current, unsaved settings, validated as Save would), an action on a backtest limitation item, and backtest result sources — rows of the Backtests table produced by another process, with a Type column, a status beside the name, an inline expansion, and additions to the results modal (a result selector in the header, extra tabs, chart markers with their own toggle on the Deals chart, a per-deal card and deal-list badges). With nothing registered the table and the modal are unchanged.
+- Tables can show an inline detail row under a row, sized to the visible width of the table.
+- The chart can draw note pins (hover text) among a backtest's transactions.
+
+## [2.70.0] - 2026-10-01
+
+### Added
+
+- Settings → Notification Preferences: a slot at the end of the card (`settings.notificationChannels.footer`) for host-provided content. Empty in the self-hosted build.
+- Host builds can ask open bot forms to re-check which extension sections are visible (`invalidateBotFormSections`), e.g. when an access flag arrives after the form mounted.
+
+## [2.69.0] - 2026-10-01
+
+### Added
+
+- Extension points for host builds: a component can be attached to an individual bot setting (next to the global-variable control) or to a bot form section, and may take the setting over (hiding the variable binding and locking the field); extra tabs in the bot details drawer, reachable with `?tab=`; badges after a bot's name and extra filters in the DCA and Combo bot lists. With nothing registered the dashboard is unchanged.
+- More extension points for the bot form: a block under an individual setting or at the top of a section, a section-header highlight, whole extra form sections, extension settings kept in the form and saved by its Save button after the bot itself, and decorations for a bot's header in the details drawer and the bot form. The Take profit and Stop loss "More Settings" groups open by themselves while an extension manages trailing take profit or trailing stop loss.
+- AI color tokens (`ai-surface`, `ai-surface-strong`, `ai-border`, `ai-foreground`) for light and dark themes.
+- Backtest limitations: before a DCA or Combo backtest, a dialog lists the settings that are on for the bot but can't be simulated in a backtest (webhook signals, volume filters, global variables, Combo trailing / multiple targets and others), with what the backtest does instead. It never blocks the run, and "Don't remind me again" is remembered per setting, so a newly applicable one still shows. Host builds can add their own items.
+## [2.69.11] - 2026-10-06
+
+### Fixed
+
+- Bot details panel: on touch screens, dragging the panel's left edge or the divider between the chart and the bot info with a finger now resizes them, as dragging with a mouse does on desktop.
+
+## [2.69.10] - 2026-10-06
+
+### Fixed
+
+- Grid bots: a Short futures grid with a take profit or stop loss target price is now checked as a short grid, so a take profit below the range or a stop loss above it can be saved again. Futures grids are judged by their position side, as the bot itself trades them.
+
+## [2.69.9] - 2026-10-06
+
+### Fixed
+
+- Notifications: an update or news item whose text is cut off now always shows the expand arrow. Short items made of a heading and a few paragraphs could be cut off with no way to expand them.
+
+## [2.69.8] - 2026-10-05
+
+### Fixed
+
+- Trading bots list: a DCA bot holding an open deal on a pair that was later removed from the bot showed that deal at zero value, so unrealized PnL read as a loss of the deal's whole cost. Assets whose names use lowercase letters (such as stock tokens) are now priced correctly.
+
+## [2.69.7] - 2026-10-05
+
+### Fixed
+
+- Backtests list: a browser copy of a server-stored result (downloaded to show its deals) replaced the server's row, so the row lost its name and "server side"; the server's row now wins and the copy only marks that its details are in this browser.
+
+## [2.69.6] - 2026-10-05
+
+### Fixed
+
+- Grid bot page: opening the Settings tab no longer removes the bot's grid order lines from the chart; they stay visible when you return to Overview.
+
+## [2.69.5] - 2026-10-04
+
+### Fixed
+
+- Help articles and other pages with images no longer reload and jump back to the top every 15 seconds; the startup loading check now only reacts to an app that never rendered.
+
 ## [2.69.4] - 2026-10-04
 
 ### Fixed

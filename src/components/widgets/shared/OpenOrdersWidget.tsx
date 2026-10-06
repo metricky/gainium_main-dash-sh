@@ -2449,7 +2449,12 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       baseCols.push({
         accessorKey: 'botName',
         header: 'Bot Name',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'textSelect',
+          // Picking "Coinbase" matches that bot only, not "Coinbase 2".
+          getOptionValue: (row: unknown) =>
+            ((row as Record<string, unknown>)['botName'] as string) || '',
+        },
         cell: ({ getValue, row }) => {
           const botName = getValue() as string;
           const botId = row.original.botId;
@@ -3099,7 +3104,11 @@ const OpenOrdersWidget: React.FC<OpenTradesWidgetProps> = ({
       {
         accessorKey: 'closeTrigger',
         header: 'Close Trigger',
-        meta: { filterType: 'string' },
+        meta: {
+          filterType: 'array',
+          getOptionValue: (row: unknown) =>
+            ((row as Record<string, unknown>)['closeTrigger'] as string) || '',
+        },
         cell: ({ row, getValue }) => {
           const value = getValue() as string;
           const status = row.original.status?.toLowerCase();

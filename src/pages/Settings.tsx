@@ -2468,11 +2468,13 @@ const Settings: React.FC = () => {
                         </tr>
                       );
                     })}
+                    <Slot name="settings.notificationChannels.rows" columns={3} />
                   </tbody>
                 </table>
               </div>
             </div>
             <Slot name="settings.notificationChannels.actions" />
+            <Slot name="settings.notificationChannels.footer" />
           </CardContent>
         </Card>
       </div>

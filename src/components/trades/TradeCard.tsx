@@ -14,6 +14,7 @@ import {
     useDealActions,
     useEditDeal,
     useExecuteNextDca,
+    useRestartDeal,
     useMoveDealToTerminal,
     useRestoreDeal,
     toastDealCloseError,
@@ -51,6 +52,7 @@ import {
     X,
     XCircle,
     Zap,
+    RefreshCw,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -68,6 +70,7 @@ import { ConfirmationDialog } from '../ui';
 import { MoveDealToBotDialog } from '@/components/deals/MoveDealToBotDialog';
 import { DealOrdersDialog } from '../widgets/shared/DealOrdersDialog';
 import { TrailingBadge } from './TrailingBadge';
+import { Slot } from '@/lib/extensions';
 import { orderDataToViewOrder } from '@/utils/orders/viewOrder';
 import { DualArcProgressGauge } from '../ui/DualArcProgressGauge';
 import { Button } from '../ui/button';
@@ -350,6 +353,7 @@ const EnhancedCard = React.memo(
     const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
     const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
     const [executeNextDcaOpen, setExecuteNextDcaOpen] = useState(false);
+    const [restartDialogOpen, setRestartDialogOpen] = useState(false);
     const handleAddFunds = () => {
       setAdjustFundsDialog('add');
     };
@@ -958,6 +962,29 @@ const EnhancedCard = React.memo(
       },
       [executeNextDcaMutation, trade.botId, trade.id]
     );
+    // Restart deal — DCA / Combo bot deals, hedge ones included (the backend
+    // routes a hedge deal to the long or short child that owns it); not
+    // terminal. Re-places this deal's orders only.
+    const canShowRestartDeal =
+      !terminal &&
+      ['DCA', 'Combo', 'Hedge DCA', 'Hedge Combo'].includes(trade.type);
+    const restartDealMutation = useRestartDeal();
+    const handleRestartConfirm = useCallback(() => {
+      if (!trade.botId) {
+        toast.error('Cannot restart the deal - missing bot ID');
+        return;
+      }
+      restartDealMutation.mutate({
+        dealId: trade.id,
+        botId: trade.botId,
+        combo:
+          trade.type === 'Combo' ||
+          trade.type === 'Hedge Combo' ||
+          botType === BotTypesEnum.combo ||
+          botType === BotTypesEnum.hedgeCombo,
+      });
+      setRestartDialogOpen(false);
+    }, [restartDealMutation, trade.botId, trade.id, trade.type, botType]);
     // The inverse of "Move to Terminal": only terminal deals can be moved back
     // into a bot, and only while open (a closed deal has no position to adopt).
     const canShowMoveToBot = useMemo(
@@ -1139,6 +1166,15 @@ const EnhancedCard = React.memo(
           onConfirm={handleMoveToTerminalConfirm}
         />
         <ConfirmationDialog
+          open={restartDialogOpen}
+          onOpenChange={setRestartDialogOpen}
+          title="Restart deal"
+          description={`Restart the deal for ${symbolString}? Its open safety orders and take profit are cancelled and placed again from the deal's current state. The bot's other deals are not touched.`}
+          confirmText="Restart"
+          cancelText="Cancel"
+          onConfirm={handleRestartConfirm}
+        />
+        <ConfirmationDialog
           open={restoreDialogOpen}
           onOpenChange={setRestoreDialogOpen}
           title="Restore deal"
@@ -1277,6 +1313,15 @@ const EnhancedCard = React.memo(
                   <Edit className="w-4 h-4 mr-2" />
                   Edit
                 </DropdownMenuItem>
+                {canShowRestartDeal && (
+                  <DropdownMenuItem
+                    onClick={() => setRestartDialogOpen(true)}
+                    disabled={!isDealOpen}
+                  >
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Restart deal
+                  </DropdownMenuItem>
+                )}
                 {canShowChangeDca && (
                   <DropdownMenuItem
                     onClick={() => setChangeDcaDialogOpen(true)}
@@ -1368,6 +1413,15 @@ const EnhancedCard = React.memo(
                 size="xs"
                 chipStyle="solid"
               />
+              {trade.botId &&
+                (trade.type === 'DCA' || trade.type === 'Combo') && (
+                  <Slot
+                    name="deal.badges"
+                    dealId={trade.id}
+                    botId={trade.botId}
+                    botType={trade.type === 'Combo' ? 'combo' : 'dca'}
+                  />
+                )}
             </div>
 
             {trade.botName && (
@@ -1901,6 +1955,15 @@ const SimpleCard = React.memo(
                 size="xs"
                 chipStyle="solid"
               />
+              {trade.botId &&
+                (trade.type === 'DCA' || trade.type === 'Combo') && (
+                  <Slot
+                    name="deal.badges"
+                    dealId={trade.id}
+                    botId={trade.botId}
+                    botType={trade.type === 'Combo' ? 'combo' : 'dca'}
+                  />
+                )}
             </div>
 
             {/* Bot Name */}

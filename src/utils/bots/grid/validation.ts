@@ -1,4 +1,4 @@
-import type { BotSettings, BotTypesEnum } from '@/types';
+import { FuturesStrategyEnum, type BotSettings, type BotTypesEnum } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
 
 export interface GridFormValidationResult {
@@ -106,6 +106,7 @@ export const validateGridFormData = ({
   exchangeUUID,
   pair,
   grid,
+  minBudget,
 }: Omit<
   Pick<BotFormData, 'name' | 'exchangeUUID' | 'pair' | BotTypesEnum.grid>,
   'grid'
@@ -127,6 +128,7 @@ export const validateGridFormData = ({
     | 'slLowPrice'
     | 'slPerc'
     | 'strategy'
+    | 'futuresStrategy'
     | 'useStartPrice'
     | 'startPrice'
     | 'useOrderInAdvance'
@@ -135,6 +137,12 @@ export const validateGridFormData = ({
     | 'leverage'
     | 'marginType'
   >;
+  /**
+   * Least budget at which every level clears the exchange's per-order
+   * minimum (`computeGridBudgetRangeFromForm`). Omit when it is unknown —
+   * the check is skipped, as before.
+   */
+  minBudget?: number | null;
 }): GridFormValidationResult => {
   const errors: Record<string, string> = {};
 
@@ -153,6 +161,15 @@ export const validateGridFormData = ({
 
   if (!isPositiveNumber(grid.budget)) {
     errors['budget'] = 'Budget must be greater than zero.';
+  } else if (
+    typeof minBudget === 'number' &&
+    minBudget > 0 &&
+    (parseGridNumber(grid.budget) ?? 0) < minBudget
+  ) {
+    // Below this the engine raises levels to the exchange minimum and
+    // refuses the start ("Budget … is below the minimum …"), so the bot
+    // could be saved but never run. Legacy main-dash blocked save here too.
+    errors['budget'] = `Min budget for these settings is ${minBudget}.`;
   }
 
   if (!isPositiveNumber(grid.topPrice)) {
@@ -210,12 +227,18 @@ export const validateGridFormData = ({
   // A long grid takes profit on the way up and stops out on the way down, so
   // a take profit at or below the low price, or a stop loss at or above the
   // top price, is true everywhere inside the range. A short grid runs the
-  // other way round.
+  // other way round. The side is the engine's (`get isShort()`): a futures
+  // grid's position side, falling back to `strategy` only when it is NEUTRAL.
   const rangeTop = parseGridNumber(grid.topPrice) ?? NaN;
   const rangeLow = parseGridNumber(grid.lowPrice) ?? NaN;
   const hasRange =
     Number.isFinite(rangeTop) && Number.isFinite(rangeLow) && rangeTop > rangeLow;
-  const isShortGrid = grid.strategy === 'SHORT';
+  const isShortGrid =
+    grid.futures &&
+    grid.futuresStrategy &&
+    grid.futuresStrategy !== FuturesStrategyEnum.neutral
+      ? grid.futuresStrategy === FuturesStrategyEnum.short
+      : grid.strategy === 'SHORT';
 
   if (
     hasRange &&

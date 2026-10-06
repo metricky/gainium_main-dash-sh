@@ -18,8 +18,8 @@ import {
   Wallet,
   Zap,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { mapWidgetMenuItemsToPanelMenu } from '@/components/bots/panels/menuUtils';
 import { Celebration } from '@/components/onboarding/Celebration';
@@ -32,6 +32,16 @@ import {
   type ScrollableTabItem,
 } from '@/components/ui/ScrollableFormTabNavigation';
 import { SectionHeader } from '@/features/bots/shared/components/SectionHeader';
+import {
+  useBotFormSectionsVersion,
+  withBotFormExtensionSections,
+} from '@/lib/extensions/botFormExtensions';
+import {
+  BotFieldExtensionControl,
+  BotFieldExtensionSlot,
+  BotFormSectionHeaderFrame,
+  BotFormSectionPanels,
+} from '@/lib/extensions/botFieldExtensions';
 import { Switch } from '@/components/ui/switch';
 import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import WidgetWrapper, {
@@ -39,6 +49,7 @@ import WidgetWrapper, {
 } from '@/components/widgets/WidgetWrapper';
 import {
   useBotFormActiveTab,
+  useBotFormBotVars,
   useBotFormContext,
   useBotFormEditing,
   useBotFormGetFormData,
@@ -111,6 +122,7 @@ import {
 import {
   BotStartTypeEnum,
   BotTypesEnum,
+  type BotVars,
   CloseConditionEnum,
   DCAOrderTypeEnum,
   ExchangeEnum,
@@ -156,6 +168,11 @@ import {
 } from '@/utils/bots/navigation';
 import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { COMBO_BOT_TYPE_ID } from '../../registry';
+import { useBacktestLimitationsGate } from '@/features/bots/backtest-limitations/useBacktestLimitationsGate';
+import {
+  useBotFormBacktestActions,
+  type BotFormBacktestSnapshot,
+} from '@/lib/extensions/botFormBacktestActions';
 import BacktestSettingsDialog, {
   type BacktestConfig,
 } from './components/BacktestSettingsDialog';
@@ -945,16 +962,64 @@ const BotForm: React.FC<BotFormProps> = ({
 
   // Post-create dialog actions. Celebration calls onClose after each one,
   // which clears createdBotId — so read it before navigating.
+  const startCreatedBot = useCallback(
+    (
+      id: string,
+      grid?: { buyType: BuyTypeEnum; buyCount?: string; buyAmount?: number }
+    ) => {
+      statusToggleMutation.mutate(
+        { id, status: 'open', ...(grid ?? {}) },
+        { onSuccess: () => toast.success('Bot started') }
+      );
+      // Don't wait for the mutation: `{base}/view/:id` is the list page with
+      // the bot open in its sidebar, which reflects the status once it lands.
+      navigate(buildBotViewRoute(botExperience.id, id));
+    },
+    [botExperience.id, navigate, statusToggleMutation]
+  );
+
+  // A grid start goes through the start dialog, as it does from the footer:
+  // the dialog is where the balance is checked and the buy type chosen.
+  // Starting straight from here skipped both — the bot started on an empty
+  // wallet and every grid order failed. The celebration clears
+  // `createdBotId` on close, so the id is held separately.
+  const [celebrationGridStartId, setCelebrationGridStartId] = useState<
+    string | undefined
+  >(undefined);
+
   const handleCelebrationStartBot = useCallback(() => {
     if (!createdBotId) return;
-    statusToggleMutation.mutate(
-      { id: createdBotId, status: 'open' },
-      { onSuccess: () => toast.success('Bot started') }
-    );
-    // Don't wait for the mutation: `{base}/view/:id` is the list page with
-    // the bot open in its sidebar, which reflects the status once it lands.
-    navigate(buildBotViewRoute(botExperience.id, createdBotId));
-  }, [createdBotId, botExperience.id, navigate, statusToggleMutation]);
+    if (isGridBot) {
+      setCelebrationGridStartId(createdBotId);
+      return;
+    }
+    startCreatedBot(createdBotId);
+  }, [createdBotId, isGridBot, startCreatedBot]);
+
+  const handleCelebrationGridStartConfirm = useCallback(
+    (buyType: BuyTypeEnum, buyCount?: string, buyAmount?: number) => {
+      if (!celebrationGridStartId) return;
+      const id = celebrationGridStartId;
+      setCelebrationGridStartId(undefined);
+      startCreatedBot(id, {
+        buyType,
+        ...(buyCount ? { buyCount } : {}),
+        ...(buyAmount !== undefined ? { buyAmount } : {}),
+      });
+    },
+    [celebrationGridStartId, startCreatedBot]
+  );
+
+  const celebrationGridStartDialog = isGridBot ? (
+    <GridStartBotDialog
+      open={!!celebrationGridStartId}
+      onOpenChange={(open) => {
+        if (!open) setCelebrationGridStartId(undefined);
+      }}
+      onConfirm={handleCelebrationGridStartConfirm}
+      isProcessing={statusToggleMutation.isPending}
+    />
+  ) : null;
 
   const handleCelebrationAllBots = useCallback(() => {
     navigate(buildBotListRoute(botExperience.id));
@@ -1333,6 +1398,7 @@ const BotForm: React.FC<BotFormProps> = ({
     /* updateFormData, */ handleSave,
     handleBacktest: handleFormBacktest,
     backtestPending,
+    buildSettingsPayload,
   } = useFormHandlers(
     setFormData,
     setIsDirty,
@@ -1792,23 +1858,41 @@ const BotForm: React.FC<BotFormProps> = ({
     return isGridBot ? gridTabDescriptors : dcaTabDescriptors;
   }, [isGridBot]);
 
-  const tabDescriptors = useMemo<BotFormTabDescriptor[]>(
-    () =>
+  // Host sections re-check `isVisible` when the host invalidates them.
+  const extensionSectionsVersion = useBotFormSectionsVersion();
+  const tabDescriptors = useMemo<BotFormTabDescriptor[]>(() => {
+    // A host invalidation (version bump) re-runs the sections' isVisible.
+    void extensionSectionsVersion;
+    return withBotFormExtensionSections(
       (moduleTabDescriptors?.length
         ? moduleTabDescriptors
         : (metadataTabDescriptors ?? fallbackTabDescriptors)
-      )
-        .filter((d) => (isGridBot ? true : isTerminal ? d.isTerminal : d.isDca))
-        .filter((d) => (tabDescriptorsFilter ? tabDescriptorsFilter(d) : true)),
-    [
-      moduleTabDescriptors,
-      metadataTabDescriptors,
-      fallbackTabDescriptors,
-      isTerminal,
-      tabDescriptorsFilter,
-      isGridBot,
-    ]
-  );
+      ).filter((d) =>
+        isGridBot ? true : isTerminal ? d.isTerminal : d.isDca
+      ),
+      {
+        botType: isGridBot
+          ? BotTypesEnum.grid
+          : isComboBot
+            ? BotTypesEnum.combo
+            : BotTypesEnum.dca,
+        mode,
+        isTerminal,
+        isNestedLeg,
+      }
+    ).filter((d) => (tabDescriptorsFilter ? tabDescriptorsFilter(d) : true));
+  }, [
+    moduleTabDescriptors,
+    metadataTabDescriptors,
+    fallbackTabDescriptors,
+    isTerminal,
+    tabDescriptorsFilter,
+    isGridBot,
+    isComboBot,
+    mode,
+    isNestedLeg,
+    extensionSectionsVersion,
+  ]);
 
   const visibleDescriptors = useMemo(() => {
     const filtered = tabDescriptors.filter((descriptor) => {
@@ -2952,8 +3036,61 @@ const BotForm: React.FC<BotFormProps> = ({
   // failed, silently backtesting without fees.
   const lastDialogFeeRef = useRef<{ key: string; fee: number } | null>(null);
 
+  // Settings this bot has on that the backtester cannot simulate: listed in
+  // an informational dialog before a DCA / Combo run (never blocks it).
+  const [searchParams] = useSearchParams();
+  const backtestBotVars = useBotFormBotVars();
+  const backtestBotVarsRef = useRef<BotVars | null>(null);
+  backtestBotVarsRef.current = backtestBotVars;
+  // Other ways to backtest the form, offered by host builds next to the
+  // footer's Backtest button (botFormBacktestActions). They run on the form
+  // as Save would send it.
+  const getBacktestSnapshot = useCallback(():
+    | BotFormBacktestSnapshot
+    | null => {
+    const settings = buildSettingsPayload();
+    if (!settings) return null;
+    return {
+      mode: mode === 'edit' ? 'edit' : 'create',
+      botType: String(botTypeEnum),
+      botId: botId ?? undefined,
+      settings,
+    };
+  }, [buildSettingsPayload, mode, botTypeEnum, botId]);
+  const extraBacktestActions = useBotFormBacktestActions({
+    mode: mode === 'edit' ? 'edit' : 'create',
+    formMode: mode,
+    botType: String(botTypeEnum),
+    botId: botId ?? undefined,
+    isTerminal,
+  });
+
+  const backtestLimitations = useBacktestLimitationsGate({
+    getSnapshot: getBacktestSnapshot,
+    botType: isTerminal ? undefined : botTypeEnum,
+    botId: botId ?? undefined,
+    sourceBotId: mode === 'edit' ? undefined : (searchParams.get('load') ?? undefined),
+    getSettings: () => {
+      const data = getFormData();
+      const slice =
+        botTypeEnum === BotTypesEnum.combo
+          ? data.combo
+          : botTypeEnum === BotTypesEnum.dca
+            ? data.dca
+            : undefined;
+      if (!slice) return undefined;
+      // Variable bindings live beside the settings, not in them.
+      return {
+        ...(slice as unknown as Record<string, unknown>),
+        vars: backtestBotVarsRef.current,
+      };
+    },
+  });
+  const confirmBacktestLimitations = backtestLimitations.confirm;
+
   const onRunBacktest = useCallback(
     async (cfg: BacktestConfig) => {
+      if (!(await confirmBacktestLimitations())) return;
       // The form as it is now, read once at run time (the shell does not
       // subscribe to it).
       const formData = getFormData();
@@ -3527,6 +3664,7 @@ const BotForm: React.FC<BotFormProps> = ({
       }
     },
     [
+      confirmBacktestLimitations,
       currentExchange,
       getFormData,
       getPeriod,
@@ -3639,7 +3777,9 @@ const BotForm: React.FC<BotFormProps> = ({
         <div className="flex h-full flex-col">
           {(showStickyHeader || allStrategiesOpen) && (
             <motion.div
-              className="sticky top-2 z-30 mb-3 mx-1 rounded-lg bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80"
+              className={cn(
+                'sticky top-2 z-30 mb-3 mx-1 rounded-lg bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
+              )}
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3 }}
@@ -3799,6 +3939,11 @@ const BotForm: React.FC<BotFormProps> = ({
                             isContentReadOnly || !!isFieldLocked(toggleField)
                           }
                           toggleId={`toggle-${descriptor.id}`}
+                          sectionId={descriptor.id}
+                          {...(descriptor.HeaderControls
+                            ? { HeaderControls: descriptor.HeaderControls }
+                            : {})}
+                          {...(hasToggle ? { toggleField } : {})}
                           className={cn(
                             isTerminalSimpleSelected &&
                               descriptor.id === 'basic'
@@ -3807,7 +3952,14 @@ const BotForm: React.FC<BotFormProps> = ({
                           )}
                         />
                         {!isSectionCollapsed(descriptor.id) && (
-                          <SectionComponent {...componentProps} />
+                          <>
+                            <BotFormSectionPanels
+                              sectionId={descriptor.id}
+                              toggleField={hasToggle ? toggleField : undefined}
+                              className="mb-md"
+                            />
+                            <SectionComponent {...componentProps} />
+                          </>
                         )}
                       </div>
                     );
@@ -3865,6 +4017,10 @@ const BotForm: React.FC<BotFormProps> = ({
                 onRunBacktestDirect={
                   footerOverride?.onRunBacktestDirect ?? onRunBacktest
                 }
+                extraBacktestActions={
+                  footerOverride ? undefined : extraBacktestActions
+                }
+                getBacktestSnapshot={getBacktestSnapshot}
                 backtestProgress={
                   footerOverride?.backtestProgress ?? backtestProgress
                 }
@@ -3984,6 +4140,11 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestLimitations.dialog}
+      {/* Host-provided backtest actions' own UI (e.g. their dialog). */}
+      {extraBacktestActions.map((a) =>
+        a.element ? <Fragment key={a.key}>{a.element}</Fragment> : null
+      )}
       {backtestResult && (
         <BacktestResultsFullModal
           open={resultsModalOpen}
@@ -4041,6 +4202,7 @@ const BotForm: React.FC<BotFormProps> = ({
           ]}
         />
       )}
+      {celebrationGridStartDialog}
     </>
   );
 
@@ -4057,7 +4219,9 @@ const BotForm: React.FC<BotFormProps> = ({
       {/* Sticky header with navigation - hidden when parent provides tabs */}
       {showStickyHeader && (
         <motion.div
-          className="sticky top-2 z-10 mx-2 mt-2 rounded-lg bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur safe-area-inset-top supports-[backdrop-filter]:bg-background/80"
+          className={cn(
+            'sticky top-2 z-10 mx-2 mt-2 rounded-lg bg-background/95 px-2 py-1.5 shadow-sm backdrop-blur safe-area-inset-top supports-[backdrop-filter]:bg-background/80'
+          )}
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
@@ -4153,7 +4317,10 @@ const BotForm: React.FC<BotFormProps> = ({
                   data-form-readonly={isContentReadOnly ? 'true' : 'false'}
                   data-section-id={descriptor.id}
                 >
-                  <div className="mb-3 border-t-2 border-primary/60 pt-3 pb-2 bg-primary/10 rounded-lg px-3 -mx-2">
+                  <BotFormSectionHeaderFrame
+                    sectionId={descriptor.id}
+                    className="mb-3 border-t-2 border-primary/60 pt-3 pb-2 bg-primary/10 rounded-lg px-3 -mx-2"
+                  >
                     <div className="flex items-start justify-between gap-sm">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-start gap-xs">
@@ -4163,6 +4330,10 @@ const BotForm: React.FC<BotFormProps> = ({
                               <h2 className="text-base font-semibold leading-tight">
                                 {descriptor.label}
                               </h2>
+                              <BotFieldExtensionSlot
+                                path={`section:${descriptor.id}`}
+                                kind="section"
+                              />
                               {(descriptor.tooltipText ||
                                 descriptor.description) && (
                                 <Tooltip
@@ -4191,7 +4362,44 @@ const BotForm: React.FC<BotFormProps> = ({
                         </div>
                       </div>
                       <div className="flex items-center gap-xs self-start pt-0.5 shrink-0">
-                        {(hasToggle ? toggleEnabled : true) && (
+                        {descriptor.HeaderControls ? (
+                          <descriptor.HeaderControls
+                            readOnly={isContentReadOnly}
+                            collapseControl={
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                type="button"
+                                aria-expanded={!isSectionCollapsed(descriptor.id)}
+                                aria-controls={`section-${descriptor.id}`}
+                                onClick={() =>
+                                  toggleSectionCollapsed(descriptor.id)
+                                }
+                                disabled={isContentReadOnly}
+                                className={cn(
+                                  'p-0',
+                                  isContentReadOnly ? 'opacity-50' : 'opacity-100'
+                                )}
+                                title={
+                                  isSectionCollapsed(descriptor.id)
+                                    ? 'Expand section'
+                                    : 'Collapse section'
+                                }
+                              >
+                                <ChevronDown
+                                  className={cn(
+                                    'h-4 w-4 transition-transform',
+                                    isSectionCollapsed(descriptor.id)
+                                      ? 'rotate-0'
+                                      : 'rotate-180'
+                                  )}
+                                />
+                              </Button>
+                            }
+                          />
+                        ) : null}
+                        {!descriptor.HeaderControls &&
+                          (hasToggle ? toggleEnabled : true) && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -4224,21 +4432,30 @@ const BotForm: React.FC<BotFormProps> = ({
                         )}
                         {hasToggle && (
                           <div className="flex items-center gap-xs">
-                            <Switch
-                              checked={toggleEnabled}
-                              onCheckedChange={(checked: boolean) =>
-                                updateFormData(toggleField, checked)
-                              }
-                              disabled={isContentReadOnly}
-                              id={`toggle-${descriptor.id}`}
-                            />
+                            <BotFieldExtensionControl path={toggleField}>
+                              <Switch
+                                checked={toggleEnabled}
+                                onCheckedChange={(checked: boolean) =>
+                                  updateFormData(toggleField, checked)
+                                }
+                                disabled={isContentReadOnly}
+                                id={`toggle-${descriptor.id}`}
+                              />
+                            </BotFieldExtensionControl>
                           </div>
                         )}
                       </div>
                     </div>
-                  </div>
+                  </BotFormSectionHeaderFrame>
                   {!isSectionCollapsed(descriptor.id) && (
-                    <SectionComponent {...componentProps} />
+                    <>
+                      <BotFormSectionPanels
+                        sectionId={descriptor.id}
+                        toggleField={hasToggle ? toggleField : undefined}
+                        className="mb-md"
+                      />
+                      <SectionComponent {...componentProps} />
+                    </>
                   )}
                 </div>
               );
@@ -4285,6 +4502,10 @@ const BotForm: React.FC<BotFormProps> = ({
             onRunBacktestDirect={
               footerOverride?.onRunBacktestDirect ?? onRunBacktest
             }
+            extraBacktestActions={
+              footerOverride ? undefined : extraBacktestActions
+            }
+            getBacktestSnapshot={getBacktestSnapshot}
             backtestProgress={
               footerOverride?.backtestProgress ?? backtestProgress
             }
@@ -4394,6 +4615,11 @@ const BotForm: React.FC<BotFormProps> = ({
         onCancelLocal={cancelLocalBacktest}
         onRun={onRunBacktest}
       />
+      {backtestLimitations.dialog}
+      {/* Host-provided backtest actions' own UI (e.g. their dialog). */}
+      {extraBacktestActions.map((a) =>
+        a.element ? <Fragment key={a.key}>{a.element}</Fragment> : null
+      )}
       {backtestResult && (
         <BacktestResultsFullModal
           open={resultsModalOpen}
@@ -4449,6 +4675,7 @@ const BotForm: React.FC<BotFormProps> = ({
           },
         ]}
       />
+      {celebrationGridStartDialog}
     </div>
   );
 

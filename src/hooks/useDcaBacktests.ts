@@ -1,10 +1,12 @@
 import { useMemo } from 'react';
+import { mergeRemoteAndLocalRows } from '../utils/backtest/localRows';
 import { botQueries } from '../lib/api/GraphQLQueries-bot-queries';
 import { LONG_READ_TIMEOUT_MS } from '../lib/api';
 import type { ReturnResult } from '../lib/api/types';
 import { logger } from '../lib/loggerInstance';
 import type { DCABacktestingResultHistory } from '../types';
 import { useGraphQL } from './useGraphQL';
+import { useBacktestListExtraFields } from '../lib/extensions/backtestSources';
 import { useLocalBacktestsByType } from './useLocalBacktestsByType';
 import { useShareContext } from './useShareContext';
 
@@ -27,11 +29,13 @@ export function useDcaBacktests(_filter?: BacktestsFilter): UseBacktestsResult {
   const local = useLocalBacktestsByType('DCA');
 
   // Get the query and variables from botQueries with proper input parameters
+  // Host fields of each row (e.g. a result's source), once served.
+  const extraFields = useBacktestListExtraFields();
   const { query, variables } = botQueries.getBacktests({
     page: 0,
     pageSize: 50,
     sortModel: [{ field: 'time', sort: 'desc' }],
-  });
+  }, extraFields);
 
   // Share-mode visitors must NOT fetch the visitor's backtest list — the
   // share URL renders ONLY the shared backtest via `?backtestShare=…`.
@@ -42,7 +46,9 @@ export function useDcaBacktests(_filter?: BacktestsFilter): UseBacktestsResult {
     'getBacktests',
     {
       query,
-      variables,
+      // The extra selection is part of the cache key (same base key, so
+      // invalidations still match); unknown variables are ignored by the API.
+      variables: extraFields ? { ...variables, fields: extraFields } : variables,
     },
     // Large backtest-history payload → generous long-read cap.
     { enabled: !isDemo, requestTimeoutMs: LONG_READ_TIMEOUT_MS }
@@ -95,32 +101,11 @@ export function useDcaBacktests(_filter?: BacktestsFilter): UseBacktestsResult {
     [backtestResponse]
   );
 
-  const mergedBacktests = useMemo(() => {
-    const byId = new Map<string, DCABacktestingResultHistory>();
-    const withoutId: DCABacktestingResultHistory[] = [];
-
-    for (const remoteBacktest of backtestsArray) {
-      const id = remoteBacktest?._id;
-      if (id) {
-        byId.set(id, remoteBacktest);
-      } else {
-        withoutId.push(remoteBacktest);
-      }
-    }
-
-    for (const localBacktest of local.backtests) {
-      const id = localBacktest?._id;
-      if (id) {
-        byId.set(id, localBacktest);
-      } else {
-        withoutId.push(localBacktest);
-      }
-    }
-
-    const merged = [...withoutId, ...Array.from(byId.values())];
-    merged.sort((a, b) => (b.time || 0) - (a.time || 0));
-    return merged;
-  }, [backtestsArray, local.backtests]);
+  // The server's row wins; a local copy only adds this browser's own runs.
+  const mergedBacktests = useMemo(
+    () => mergeRemoteAndLocalRows(backtestsArray, local.backtests),
+    [backtestsArray, local.backtests]
+  );
 
   // Create display names for backtests using the requested format: {start-date} to {end-date} - {coin}
   // Maps `mergedBacktests` directly, like the sibling useGridBacktests. There

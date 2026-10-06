@@ -116,6 +116,21 @@ export interface SlotPropsMap {
    */
   'settings.notificationChannels.actions': Record<string, unknown>;
 
+  /**
+   * Notification preferences — extra `<tr>` rows appended to the table body
+   * (a host's own notification types, e.g. a group with its own heading).
+   * `columns` is core's column count (Type, In-App, Sound); the host adds
+   * the columns its header slot renders. Sh renders nothing.
+   */
+  'settings.notificationChannels.rows': { columns: number };
+
+  /**
+   * Notification preferences — content rendered at the end of the card,
+   * below the action row (e.g. extra delivery destinations or help for a
+   * channel). Sh renders nothing.
+   */
+  'settings.notificationChannels.footer': Record<string, unknown>;
+
   /** Cloud-sync icon button shown in the Navbar desktop row.
    *  Cloud's filler handles its own open-state + free-plan gating. */
   'navbar.syncButtonDesktop': {
@@ -167,6 +182,15 @@ export interface SlotPropsMap {
    *  Sh renders nothing. Mounted once in MainLayout right after the
    *  pending-delete banner so it sits above the page content. */
   'max.detachedPanel': Record<string, unknown>;
+
+  /** Badges on a bot deal — its deal card, the bot drawer's deals table and
+   *  the deal detail. `dealId` is the deal's id; `botType` the bot's
+   *  (`dca` / `combo`). Sh renders nothing. */
+  'deal.badges': {
+    dealId: string;
+    botId?: string | undefined;
+    botType: 'dca' | 'combo';
+  };
 
   /**
    * Start-trial prompt shown when a free, trial-eligible user picks a
