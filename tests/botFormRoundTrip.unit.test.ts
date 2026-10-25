@@ -124,6 +124,7 @@ const PROBE_OVERRIDES: Record<string, unknown> = {
   minOpenDeal: '100',
   maxOpenDeal: '200',
   reduceToAvailableMinSize: '20',
+  maxPositionEntries: '3',
   startBotPriceValue: '100',
   stopBotPriceValue: '200',
   // Only 'tp' and 'avg' are valid here; the generic sibling lookup finds
@@ -152,6 +153,7 @@ const PROBE_OVERRIDES: Record<string, unknown> = {
   tpSlAction: 'close',
   slAction: 'close',
   hodlAt: '18:30',
+  hodlWeekdays: [1, 3, 5],
   name: 'Round Trip Probe',
   pair: ['ETHUSDT'],
   // 'gt' appears in several enums; the generic sibling lookup picks the wrong
@@ -344,6 +346,11 @@ const buildFormData = (section: Section, overrides: Record<string, unknown>) => 
 
   return {
     ...SHARED_FORM_DEFAULTS,
+    // A backend that has single position per pair, so those fields are
+    // exercised; on an older one they are stripped (singlePosition.vitest).
+    singlePositionSupported: true,
+    // Same for base funding (DCA and combo); stripped on an older backend.
+    baseFundingSupported: true,
     type,
     exchangeUUID: 'exchange-uuid',
     dca,
@@ -503,6 +510,7 @@ const VERDICT: Record<string, string> = {
   hodlDay: 'gated:scheduled start condition — guard read, not executed',
   hodlHourly: 'gated:scheduled start condition — guard read, not executed',
   hodlNextBuy: 'gated:scheduled start condition — guard read, not executed',
+  hodlWeekdays: 'gated:scheduled start condition (DCA only) — guard read, not executed',
   gridLevel: 'gated:combo/smart-grid bot — guard read, not executed',
   baseStep: 'gated:combo/smart-grid bot — guard read, not executed',
   baseGridLevels: 'gated:combo/smart-grid bot — guard read, not executed',
@@ -515,9 +523,10 @@ const VERDICT: Record<string, string> = {
   comboSlLimit: 'gated:combo bot — guard read, not executed',
   fixedTpPrice: 'gated:useFixedTPPrices (combo list only)',
   remainderFullAmount: 'gated:combo remainder handling — guard read, not executed',
-  allowRaiseToExchangeMin: 'gated:DCA only — the combo engine does not implement the exchange-minimum refusal',
   reduceToAvailableBalance: 'gated:DCA only — the combo form does not offer a reduced deal',
   reduceToAvailableMinSize: 'gated:DCA only — the combo form does not offer a reduced deal',
+  singlePosition: 'gated:DCA only — combo bots are excluded from single position per pair',
+  maxPositionEntries: 'gated:DCA only — combo bots are excluded from single position per pair',
 };
 
 const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
@@ -527,7 +536,7 @@ const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
     'comboSmartGridsCount', 'comboTpBase', 'comboTpLimit', 'comboUseSmartGrids',
     'dcaCustom', 'dynamicArLockValue', 'dynamicPriceFilterOverValue',
     'fixedSlPrice', 'fixedTpPrice', 'gridLevel', 'hodlAt', 'hodlDay',
-    'hodlHourly', 'hodlNextBuy', 'ignoreStartDeals', 'importFrom', 'maxOpenDeal',
+    'hodlHourly', 'hodlNextBuy', 'hodlWeekdays', 'ignoreStartDeals', 'importFrom', 'maxOpenDeal',
     'minOpenDeal', 'multiSl', 'multiTp', 'relativeVolumeTop', 'riskMaxPositionSize',
     'riskMaxSl', 'riskMinPositionSize', 'riskMinSl', 'riskSlAmountPerc',
     'riskSlAmountValue', 'riskSlType', 'riskTpRatio', 'riskUseTpRatio',
@@ -537,10 +546,10 @@ const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
     'tpSlTargetFilled', 'useExperimental', 'useRiskReward', 'volumeTop',
   ].sort(),
   combo: [
-    'allowRaiseToExchangeMin', 'avgPrice', 'baseOrderPrice', 'closeDealType', 'comboSmartGridsCount',
+    'avgPrice', 'baseOrderPrice', 'closeDealType', 'comboSmartGridsCount',
     'dcaCustom', 'dynamicArLockValue', 'dynamicPriceFilterOverValue',
     'fixedSlPrice', 'fixedTpPrice', 'hodlAt', 'hodlDay', 'hodlHourly',
-    'hodlNextBuy', 'ignoreStartDeals', 'importFrom', 'maxOpenDeal', 'minOpenDeal',
+    'hodlNextBuy', 'hodlWeekdays', 'ignoreStartDeals', 'importFrom', 'maxOpenDeal', 'minOpenDeal',
     'multiSl', 'multiTp', 'relativeVolumeTop', 'remainderFullAmount',
     'riskMaxPositionSize', 'riskMaxSl', 'riskMinPositionSize', 'riskMinSl',
     'riskSlAmountPerc', 'riskSlAmountValue', 'riskSlType', 'riskTpRatio',
@@ -549,6 +558,7 @@ const NEVER_MAPPED: Record<'dca' | 'combo', string[]> = {
     'stopBotPriceCondition', 'stopBotPriceValue', 'stopDealLogic',
     'stopDealSlLogic', 'tpSlTargetFilled', 'useExperimental', 'useRiskReward',
     'volumeTop', 'reduceToAvailableBalance', 'reduceToAvailableMinSize',
+    'singlePosition', 'maxPositionEntries',
   ].sort(),
 };
 
@@ -563,10 +573,13 @@ const NOT_IN_PAYLOAD: Record<Section, string[]> = {
   // gate is on (useMultiTp/useMultiSl, dcaCondition=custom). All nine are
   // absent because this baseline leaves them unset, not because they cannot be
   // sent: each is probed with a fixture in the round-trip test above.
+  // hodlWeekdays is sent only with the Timer start condition, which this
+  // baseline does not use.
   dca: [
     'dcaCustom',
     'fixedSlPrice',
     'fixedTpPrice',
+    'hodlWeekdays',
     'maxOpenDeal',
     'minOpenDeal',
     'multiSl',
@@ -577,19 +590,21 @@ const NOT_IN_PAYLOAD: Record<Section, string[]> = {
   // Plus the DCA-only settings the combo inputs do not declare
   // (DECLARED_BY_DCA_ONLY), which the mapper strips for combo.
   combo: [
-    'allowRaiseToExchangeMin',
     'dcaCustom',
     'fixedSlPrice',
     'fixedTpPrice',
+    'hodlWeekdays',
     'maxOpenDeal',
     'minOpenDeal',
     'multiSl',
     'multiTp',
     'reduceToAvailableBalance',
     'reduceToAvailableMinSize',
+    'singlePosition',
+    'maxPositionEntries',
     'startBotPriceValue',
     'stopBotPriceValue',
-  ],
+  ].sort(),
   // The grid payload derives these rather than carrying them through.
   grid: ['newProfit', 'strategy', 'updatedBudget'],
 };

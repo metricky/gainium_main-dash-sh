@@ -1,4 +1,6 @@
-import { formatCurrency, formatNumber } from '@/utils/numberFormatter';
+import { formatQuoteAmount } from '@/utils/formatters';
+import { formatNumber } from '@/utils/numberFormatter';
+import { extractPairAssets } from '@/utils/pairs';
 import { Info } from 'lucide-react';
 import React from 'react';
 import { Button } from '../../ui/button';
@@ -10,7 +12,10 @@ import {
 } from '../../ui/dialog';
 import logger from '@/lib/loggerInstance';
 import type { ViewOrder } from '@/types/bots';
-import { getOrderTypeLabel } from '@/utils/mapOrderName';
+import {
+  baseRemainderAddFundsIds,
+  getOrderTypeLabel,
+} from '@/utils/mapOrderName';
 
 interface DealOrdersDialogProps {
   open: boolean;
@@ -43,6 +48,7 @@ export const DealOrdersDialog: React.FC<DealOrdersDialogProps> = ({
     exchange,
   });
 
+  const baseRemainderIds = baseRemainderAddFundsIds(orders);
   const preparedOrders = orders.map(
     (o) => {
       const qty = o.status === 'filled' ? o.executedQty : o.origQty;
@@ -52,13 +58,17 @@ export const DealOrdersDialog: React.FC<DealOrdersDialogProps> = ({
         !!o.sl,
         o.clientOrderId,
         o.reduceFundsId,
-        true
+        true,
+        !!o.addFundsId && baseRemainderIds.has(o.addFundsId)
       );
       const price = formatNumber(o.price);
       const qtyFormatted = formatNumber(qty);
       return {
         ...o,
-        total: formatCurrency(total),
+        total: formatQuoteAmount(
+          total,
+          o.quoteAsset || extractPairAssets(symbol).quoteAsset
+        ),
         label,
         price,
         qty: qtyFormatted,

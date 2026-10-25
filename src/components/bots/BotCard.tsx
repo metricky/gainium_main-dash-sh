@@ -1,4 +1,5 @@
 import { cardHoverVariants } from '@/lib/animations/variants';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 import { BotNameBadges } from '@/lib/extensions/botListExtensions';
 import { AXIS_INDEX_KEY, withAxisIndex } from '@/lib/charts/axisIndex';
 import { cn } from '@/lib/utils';
@@ -8,7 +9,6 @@ import {
   type AdditionalBotData,
   type Bot,
   type BotStats,
-  type BotStatus,
   type ComboBot,
   type DCABot,
 } from '@/types';
@@ -25,8 +25,11 @@ import {
   YAxis,
 } from 'recharts';
 import { useBotActions } from '../../hooks/useBotActions';
+import { botKindFromType, toBotRef } from '@/features/bots/actions/botRef';
 import { useLongPressMenu } from '../../hooks/useLongPressMenu';
 import { useChartColors } from '../../hooks/useChartColors';
+import { useBotPositionEntries } from '@/hooks/useSinglePosition';
+import { positionUsageRing } from '@/lib/singlePosition/singlePosition';
 import logger from '../../lib/loggerInstance';
 import { BotActionsModals } from './BotActionsModals';
 import { Button } from '../ui/button';
@@ -116,16 +119,7 @@ type BaseBotCardProps = {
   type: BotTypesEnum;
 };
 
-interface BotCardProps extends BaseBotCardProps {
-  //botDealsOverride?: DCADeals[];
-  // Optional hedge-aware status toggle override
-  onToggleStatus?: (
-    bot: BotLike,
-    targetStatus: BotStatus,
-    closeType?: string
-  ) => Promise<void> | void;
-  isTogglingStatus?: boolean;
-}
+type BotCardProps = BaseBotCardProps;
 
 /* interface BotCardComponentProps extends BotCardProps {
   botDeals: DCADeals[];
@@ -139,11 +133,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
   index,
   //bot,
   /* botDeals, */
-  onToggleStatus,
-  isTogglingStatus,
   privacyMode = false,
 }) => {
   const colors = useChartColors();
+  const { formatUsd } = useReportingCurrency();
   const resolvePairAsset = useResolvePairAsset();
   // DCA ladder position for the Usage ring's label. Grid/hedge cards have no
   // ladder, so the hook is fed an undefined id there and returns undefined.
@@ -153,6 +146,13 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
       : undefined,
     type === BotTypesEnum.combo ? 'combo' : 'dca'
   );
+  // Single-position bots fill entries, not a safety ladder.
+  const positionEntries = useBotPositionEntries(
+    type === BotTypesEnum.dca ? bot.id : undefined
+  );
+  const positionRing = positionEntries
+    ? positionUsageRing(positionEntries)
+    : undefined;
   // Header pair base/quote — resolve its asset class + venue so tokenized
   // stocks render their real logo (not a letter tile) on the card.
   const headerBaseAsset =
@@ -242,40 +242,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
     return [];
   }, [statsChart /* , botDeals */]);
 
-  // Shared bot-action orchestration (clone/status/restart/delete + their
-  // modals). Clone opens the pre-filled create page; status/delete go through
-  // the confirmation modals rendered by <BotActionsModals> below.
-  const botActions = useBotActions({
-    botId: bot.id,
-    botType: type,
-    botName: bot.name,
-    status: bot.status,
-    activeDeals: (bot as DCABot)?.dealsInBot?.active || 0,
-    totalValue: bot?.usage?.current?.quote || 0,
-    currency: Array.isArray(bot.symbol)
-      ? bot.symbol[0]?.value?.quoteAsset || ''
-      : bot.symbol?.quoteAsset || '',
-    lastActivity: bot?.created || 'Unknown',
-    botData: bot,
-    // Hedge-aware / page-level status override (list pages pass this in).
-    ...(onToggleStatus
-      ? {
-          onToggleStatus: (
-            targetStatus: BotStatus,
-            closeType?: string
-          ) => onToggleStatus(bot, targetStatus, closeType),
-          statusTogglePending: !!isTogglingStatus,
-        }
-      : {}),
-  });
-
-  // Helper function to determine gauge color based on percentage
-  const getGaugeColor = (percentage: number): string => {
-    const roundedPercentage = Math.round(percentage);
-    if (roundedPercentage >= 100) return colors.destructive; // Error color for 100%
-    if (roundedPercentage > 80) return colors.warning; // Caution color for >80%
-    return colors.success; // Default success color
-  };
+  // Bot actions: which items the ⋮ menu shows comes from the registry; the
+  // runner owns the clone/status/restart/delete flows and their modals.
+  const botRef = useMemo(() => toBotRef(bot, botKindFromType(type)), [bot, type]);
+  const botActions = useBotActions(botRef);
 
   // Helper function to format time to show only the biggest unit
   const formatTimeToBiggestUnit = (timeStr: string): string => {
@@ -371,14 +341,12 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
       +((type === BotTypesEnum.grid ? bot.valueChange : bot.unPnlPerc) || 0),
     [bot.valueChange, bot.unPnlPerc, type]
   );
-  // True while the page is still waiting for a fresh price snapshot for this
-  // bot's exchange. The displayed value during this window is a server-side
-  // liveStats fallback (or 0 if the bot has no liveStats), and will refresh
-  // to the locally-computed number once `latestPrices` populates.
-  const valuePending = useMemo(
-    () => Boolean(bot.isActive) && bot.loadedPrices === false,
-    [bot.isActive, bot.loadedPrices]
-  );
+  // True while the value is not live yet: no price for this bot's exchange
+  // (a server-side liveStats fallback is shown), or prices still from the
+  // persisted previous-session snapshot. See `unPnlPending` in the transforms.
+  const valuePending =
+    (Boolean(bot.isActive) && bot.loadedPrices === false) ||
+    !!bot.unPnlPending;
   const avgDaily = useMemo(() => bot.avgDaily || 0, [bot.avgDaily]);
   const avgDailyPerc = useMemo(() => bot.avgDailyPerc || 0, [bot.avgDailyPerc]);
   const annualizedReturn = useMemo(
@@ -500,13 +468,8 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                 <BotActionsMenuItems
                   align="end"
                   className="w-56"
-                  bot={{
-                    id: bot.id,
-                    name: bot.name,
-                    type: type,
-                    status: bot.status,
-                  }}
-                  {...botActions.menuProps}
+                  actions={botActions}
+                  surface="card"
                 />
               </DropdownMenu>
             </div>
@@ -518,6 +481,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
               <div className="flex items-center gap-2 min-w-0">
                 <StatusChip
                   status={bot.status}
+                  botId={bot._id}
                   size="xs"
                   dotOnly
                   className="shrink-0"
@@ -587,9 +551,11 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   <div
                     className="shrink-0 w-20"
                     title={
-                      dcaOrderFill
-                        ? `${dcaOrderFill.complete} of ${dcaOrderFill.all} DCA orders filled`
-                        : undefined
+                      positionRing
+                        ? positionRing.title
+                        : dcaOrderFill
+                          ? `${dcaOrderFill.complete} of ${dcaOrderFill.all} DCA orders filled`
+                          : undefined
                     }
                   >
                     <div className="text-xs text-muted-foreground mb-2">
@@ -597,16 +563,24 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                     </div>
                     <DualArcProgressGauge
                       size={70}
-                      outerPercentage={bot.usageTotal || 0}
+                      outerPercentage={
+                        positionRing ? positionRing.percent : bot.usageTotal || 0
+                      }
                       innerPercentage={0}
-                      outerProgressColor={getGaugeColor(bot.usageTotal || 0)}
+                      outerProgressColor={colors.success}
                       innerProgressColor={colors.warning}
                       trailColor="var(--color-border)"
-                      centerText={`${(bot.usageTotal || 0).toFixed(0)}%`}
+                      centerText={
+                        positionRing
+                          ? positionRing.centerText
+                          : `${(bot.usageTotal || 0).toFixed(0)}%`
+                      }
                       label={
-                        dcaOrderFill
-                          ? `${dcaOrderFill.complete}/${dcaOrderFill.all}`
-                          : ''
+                        positionRing
+                          ? positionRing.label
+                          : dcaOrderFill
+                            ? `${dcaOrderFill.complete}/${dcaOrderFill.all}`
+                            : ''
                       }
                       animate={true}
                       showInnerGauge={false}
@@ -616,17 +590,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                   {/* Middle - same figure the table's second money column
                       shows: grid bots put their absolute worth here, every
                       other type puts the open PnL. */}
-                  <div
-                    className={cn(
-                      'flex-1 min-w-0 transition-opacity',
-                      valuePending && 'opacity-50 animate-pulse'
-                    )}
-                    title={
-                      valuePending
-                        ? 'Updating value with latest prices…'
-                        : undefined
-                    }
-                  >
+                  <div className="flex-1 min-w-0">
                     <div className="text-xs text-muted-foreground mb-1">
                       {type === BotTypesEnum.grid
                         ? 'Current Value'
@@ -638,6 +602,7 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                       privacyMode={privacyMode}
                       chipPosition="bottom"
                       size="md"
+                      pending={valuePending}
                     />
                   </div>
 
@@ -704,8 +669,8 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                                   }
                                 </p>
                                 <p className="text-sm font-semibold">
-                                  Bot Equity: $
-                                  {Number(payload[0]?.value || 0).toFixed(2)}
+                                  Bot Equity:{' '}
+                                  {formatUsd(Number(payload[0]?.value || 0))}
                                 </p>
                               </div>
                             );
@@ -750,10 +715,10 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                     <div
                       className="text-card-foreground font-semibold text-sm truncate"
                       title={
-                        privacyMode ? '***' : `$${(bot.budget || 0).toFixed(2)}`
+                        privacyMode ? '***' : formatUsd(bot.budget || 0)
                       }
                     >
-                      {privacyMode ? '***' : `$${(bot.budget || 0).toFixed(2)}`}
+                      {privacyMode ? '***' : formatUsd(bot.budget || 0)}
                     </div>
                   </div>
                   <div className="min-w-0">
@@ -828,18 +793,22 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
                       title={
                         privacyMode
                           ? '***'
-                          : `$${(bot.currentValue || 0).toFixed(2)}`
+                          : formatUsd(bot.currentValue || 0)
                       }
                     >
                       {privacyMode
                         ? '***'
-                        : `$${(bot.currentValue || 0).toFixed(2)}`}
+                        : formatUsd(bot.currentValue || 0)}
                     </div>
-                    <div className="text-muted-foreground text-xs truncate">
-                      {privacyMode
-                        ? '***'
-                        : `Max: $${(bot.maxValue || 0).toFixed(2)}`}
-                    </div>
+                    {/* A position's max cost is its cost, so "Max" would
+                        only repeat the figure above. */}
+                    {!positionEntries && (
+                      <div className="text-muted-foreground text-xs truncate">
+                        {privacyMode
+                          ? '***'
+                          : `Max: ${formatUsd(bot.maxValue || 0)}`}
+                      </div>
+                    )}
                   </div>
                   <div className="min-w-0">
                     <div className="text-muted-foreground mb-1 text-xs">
@@ -903,26 +872,9 @@ const BotCardComponent: React.FC</* BotCardComponentProps */ BotCardProps> = ({
   );
 };
 
-const BotCardBase: React.FC<BotCardProps> = (props) => {
-  const {
-    /*  botDealsOverride, */ onToggleStatus,
-    isTogglingStatus,
-    ...baseProps
-  } = props;
-  const safeBaseProps = baseProps as BaseBotCardProps;
-
-  const extraProps: Record<string, unknown> = {};
-  if (onToggleStatus) {
-    (extraProps['onToggleStatus'] as unknown) = onToggleStatus;
-  }
-  if (typeof isTogglingStatus === 'boolean') {
-    (extraProps['isTogglingStatus'] as unknown) = isTogglingStatus;
-  }
-
-  return (
-    <BotCardComponent {...(safeBaseProps as BotCardProps)} {...extraProps} />
-  );
-};
+const BotCardBase: React.FC<BotCardProps> = (props) => (
+  <BotCardComponent {...props} />
+);
 
 // Memoize BotCard to prevent unnecessary re-renders
 export const BotCard = React.memo(BotCardBase, (prevProps, nextProps) => {
@@ -974,7 +926,8 @@ export const BotCard = React.memo(BotCardBase, (prevProps, nextProps) => {
   // Toggling the price-loaded flag drives the "Updating value…" pending tint,
   // so the card has to re-render when it flips.
   const loadedPricesChanged =
-    prevProps.item.loadedPrices !== nextProps.item.loadedPrices;
+    prevProps.item.loadedPrices !== nextProps.item.loadedPrices ||
+    prevProps.item.unPnlPending !== nextProps.item.unPnlPending;
 
   if (
     statusChanged ||

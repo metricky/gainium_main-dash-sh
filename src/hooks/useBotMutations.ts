@@ -23,6 +23,10 @@ import {
   clearBotTombstone,
 } from '@/stores/live/staleWriteGuard';
 import {
+  beginBotTransition,
+  clearBotTransition,
+} from '@/stores/live/botStatusTransitions';
+import {
   removeBotFromListCaches,
   patchBotInListCaches,
   invalidateListCaches,
@@ -58,6 +62,15 @@ export interface BotStatusUpdate {
   buyAmount?: number;
   cancelPartiallyFilled?: boolean;
   closeGridType?: CloseGRIDTypeEnum;
+  /** Hedge start: the action each leg starts with (the hedge start dialog). */
+  hedgeConfig?: ChangeStatusInput['hedgeConfig'];
+  /**
+   * Toast when the server confirms the new status (default true). Bulk runs
+   * turn it off and toast one summary instead. Never sent to the API.
+   */
+  notify?: boolean;
+  /** Bot name for the confirmation toasts. Never sent to the API. */
+  name?: string;
 }
 
 export interface BotArchiveParams {
@@ -164,6 +177,61 @@ const botUpdatedMsFor = (type: BotTypesEnum, id: string): number => {
 // toast and React Query flips isPending back, resetting the button.
 const BOT_COMMAND_TIMEOUT_MS = 60_000;
 
+const settingsName = (bot: unknown): string | undefined =>
+  (bot as { settings?: { name?: string } }).settings?.name || undefined;
+
+/** Bot event types the engine records when it refuses something. */
+const REFUSAL_EVENT_TYPES = new Set(['error', 'warning']);
+
+/** A bot event's `created` (epoch ms or a date string) in epoch ms. */
+const eventTimeMs = (created: string | number): number =>
+  typeof created === 'number'
+    ? created
+    : Number.isFinite(Number(created))
+      ? Number(created)
+      : Date.parse(created);
+
+/**
+ * Why the engine refused to start a bot: the newest error or warning it
+ * recorded for the bot at or after `since`. Read from the bot's event log,
+ * which gets a row for every refusal; the notification feed folds repeats
+ * into one row and does not.
+ */
+async function findStartRefusal(
+  client: GraphQLClient,
+  botId: string,
+  type: BotTypesEnum,
+  since: number
+): Promise<string | undefined> {
+  const { query, variables } = botQueries.getBotEvents({
+    botId,
+    page: 0,
+    pageSize: 10,
+    // No sortModel: the server returns newest first by default, while its
+    // grid sort mapping reads `desc` as ascending.
+    combo: type === BotTypesEnum.combo || type === BotTypesEnum.hedgeCombo,
+    hedge: type === BotTypesEnum.hedgeCombo || type === BotTypesEnum.hedgeDca,
+  });
+  const result = await client.request<{
+    getBotEvents: {
+      status: string;
+      data?: Array<{
+        type?: string | null;
+        description?: string | null;
+        created: string | number;
+      }>;
+    };
+  }>(query, variables);
+  if (result.getBotEvents?.status !== 'OK') return undefined;
+  const refusal = (result.getBotEvents.data ?? []).find(
+    (event) =>
+      REFUSAL_EVENT_TYPES.has(event.type ?? '') &&
+      !!event.description &&
+      eventTimeMs(event.created) >= since
+  );
+  return refusal?.description?.replace(/^(Error|Warning): /, '');
+}
+
 /**
  * Hook for toggling bot status (start/pause/stop)
  * Implements optimistic updates with rollback on error
@@ -183,6 +251,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
       buyCount,
       cancelPartiallyFilled,
       closeGridType,
+      hedgeConfig,
     }: BotStatusUpdate) => {
       if (!tokens?.accessToken) {
         throw new Error('Authentication required');
@@ -245,6 +314,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         buyCount,
         cancelPartiallyFilled,
         closeGridType,
+        ...(status === 'open' && hedgeConfig ? { hedgeConfig } : {}),
       };
 
       const { query: mutation, variables } = GraphQlQuery.changeStatus(input);
@@ -270,7 +340,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         throw error;
       }
     },
-    onMutate: async ({ id, status }) => {
+    onMutate: async ({ id, status, notify, name }) => {
       const key =
         type === BotTypesEnum.dca
           ? 'dcaBotList'
@@ -286,6 +356,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
       // Optimistic update: immediately update bot status in Zustand store
       const targetStatus = status === 'open' ? 'open' : 'closed';
       let previousStatus: string | undefined;
+      let botName: string | undefined = name;
 
       // Optimistically flip the badge in whichever live store holds this bot
       // type. Hedge wrappers live in their own stores, so a hedge toggle gets
@@ -299,6 +370,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
+          botName ??= settingsName(bot);
           store.updateBot({ ...bot, status: nextStatus });
         }
       } else if (type === BotTypesEnum.combo) {
@@ -306,6 +378,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
+          botName ??= settingsName(bot);
           store.updateBot({ ...bot, status: nextStatus });
         }
       } else if (type === BotTypesEnum.hedgeDca) {
@@ -313,6 +386,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
+          botName ??= settingsName(bot);
           store.updateBot({ ...bot, status: nextStatus });
         }
       } else if (type === BotTypesEnum.hedgeCombo) {
@@ -320,6 +394,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
+          botName ??= settingsName(bot);
           store.updateBot({ ...bot, status: nextStatus });
         }
       } else {
@@ -327,6 +402,7 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         const bot = store.bots[id];
         if (bot) {
           previousStatus = bot.status;
+          botName ??= settingsName(bot);
           store.updateBot({ ...bot, status: nextStatus });
         }
       }
@@ -339,11 +415,38 @@ export function useBotStatusToggle(type: BotTypesEnum) {
         botListKeysFor(type)
       );
 
+      // The API accepts the request before the engine acts on it. Until the
+      // server reports the target status the bot is "Starting…"/"Stopping…"
+      // and list refetches can't flip the badge back (botStatusTransitions).
+      const accessToken = tokens?.accessToken;
+      beginBotTransition(id, targetStatus, {
+        ...(botName ? { name: botName } : {}),
+        notify: notify ?? true,
+        onTimeout: () => invalidateListCaches(botListKeysFor(type)),
+        ...(targetStatus === 'open' && accessToken
+          ? {
+              findRefusal: (since: number) =>
+                findStartRefusal(
+                  new GraphQLClient(
+                    import.meta.env['VITE_API_ENDPOINT'] ||
+                      'http://localhost:4000',
+                    accessToken,
+                    !isLiveTrading
+                  ),
+                  id,
+                  type,
+                  since
+                ),
+            }
+          : {}),
+      });
+
       return { previousStatus } as MutationContext;
     },
     onError: (err, { id }, context: MutationContext | undefined) => {
       logger.error('[BotMutations] Status update failed:', err);
       toast.error(`Failed to update bot status: ${err.message}`);
+      clearBotTransition(id);
 
       // Rollback optimistic update
       if (context?.previousStatus) {

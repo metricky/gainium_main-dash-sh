@@ -135,6 +135,13 @@ export interface HedgeBotFormApi {
    *  active leg only — the other leg's pair is unaffected. */
   chartSymbolWriterRef: MutableRefObject<((pair: string) => void) | null>;
 
+  /** Ref the layout fills with a reader of each leg's current form data —
+   *  the unmounted leg's included — so a leg can copy the other leg's
+   *  pairs. Null until the layout mounts. */
+  legFormDataReaderRef: MutableRefObject<
+    ((leg: HedgeLeg) => Partial<BotFormData> | null | undefined) | null
+  >;
+
   /** Loaded hedge bot (edit mode), once the query returns successfully.
    *  Null while loading or in create mode. */
   hedgeBot: HedgeBot | null;
@@ -150,8 +157,9 @@ export interface HedgeBotFormApi {
   loadError: Error | null;
   /** Refetch the hedge bot from the server. Call after a successful
    *  hedge save so the per-leg `initialBot` references update and the
-   *  forms re-initialize from the latest persisted state. */
-  refetchHedgeBot: () => void;
+   *  forms re-initialize from the latest persisted state. Resolves with the
+   *  refetched bot (null when the read failed). */
+  refetchHedgeBot: () => Promise<HedgeBot | null>;
 }
 
 const HedgeBotFormContext = createContext<HedgeBotFormApi | undefined>(
@@ -196,6 +204,9 @@ export const HedgeBotFormProvider: React.FC<HedgeBotFormProviderProps> = ({
     undefined
   );
   const chartSymbolWriterRef = useRef<((pair: string) => void) | null>(null);
+  const legFormDataReaderRef = useRef<
+    ((leg: HedgeLeg) => Partial<BotFormData> | null | undefined) | null
+  >(null);
   // Tracks the load we've already seeded `hedgeName` from, so a post-save
   // refetch (same hedge id, new leg data) doesn't clobber the user's
   // confirmed name. Keyed on the loaded hedge id (or botId for clone).
@@ -361,8 +372,9 @@ export const HedgeBotFormProvider: React.FC<HedgeBotFormProviderProps> = ({
   ]);
 
   const refetchHedgeBot = useMemo(
-    () => () => {
-      void queryResult.refetch();
+    () => async (): Promise<HedgeBot | null> => {
+      const result = await queryResult.refetch();
+      return result.data?.status === 'OK' ? (result.data.data ?? null) : null;
     },
     [queryResult]
   );
@@ -390,6 +402,7 @@ export const HedgeBotFormProvider: React.FC<HedgeBotFormProviderProps> = ({
       activeLegBotId,
       setActiveLegBotId,
       chartSymbolWriterRef,
+      legFormDataReaderRef,
       hedgeBot,
       longInitialFormData,
       shortInitialFormData,

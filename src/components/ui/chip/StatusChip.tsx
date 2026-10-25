@@ -1,4 +1,8 @@
 import { cn } from '@/lib/utils';
+import {
+  transitionLabel,
+  useBotTransition,
+} from '@/stores/live/botStatusTransitions';
 import { getBotStatusConfig } from '@/utils/botUtils';
 import React from 'react';
 import { Tooltip } from '../tooltip';
@@ -17,6 +21,17 @@ interface StatusChipProps {
    * repeating the status label. Falls back to the status label when omitted.
    */
   tooltip?: string;
+  /**
+   * Override the visible label while keeping the status's colour — for a
+   * record whose own state names map onto a bot status colour.
+   */
+  label?: string;
+  /**
+   * The bot this chip shows. While its Start/Stop is not yet confirmed by
+   * the server the chip reads "Starting…" / "Stopping…" instead of a status
+   * a list refetch might still report.
+   */
+  botId?: string;
 }
 
 export const StatusChip: React.FC<StatusChipProps> = ({
@@ -27,8 +42,17 @@ export const StatusChip: React.FC<StatusChipProps> = ({
   dotOnly = false,
   className,
   tooltip,
+  label,
+  botId,
 }) => {
-  const config = getBotStatusConfig(status);
+  const transition = useBotTransition(botId);
+  const base = transition
+    ? {
+        ...getBotStatusConfig('pending'),
+        label: transitionLabel(transition.target),
+      }
+    : getBotStatusConfig(status);
+  const config = label && !transition ? { ...base, label } : base;
 
   // Explicit tooltip (e.g. an error reason) wins over the static status label.
   const tooltipText = tooltip || config.label;

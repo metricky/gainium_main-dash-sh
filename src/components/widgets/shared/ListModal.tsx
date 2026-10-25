@@ -12,10 +12,12 @@ import { createPortal } from 'react-dom';
 import { type AssetClass } from '../../../hooks/useTradingPairs';
 import { formatExchangeProvider } from '../../../utils/exchangeUtils';
 import {
-  isPairSymbolReconstructable,
-  normalizePairKey,
-  splitPastedPairTokens,
-} from '../../../utils/pairs';
+  formatLeverageRange,
+  formatMinOrder,
+  pairContractSymbol,
+} from '../../../utils/pairPicker';
+import { splitPastedPairTokens } from '../../../utils/pairs';
+import { getReportingCurrency } from '@/utils/reportingCurrency';
 import { Chip } from '../../ui/chip';
 import { Checkbox } from '../../ui/checkbox';
 import ProfitLossPercChip from '../../ui/chip/ProfitLossPercChip';
@@ -28,11 +30,17 @@ import {
 } from '../../ui/select';
 import { Switch } from '../../ui/switch';
 import { Tooltip, InfoIcon } from '../../ui/tooltip';
+import { ASSET_CLASS_LABELS, ASSET_CLASS_ORDER } from './assetClassLabels';
+import {
+  matchesPairSearch,
+  pairSearchWordForms,
+  searchableTextFor,
+} from './pairSearch';
 import CoinIcon from './CoinIcon';
 import CoinPair from './CoinPair';
 import ExchangeIcon from './ExchangeIcon';
 
-interface ListItem {
+export interface ListItem {
   symbol: string;
   name: string;
   icon: string;
@@ -76,6 +84,12 @@ interface ListItem {
   rsi?: number;
   roi?: number;
   isFavorite?: boolean;
+  // Exchange trading limits (pair picker table, spec 115): the smallest
+  // accepted order in the quote asset and the max leverage. Shown in the
+  // expanded detail only when known.
+  minOrder?: number;
+  minLeverage?: number;
+  maxLeverage?: number;
   /**
    * Why this item can't be picked right now (e.g. its quote asset doesn't
    * match the bot's already-anchored quote). Present => the row renders dimmed
@@ -86,26 +100,8 @@ interface ListItem {
   disabledReason?: string;
 }
 
-/**
- * The exchange-native symbol to show next to the base ticker, or null when the
- * row's identity is fully described by `BASE / QUOTE`.
- *
- * Contract markets put the distinguishing component in the symbol alone — a
- * COIN-M venue lists `BTCUSD_PERP`, `BTCUSD_260925` and `BTCUSD_261225`, all
- * of which are BTC/USD. Rendering only base + quote collapsed every expiry
- * into visually identical rows, so the picker looked like it was repeating
- * itself and the user had no way to tell which contract they were selecting.
- */
-const contractSymbolFor = (item: ListItem): string | null => {
-  if (!item.baseAsset || !item.quoteAsset) return null;
-  return isPairSymbolReconstructable(
-    item.symbol,
-    item.baseAsset,
-    item.quoteAsset
-  )
-    ? null
-    : item.symbol;
-};
+const contractSymbolFor = (item: ListItem): string | null =>
+  pairContractSymbol(item.symbol, item.baseAsset, item.quoteAsset);
 
 export interface ListModalSortOption {
   value: string;
@@ -155,27 +151,6 @@ interface ListModalProps {
   selectedAssetClass?: AssetClass | 'all';
   onAssetClassChange?: (cls: AssetClass | 'all') => void;
 }
-
-/** Canonical order + labels for the asset-class filter chips. */
-const ASSET_CLASS_ORDER: AssetClass[] = [
-  'crypto',
-  'stock',
-  'etf',
-  'commodity',
-  'metal',
-  'forex',
-  'index',
-];
-const ASSET_CLASS_LABELS: Record<AssetClass | 'all', string> = {
-  all: 'All',
-  crypto: 'Crypto',
-  stock: 'Stocks',
-  etf: 'ETFs',
-  commodity: 'Commodities',
-  metal: 'Metals',
-  forex: 'Forex',
-  index: 'Indices',
-};
 
 const renderItemIcon = (item: ListItem) => {
   if (item.isHelper) {
@@ -239,25 +214,29 @@ const formatRoi = (roi: number): string =>
   })}%`;
 
 /** Compact USD, e.g. $1.34T / $66.3B / $345M / $12.3K. */
-const formatCompactUsd = (n: number): string => {
+const formatCompactUsd = (usd: number): string => {
+  const { symbol: sym, rate } = getReportingCurrency();
+  const n = usd * rate;
   const abs = Math.abs(n);
-  if (abs >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
-  if (abs >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
-  return `$${Math.round(n)}`;
+  if (abs >= 1e12) return `${sym}${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${sym}${(n / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${sym}${(n / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sym}${(n / 1e3).toFixed(1)}K`;
+  return `${sym}${Math.round(n)}`;
 };
 
 /** Price with sensible precision across BTC ($66,000) and SHIB ($0.00002). */
-const formatPrice = (n: number): string => {
+const formatPrice = (usd: number): string => {
+  const { symbol: sym, rate } = getReportingCurrency();
+  const n = usd * rate;
   if (n >= 1)
-    return `$${n.toLocaleString('en-US', {
+    return `${sym}${n.toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
-  if (n >= 0.01) return `$${n.toFixed(4)}`;
-  if (n > 0) return `$${n.toPrecision(2)}`;
-  return '$0';
+  if (n >= 0.01) return `${sym}${n.toFixed(4)}`;
+  if (n > 0) return `${sym}${n.toPrecision(2)}`;
+  return `${sym}0`;
 };
 
 const nameKey = (item: ListItem) => (item.name || item.symbol).toLowerCase();
@@ -351,28 +330,6 @@ const DetailRow: React.FC<{
  * `onToggleFavorite` identities and stable `item` references. The
  * expand/collapse state is local to the row.
  */
-/**
- * Searchable text of one item. The separator-stripped forms matter: a pair is
- * displayed as `ETH/BTC` and identified as `ETH-BTC`, but users type — and the
- * bot form STORES — the concatenated `ETHBTC`, which matches neither. Before
- * this, searching `BTCUSDT` on a venue with dated futures returned the eight
- * `BTCUSDT-<expiry>` contracts (whose native symbol contains that literal
- * string) and hid the actual BTCUSDT perpetual.
- */
-const searchableTextFor = (item: ListItem): string =>
-  [
-    item.name,
-    item.symbol,
-    normalizePairKey(item.name),
-    normalizePairKey(item.symbol),
-    item.subtitle || '',
-    // The company name shown under a stock's ticker (`Apple Inc.` for RAAPL),
-    // so a stock can be found by its name, not only its ticker.
-    item.baseDisplayName || '',
-  ]
-    .join(' ')
-    .toLowerCase();
-
 /** Row height used before a row has been measured (a collapsed pair row). */
 const ESTIMATED_ROW_HEIGHT = 60;
 /** Gap between rows (the former `space-y-1`). */
@@ -515,7 +472,7 @@ const MeasuredRow: React.FC<{
   );
 };
 
-const ListModalRow = React.memo<ListModalRowProps>(
+export const ListModalRow = React.memo<ListModalRowProps>(
   ({ item, isSelected, enableFavorites, onToggle, onToggleFavorite }) => {
     const [expanded, setExpanded] = useState(false);
     const isPair = Boolean(item.baseAsset && item.quoteAsset);
@@ -536,7 +493,8 @@ const ListModalRow = React.memo<ListModalRowProps>(
       } else if (item.subtitle) {
         subtitleText = item.subtitle;
       } else if (item.price !== undefined) {
-        subtitleText = `$${item.price.toLocaleString('en-US', {
+        const { symbol: sym, rate } = getReportingCurrency();
+        subtitleText = `${sym}${(item.price * rate).toLocaleString('en-US', {
           minimumFractionDigits: item.symbol === 'USDT' ? 0 : 2,
           maximumFractionDigits: item.symbol === 'USDT' ? 0 : 2,
         })}`;
@@ -557,6 +515,9 @@ const ListModalRow = React.memo<ListModalRowProps>(
         item.marketCap,
         item.rsi,
         item.volatility,
+        item.minOrder,
+        item.minLeverage,
+        item.maxLeverage,
       ].some((v) => v != null);
     const icon = renderItemIcon(item);
 
@@ -663,6 +624,24 @@ const ListModalRow = React.memo<ListModalRowProps>(
                         ? `${item.baseDisplayName} · ${item.quoteAsset}`
                         : item.quoteAsset}
                     </div>
+                    {/* Exchange limits (pair picker), only when known. */}
+                    {(item.minOrder != null ||
+                      item.minLeverage != null ||
+                      item.maxLeverage != null) && (
+                      <div className="text-muted-foreground text-xs truncate leading-tight tabular-nums">
+                        {[
+                          item.minOrder != null
+                            ? `Min ${formatMinOrder(item.minOrder)} ${item.quoteAsset ?? ''}`.trim()
+                            : null,
+                          formatLeverageRange(
+                            item.minLeverage,
+                            item.maxLeverage
+                          ),
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <>
@@ -807,6 +786,23 @@ const ListModalRow = React.memo<ListModalRowProps>(
                     value={`${item.volatility.toFixed(1)}%`}
                   />
                 )}
+                {item.minOrder != null && (
+                  <DetailRow
+                    label="Min order"
+                    value={`${formatMinOrder(item.minOrder)} ${
+                      item.quoteAsset ?? ''
+                    }`.trim()}
+                  />
+                )}
+                {(item.minLeverage != null || item.maxLeverage != null) && (
+                  <DetailRow
+                    label="Leverage"
+                    value={
+                      formatLeverageRange(item.minLeverage, item.maxLeverage) ??
+                      ''
+                    }
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -915,30 +911,15 @@ export const ListModal: React.FC<ListModalProps> = ({
 
     if (!deferredSearchTerm.trim()) return classFiltered;
 
-    const searchLower = deferredSearchTerm.toLowerCase().trim();
-
-    // Split search term into words for multi-term search
-    const searchWords = searchLower
-      .split(/\s+/)
-      .filter((word) => word.length > 0);
-
     // Normalize the query words once, not once per item.
-    const wordForms = searchWords.map((word) => [
-      word,
-      normalizePairKey(word).toLowerCase(),
-    ]);
+    const wordForms = pairSearchWordForms(deferredSearchTerm);
 
-    return classFiltered.filter((item) => {
-      const searchableText = searchIndex.get(item) ?? searchableTextFor(item);
-
-      // All search words must appear somewhere in the combined text. Each word
-      // is also tried separator-stripped, so `eth/btc`, `eth-btc` and `ethbtc`
-      // are interchangeable in the query as well as in the haystack.
-      return wordForms.every(
-        ([word, stripped]) =>
-          searchableText.includes(word) || searchableText.includes(stripped)
-      );
-    });
+    return classFiltered.filter((item) =>
+      matchesPairSearch(
+        searchIndex.get(item) ?? searchableTextFor(item),
+        wordForms
+      )
+    );
   }, [
     deferredItems,
     searchIndex,

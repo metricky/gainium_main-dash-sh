@@ -1,22 +1,12 @@
 import { dcaDealToOpenTrade } from '@/lib/utils/dcaDealToOpenTrade';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 import { durationTextToDays } from '@/lib/utils/durationText';
 import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { type ColumnDef } from '@tanstack/react-table';
 import { motion, type Transition } from 'framer-motion';
-import {
-  Archive,
-  Bot,
-  Edit,
-  ExternalLink,
-  MoreHorizontal,
-  Play,
-  Plus,
-  RefreshCw,
-  Square,
-  Star,
-  Trash2,
-} from 'lucide-react';
+import { Activity, Archive, ArrowDownToLine, Bot, Plus, Target } from 'lucide-react';
 import EmptyState from '../components/ui/empty-state';
+import FeatureEmptyState from '../components/ui/feature-empty-state';
 import React, {
   useCallback,
   useContext,
@@ -26,12 +16,11 @@ import React, {
   useState,
 } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import {
-  BotActionsMenuItems,
-  type BotStatusType,
-  type BotTypeId,
-} from '../components/bots/BotActionsMenuItems';
 import { BotCard } from '../components/bots/BotCard';
+import { BotNameCell } from '../components/bots/BotNameCell';
+import { BotTableActions } from '../components/bots/BotTableActions';
+import { toBotRef } from '@/features/bots/actions/botRef';
+import { useBulkBotRunner } from '@/hooks/useBulkBotRunner';
 import { BotUsageCell } from '../components/bots/BotUsageCell';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -44,13 +33,8 @@ import { Button } from '../components/ui/button';
 import { DataTable } from '../components/ui/data-table/data-table';
 import {
   BotListFilterButtons,
-  BotNameBadges,
   useBotListFilters,
 } from '@/lib/extensions/botListExtensions';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-} from '../components/ui/dropdown-menu';
 import { MotionButton } from '../components/ui/MotionWrapper';
 import Widget from '../components/ui/widget';
 import getLatestPrices, { getLocalPrices } from '../helper/price';
@@ -67,26 +51,17 @@ import { useUIStore } from '../stores/uiStore';
 
 import { isReadOnly } from '@/lib/demoMode';
 import { BOT_METRIC_DESCRIPTIONS } from '@/lib/botMetricDescriptions';
+import { creditsInUse } from '@/lib/botList/creditsInUse';
 import { isReady as isAnalyticsReady } from '@/lib/analytics';
 import { useStarredBotsStore } from '@/stores/starredBotsStore';
 import {
   BotTypesEnum,
-  CloseDCATypeEnum,
   StrategyEnum,
   type BotStatus,
   type DCABot,
   /*   type DCADeals, */
   type ExchangeInUser,
 } from '@/types';
-import {
-  areAllBotsDeletable,
-  filterDeletableBots,
-  filterRestartableBots,
-  filterStartableBots,
-  filterStoppableBots,
-  isBotActive,
-} from '@/utils/botStatusUtils';
-import { useBulkBotConfirm } from '@/hooks/useBulkBotConfirm';
 import {
   Tabs,
   TabsContent,
@@ -97,32 +72,20 @@ import OpenOrdersWidget from '../components/widgets/shared/OpenOrdersWidget';
 /* import { toDrawerBot } from '../adapters/bots/drawer'; */
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import {
-  BotStatusConfirmationModal,
-  DeleteConfirmationModal,
-} from '../components/modals';
-import {
   ExchangeChip,
   ProfitAndPerc,
   ProfitLossPercChip,
   StatusChip,
   StrategyChip,
 } from '../components/ui/chip';
+import { PendingLiveValue } from '../components/ui/pending-live-value';
 import BotListStatsBoxes from '../components/ui/BotListStatsBoxes';
 import CoinPair from '../components/widgets/shared/CoinPair';
 import StaleIndicator from '../components/widgets/shared/StaleIndicator';
-import {
-  useBotArchive,
-  useBotDelete,
-  useBotRestart,
-  useBotStatusToggle,
-} from '../hooks/useBotMutations';
-import { useBotActions } from '../hooks/useBotActions';
-import { BotActionsModals } from '../components/bots/BotActionsModals';
 import { useBotModeGuard } from '../hooks/bots/base/useBotModeGuard';
 import { useCacheKey } from '../hooks/useCacheKey';
 import { useCacheStatus } from '../hooks/useCacheStatus';
 import { logger } from '../lib/loggerInstance';
-import { toast } from '../lib/toast';
 import { useTradingBotStore } from '../stores/botWidgetsStoreFactory';
 import { useBotStatsStore } from '../stores/live/botStatsStore';
 import { transformDcaBotToBot } from '../types/dcaBot';
@@ -140,13 +103,8 @@ import { withServerFields } from '../components/ui/data-table/serverSide';
 import { PartialCount } from '../components/ui/large-account';
 import type { CalculatedBotStats } from '../services/metrics/BotMetricsCalculator';
 
-// Bot table actions component for mobile accessibility
-interface BotTableActionsProps {
-  bot: ReturnType<typeof transformDcaBotToBot>;
-  originalBotData: DCABot | undefined;
-}
-
 const TRADING_BOTS_DEFAULT_COLUMN_VISIBILITY = {
+  positionValue: false,
   profitPerc: false,
   unPnlPerc: false,
   avgDailyPerc: false,
@@ -195,70 +153,6 @@ const TRADING_BOTS_TABLE_MOTION = {
   initial: { opacity: 0, y: 20 },
   animate: { opacity: 1, y: 0 },
   transition: { duration: 0.4, delay: 0.6 },
-};
-
-const BotTableActions: React.FC<BotTableActionsProps> = ({
-  bot,
-  originalBotData,
-}) => {
-  // Shared bot-action orchestration (clone opens the pre-filled create page;
-  // status/delete via the confirmation modals rendered by <BotActionsModals>;
-  // "Duplicate to live/paper" stages this row's bot for the other mode).
-  const botActions = useBotActions({
-    botId: bot.id,
-    botType: BotTypesEnum.dca,
-    botName: bot.name,
-    status: bot.status,
-    activeDeals: originalBotData?.dealsInBot?.active || 0,
-    totalValue: originalBotData?.usage?.current?.quote || 0,
-    currency: originalBotData?.symbol?.[0]?.value?.quoteAsset || 'USD',
-    lastActivity: originalBotData?.created || 'Unknown',
-    botData: originalBotData ?? bot,
-  });
-
-  const botActionsMenuItems = useMemo(
-    () => ({
-      id: bot.id,
-      name: bot.name,
-      type: bot.type as BotTypeId,
-      status: bot.status as BotStatusType,
-      coldArchived: bot.coldArchived,
-    }),
-    [bot.id, bot.name, bot.type, bot.status, bot.coldArchived]
-  );
-
-  const handleMenuTriggerClick = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      e.stopPropagation();
-    },
-    []
-  );
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="p-0"
-            onClick={handleMenuTriggerClick}
-          >
-            <MoreHorizontal className="w-4 h-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <BotActionsMenuItems
-          align="end"
-          className="w-56"
-          bot={botActionsMenuItems}
-          {...botActions.menuProps}
-        />
-      </DropdownMenu>
-
-      {/* Shared status / delete / success modals, driven by useBotActions. */}
-      <BotActionsModals {...botActions.modalProps} />
-    </>
-  );
 };
 
 const useRenderTelemetry = (
@@ -351,48 +245,6 @@ const BotCardWrapper: React.FC<BotCardWrapperProps> = React.memo(
 
 BotCardWrapper.displayName = 'BotCardWrapper';
 
-const NameCell: React.FC<{ value: string; id: string }> = ({ value, id }) => {
-  const toggleStarred = useStarredBotsStore((s) => s.toggleStarred);
-  const starredBotIds = useStarredBotsStore((s) => s.starredBotIds);
-  const starred = starredBotIds.has(id);
-  const handleOpenInNewTab = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      e.stopPropagation();
-      window.open(`/bot/view/${id}`, '_blank');
-    },
-    [id]
-  );
-  const handleToggleStarred = useCallback(
-    (e: React.MouseEvent<HTMLButtonElement>) => {
-      e.stopPropagation();
-      toggleStarred(id);
-    },
-    [id, toggleStarred]
-  );
-  return (
-    <div className="flex items-center gap-xs">
-      <div className="truncate">{value}</div>
-      <BotNameBadges botId={id} botType={BotTypesEnum.dca} />
-      <button
-        onClick={handleOpenInNewTab}
-        className="p-1 rounded hover:bg-muted/30"
-        title="Open in new tab"
-      >
-        <ExternalLink className="w-4 h-4 text-muted-foreground" />
-      </button>
-      <button
-        onClick={handleToggleStarred}
-        className="p-1 rounded hover:bg-muted/30"
-        title={starred ? 'Unstar bot' : 'Star bot'}
-      >
-        <Star
-          className={`w-4 h-4 ${starred ? 'text-yellow-400 fill-yellow-400' : 'text-muted-foreground'}`}
-        />
-      </button>
-    </div>
-  );
-};
-
 const PRICE_UPDATE_THROTTLE_MS = 10000; // Increased to 10 seconds for better stability
 
 const TradingBots: React.FC = () => {
@@ -472,36 +324,13 @@ const TradingBots: React.FC = () => {
   const tokens = useAuthStore((state) => state.tokens);
   const currentUser = useAuthStore((state) => state.user);
   const privacyMode = useUIStore((state) => state.privacyMode);
+  const { formatUsd, currency } = useReportingCurrency();
   const { data: exchangesData } = useExchangesFromContext();
 
   // Share-link viewers land here without auth — fetch the bot directly
   // via its share id. When `shareId` is set, the list query is bypassed
   // and the drawer is hydrated from the single shared bot record.
   const { shareId } = useShareContext();
-
-  // Bot mutations
-  const statusToggleMutation = useBotStatusToggle(BotTypesEnum.dca);
-  const restartMutation = useBotRestart();
-  const deleteMutation = useBotDelete();
-  const archiveMutation = useBotArchive();
-
-  // Bulk delete modal state
-  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-  const [bulkDeleteTargets, setBulkDeleteTargets] = useState<
-    ReturnType<typeof transformDcaBotToBot>[]
-  >([]);
-  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false);
-
-  // Bulk status change modal state
-  const [bulkStatusOpen, setBulkStatusOpen] = useState(false);
-  const [bulkStatusSelectedCount, setBulkStatusSelectedCount] = useState(0);
-  const [bulkStatusTargets, setBulkStatusTargets] = useState<
-    ReturnType<typeof transformDcaBotToBot>[]
-  >([]);
-  const [bulkStatusAction, setBulkStatusAction] = useState<'start' | 'stop'>(
-    'start'
-  );
-  const [bulkStatusLoading, setBulkStatusLoading] = useState(false);
 
   // Manage widget layout
   const { initializeDefaultWidgets } = useTradingBotStore();
@@ -625,127 +454,6 @@ const TradingBots: React.FC = () => {
       }
     }
   }, [selectedBot, dcaBots]);
-
-  // Open bulk delete modal with selected bots
-  const handleOpenBulkDelete = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      if (!bots || bots.length === 0) {
-        toast.info('No bots selected');
-        return;
-      }
-
-      if (!areAllBotsDeletable(bots)) {
-        const deletableBots = filterDeletableBots(bots);
-        if (deletableBots.length === 0) {
-          toast.info(
-            'Only closed or archived bots can be deleted. Stop bots before deleting.'
-          );
-        } else {
-          toast.info(
-            'Some selected bots are still running. Stop them before bulk delete.'
-          );
-        }
-        return;
-      }
-
-      setBulkDeleteTargets(bots);
-      setBulkDeleteOpen(true);
-    },
-    []
-  );
-
-  // Confirm and perform bulk delete sequentially
-  const handleConfirmBulkDelete = useCallback(async () => {
-    if (!areAllBotsDeletable(bulkDeleteTargets)) {
-      toast.info(
-        'Only closed or archived bots can be deleted. Stop bots before deleting.'
-      );
-      setBulkDeleteOpen(false);
-      setBulkDeleteTargets([]);
-      return;
-    }
-
-    setBulkDeleteLoading(true);
-    try {
-      for (const b of bulkDeleteTargets) {
-        await deleteMutation.mutateAsync({ id: b.id, type: BotTypesEnum.dca });
-      }
-      toast.success(`Deleted ${bulkDeleteTargets.length} bot(s)`);
-    } catch (error) {
-      console.error('Failed to delete selected bots:', error);
-      toast.error('Failed to delete selected bots');
-    } finally {
-      setBulkDeleteLoading(false);
-      setBulkDeleteOpen(false);
-      setBulkDeleteTargets([]);
-    }
-  }, [bulkDeleteTargets, deleteMutation]);
-
-  // Open bulk status change modal
-  const handleOpenBulkStatusChange = useCallback(
-    (
-      bots: ReturnType<typeof transformDcaBotToBot>[],
-      action: 'start' | 'stop'
-    ) => {
-      const filteredBots =
-        action === 'start'
-          ? filterStartableBots(bots)
-          : filterStoppableBots(bots);
-
-      if (filteredBots.length === 0) {
-        toast.info(
-          action === 'start'
-            ? 'No stopped bots selected'
-            : 'No active bots selected'
-        );
-        return;
-      }
-      setBulkStatusSelectedCount(bots.length);
-      setBulkStatusTargets(filteredBots);
-      setBulkStatusAction(action);
-      setBulkStatusOpen(true);
-    },
-    []
-  );
-
-  // Confirm bulk status change
-  const handleConfirmBulkStatusChange = useCallback(
-    async (closeType?: string) => {
-      setBulkStatusLoading(true);
-      try {
-        const newStatus = bulkStatusAction === 'start' ? 'open' : 'closed';
-        for (const b of bulkStatusTargets) {
-          await statusToggleMutation.mutateAsync({
-            id: b.id,
-            status: newStatus,
-            closeType:
-              bulkStatusAction === 'stop'
-                ? (closeType as CloseDCATypeEnum | undefined)
-                : undefined,
-          });
-        }
-        toast.success(
-          `${bulkStatusAction === 'start' ? 'Started' : 'Stopped'} ${bulkStatusTargets.length} bot(s)`
-        );
-      } catch (error) {
-        console.error('Failed to change status for selected bots:', error);
-        toast.error('Failed to change status for selected bots');
-      } finally {
-        setBulkStatusLoading(false);
-        setBulkStatusOpen(false);
-        setBulkStatusTargets([]);
-      }
-    },
-    [bulkStatusAction, bulkStatusTargets, statusToggleMutation]
-  );
-
-  // Check if any bulk targets have active deals (for showing close options)
-  const bulkHasActiveDeals = useMemo(() => {
-    return bulkStatusTargets.some((b) => {
-      const original = getOriginalBot(b.id);
-      return (original?.dealsInBot?.active || 0) > 0;
-    });
-  }, [bulkStatusTargets, getOriginalBot]);
 
   const cardContextValue = useMemo(
     () => ({
@@ -1131,7 +839,7 @@ const TradingBots: React.FC = () => {
         cell: ({ getValue, row }) => {
           const name = getValue() as string;
           const id = row.original.id as string;
-          return <NameCell value={name} id={id} />;
+          return <BotNameCell name={name} id={id} kind="dca" />;
         },
       },
       {
@@ -1228,11 +936,42 @@ const TradingBots: React.FC = () => {
         aggregationFn: 'sum',
         cell: ({ getValue }) => {
           const cost = getValue() as number;
-          return <span>{privacyMode ? '***' : `$${cost.toFixed(2)}`}</span>;
+          return <span>{privacyMode ? '***' : formatUsd(cost)}</span>;
         },
         footerValue: (value: number) => (
           <span className="font-bold">
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'positionValue',
+        header: 'CURRENT VALUE',
+        meta: {
+          description: BOT_METRIC_DESCRIPTIONS.dca.currentValue,
+          filterType: 'number',
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        sortUndefined: 'last',
+        cell: ({ row }) => {
+          if (row.original.isActive && row.original.loadedPrices === false) {
+            return <Skeleton className="h-4 w-16" />;
+          }
+          const value = row.original.positionValue;
+          if (value === undefined) {
+            return <span className="text-muted-foreground">-</span>;
+          }
+          return (
+            <PendingLiveValue pending={row.original.unPnlPending}>
+              {privacyMode ? '***' : formatUsd(value)}
+            </PendingLiveValue>
+          );
+        },
+        footerValue: (value: number) => (
+          <span className="font-bold">
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -1248,20 +987,20 @@ const TradingBots: React.FC = () => {
         aggregationFn: 'sum',
         cell: ({ getValue }) => {
           const cost = getValue() as number;
-          return <span>{privacyMode ? '***' : `$${cost.toFixed(2)}`}</span>;
+          return <span>{privacyMode ? '***' : formatUsd(cost)}</span>;
         },
         footerValue: (value: number) => (
           <span className="font-bold">
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
       {
         accessorKey: 'totalProfitUsd',
-        header: 'REALIZED PNL, $',
+        header: `REALIZED PNL, ${currency.symbol}`,
         meta: {
           description: BOT_METRIC_DESCRIPTIONS.dca.realizedPnl,
-          filterType: 'number',
+          filterType: 'number', reportingUsd: true,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
         },
@@ -1289,7 +1028,7 @@ const TradingBots: React.FC = () => {
                   : 'text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -1328,6 +1067,7 @@ const TradingBots: React.FC = () => {
               privacyMode={privacyMode}
               chipPosition="right"
               size="sm"
+              pending={row.original.unPnlPending}
             />
           );
         },
@@ -1343,9 +1083,7 @@ const TradingBots: React.FC = () => {
           >
             {privacyMode
               ? '***'
-              : value < 0
-                ? `-$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
-                : `$${value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`}
+              : formatUsd(value)}
           </span>
         ),
       },
@@ -1397,7 +1135,7 @@ const TradingBots: React.FC = () => {
                   : 'text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -1444,6 +1182,7 @@ const TradingBots: React.FC = () => {
               privacyMode={privacyMode}
               chipPosition="right"
               size="sm"
+              pending={row.original.unPnlPending}
             />
           );
         },
@@ -1457,7 +1196,7 @@ const TradingBots: React.FC = () => {
                   : 'text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -1484,7 +1223,11 @@ const TradingBots: React.FC = () => {
           const netPnl = totalProfit + unrealized;
           const cost = row.original.currentValue || row.original.maxValue || 0;
           const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
-          return <ProfitLossPercChip value={percentage} size="sm" />;
+          return (
+            <PendingLiveValue pending={row.original.unPnlPending}>
+              <ProfitLossPercChip value={percentage} size="sm" />
+            </PendingLiveValue>
+          );
         },
       },
       {
@@ -1559,6 +1302,7 @@ const TradingBots: React.FC = () => {
               size="xs"
               chipStyle="soft"
               tooltip={tooltip}
+              botId={row.original._id}
             />
           );
         },
@@ -1611,14 +1355,16 @@ const TradingBots: React.FC = () => {
       },
       {
         accessorKey: 'cost',
-        header: 'CREDITS COST',
+        // Bots that released their credits sort/filter as 0 (spec 128).
+        accessorFn: (row) => creditsInUse(row) ?? 0,
+        header: 'CREDITS IN USE',
         meta: {
           filterType: 'number',
           description: BOT_METRIC_DESCRIPTIONS.dca.creditsCost,
         },
-        cell: ({ getValue }) => {
-          const cost = getValue() as number;
-          return `${(cost || 0).toFixed(2)}`;
+        cell: ({ row }) => {
+          const cost = creditsInUse(row.original);
+          return cost === undefined ? null : cost.toFixed(2);
         },
       },
       {
@@ -1640,8 +1386,8 @@ const TradingBots: React.FC = () => {
           const bot = row.original;
           return (
             <BotTableActions
-              bot={bot}
-              originalBotData={botDataMap.get(bot.id)}
+              source={botDataMap.get(bot.id) ?? bot}
+              kind="dca"
             />
           );
         },
@@ -1650,7 +1396,7 @@ const TradingBots: React.FC = () => {
         size: 56,
       },
     ],
-    [botDataMap, privacyMode, accountTimeZone]
+    [botDataMap, privacyMode, accountTimeZone, formatUsd, currency]
   );
   // Server mode only honours sorts/filters with a server field.
   const serverColumns = useMemo(
@@ -1793,32 +1539,6 @@ const TradingBots: React.FC = () => {
     if (!ownerId) return false;
     return ownerId !== currentUser.id;
   }, [shareId, selectedBotData, currentUser, drawerBot.rawBot]);
-  const onToggleStatus = useCallback(
-    (botId: string, status: BotStatus) => {
-      const bot = dcaBots.find((b) => b._id === botId);
-      const isActive = bot ? isBotActive(bot.status) : false;
-
-      statusToggleMutation.mutate(
-        {
-          id: botId,
-          status,
-        },
-        {
-          onSuccess: () => {
-            toast.success(
-              `Bot ${isActive ? 'stopped' : 'started'} successfully`
-            );
-          },
-          onError: (error) => {
-            console.error('Failed to change bot status:', error);
-            toast.error(`Failed to ${isActive ? 'stop' : 'start'} bot`);
-          },
-        }
-      );
-    },
-    [statusToggleMutation, dcaBots]
-  );
-
   const onCloseBot = useCallback(
     () => updateSelectedBot(null),
     [updateSelectedBot]
@@ -1839,153 +1559,13 @@ const TradingBots: React.FC = () => {
     [handleSelectBot]
   );
 
-  const { confirmRestart, confirmArchive, confirmDialog } =
-    useBulkBotConfirm();
-
-  const handleBulkArchive = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      confirmArchive(bots, !showArchived, (targets) =>
-        targets.forEach((b) =>
-          archiveMutation.mutate({
-            id: b.id,
-            archive: !showArchived,
-            type: BotTypesEnum.dca,
-          })
-        )
-      );
-    },
-    [archiveMutation, confirmArchive, showArchived]
+  // Bulk toolbar: entries, confirmation and per-bot run from the registry.
+  const toBulkRef = useCallback(
+    (row: ReturnType<typeof transformDcaBotToBot>) =>
+      toBotRef(getOriginalBot(row.id) ?? row, 'dca'),
+    [getOriginalBot]
   );
-
-  const handleBulkStart = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      handleOpenBulkStatusChange(bots, 'start');
-    },
-    [handleOpenBulkStatusChange]
-  );
-
-  const handleBulkStop = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      handleOpenBulkStatusChange(bots, 'stop');
-    },
-    [handleOpenBulkStatusChange]
-  );
-
-  const handleBulkRestart = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      confirmRestart(bots, async (restartableBots) => {
-        try {
-          for (const b of restartableBots) {
-            await restartMutation.mutateAsync({
-              id: b.id,
-              type: BotTypesEnum.dca,
-            });
-          }
-          toast.success(`Restarted ${restartableBots.length} bot(s)`);
-        } catch {
-          toast.error('Failed to restart selected bots');
-        }
-      });
-    },
-    [confirmRestart, restartMutation]
-  );
-
-  const handleBulkDelete = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) => {
-      handleOpenBulkDelete(bots);
-    },
-    [handleOpenBulkDelete]
-  );
-
-  const handleBulkEdit = useCallback(() => {
-    toast.info('Bulk edit coming soon');
-  }, []);
-
-  const shouldShowStart = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) =>
-      filterStartableBots(bots).length > 0,
-    []
-  );
-
-  const shouldShowStop = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) =>
-      filterStoppableBots(bots).length > 0,
-    []
-  );
-
-  const shouldShowRestart = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) =>
-      filterRestartableBots(bots).length > 0,
-    []
-  );
-
-  const shouldShowDelete = useCallback(
-    (bots: ReturnType<typeof transformDcaBotToBot>[]) =>
-      areAllBotsDeletable(bots),
-    []
-  );
-
-  const bulkActions = useMemo(() => {
-    if (readOnly) {
-      return undefined;
-    }
-
-    return [
-      {
-        id: 'start',
-        label: 'Start',
-        icon: Play,
-        onAction: handleBulkStart,
-        shouldShow: shouldShowStart,
-      },
-      {
-        id: 'stop',
-        label: 'Stop',
-        icon: Square,
-        onAction: handleBulkStop,
-        shouldShow: shouldShowStop,
-      },
-      {
-        id: 'restart',
-        label: 'Restart',
-        icon: RefreshCw,
-        onAction: handleBulkRestart,
-        shouldShow: shouldShowRestart,
-      },
-      {
-        id: 'edit',
-        label: 'Edit',
-        icon: Edit,
-        onAction: handleBulkEdit,
-      },
-      {
-        id: 'delete',
-        label: 'Delete',
-        icon: Trash2,
-        onAction: handleBulkDelete,
-        shouldShow: shouldShowDelete,
-      },
-      {
-        id: 'archive',
-        label: showArchived ? 'Unarchive' : 'Archive',
-        icon: Archive,
-        onAction: handleBulkArchive,
-      },
-    ];
-  }, [
-    handleBulkArchive,
-    handleBulkDelete,
-    handleBulkEdit,
-    handleBulkRestart,
-    handleBulkStart,
-    handleBulkStop,
-    readOnly,
-    shouldShowRestart,
-    shouldShowStart,
-    shouldShowStop,
-    shouldShowDelete,
-    showArchived,
-  ]);
+  const bulk = useBulkBotRunner(toBulkRef);
 
   const getRowId = useCallback(
     (bot: ReturnType<typeof transformDcaBotToBot>) => bot.id,
@@ -2094,24 +1674,6 @@ const TradingBots: React.FC = () => {
     [showArchived, toggleArchived]
   );
 
-  const bulkDeleteAdditionalInfo = useMemo(
-    () => ({
-      activeDeals: bulkDeleteTargets.reduce(
-        (sum: number, b: ReturnType<typeof transformDcaBotToBot>) =>
-          sum + ((b as DCABot)?.dealsInBot.active || 0),
-        0
-      ),
-      totalValue: bulkDeleteTargets.reduce(
-        (sum: number, b: ReturnType<typeof transformDcaBotToBot>) =>
-          sum + (getOriginalBot(b.id)?.usage?.current?.quote || 0),
-        0
-      ),
-      currency:
-        getOriginalBot(bulkDeleteTargets[0]?.id ?? '')?.symbol?.[0]?.value
-          ?.quoteAsset || 'USD',
-    }),
-    [bulkDeleteTargets, getOriginalBot]
-  );
   // Only show the loading skeleton on first load (no cached data present)
   if ((botsLoading || statsLoading) && dcaBots.length === 0) {
     return (
@@ -2210,7 +1772,10 @@ const TradingBots: React.FC = () => {
           {/* Enhanced Statistics Cards moved into header */}
 
           {/* Active Trading Bots - Full Height */}
-          <motion.div {...TRADING_BOTS_WIDGET_MOTION}>
+          <motion.div
+            {...TRADING_BOTS_WIDGET_MOTION}
+            className="md:flex md:min-h-0 md:flex-1 md:flex-col"
+          >
             <Widget
               className="p-sm text-card-foreground flex-1 min-h-[500px]"
               noPadding
@@ -2219,8 +1784,9 @@ const TradingBots: React.FC = () => {
               <Tabs
                 value={pageTab}
                 onValueChange={(v) => setPageTab(v as 'bots' | 'deals')}
+                className="md:flex md:min-h-0 md:flex-1 md:flex-col"
               >
-                <div className="flex flex-col h-full min-h-[500px]">
+                <div className="flex flex-col h-full min-h-[500px] md:h-auto md:flex-1">
                   <motion.div
                     className="shrink-0"
                     {...TRADING_BOTS_HEADER_MOTION}
@@ -2338,7 +1904,7 @@ const TradingBots: React.FC = () => {
                   >
                     {/* Data Table with Card View - Full Height */}
                     <motion.div
-                      className="flex-1 min-h-[400px] overflow-hidden"
+                      className="flex-1 min-h-[400px] overflow-hidden md:h-full"
                       {...TRADING_BOTS_TABLE_MOTION}
                     >
                       <TradingBotsCardContext.Provider value={cardContextValue}>
@@ -2366,8 +1932,12 @@ const TradingBots: React.FC = () => {
                             TRADING_BOTS_CARD_VIEW_BREAKPOINTS
                           }
                           cardViewGap={16}
+                          emptyReplacesBody={
+                            !showArchived && !readOnly && transformedBots.length === 0
+                          }
                           emptyContent={
-                            <EmptyState
+                            showArchived || readOnly || transformedBots.length > 0 ? (
+                              <EmptyState
                               size="page"
                               icon={<Bot className="w-6 h-6" />}
                               title={
@@ -2403,6 +1973,30 @@ const TradingBots: React.FC = () => {
                                     }
                               }
                             />
+                            ) : (
+                              <FeatureEmptyState
+                                className="text-foreground"
+                                icon={<Bot className="size-6" />}
+                                title="Buy the dips, sell the rips"
+                                subtitle="DCA bots average into every dip with safety orders and close at your take-profit, around the clock."
+                                highlights={[
+                                  { icon: <ArrowDownToLine />, label: 'Safety orders on dips' },
+                                  { icon: <Target />, label: 'Take profit & stop loss' },
+                                  { icon: <Activity />, label: 'Indicator & webhook entries' },
+                                ]}
+                                action={{
+                                  label: 'Create DCA bot',
+                                  onClick: handleCreateBot,
+                                  icon: <Plus />,
+                                }}
+                                video={{
+                                  url: 'https://youtu.be/dKXa_PLhcbU',
+                                  title: 'How DCA bots work',
+                                }}
+                              >
+                                <Slot name="bots.list.empty-strategies" botType="dca" />
+                              </FeatureEmptyState>
+                            )
                           }
                           className="h-full min-h-[400px]"
                           onViewModeChange={setCurrentViewMode}
@@ -2411,7 +2005,7 @@ const TradingBots: React.FC = () => {
                           betweenToolbarAndContent={null}
                           onRowClick={handleRowClick}
                           getRowId={getRowId}
-                          bulkActions={bulkActions}
+                          bulkActions={bulk.bulkActions}
                           firstToolbarActions={null}
                           customToolbarActions={customToolbarActions}
                           customToolbarActionsCompact={
@@ -2423,39 +2017,7 @@ const TradingBots: React.FC = () => {
                           // New button moved to widget header - remove DataTable overflow entry
                         />
 
-                        {/* Bulk delete modal */}
-                        <DeleteConfirmationModal
-                          open={bulkDeleteOpen}
-                          onOpenChange={setBulkDeleteOpen}
-                          onConfirm={handleConfirmBulkDelete}
-                          title={`Delete ${bulkDeleteTargets.length} bot${bulkDeleteTargets.length === 1 ? '' : 's'}`}
-                          description={`Are you sure you want to delete ${bulkDeleteTargets.length} selected bot${bulkDeleteTargets.length === 1 ? '' : 's'}? This action cannot be undone.`}
-                          itemName={`${bulkDeleteTargets.length} bots`}
-                          bulkCount={bulkDeleteTargets.length}
-                          itemType="bot"
-                          additionalInfo={bulkDeleteAdditionalInfo}
-                          isLoading={bulkDeleteLoading}
-                        />
-
-                        {confirmDialog}
-
-                        {/* Bulk status change modal */}
-                        <BotStatusConfirmationModal
-                          open={bulkStatusOpen}
-                          onOpenChange={setBulkStatusOpen}
-                          onConfirm={handleConfirmBulkStatusChange}
-                          botName={`${bulkStatusTargets.length} bot${bulkStatusTargets.length === 1 ? '' : 's'}`}
-                          bulkCount={bulkStatusTargets.length}
-                          bulkSelectedCount={bulkStatusSelectedCount}
-                          currentStatus={
-                            bulkStatusAction === 'start' ? 'closed' : 'open'
-                          }
-                          targetStatus={
-                            bulkStatusAction === 'start' ? 'open' : 'closed'
-                          }
-                          hasActiveDeals={bulkHasActiveDeals}
-                          isLoading={bulkStatusLoading}
-                        />
+                        {bulk.dialogs}
                       </TradingBotsCardContext.Provider>
                     </motion.div>
                   </TabsContent>
@@ -2465,6 +2027,7 @@ const TradingBots: React.FC = () => {
                     className="flex-1 min-h-[400px] overflow-hidden mt-0"
                   >
                     <OpenOrdersWidget
+                      pinHeaderOnPageScroll
                       widgetId="dca-bot-deals"
                       data={{ trades: dcaDealsAsOpenTrades }}
                       rawDeals={dcaDealsForTab}
@@ -2487,7 +2050,6 @@ const TradingBots: React.FC = () => {
               bot={selectedBotData}
               open={true}
               privacyMode={privacyMode}
-              onToggleStatus={onToggleStatus}
               onClose={onCloseBot}
               viewOnly={viewOnly}
               ownerUserId={

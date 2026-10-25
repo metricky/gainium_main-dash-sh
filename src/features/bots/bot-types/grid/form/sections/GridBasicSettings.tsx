@@ -738,13 +738,13 @@ export const GridBasicSettings: React.FC<GridBasicSettingsProps> = ({
       <div data-tour="botForm.pair">
       <SettingsRow
         name="Trading Pairs"
-        tooltip="Configure the trading pairs used by this bot"
+        tooltip={`Configure the trading pairs used by this bot. The grid range and funding currency use ${baseLabel} / ${quoteLabel}.`}
         alerts={pairAlerts ?? []}
         navId="pair"
       >
         <div className="space-y-xs">
           {isPairsLocked ? (
-            <div className="space-y-sm rounded-lg border border-border bg-muted/30 p-sm">
+            <div className="space-y-sm">
               {lockedPairs.length ? (
                 <div className="flex flex-wrap gap-xs">
                   {lockedPairs.map(({ key, base, quote, label }) => {
@@ -760,7 +760,7 @@ export const GridBasicSettings: React.FC<GridBasicSettingsProps> = ({
                     return (
                     <div
                       key={key}
-                      className="flex min-w-0 items-center gap-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm"
+                      className="flex min-w-0 items-center gap-xs rounded-lg bg-muted px-2.5 py-1.5 text-xs font-medium text-foreground"
                     >
                       <CoinPair
                         baseAsset={base || '?'}
@@ -803,10 +803,6 @@ export const GridBasicSettings: React.FC<GridBasicSettingsProps> = ({
               />
             </>
           )}
-          <p className="text-xs text-muted-foreground">
-            The grid range and funding currency will use {baseLabel || 'base'}{' '}
-            / {quoteLabel || 'quote'} assets from the selected pair.
-          </p>
           {/* Pair errors are surfaced via SettingsRow alerts (validator-driven) */}
         </div>
       </SettingsRow>

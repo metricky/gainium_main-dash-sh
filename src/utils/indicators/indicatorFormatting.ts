@@ -8,6 +8,7 @@ import {
   resolveFieldLabel,
   shouldHideField,
   withFieldDefaults,
+  withGatingParams,
 } from '@/utils/indicators/indicatorFieldGating';
 
 const getOptionLabel = (
@@ -49,6 +50,13 @@ export const formatIndicatorParamValue = (
     return trimmed;
   }
 
+  // A multi-select (Session Days) reads as its option labels, not raw values.
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => getOptionLabel(field, item) ?? String(item))
+      .join(', ');
+  }
+
   if (
     (field.type === 'select' || field.type === 'interval') &&
     field.options?.length
@@ -60,6 +68,16 @@ export const formatIndicatorParamValue = (
 
   return String(value);
 };
+
+// The condition an indicator fires on. Always summarized, even past the cap:
+// without them the card can't say what the indicator waits
+// for (RSI's Use percentile / Length / Interval / Condition filled all four
+// slots, so "Value: 40" never showed and the editor had to be opened to see it).
+const TRIGGER_FIELD_KEYS = new Set([
+  'indicatorCondition',
+  'indicatorValue',
+  'indicatorValue2',
+]);
 
 export const buildIndicatorSummary = (
   definition: IndicatorDefinition,
@@ -77,21 +95,37 @@ export const buildIndicatorSummary = (
   // Reference "Current price" used to summarize as "Comparison length: 20 ·
   // Comparison interval: 1 hour" (both hidden, both stuck at their defaults)
   // while the live Length/Interval never made the cut.
-  const effectiveParams = withFieldDefaults(definition, params);
+  const effectiveParams = withGatingParams(definition, params);
+  const filledParams = withFieldDefaults(definition, params) ?? params;
 
   const summary: string[] = [];
+  let baseItems = 0;
   for (const field of fields) {
-    if (summary.length >= maxItems) {
-      break;
+    // A field with its own `summary` only shows while its setting is in use,
+    // so it does not count towards (or stop at) the cap.
+    if (
+      !field.summary &&
+      !TRIGGER_FIELD_KEYS.has(field.key) &&
+      baseItems >= maxItems
+    ) {
+      continue;
     }
     if (shouldHideField(field, effectiveParams)) {
       continue;
     }
-    const { key, defaultValue } = resolveFieldKey(field, params);
-    const value = params?.[key] ?? defaultValue;
-    const formatted = formatIndicatorParamValue(field, value);
+    let formatted: string;
+    if (field.summary) {
+      formatted = field.summary(filledParams) ?? '';
+    } else {
+      const { key, defaultValue } = resolveFieldKey(field, params);
+      const value = params?.[key] ?? defaultValue;
+      formatted = formatIndicatorParamValue(field, value);
+    }
     if (!formatted) {
       continue;
+    }
+    if (!field.summary) {
+      baseItems += 1;
     }
     // Same dynamic label the form shows, so the card doesn't call a field
     // "Base MA length" while the editor under it says "EMA Length".

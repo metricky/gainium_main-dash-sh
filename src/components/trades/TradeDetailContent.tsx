@@ -15,6 +15,7 @@ import React from 'react';
 import { formatCurrency, formatPercentage } from '../../lib/utils';
 import { formatPriceWithPrecision } from '@/utils/formatters';
 import { formatNumber } from '../../utils/numberFormatter';
+import { calculateDealOpenPnl } from '@/lib/utils/tradingMetrics';
 import { Card } from '../ui/card';
 import {
   BotTypeChip,
@@ -24,6 +25,8 @@ import {
   StrategyChip,
 } from '../ui/chip';
 import { DealOrdersSection } from './DealOrdersSection';
+import { DealCostsSection } from './DealCostsSection';
+import { isFiniteNumber } from '@/utils/tradingCosts';
 import {
   ExecuteNextDcaDialog,
   canExecuteNextDca,
@@ -31,6 +34,8 @@ import {
 import { useExecuteNextDca } from '@/hooks/useDealActions';
 import { Slot } from '@/lib/extensions';
 import { toast } from '@/lib/toast';
+import { DealLevelsText } from '@/components/deals/DealLevelsText';
+import { usePositionEntriesLabel } from '@/hooks/useSinglePosition';
 
 interface TradeDetailContentProps {
   trade: {
@@ -81,6 +86,7 @@ interface TradeDetailContentProps {
         }
       | undefined;
     unrealizedProfit?: number | undefined;
+    unrealizedPending?: boolean | undefined;
     avgPrice?: number | undefined;
     levels: {
       complete: number;
@@ -145,11 +151,19 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
 
   const progressPercentage =
     trade.levels.all > 0 ? (trade.levels.complete / trade.levels.all) * 100 : 0;
+  // Single-position bots: entries instead of levels (see DealLevelsText).
+  const positionEntries = usePositionEntriesLabel(trade.id);
 
   const normalizedStatus = String(trade.status || '').toLowerCase();
   const isClosedTrade = ['closed', 'cancelled', 'canceled'].includes(
     normalizedStatus
   );
+  // Open position only: what the deal already banked is under Realized.
+  const openUnrealized = calculateDealOpenPnl({
+    active: !isClosedTrade,
+    unrealizedProfit: trade.unrealizedProfit,
+    realizedProfit: trade.profit?.totalUsd,
+  });
 
   // Extract symbol string
   const symbolString =
@@ -276,22 +290,23 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
             </div>
           </Card>
 
-          {trade.unrealizedProfit !== undefined && !isClosedTrade && (
+          {openUnrealized !== undefined && !isClosedTrade && (
             <Card className="p-md">
               <div className="space-y-xs">
                 <div className="text-sm text-muted-foreground">
                   Unrealized Profit
                 </div>
                 <ProfitAndPerc
-                  value={trade.unrealizedProfit}
+                  value={openUnrealized}
                   percentage={
                     trade.usage.currentUsd
-                      ? (trade.unrealizedProfit / trade.usage.currentUsd) * 100
+                      ? (openUnrealized / trade.usage.currentUsd) * 100
                       : 0
                   }
                   privacyMode={privacyMode}
                   chipPosition="right"
                   size="lg"
+                  pending={trade.unrealizedPending}
                 />
               </div>
             </Card>
@@ -324,6 +339,30 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
           )}
         </div>
       </div>
+
+      {/* Gross → Fees → Slippage → Net. Grid has no deals of its own. */}
+      {trade.botId && trade.type !== 'Grid' && (
+        <DealCostsSection
+          botId={trade.botId}
+          dealId={trade.id}
+          kind={
+            trade.type === 'Combo' || trade.type === 'Hedge Combo'
+              ? 'combo'
+              : 'dca'
+          }
+          quoteAsset={quoteAsset}
+          // What the Realized Profit card above shows (ProfitAndPerc of
+          // totalUsd). Not `trade.profit.total`: the bot drawer's deal
+          // mapping fills that from pureBase.
+          {...(isFiniteNumber(trade.profit?.totalUsd) && {
+            realizedUsd: trade.profit.totalUsd,
+          })}
+          privacyMode={privacyMode}
+          version={`${normalizedStatus}:${completedOrders.length}:${
+            trade.profit?.total ?? ''
+          }`}
+        />
+      )}
 
       {/* Auto-Compounding Section — how much compounding added to each order.
           Only rendered when the deal actually compounded (see
@@ -505,10 +544,10 @@ export const TradeDetailContent: React.FC<TradeDetailContentProps> = ({
           <div className="space-y-md">
             <div className="flex justify-between items-center">
               <div className="text-sm text-muted-foreground">
-                Levels Completed
+                {positionEntries ? 'Position' : 'Levels Completed'}
               </div>
               <div className="font-medium">
-                {trade.levels.complete} / {trade.levels.all}
+                <DealLevelsText dealId={trade.id} levels={trade.levels} />
               </div>
             </div>
             <div className="w-full bg-muted rounded-full h-3">

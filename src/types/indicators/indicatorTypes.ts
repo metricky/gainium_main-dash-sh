@@ -19,6 +19,8 @@ export const IndicatorFieldTypes = {
   BOOLEAN: 'boolean',
   INTERVAL: 'interval',
   STRING: 'string',
+  /** Local time of day, stored as `HH:MM` ('' when unset). */
+  TIME: 'time',
 } as const;
 
 export type IndicatorFieldType =
@@ -98,6 +100,26 @@ export interface IndicatorFieldDefinition {
     suffix: string;
   };
   multiple?: boolean;
+  /**
+   * Width in the two-column field grid. Defaults by type (see
+   * `resolveFieldSpan`): toggles, checkbox groups, fields with a description
+   * and selects with long option labels take the full row; numbers and short
+   * selects take half and pair with their neighbour.
+   */
+  span?: 'full' | 'half';
+  /**
+   * Always begin a new row in the field grid: never paired as the second half
+   * with the field before it (e.g. Smoothing, which pairs with the Smoothing
+   * length after it, not with whatever precedes the block).
+   */
+  rowStart?: boolean;
+  /**
+   * Custom text for the indicator card summary. Return `null` to leave the
+   * field out of the summary (a setting that is off). Fields with a
+   * `summary` do not count towards the summary's item cap: they only show
+   * while their setting is in use, so they never displace the base items.
+   */
+  summary?: (params: SettingsIndicators) => string | null;
   hiddenWhen?: ConditionalDirective[];
   /** Hidden unless one of these matches (e.g. the "between" upper bound). */
   shownWhen?: ConditionalDirective[];
@@ -109,6 +131,18 @@ export interface IndicatorFieldDefinition {
    * ORed with any `disabledWhen` match.
    */
   disabled?: boolean;
+  /**
+   * A select with no stored value of its own: it shows a value read from
+   * other params and writes those params when changed (the Session preset,
+   * which fills the hour fields). Its `key` is only the control's id.
+   */
+  derive?: {
+    get: (params: SettingsIndicators) => string;
+    set: (
+      value: string,
+      params: SettingsIndicators
+    ) => Partial<SettingsIndicators>;
+  };
 }
 
 export interface IndicatorDefinition {
@@ -122,4 +156,13 @@ export interface IndicatorDefinition {
   advancedFields?: IndicatorFieldDefinition[];
   pendingPort?: boolean;
   documentationUrl?: string;
+  /**
+   * Map stored params to the EFFECTIVE values the `hiddenWhen` / `shownWhen`
+   * / `disabledWhen` / `optionsWhen` directives compare against. The
+   * directives are plain equality checks; when one setting only applies while
+   * others allow it (the smoothing compare mode needs smoothing on and percentile
+   * off), the definition resolves that here instead of in every directive.
+   * Gating only — never applied to what is saved.
+   */
+  deriveGatingParams?: (params: SettingsIndicators) => SettingsIndicators;
 }

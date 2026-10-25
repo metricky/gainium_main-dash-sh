@@ -1,4 +1,5 @@
 import React from 'react';
+import { HelpArticlePill } from '@/components/ui/HelpArticlePill';
 import {
   Dialog,
   DialogContent,
@@ -9,6 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { TimeInput } from '@/components/ui/time-input';
 import { Label } from '@/components/ui/label';
 import { FieldVariableBinding } from '@/components/ui/field-variable-binding';
 import type { VarBindingPath } from '@/hooks/bots/global-variables/useBotVarBinding';
@@ -38,7 +40,6 @@ import {
 import type {
   IndicatorDefinition,
   IndicatorFieldDefinition,
-  IndicatorFieldOption,
 } from '@/types/indicators/indicatorTypes';
 import type {
   IndicatorParamPrimitive,
@@ -46,10 +47,13 @@ import type {
 } from '@/types/indicators/indicatorParams';
 import { sanitizeIndicatorParams } from '@/utils/indicators/indicatorConfigUtils';
 import {
+  resetInvalidConditionalSelects,
   resolveFieldKey,
   resolveFieldLabel,
+  resolveFieldOptions,
   shouldDisableField,
   shouldHideField,
+  withGatingParams,
 } from '@/utils/indicators/indicatorFieldGating';
 
 interface IndicatorConfigurationModalProps {
@@ -165,29 +169,11 @@ export const IndicatorConfigurationModal: React.FC<
         }
         const next: IndicatorParamsState = { ...prev, [key]: value };
         // Reset dependent conditional-option selects to a valid default when
-        // their driving field changes (e.g. Market Structure value when the
-        // trigger type switches), so they never show an empty/stale selection.
-        const allFields = definition
-          ? [...definition.fields, ...(definition.advancedFields ?? [])]
-          : [];
-        for (const f of allFields) {
-          if (!f.optionsWhen?.some((e) => e.field === key)) continue;
-          const opts =
-            f.optionsWhen.find((e) => next[e.field] === e.equals)?.options ??
-            f.options;
-          const valid = opts?.map((o) => o.value);
-          if (
-            valid &&
-            !valid.includes(next[f.key] as IndicatorFieldOption['value'])
-          ) {
-            (next as Record<string, IndicatorParamPrimitive>)[f.key as string] =
-              f.defaultValue !== undefined &&
-              valid.includes(f.defaultValue as IndicatorFieldOption['value'])
-                ? (f.defaultValue as IndicatorParamPrimitive)
-                : (opts?.[0]?.value as IndicatorParamPrimitive);
-          }
-        }
-        return next;
+        // their options change (e.g. Market Structure value when the trigger
+        // type switches), so they never show an empty/stale selection.
+        return definition
+          ? resetInvalidConditionalSelects(definition, prev, next, key)
+          : next;
       });
     },
     [definition]
@@ -198,11 +184,12 @@ export const IndicatorConfigurationModal: React.FC<
       return null;
     }
 
-    if (shouldHideField(field, paramsState)) {
+    const gatingParams = withGatingParams(definition, paramsState);
+    if (shouldHideField(field, gatingParams)) {
       return null;
     }
 
-    const disabled = shouldDisableField(field, paramsState);
+    const disabled = shouldDisableField(field, gatingParams);
     if (!paramsState) {
       return null;
     }
@@ -216,10 +203,7 @@ export const IndicatorConfigurationModal: React.FC<
     // selected trigger type). First matching directive wins; else fall back.
     // Interval-type fields additionally filter to the exchange's supported
     // intervals when a bot exchange is selected (legacy parity).
-    const baseOptions =
-      field.optionsWhen?.find(
-        (entry) => paramsState[entry.field] === entry.equals
-      )?.options ?? field.options;
+    const baseOptions = resolveFieldOptions(definition, field, paramsState);
     const resolvedOptions =
       field.type === 'interval'
         ? filterIntervalOptionsByExchange(baseOptions, exchange)
@@ -294,16 +278,25 @@ export const IndicatorConfigurationModal: React.FC<
             </div>
           );
         }
+        const derive = field.derive;
         return (
           <div key={field.key} className="space-y-1.5">
             {commonLabel}
             <Select
               value={
-                (value as string) ??
-                (field.defaultValue as string | undefined) ??
-                ''
+                derive
+                  ? derive.get(paramsState)
+                  : ((value as string) ??
+                    (field.defaultValue as string | undefined) ??
+                    '')
               }
-              onValueChange={(next) => updateParam(field.key, next)}
+              onValueChange={(next) =>
+                derive
+                  ? setParamsState((prev) =>
+                      prev ? { ...prev, ...derive.set(next, prev) } : prev
+                    )
+                  : updateParam(field.key, next)
+              }
               disabled={disabled}
             >
               <SelectTrigger id={field.key} className="w-full">
@@ -360,6 +353,7 @@ export const IndicatorConfigurationModal: React.FC<
         );
       }
       case 'string':
+      case 'time':
       case 'number':
       default: {
         const stringValue =
@@ -368,23 +362,33 @@ export const IndicatorConfigurationModal: React.FC<
             : effectiveDefault !== undefined
               ? String(effectiveDefault)
               : '';
-        const inputElement = (
-          <Input
-            id={field.key}
-            type={
-              field.type === 'number' && !field.allowVariables
-                ? 'number'
-                : 'text'
-            }
-            value={stringValue}
-            onChange={(event) => updateParam(storageKey, event.target.value)}
-            placeholder={field.placeholder}
-            min={field.min}
-            max={field.max}
-            step={field.step}
-            disabled={disabled}
-          />
-        );
+        const inputElement =
+          field.type === 'time' ? (
+            <TimeInput
+              id={field.key}
+              value={stringValue}
+              onChange={(next) => updateParam(storageKey, next)}
+              placeholder={field.placeholder}
+              disabled={disabled}
+              clearable
+            />
+          ) : (
+            <Input
+              id={field.key}
+              type={
+                field.type === 'number' && !field.allowVariables
+                  ? 'number'
+                  : 'text'
+              }
+              value={stringValue}
+              onChange={(event) => updateParam(storageKey, event.target.value)}
+              placeholder={field.placeholder}
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              disabled={disabled}
+            />
+          );
         // The modal stores params locally and only commits on submit, but
         // variable bindings are stored on the parent bot form (BotVars) and
         // persist independently of the literal value. We can only bind if
@@ -461,13 +465,10 @@ export const IndicatorConfigurationModal: React.FC<
                 {dialogTitle}
               </DialogTitle>
               {docParsed.helpSlug ? (
-                <button
-                  type="button"
-                  className="text-sm font-medium text-primary hover:underline"
-                  onClick={() => setDocHelpSlug(docParsed.helpSlug)}
-                >
-                  Learn more
-                </button>
+                <HelpArticlePill
+                  url={documentationUrl}
+                  onActivate={setDocHelpSlug}
+                />
               ) : null}
             </div>
             <DialogDescription className="text-sm text-muted-foreground">

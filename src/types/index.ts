@@ -1133,6 +1133,7 @@ export enum AlertType {
   dca100 = 'dca100',
   priceOutOfRange = 'priceOutOfRange',
   safetyOrderFilled = 'safetyOrderFilled',
+  maxDealsReached = 'maxDealsReached',
 }
 
 /**
@@ -1542,16 +1543,38 @@ export enum IndicatorEnum {
   obfvg = 'OBFVG',
   session = 'SESSION',
   lw = 'LW',
+  ote = 'OTE',
 }
 
 export enum SessionRuleEnum {
   in = 'in',
   out = 'out',
+  /** Price levels: compare two session levels (A with B). */
+  levels = 'levels',
+}
+
+/** A value a Session "Price levels" condition can read. */
+export enum SessionLevelEnum {
+  prevOpen = 'prevOpen',
+  prevHigh = 'prevHigh',
+  prevMid = 'prevMid',
+  prevLow = 'prevLow',
+  prevClose = 'prevClose',
+  curOpen = 'curOpen',
+  curMid = 'curMid',
+  price = 'price',
 }
 
 export enum LWValueEnum {
   top = 'top',
   bottom = 'bottom',
+  any = 'any',
+}
+
+/** Which leg direction an OTE Levels condition reads. */
+export enum OTELegEnum {
+  bullish = 'bullish',
+  bearish = 'bearish',
   any = 'any',
 }
 
@@ -1626,6 +1649,15 @@ export type SettingsIndicators = {
   percentile?: boolean;
   percentileLookback?: number;
   percentilePercentage?: number;
+  /**
+   * Single-line oscillators only (see `SMOOTHING_INDICATOR_TYPES`): moving
+   * average over the indicator's line. Unset / 'none' = the raw line.
+   */
+  smoothing?: IndicatorSmoothing | null;
+  /** Candles of the smoothing average, 1..1000. Unset / 0 = the raw line. */
+  smoothingLength?: number | null;
+  /** What the condition tests while smoothing is on. Unset = 'value'. */
+  smoothingCompare?: IndicatorSmoothingCompare | null;
   mar1length?: number;
   mar1type?: MAEnum;
   mar2length?: number;
@@ -1671,11 +1703,49 @@ export type SettingsIndicators = {
   obfvgRef?: OBFVGRefEnum;
   sessionDays?: number[];
   sessionRule?: SessionRuleEnum;
+  /** Local HH:MM in sessionTimezone; with sessionEnd, limits the session to those hours. */
+  sessionStart?: string;
+  sessionEnd?: string;
+  /** IANA time zone the session hours and days are read in (default UTC). */
+  sessionTimezone?: string;
+  /** Id of the derived Session preset control; never stored or sent. */
+  sessionPreset?: string;
+  /** Session Price levels: the compared value (A). */
+  sessionLevelA?: SessionLevelEnum;
+  /** Session Price levels: the value A is compared with (B). */
+  sessionLevelB?: SessionLevelEnum;
   lwThreshold?: string;
   lwMaxDuration?: string;
   lwValue?: LWValueEnum;
   lwCondition?: LWConditionEnum;
+  /** OTE Levels: bars to the left a swing must dominate. */
+  oteLeftBars?: string;
+  /** OTE Levels: minimum leg size, % of the leg's low. */
+  oteMinLegSize?: string;
+  /** OTE Levels: retracement level the close is compared with (0 = leg end, 1 = origin). */
+  oteLevel?: string;
+  oteLeg?: OTELegEnum;
 };
+
+/**
+ * Moving average that can smooth a single-line oscillator. VWMA is not
+ * offered: an oscillator reading has no volume to weight by.
+ */
+export type IndicatorSmoothing =
+  | 'none'
+  | 'sma'
+  | 'ema'
+  | 'wma'
+  | 'dema'
+  | 'tema'
+  | 'hma'
+  | 'rma';
+
+/**
+ * With smoothing on: 'value' tests the smoothed line against the condition's
+ * value (or its percentile); 'line' tests the raw line against the smoothed one.
+ */
+export type IndicatorSmoothingCompare = 'value' | 'line';
 
 export enum LWConditionEnum {
   onStart = 'onStart',
@@ -1718,6 +1788,16 @@ export enum StochRangeEnum {
   lower = 'lower',
   both = 'both',
   none = 'none',
+}
+
+/** Short spot DCA / combo — what a deal does when the free base does not cover it. */
+export enum BaseFundingEnum {
+  /** Skip the deal (the default). */
+  require = 'require',
+  /** Use the free base, buy only what is missing. */
+  auto = 'auto',
+  /** Never use the free base; the bot buys what it needs. */
+  botOnly = 'botOnly',
 }
 
 export enum OrderSizeTypeEnum {
@@ -1791,6 +1871,13 @@ export enum CooldownOptionsEnum {
   bot = 'bot',
 }
 
+/** Which closed deals start the cooldown after deal stop. */
+export enum CooldownStopTriggerEnum {
+  any = 'any',
+  sl = 'sl',
+  loss = 'loss',
+}
+
 export enum BaseSlOnEnum {
   start = 'start',
   avg = 'avg',
@@ -1811,6 +1898,12 @@ export type SettingsIndicatorGroup = {
   logic: IndicatorsLogicEnum;
   action: IndicatorAction;
   section?: IndicatorSection;
+  /**
+   * How this group attaches to the previous group of the same action and
+   * section (ignored on the first). AND binds tighter than OR. Unset means
+   * the bot-level logic (startDealLogic, stopDealLogic, ...).
+   */
+  join?: IndicatorsLogicEnum;
 };
 
 export interface DCABotSettings extends BaseSettings {
@@ -1828,6 +1921,12 @@ export interface DCABotSettings extends BaseSettings {
   reduceToAvailableBalance?: boolean;
   /** Smallest base order a reduced deal may open with, in the base order size unit. Empty/0: no floor. */
   reduceToAvailableMinSize?: string;
+  /** Short spot: what a deal does when the free base does not cover it. Missing = require. */
+  baseFunding?: BaseFundingEnum;
+  /** At most one open deal per pair: start signals add entries to it, other deals are adopted. Missing = off. */
+  singlePosition?: boolean;
+  /** Most entries a position may hold, counting the base order. ''/'0' = no limit. */
+  maxPositionEntries?: string;
   dcaCustom?: DCACustom[] | undefined;
   strategy: StrategyEnum;
   baseOrderSize: string;
@@ -1853,6 +1952,8 @@ export interface DCABotSettings extends BaseSettings {
   hodlDay: string;
   hodlAt: string;
   hodlHourly?: boolean;
+  /** Timer weekdays, 0 = Sunday … 6 = Saturday in the profile timezone; empty = every day */
+  hodlWeekdays?: number[];
   hodlNextBuy: number;
   maxNumberOfOpenDeals?: string | undefined;
   indicators: SettingsIndicators[];
@@ -1870,6 +1971,7 @@ export interface DCABotSettings extends BaseSettings {
   cooldownAfterDealStopUnits?: CooldownUnits | undefined;
   cooldownAfterDealStopInterval?: number | undefined;
   cooldownAfterDealStopOption?: CooldownOptionsEnum | undefined;
+  cooldownAfterDealStopTrigger?: CooldownStopTriggerEnum | undefined;
   moveSL?: boolean;
   moveSLTrigger?: string;
   moveSLValue?: string;
@@ -2679,6 +2781,77 @@ export type OrderData = {
   acAfter?: number;
   acBefore?: number;
   reduceFundsId?: string;
+  /** Set on an add-funds order; such an order is not a ladder level. */
+  addFundsId?: string;
+  /** Market price when the bot decided to send the order. */
+  refPrice?: string | null;
+  /** Signed execution slippage of a MARKET order: positive = cost, negative =
+   *  price improvement. Null on LIMIT orders and on backends without it. */
+  slippageBps?: number | null;
+  /** The same slippage in the pair's quote asset, positive = cost. */
+  slippageQuote?: number | null;
+  /** `recorded` at send time, or `reconstructed` later from order data. */
+  slippageSource?: OrderSlippageSource | null;
+  /** The order's fee in the pair's quote asset; null when it cannot be
+   *  valued safely (e.g. paid in an exchange token). */
+  feeQuote?: number | null;
+  /** The fee is worked out from the stored fee rate, not venue-reported. */
+  feeEstimated?: boolean | null;
+  /** The fee includes one paid in another asset (e.g. BNB), converted at
+   *  that asset's market price when the order filled. */
+  feeConverted?: boolean | null;
+};
+
+export type OrderSlippageSource = 'recorded' | 'reconstructed';
+
+/** A deal's execution slippage over its MARKET orders (quote asset). */
+export type DealSlippage = {
+  /** Positive = cost. */
+  quote?: number | null;
+  /** Signed, positive = adverse. */
+  bps?: number | null;
+  /** Orders that carried a slippage figure. */
+  orders?: number | null;
+  /** Some of it was reconstructed from order data rather than recorded. */
+  reconstructed?: boolean | null;
+};
+
+/** gross − fees − slippage = net (= the deal's profit), all in quote asset. */
+export type DealCostBreakdown = {
+  grossQuote?: number | null;
+  feesQuote?: number | null;
+  /** Fees were estimated from a fee rate, not read from the fills. */
+  feesEstimated?: boolean | null;
+  slippageQuote?: number | null;
+  netQuote?: number | null;
+  /** Fees paid in another asset (e.g. BNB), converted at each fill's market
+   *  price. Not in `feesQuote` or `netQuote`: not deducted from the profit. */
+  unbookedFeesQuote?: number | null;
+  /** Some of them could not be priced and are left out of the amount. */
+  unbookedFeesPartial?: boolean | null;
+  unbookedFeeAssets?: string[] | null;
+  /** The deal's USD profit (`profit.totalUsd`) already has these fees
+   *  subtracted (its `profit.total` never does). */
+  unbookedFeesInUsdProfit?: boolean | null;
+  /** The USD amount subtracted from `profit.totalUsd`. */
+  unbookedFeesUsd?: number | null;
+};
+
+/** Fees and slippage summed over a bot's (or an account's) deals. */
+export type TradingCosts = {
+  feesQuote?: number | null;
+  slippageQuote?: number | null;
+  grossQuote?: number | null;
+  netQuote?: number | null;
+  deals?: number | null;
+  slippageReconstructed?: boolean | null;
+  feesEstimated?: boolean | null;
+  quoteAsset?: string | null;
+  /** Sum of the deals' `unbookedFeesQuote` (not in `feesQuote` / `netQuote`). */
+  unbookedFeesQuote?: number | null;
+  unbookedFeesPartial?: boolean | null;
+  /** The part of `unbookedFeesQuote` already subtracted from USD profit. */
+  unbookedFeesInUsdProfitQuote?: number | null;
 };
 
 export type ProfitLossStats = {
@@ -2808,6 +2981,7 @@ export type QueryNames =
   | 'userSettings'
   | 'getLatestOrders'
   | 'getUsdRate'
+  | 'getFiatRates'
   | 'getPairInfo'
   | 'getAllPairs'
   | 'createDCABot'
@@ -3356,6 +3530,15 @@ export type DCADeals = {
     all: number;
     complete: number;
   };
+  /**
+   * Single-position bots: entries the position holds (1 at creation). Not in
+   * the shared fragments (an older backend would reject the query); read
+   * through `@/lib/singlePosition/singlePositionApi`, or present on a live
+   * update.
+   */
+  positionEntries?: number | null;
+  /** Ids of the deals adopted into this position. */
+  adoptedIds?: string[] | null;
   usage: Usage;
   settings: DCADealsSettings;
   assets: {
@@ -3392,6 +3575,10 @@ export type DCADeals = {
   funds?: {
     price: number;
     qty: number;
+    /** Set on the fill of a base-order remainder: its add-funds entry id. */
+    id?: string | null;
+    /** The fill is the rest of a part-filled base order. */
+    baseRemainder?: boolean | null;
   }[];
   reduceFunds?: {
     price: number;
@@ -3675,8 +3862,12 @@ export type AdditionalBotData = {
   fullProfitPerc?: number;
   unPnl?: number;
   unPnlPerc?: number;
+  /** Open bot whose unPnl is the server's saved value or priced from the persisted price snapshot, not a live price yet. */
+  unPnlPending?: boolean;
   maxValue?: number;
   currentValue?: number;
+  /** Open position at the current price (|size| × price), USD. */
+  positionValue?: number | undefined;
   exchangeName?: string;
   currentValueFriendly?: string;
   maxValueFriendly?: string;
@@ -3877,6 +4068,9 @@ export type CommonIndicatorSettings = {
   percentileLookback?: number;
   percentilePercentage?: number;
   percentileCondition?: IndicatorStartConditionEnum;
+  smoothing?: IndicatorSmoothing | null;
+  smoothingLength?: number | null;
+  smoothingCompare?: IndicatorSmoothingCompare | null;
   mar1length?: number;
   mar1type?: MAEnum;
   mar2length?: number;
@@ -3946,10 +4140,21 @@ export type CommonIndicatorSettings = {
   obfvgRef?: OBFVGRefEnum;
   sessionDays?: number[];
   sessionRule?: SessionRuleEnum;
+  /** Local HH:MM in sessionTimezone; with sessionEnd, limits the session to those hours. */
+  sessionStart?: string;
+  sessionEnd?: string;
+  /** IANA time zone the session hours and days are read in (default UTC). */
+  sessionTimezone?: string;
+  sessionLevelA?: SessionLevelEnum;
+  sessionLevelB?: SessionLevelEnum;
   lwThreshold?: number;
   lwMaxDuration?: number;
   lwValue?: LWValueEnum;
   lwCondition?: LWConditionEnum;
+  oteLeftBars?: number;
+  oteMinLegSize?: number;
+  oteLevel?: number;
+  oteLeg?: OTELegEnum;
 };
 
 export enum ppValueTypeEnum {
@@ -4750,6 +4955,18 @@ export type StoreHedgeBacktest = {
  * re-exporting from the package) to keep `types/index.ts` self-contained,
  * matching the existing pattern with `DCABacktestingResult`.
  */
+/** One pair the hedge take profit / stop loss closed: the long and short
+ *  deals that closed together (ids into longResult/shortResult deals). */
+export interface HedgeClose {
+  pair: string;
+  time: number;
+  reason: 'tp' | 'sl';
+  /** The pair's combined unrealized PnL at the close, % of its usage. */
+  perc: number;
+  longDealIds: string[];
+  shortDealIds: string[];
+}
+
 export interface HedgeBacktestingResult {
   longResult: DCABacktestingResult;
   shortResult: DCABacktestingResult;
@@ -4757,6 +4974,8 @@ export interface HedgeBacktestingResult {
     DCABacktestingResult,
     'financial' | 'duration' | 'usage' | 'numerical' | 'ratios'
   >;
+  /** Absent on results from backtester versions before 1.17.0. */
+  hedgeCloses?: HedgeClose[];
 }
 
 export type InputDCABotSettings = Omit<

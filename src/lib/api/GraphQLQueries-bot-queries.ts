@@ -29,6 +29,7 @@ import {
   dcaMultiBotFragment,
   gridBacktest,
   hedgeComboBotFragment,
+  orderCosts,
   orders,
   keyValue,
   varsFragment,
@@ -41,6 +42,8 @@ import {
   statsFragment,
   symbolsStatsFragment,
 } from './GraphQLQueries-fragments';
+
+export type BotMessageView = 'unread' | 'read' | 'all';
 
 /**
  * Stats-only selection for the live-bot Statistics tab.
@@ -81,21 +84,48 @@ type CreateBotInput = Omit<
   vars?: BotVars | null;
 };
 
+const tradingCostsSelection = `
+    feesQuote
+    slippageQuote
+    grossQuote
+    netQuote
+    deals
+    slippageReconstructed
+    feesEstimated
+    quoteAsset
+    unbookedFeesQuote
+    unbookedFeesPartial
+    unbookedFeesInUsdProfitQuote
+`;
+
+// Bot types that carry `tradingCosts` (grid has none). Terminal bots are DCA.
+const BOT_BY_ID_FIELD: Record<string, string> = {
+  dca: 'getDCABot',
+  terminal: 'getDCABot',
+  combo: 'getComboBot',
+  hedgeDca: 'getHedgeDCABot',
+  hedgeCombo: 'getHedgeComboBot',
+};
+
 export const botQueries = {
-  getBotOrders: (input: {
-    id: string;
-    type: BotTypesEnum;
-    status?: string;
-    page?: number;
-    pageSize?: number;
-    shareId?: string;
-  }) => {
+  getBotOrders: (
+    input: {
+      id: string;
+      type: BotTypesEnum;
+      status?: string;
+      page?: number;
+      pageSize?: number;
+      shareId?: string;
+    },
+    /** Also select the per-order fee + slippage fields (newer backends only). */
+    withCosts = false
+  ) => {
     const query = `query getBotOrders($input: getBotOrdersInput!) {
       getBotOrders(input: $input) {
         status
         reason
         data {
-          orders {${orders}}
+          orders {${orders}${withCosts ? orderCosts : ''}}
           total
           page
         }
@@ -291,6 +321,52 @@ export const botQueries = {
   },
 
   /**
+   * Fees and slippage summed over one bot's finished deals. Newer backends
+   * only: a schema without `tradingCosts` rejects the document, so the caller
+   * asks once and hides the figures (see `useBotTradingCosts`). Null for a
+   * bot type that has none (grid).
+   */
+  getBotTradingCosts: (
+    type: BotTypesEnum,
+    input: { id: string; shareId?: string }
+  ) => {
+    const field = BOT_BY_ID_FIELD[`${type}`];
+    if (!field) return null;
+    const query = `query ${field}($input: getBotInput!) {
+                    ${field}(input: $input) {
+                        status
+                        reason
+                        data {
+                            _id
+                            tradingCosts {${tradingCostsSelection}}
+                        }
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  /**
+   * Account-wide fees and slippage over deals closed in [from, to] (ms,
+   * inclusive), one row per quote asset. `botType` omitted = all bot types.
+   */
+  tradingCostsSummary: (input: {
+    from?: number;
+    to?: number;
+    botType?: BotTypesEnum;
+  }) => {
+    const query = `query tradingCostsSummary($input: tradingCostsSummaryInput) {
+                    tradingCostsSummary(input: $input) {
+                        status
+                        reason
+                        data {${tradingCostsSelection}}
+                    }
+                }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  /**
    * DCA-usage histogram for the DCA Analysis widget — the deal-derived half.
    *
    * Replaces walking `getBotDeals` pages (100 full deal documents at a time,
@@ -453,6 +529,19 @@ export const botQueries = {
   deleteBotMessage: (input: { id?: string }) => {
     const query = `mutation deleteBotMessage($input: deleteBotMessageInput!) {
         deleteBotMessage(input: $input) {
+            status
+            reason
+        }
+    }`;
+    const variables = { input };
+    return { query, variables };
+  },
+
+  /** Acknowledge one bot message, or (no id) every unread one. Unlike
+   *  deleteBotMessage, a read message stays in the history views. */
+  markBotMessageRead: (input: { id?: string }) => {
+    const query = `mutation markBotMessageRead($input: markBotMessageReadInput!) {
+        markBotMessageRead(input: $input) {
             status
             reason
         }
@@ -1883,6 +1972,11 @@ export const botQueries = {
   },
 
   getMessageBot: (input?: {
+    /** unread | read | all — wins over unreadOnly. */
+    view?: BotMessageView;
+    /** Severity: error | warning | info. */
+    type?: string;
+    botId?: string;
     unreadOnly?: boolean;
     page?: number;
     pageSize?: number;
@@ -1907,6 +2001,8 @@ export const botQueries = {
 
   symbol
   exchange
+  isRead
+  readAt
   }
   }
   total

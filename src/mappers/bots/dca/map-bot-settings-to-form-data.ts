@@ -1,5 +1,7 @@
+import { toBaseFundingMode } from '@/lib/baseFunding/baseFundingApi';
 import type { BotFormData } from '@/types/bots/form';
 import { normalizeMultiTpTargets } from '@/utils/bots/dca/take-profit';
+import { maxPositionEntriesToForm } from '@/lib/singlePosition/singlePosition';
 import {
   BaseSlOnEnum,
   BotMarginTypeEnum,
@@ -10,6 +12,7 @@ import {
   ComboTpBase,
   DCAConditionEnum,
   CooldownOptionsEnum,
+  CooldownStopTriggerEnum,
   CooldownUnits,
   DCATypeEnum,
   DcaVolumeRequiredChangeRef,
@@ -411,6 +414,16 @@ export const mapBotSettingsToFormData = (
     CooldownOptionsEnum.bot
   );
 
+  const rawCooldownStopTrigger = getValue<string | undefined>(
+    'cooldownAfterDealStopTrigger',
+    undefined
+  );
+  const cooldownStopTrigger = Object.values(CooldownStopTriggerEnum).includes(
+    rawCooldownStopTrigger as CooldownStopTriggerEnum
+  )
+    ? (rawCooldownStopTrigger as CooldownStopTriggerEnum)
+    : CooldownStopTriggerEnum.any;
+
   const cooldownAfterDealStart = determineCooldownToggle(
     cooldownStartInterval,
     getValue('cooldownAfterDealStart', undefined),
@@ -470,6 +483,13 @@ export const mapBotSettingsToFormData = (
     }
     return '00:00';
   };
+
+  const normalizeHodlWeekdays = (raw: unknown): number[] =>
+    Array.isArray(raw)
+      ? [...new Set(raw.map(Number))]
+          .filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+          .sort((a, b) => a - b)
+      : [];
 
   const normalizeNextBuy = (raw: unknown): number => {
     if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
@@ -882,6 +902,16 @@ export const mapBotSettingsToFormData = (
       getString('reduceToAvailableMinSize', '') === '0'
         ? ''
         : getString('reduceToAvailableMinSize', ''),
+    // Absent on an older backend (and in the shared fragments, which do not
+    // select it — the form bridge merges the saved value in): reads require.
+    baseFunding: toBaseFundingMode(getString('baseFunding', '')),
+    // Single position per pair. Absent on an older backend (and in the shared
+    // fragments, which do not select it): reads as off. Stored '0' = no limit,
+    // shown as an empty field.
+    singlePosition: getBoolean('singlePosition', false),
+    maxPositionEntries: maxPositionEntriesToForm(
+      getValue<unknown>('maxPositionEntries', '')
+    ),
     maxNumberOfOpenDeals: getString('maxNumberOfOpenDeals', '1'),
     type: getValue<DCATypeEnum>('type', DCATypeEnum.regular),
     startDealLogic,
@@ -986,11 +1016,13 @@ export const mapBotSettingsToFormData = (
     cooldownAfterDealStopInterval: +cooldownStopInterval,
     cooldownAfterDealStopUnits: cooldownStopUnits,
     cooldownAfterDealStopOption: cooldownStopOption,
+    cooldownAfterDealStopTrigger: cooldownStopTrigger,
     startCondition: normalizeStartCondition(
       getString('startCondition', StartConditionEnum.asap)
     ),
     hodlDay: getString('hodlDay', '7'),
     hodlHourly: getBoolean('hodlHourly', false),
+    hodlWeekdays: normalizeHodlWeekdays(getValue('hodlWeekdays', [])),
     hodlAt: normalizeHodlAt(getValue('hodlAt', '')),
     hodlNextBuy: normalizeNextBuy(getValue('hodlNextBuy', '')),
     useStaticPriceFilter: getBoolean('useStaticPriceFilter', false),

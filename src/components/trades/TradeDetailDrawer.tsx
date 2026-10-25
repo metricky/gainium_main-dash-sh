@@ -103,6 +103,7 @@ interface TradeDetailDrawerProps {
         }
       | undefined;
     unrealizedProfit?: number | undefined;
+    unrealizedPending?: boolean | undefined;
     avgPrice?: number | undefined;
     levels: {
       complete: number;
@@ -173,15 +174,15 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
   );
 
   const { getCachedFee } = useUserFees();
-  const { pendingOrders, completedOrders } = useMemo(
-    () => splitDealOrders(dealOrders, trade.exchange),
-    [dealOrders, trade.exchange]
-  );
-
   // Raw deal (not the lossy `trade`) — carries initialPrice, gridBreakpoints,
   // per-deal settings overrides, dynamicAr — needed to project smart orders.
   const rawDeal = useDealStore((s) =>
     trade.botId ? (s.deals[trade.botId]?.[trade.id] ?? null) : null
+  );
+
+  const { pendingOrders, completedOrders } = useMemo(
+    () => splitDealOrders(dealOrders, trade.exchange, rawDeal),
+    [dealOrders, trade.exchange, rawDeal]
   );
 
   const isCombo =
@@ -220,7 +221,8 @@ export const TradeDetailDrawer: React.FC<TradeDetailDrawerProps> = ({
             rawDeal,
             (chartBot as { settings?: DCABotSettings } | null)?.settings,
             takerFee,
-            pendingOrders.map((o) => +o.price)
+            pendingOrders.map((o) => +o.price),
+            { isCombo }
           ),
     [isCombo, rawDeal, chartBot, takerFee, pendingOrders]
   );

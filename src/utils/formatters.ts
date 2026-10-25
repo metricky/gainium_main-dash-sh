@@ -2,6 +2,8 @@
  * Utility functions for formatting data display
  */
 
+import { formatUsdAsReporting } from '@/utils/reportingCurrency';
+
 /**
  * Format bytes to human readable string
  */
@@ -76,9 +78,11 @@ export function formatDate(
 }
 
 /**
- * Format currency value
+ * Format currency value. A USD value (the default) is shown in the user's
+ * reporting currency; any other code is formatted as-is, unconverted.
  */
 export function formatCurrency(value: number, currency = 'USD'): string {
+  if (currency === 'USD') return formatUsdAsReporting(value);
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency,
@@ -209,6 +213,65 @@ export function formatQuoteAmount(
     { minimumFractionDigits: decimals, maximumFractionDigits: decimals }
   );
   return `${prefix}${formatted}${suffix}`;
+}
+
+/**
+ * A price rendered in the pair's own quote asset rather than a hardcoded "$".
+ * With the pair's price precision (its tick scale) the price is shown at that
+ * scale; without one (`0` is the "unknown" default in `pairPrecisionMap`) it
+ * keeps `formatPriceWithPrecision`'s adaptive decimals.
+ */
+export function formatPriceInQuote(
+  value: number,
+  quoteAsset?: string | null,
+  pricePrecision?: number
+): string {
+  const { prefix, suffix } = quoteUnits(quoteAsset);
+  if (
+    typeof pricePrecision === 'number' &&
+    pricePrecision > 0 &&
+    Number.isFinite(value)
+  ) {
+    return `${prefix}${value.toFixed(Math.min(pricePrecision, 20))}${suffix}`;
+  }
+  return formatPriceWithPrecision(value, prefix, suffix);
+}
+
+/**
+ * A bare price for cells that print the quote asset themselves (`… USDT`): at
+ * the pair's price precision (its tick scale) when known, so every price of
+ * the pair has the same number of decimals; without one, the adaptive
+ * decimals of `formatPriceWithPrecision`. Never exponent notation.
+ */
+export function formatPairPrice(value: number, pricePrecision?: number): string {
+  if (
+    typeof pricePrecision === 'number' &&
+    pricePrecision > 0 &&
+    Number.isFinite(value)
+  ) {
+    const digits = Math.min(pricePrecision, 20);
+    return value.toLocaleString('en-US', {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+  }
+  return formatPriceWithPrecision(value, '', '');
+}
+
+/**
+ * A bare asset amount (a base or quote balance) for cells that print the
+ * asset themselves: rounded to `precision` decimals when known — `0` is a real
+ * precision here (a step-1 lot size), unlike a pair's price precision — and
+ * otherwise the exact value up to 8 decimals. Trailing zeros are dropped, as
+ * the legacy dashboard's `math.round` did. Thousands separators, never K/M or
+ * exponent notation.
+ */
+export function formatAssetAmount(value: number, precision?: number): string {
+  const known =
+    typeof precision === 'number' && Number.isFinite(precision) && precision >= 0;
+  return (Number.isFinite(value) ? value : 0).toLocaleString('en-US', {
+    maximumFractionDigits: known ? Math.min(precision, 20) : 8,
+  });
 }
 
 /**

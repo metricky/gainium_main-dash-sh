@@ -2,20 +2,11 @@ import { motion } from 'framer-motion';
 import GridStartBotDialog from '@/features/bots/shared/runtime/dialogs/GridStartBotDialog';
 import { gridEditNeedsRebalance } from '@/utils/bots/grid/rebalance-on-edit';
 import {
-  Archive,
-  ArchiveRestore,
-  ArrowLeftRight,
   ChevronDown,
-  Copy,
-  LineChart,
   Loader2,
   Lock,
   /*  Merge, */
-  MinusCircle,
-  RotateCcw,
-  Share2,
   Sparkles,
-  Wallet,
   Zap,
 } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -23,8 +14,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { mapWidgetMenuItemsToPanelMenu } from '@/components/bots/panels/menuUtils';
 import { Celebration } from '@/components/onboarding/Celebration';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
+import { useSinglePositionFormBridge } from '@/features/bots/bot-types/dca/form/hooks/useSinglePositionFormBridge';
+import { useBaseFundingFormBridge } from '@/features/bots/bot-types/dca/form/hooks/useBaseFundingFormBridge';
 // Dialog and input/label components are not used here; render logic moved to footer menu
 import { Button } from '@/components/ui/button';
 import {
@@ -32,6 +24,12 @@ import {
   type ScrollableTabItem,
 } from '@/components/ui/ScrollableFormTabNavigation';
 import { SectionHeader } from '@/features/bots/shared/components/SectionHeader';
+import {
+  bindUserScrollIntent,
+  isScrolledToBottom,
+  measureSectionTops,
+  pickActiveSection,
+} from '@/features/bots/widgets/BotForm/sectionScrollSpy';
 import {
   useBotFormSectionsVersion,
   withBotFormExtensionSections,
@@ -75,6 +73,7 @@ import { gridTabDescriptors } from '@/features/bots/bot-types/grid/form/tabs';
 } from '@/features/bots/modules/hedgeModule'; */
 import SettingsAlert from '@/components/ui/SettingsAlert';
 import { BotPlacementProgress } from '@/features/bots/widgets/BotForm/BotPlacementProgress';
+import { useBalanceStore } from '@/stores/live/balanceStore';
 import { useGridBotsStore } from '@/stores/live/gridBotsStore';
 import { GRID_BOT_TYPE_ID } from '@/features/bots/registry/entries/grid';
 import {
@@ -85,7 +84,10 @@ import {
   useBotFormMutations,
   type RefreshBalancesResult,
 } from '@/hooks/bots/base/useBotFormMutations';
-import { useFormHandlers } from '@/hooks/bots/dca/useFormHandlers';
+import {
+  useFormHandlers,
+  type SaveExtraInput,
+} from '@/hooks/bots/dca/useFormHandlers';
 import {
   useBotFormInitialization,
   type BotSettingsMapper,
@@ -100,11 +102,24 @@ import {
   normalizePairKey,
   resolveNativePairSymbol,
 } from '@/utils/pairs';
-import { useBotArchive } from '@/hooks/useBotMutations';
+import { useBotActions } from '@/hooks/useBotActions';
+import {
+  buildSurfaceItems,
+  type BotActionId,
+  type BotFormActionContext,
+} from '@/features/bots/actions/botActions';
+import {
+  botKindFromType,
+  formBotRef as formBotRefFor,
+} from '@/features/bots/actions/botRef';
 import { useBotTemplateShortcuts } from '@/hooks/useBotTemplatesSync';
 import { getLocalPrices } from '@/helper/price';
 import GridBacktestingEngine from '@/lib/backtester/gridWrapper';
 import DCABacktesting from '@/lib/backtester/wrapper';
+import {
+  rememberRandomTestSource,
+  type RandomTestSource,
+} from '@/components/widgets/bots/backtest/analysis/useRandomEdgeRun';
 import logger from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -152,6 +167,10 @@ import {
   type Symbols,
 } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
+import {
+  localBacktestBalances,
+  localDcaBacktestSettings,
+} from './localBacktestSettings';
 import type { ComboBot } from '@/types/comboBot';
 import type { GridBot } from '@/types/gridBot';
 import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
@@ -161,11 +180,7 @@ import {
   readGridBacktestNumbers,
   validateGridFormData,
 } from '@/utils/bots/grid/validation';
-import {
-  buildBotCloneRoute,
-  buildBotListRoute,
-  buildBotViewRoute,
-} from '@/utils/bots/navigation';
+import { buildBotListRoute, buildBotViewRoute } from '@/utils/bots/navigation';
 import { isFuturesExchange } from '@/utils/exchangeUtils';
 import { COMBO_BOT_TYPE_ID } from '../../registry';
 import { useBacktestLimitationsGate } from '@/features/bots/backtest-limitations/useBacktestLimitationsGate';
@@ -277,6 +292,8 @@ interface BacktestResultCapture {
   settings: DCABotSettings;
   meta: BacktestViewModelMeta;
   summary: { netPerc: number; winRate: number; deals: number };
+  /** DCA only: the run's engine input + result, for Strategy vs Random. */
+  randomTest?: RandomTestSource;
 }
 
 const isGridBotEntity = (
@@ -558,6 +575,7 @@ const BotForm: React.FC<BotFormProps> = ({
   hideFooter = false,
   footerOverride,
   initialBot,
+  skipInitialBotHydration,
   onPanelMenuChange,
   onFormDataChange,
   tabDescriptorsFilter,
@@ -726,14 +744,51 @@ const BotForm: React.FC<BotFormProps> = ({
     refetchExchanges,
     currentExchange,
     pairMetadata,
-    balances: queryBalances,
   } = useBotFormQuery();
   // Prefer a caller-supplied bot (e.g. hedge legs which can't be fetched
   // via the standard botId-based query) over the query result.
   const bot = initialBot ?? queryBot;
 
+  // Single position per pair (DCA bots only): backend capability, the saved
+  // value (merged into the settings the form initializes from), the save
+  // confirmation and the backtest refusal.
+  const singlePositionSaveRef = useRef<(extra: SaveExtraInput) => void>(
+    () => undefined
+  );
+  const singlePosition = useSinglePositionFormBridge({
+    enabled:
+      !isGridBot &&
+      !isComboBot &&
+      !isNestedLeg &&
+      !formTerminal &&
+      (mode === 'create' || mode === 'edit'),
+    mode,
+    botId: _botId ?? (bot as { _id?: string } | null | undefined)?._id,
+    bot,
+    botSettings,
+    getFormData,
+    setFormData,
+    setErrors,
+    save: (extra) => singlePositionSaveRef.current(extra),
+  });
+  const { interceptSave: interceptSinglePositionSave } = singlePosition;
+  // Base funding (short spot DCA / combo): backend capability and the saved
+  // value, merged into the settings the form initializes from.
+  const baseFunding = useBaseFundingFormBridge({
+    enabled:
+      !isGridBot &&
+      !isNestedLeg &&
+      !formTerminal &&
+      (mode === 'create' || mode === 'edit'),
+    kind: isComboBot ? 'combo' : 'dca',
+    mode,
+    botId: _botId ?? (bot as { _id?: string } | null | undefined)?._id,
+    bot: singlePosition.bot,
+    botSettings: singlePosition.botSettings,
+    setFormData,
+  });
+
   const navigate = useNavigate();
-  const archiveMutation = useBotArchive();
 
   const [showImportExportDialog, setShowImportExportDialog] = useState(false);
   // Template creation/edit state moved to footer templates menu component
@@ -1018,6 +1073,7 @@ const BotForm: React.FC<BotFormProps> = ({
       }}
       onConfirm={handleCelebrationGridStartConfirm}
       isProcessing={statusToggleMutation.isPending}
+      botCreated
     />
   ) : null;
 
@@ -1123,10 +1179,11 @@ const BotForm: React.FC<BotFormProps> = ({
         ? BotTypesEnum.combo
         : BotTypesEnum.dca,
     mode,
-    bot,
-    botSettings,
+    bot: baseFunding.bot,
+    botSettings: baseFunding.botSettings,
     ...(initializationMapper ? { mapper: initializationMapper } : {}),
     debug: debugEnabled,
+    skipHydration: skipInitialBotHydration === true,
   });
 
   // Silently raise persisted amount fields up to the exchange/pair
@@ -1359,6 +1416,9 @@ const BotForm: React.FC<BotFormProps> = ({
       options.onCreateSuccess = handleCreateSuccess;
     }
 
+    options.onSaveError = singlePosition.onSaveError;
+    options.onUpdateSuccess = singlePosition.onSaveSuccess;
+
     return options;
   }, [
     mode,
@@ -1367,6 +1427,8 @@ const BotForm: React.FC<BotFormProps> = ({
     isGridBot,
     /* isHedgeBot, */
     payloadMapper,
+    singlePosition.onSaveError,
+    singlePosition.onSaveSuccess,
   ]);
 
   const isTerminal = !!formTerminal;
@@ -1408,6 +1470,9 @@ const BotForm: React.FC<BotFormProps> = ({
     formHandlerOptions,
     isTerminal
   );
+  singlePositionSaveRef.current = (extra) => {
+    void handleSave(undefined, undefined, extra);
+  };
 
   // Seed for the settings dialog. The footer's "More backtest settings"
   // button hands over the period + timeframe its own bar is showing; without
@@ -2090,10 +2155,17 @@ const BotForm: React.FC<BotFormProps> = ({
     return null;
   }, [isGridBot, bot]);
 
-  const botShareId = botForOperations?.shareId ?? null;
-  const botShareEnabled = Boolean(botForOperations?.share);
+  // Share state is read off the loaded bot of any type (grid bots carry it
+  // too, but never pass `isDcaBotEntity`).
+  const shareSource = bot as {
+    shareId?: string | null;
+    share?: boolean;
+    settings?: { name?: unknown };
+  } | null;
+  const botShareId = shareSource?.shareId ?? null;
+  const botShareEnabled = Boolean(shareSource?.share);
   const botShareName =
-    (botForOperations?.settings?.name as string | undefined) ?? null;
+    (shareSource?.settings?.name as string | undefined) ?? null;
 
   /*   const mergeBotName =
     botShareName ?? (botForOperations?.settings?.name as string | undefined); */
@@ -2459,88 +2531,53 @@ const BotForm: React.FC<BotFormProps> = ({
     exampleOrdersStore,
   ]);
 
+  // Bot actions for this form: the overflow menu's bot-level operations and
+  // the footer's Start/Stop run through the shared runner. Built from the
+  // loaded bot of ANY type (grid bots have no `usage`, so `botForOperations`
+  // is null for them) and addressed by the route id. Only a saved bot (edit
+  // mode) has an id; the create form gets the form-local items only.
+  const formBotRef = useMemo(
+    () =>
+      formBotRefFor({
+        bot,
+        kind: botKindFromType(botTypeEnum),
+        mode,
+        botId,
+      }),
+    [bot, botTypeEnum, mode, botId]
+  );
+  const formBotSaved = formBotRef.id !== '';
+  const formActionContext = useMemo<BotFormActionContext>(
+    () => ({
+      mode: mode === 'edit' ? 'edit' : 'create',
+      shareEnabled: botShareEnabled,
+      ...(fundsActionsDisabled
+        ? { fundsDisabledReason: 'Save the bot before adjusting funds.' }
+        : {}),
+    }),
+    [mode, botShareEnabled, fundsActionsDisabled]
+  );
+  const formActions = useBotActions(formBotRef, {
+    form: formActionContext,
+    ...(botShareId ? { shareId: botShareId } : {}),
+  });
+  const formChangeStatus = formActions.changeStatus;
+  const runFormAction = formActions.run;
+
+  // Start/Stop from the footer goes through the shared bot-actions runner
+  // (same mutation, toasts and optimistic update as every other surface);
+  // the footer's own dialogs collected the close / buy options already.
   const handleStatusToggle = useCallback(
-    ({
-      nextStatus,
-      closeType,
-      buyType,
-      buyCount,
-      buyAmount,
-      cancelPartiallyFilled,
-      closeGridType,
-    }: ToggleStatusPayload) => {
-      if (!botId) {
+    (payload: ToggleStatusPayload) => {
+      if (!formBotSaved) {
         toast.error('Bot ID missing. Unable to update status.');
         return;
       }
-
-      statusToggleMutation.mutate({
-        id: botId,
-        status: nextStatus,
-        buyType,
-        buyCount,
-        buyAmount,
-        cancelPartiallyFilled,
-        closeGridType,
-        ...(closeType ? { closeType } : {}),
-      });
+      // The footer shows "Starting…"/"Stopping…" until the server reports
+      // the new status, then a toast confirms it (failures toast too).
+      formChangeStatus(payload);
     },
-    [botId, statusToggleMutation]
-  );
-
-  // Duplicating opens the pre-filled *create* page (the canonical clone route
-  // every other surface already uses — see `useBotActions.clone`). Creating the
-  // copy immediately instead would land on the edit page, where the pair and
-  // exchange of a saved bot can no longer be changed — which defeats the main
-  // reason to duplicate a bot. Nothing is persisted until the user hits Create.
-  const handleDuplicate = useCallback(() => {
-    if (!botId) {
-      toast.error('Bot ID missing. Unable to duplicate.');
-      return;
-    }
-
-    navigate(buildBotCloneRoute(botExperience.id, botId));
-  }, [botExperience.id, botId, navigate]);
-
-  const handleBacktest = useCallback(() => {
-    if (!botId) {
-      toast.error('Bot ID missing. Unable to start backtest.');
-      return;
-    }
-
-    const params = new URLSearchParams({ load: botId, backtest: 'run' });
-    if (botShareId) {
-      params.set('share', botShareId);
-    }
-
-    navigate(`/bot/new?${params.toString()}`);
-  }, [botId, botShareId, navigate]);
-
-  const handleArchiveToggle = useCallback(
-    async (archive: boolean) => {
-      if (!botId) {
-        toast.error('Bot ID missing. Unable to update archive state.');
-        return;
-      }
-
-      try {
-        await archiveMutation.mutateAsync({
-          id: botId,
-          archive,
-          type: botTypeEnum,
-        });
-      } catch (error) {
-        console.error('[BotForm] Failed to toggle archive state', error);
-      }
-    },
-    // Stable `.mutateAsync`, not the whole react-query mutation object (fresh
-    // every render). Depending on the object rebuilt this callback on EVERY
-    // render, which churned `resolvedMenuActions.optionsMenuItems` →
-    // `panelMenuConfig` → the footer's `overflowMenuItems`, re-rendering the
-    // memoised ResponsiveButtonRow on every live tick (RenderLoopTripwire).
-    // Same fix as 2.30.13 applied to `restartMutation.mutate`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [archiveMutation.mutateAsync, botId, botTypeEnum]
+    [formBotSaved, formChangeStatus]
   );
 
   /* const handleSmartOrderMergeDialogChange = useCallback(
@@ -2670,12 +2707,6 @@ const BotForm: React.FC<BotFormProps> = ({
     setFundsDialogMode('reduce');
   }, []);
 
-  const archivePending = archiveMutation.isPending;
-
-  const isBotArchived =
-    typeof botForOperations?.status === 'string' &&
-    botForOperations.status.toLowerCase() === 'archived';
-
   const resolvedMenuActions = useMemo(() => {
     const baseActions = menuActions ?? {};
 
@@ -2691,88 +2722,27 @@ const BotForm: React.FC<BotFormProps> = ({
     };
 
     if (!isTerminal) {
-      mergedOptions.push(
-        {
-          label: 'Import / Export settings',
-          icon: ArrowLeftRight,
-          onSelect: openImportExport,
-        },
-        // Save as Template handled via bookmark button in footer
-        {
-          label: 'Reset to defaults',
-          icon: RotateCcw,
-          onSelect: () => {
-            setShowResetConfirm(true);
-          },
-          disabled: mode === 'edit',
-        }
-      );
-
-      if (mode === 'edit' && botForOperations) {
-        // Operations previously rendered in the footer now live in the gear menu
-        // so they remain accessible without occupying persistent screen space.
-        mergedOptions.push(
-          /* {
-            label: smartOrderMergeLabel,
-            icon: Merge,
-            onSelect: () => {
-              handleOpenSmartOrderMerge();
-            },
-            disabled: smartOrderMergeActionDisabled,
-          }, */
-          {
-            label: 'Share bot access',
-            icon: Share2,
-            onSelect: () => setShowShareDialog(true),
-            isChecked: botShareEnabled,
-            disabled: !botId,
-          },
-          {
-            label: 'Duplicate bot',
-            icon: Copy,
-            onSelect: () => {
-              void handleDuplicate();
-            },
-            disabled: !botId,
-          },
-          {
-            label: 'Run backtest',
-            icon: LineChart,
-            onSelect: () => {
-              handleBacktest();
-            },
-            disabled: !botId,
-          },
-          {
-            label: isBotArchived ? 'Unarchive bot' : 'Archive bot',
-            icon: isBotArchived ? ArchiveRestore : Archive,
-            onSelect: () => {
-              void handleArchiveToggle(!isBotArchived);
-            },
-            disabled: archivePending || !botId,
-          }
-        );
-      }
-
-      if (mode === 'edit' && isGridBot && botId) {
-        mergedOptions.push(
-          {
-            label: 'Add funds',
-            icon: Wallet,
-            onSelect: () => {
-              handleAddFundsClick();
-            },
-            disabled: fundsActionsDisabled,
-          },
-          {
-            label: 'Reduce funds',
-            icon: MinusCircle,
-            onSelect: () => {
-              handleReduceFundsClick();
-            },
-            disabled: fundsActionsDisabled,
-          }
-        );
+      // The bot-level operations come from the actions registry (`form`
+      // surface); this form only supplies the dialogs it owns.
+      const formHandlers: Partial<Record<BotActionId, () => void>> = {
+        importExport: openImportExport,
+        resetDefaults: () => setShowResetConfirm(true),
+        shareAccess: () => setShowShareDialog(true),
+        addFunds: handleAddFundsClick,
+        reduceFunds: handleReduceFundsClick,
+      };
+      for (const item of buildSurfaceItems(
+        'form',
+        formActions.bot,
+        formActions.ctx
+      )) {
+        mergedOptions.push({
+          label: item.label,
+          icon: item.icon,
+          onSelect: formHandlers[item.id] ?? (() => runFormAction(item.id)),
+          disabled: item.disabled,
+          ...(item.id === 'shareAccess' ? { isChecked: !!item.checked } : {}),
+        });
       }
     }
 
@@ -2782,24 +2752,13 @@ const BotForm: React.FC<BotFormProps> = ({
       optionsMenuItems: mergedOptions,
     };
   }, [
-    archivePending,
-    botForOperations,
-    botId,
-    botShareEnabled,
-    handleArchiveToggle,
-    handleBacktest,
-    handleDuplicate,
-    /*     handleOpenSmartOrderMerge,
-    smartOrderMergeActionDisabled,
-    smartOrderMergeLabel, */
     menuActions,
-    mode,
-    isBotArchived,
-    isGridBot,
+    isTerminal,
+    formActions.bot,
+    formActions.ctx,
+    runFormAction,
     handleAddFundsClick,
     handleReduceFundsClick,
-    fundsActionsDisabled,
-    isTerminal,
   ]);
 
   const panelMenuConfig = useMemo(() => {
@@ -2851,7 +2810,12 @@ const BotForm: React.FC<BotFormProps> = ({
     return activeStatuses.has(botStatus);
   }, [shouldWarnRestart, botStatus]);
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
+    // Single position per pair turned on over open deals: confirm the
+    // adoption first (spec 139 §5.1.3). The confirmation runs the save.
+    if (await interceptSinglePositionSave()) {
+      return;
+    }
     // Legacy parity: when the edited grid needs different balances than the
     // bot holds, ask how to cover the difference first (start dialog in
     // update mode). Its answer rides on the changeBot call, so the restart
@@ -2876,6 +2840,7 @@ const BotForm: React.FC<BotFormProps> = ({
     shouldWarnRestart,
     bot,
     getFormData,
+    interceptSinglePositionSave,
   ]);
 
   const resumeSaveAfterConfirmation = useCallback(() => {
@@ -2903,6 +2868,7 @@ const BotForm: React.FC<BotFormProps> = ({
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const isScrolling = useRef(false);
+  const clickedTab = useRef<string | null>(null);
 
   // Handle tab change by scrolling to the section
   const handleTabChangeWithScroll = useCallback(
@@ -2913,7 +2879,9 @@ const BotForm: React.FC<BotFormProps> = ({
       const scrollContainer = scrollContainerRef.current;
 
       if (sectionElement && scrollContainer) {
-        isScrolling.current = true;
+        // Keep the clicked tab until the user scrolls by hand: a short or
+        // last section would otherwise lose to the scroll-spy.
+        clickedTab.current = tabId;
 
         // Calculate the offset to scroll to
         const containerTop = scrollContainer.getBoundingClientRect().top;
@@ -2925,11 +2893,6 @@ const BotForm: React.FC<BotFormProps> = ({
           top: offset,
           behavior: 'smooth',
         });
-
-        // Reset scrolling flag after animation
-        setTimeout(() => {
-          isScrolling.current = false;
-        }, 800);
       }
     },
     [setActiveTab]
@@ -2945,6 +2908,7 @@ const BotForm: React.FC<BotFormProps> = ({
     const scrollContainer = scrollContainerRef.current;
     if (!scrollContainer) return;
     isScrolling.current = true;
+    clickedTab.current = null;
     scrollContainer.scrollTo({ top: 0, behavior: 'auto' });
     setTimeout(() => {
       isScrolling.current = false;
@@ -2964,44 +2928,20 @@ const BotForm: React.FC<BotFormProps> = ({
     let frame: number | null = null;
     const measure = () => {
       frame = null;
-      if (isScrolling.current) return;
+      if (isScrolling.current || clickedTab.current) return;
 
-      const containerRect = scrollContainer.getBoundingClientRect();
+      // Highlight the section whose header the user has scrolled to.
+      const sections = measureSectionTops(
+        scrollContainer,
+        navigationTabs.map(({ id }) => id),
+        (id) => sectionRefs.current[id]
+      );
+      const activeSection = pickActiveSection(
+        sections,
+        isScrolledToBottom(scrollContainer)
+      );
 
-      // Find which section is currently most visible in the viewport
-      let activeSection: string | null = null;
-      let maxVisibleArea = 0;
-
-      visibleDescriptors.forEach(({ id }) => {
-        const sectionElement = sectionRefs.current[id];
-        if (!sectionElement) return;
-
-        const sectionRect = sectionElement.getBoundingClientRect();
-
-        // Calculate the visible portion of this section
-        const visibleTop = Math.max(sectionRect.top, containerRect.top);
-        const visibleBottom = Math.min(
-          sectionRect.bottom,
-          containerRect.bottom
-        );
-        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-
-        // Use visible area as the metric (height * width for accuracy)
-        const visibleArea = visibleHeight * sectionRect.width;
-
-        // The section with the largest visible area is the active one
-        if (visibleArea > maxVisibleArea) {
-          maxVisibleArea = visibleArea;
-          activeSection = id;
-        }
-      });
-
-      // Update active tab only if we have a clear winner and it's different
-      if (
-        activeSection &&
-        activeSection !== activeTabRef.current &&
-        maxVisibleArea > 0
-      ) {
+      if (activeSection && activeSection !== activeTabRef.current) {
         setActiveTab(activeSection as BotFormTabId);
       }
     };
@@ -3015,11 +2955,15 @@ const BotForm: React.FC<BotFormProps> = ({
     measure();
 
     scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
+    const unbindUserScroll = bindUserScrollIntent(scrollContainer, () => {
+      clickedTab.current = null;
+    });
     return () => {
       scrollContainer.removeEventListener('scroll', handleScroll);
+      unbindUserScroll();
       if (frame !== null) cancelAnimationFrame(frame);
     };
-  }, [setActiveTab, visibleDescriptors]);
+  }, [setActiveTab, navigationTabs]);
 
   const loadingContent = (
     <div className="flex h-full flex-col items-center justify-center space-y-md">
@@ -3277,7 +3221,10 @@ const BotForm: React.FC<BotFormProps> = ({
               settings: gridSettings,
               userFee,
               prices: getLocalPrices(),
-              balances: queryBalances ?? [],
+              balances: localBacktestBalances(
+                useBalanceStore.getState().balances,
+                currentExchange
+              ),
               interval: cfg.timeframe,
               from: firstDataTime,
               to: lastDataTime,
@@ -3453,47 +3400,17 @@ const BotForm: React.FC<BotFormProps> = ({
                 settingsFromMapping.useMulti;
             }
 
-            // A combo bot stores its settings in `formData.combo`, not
-            // `formData.dca`, and must run with `combo: true` so the
-            // backtester applies combo grid logic. Mirrors legacy
-            // (useDCAPage `settingsInput`), which passes the bot's own
-            // settings plus the real `combo` flag. Using `formData.dca` +
-            // `combo: false` for a combo bot ran it as a plain DCA bot with
-            // the empty DCA slice, producing trivial ~1% ROI deals.
             const isComboBacktest = formData.type === BotTypesEnum.combo;
-            const backtestSettings = (
-              isComboBacktest ? formData.combo : formData.dca
-            ) as unknown as DCABotSettings;
             const backtesterInput: DCABacktestingInput = {
               exchange: currentExchange?.provider,
               symbols,
-              settings: {
-                ...backtestSettings,
-                // The raw form slice keeps every indicator NUMBER param as a
-                // STRING: `InlineIndicatorConfig` stores `newValue.toString()`
-                // so a `$var` expression can share the field. It is
-                // `mapFormDataToPayload` that coerces them back (its
-                // `fieldsAsNumber` list), so a SAVED bot holds
-                // `indicatorLength: 14` while the form the user is still
-                // editing holds `'14'` — and the engine is not tolerant:
-                // `new RSI('14')` returns `null` for every bar, so no crossing
-                // ever fires and the run reports 0 deals. That is bug #559,
-                // and it explains the reporter's own workaround (save, reopen
-                // in Edit, backtest works) — reloading re-reads the coerced
-                // values from the API.
-                // Take the indicators from the mapped payload instead: it is
-                // normalised exactly the way the backend receives them, and
-                // pruned of the close indicators the active close condition
-                // cannot use. `mapIndicatorGroupsFields` reads the combo slice
-                // for combo bots, so this is correct for both bot types.
-                indicators: settingsFromMapping.indicators,
-                indicatorGroups: settingsFromMapping.indicatorGroups,
-                name: formData.name,
-                pair: [formData.pair].flat(),
-              },
+              settings: localDcaBacktestSettings(formData, settingsFromMapping),
               userFee,
               prices: getLocalPrices(),
-              balances: queryBalances ?? [],
+              balances: localBacktestBalances(
+                useBalanceStore.getState().balances,
+                currentExchange
+              ),
               interval: cfg.timeframe,
               from: firstDataTime,
               to: lastDataTime,
@@ -3586,6 +3503,11 @@ const BotForm: React.FC<BotFormProps> = ({
                     historySettings,
                     dcaMeta
                   );
+                  // Strategy vs Random reruns this input (DCA only)
+                  const randomTest: RandomTestSource | undefined =
+                    isComboBacktest
+                      ? undefined
+                      : { input: backtesterInput, result: typedResult };
                   setBacktestResult({
                     result: typedResult,
                     strategy:
@@ -3597,6 +3519,7 @@ const BotForm: React.FC<BotFormProps> = ({
                       winRate: dcaVm.winRate,
                       deals: dcaVm.deals,
                     },
+                    ...(randomTest ? { randomTest } : {}),
                   });
                   const savedId = await persistBacktestResult({
                     result: typedResult,
@@ -3612,6 +3535,7 @@ const BotForm: React.FC<BotFormProps> = ({
                   });
                   toast.success('Backtest saved to server and Local Data');
                   if (savedId) {
+                    if (randomTest) rememberRandomTestSource(savedId, randomTest);
                     onBacktestComplete?.(savedId);
                   }
                 } catch (persistError) {
@@ -3673,7 +3597,6 @@ const BotForm: React.FC<BotFormProps> = ({
       pairMetadata.byPair,
       persistBacktestResult,
       persistGridBacktestResult,
-      queryBalances,
       onBacktestComplete,
       setErrors,
     ]
@@ -3771,10 +3694,23 @@ const BotForm: React.FC<BotFormProps> = ({
   const allStrategiesOpen =
     allStrategiesState.open && allStrategiesState.botType !== null;
 
+  // Seated inside each shell's own flex column (never as a sibling above it):
+  // the shells are `h-full` / `fixed inset-0`, so a notice outside them adds
+  // its height on top of 100% and pushes the footer out of the panel.
+  const draftNotice =
+    draftRestoredAt !== null ? (
+      <DraftRestoredNotice
+        savedAt={draftRestoredAt}
+        onKeep={dismissDraftNotice}
+        onDiscard={discardDraft}
+      />
+    ) : null;
+
   const shellContent = (
     <>
       <div className="flex h-full flex-col">
         <div className="flex h-full flex-col">
+          {draftNotice && <div className="shrink-0">{draftNotice}</div>}
           {(showStickyHeader || allStrategiesOpen) && (
             <motion.div
               className={cn(
@@ -3851,7 +3787,9 @@ const BotForm: React.FC<BotFormProps> = ({
 
                 <fieldset
                   disabled={isContentReadOnly}
-                  className="m-0 border-0 p-0 space-y-md pb-2"
+                  // min-w-0: a fieldset defaults to min-width: min-content, so
+                  // one wide row would push the whole form past a phone screen.
+                  className="m-0 min-w-0 border-0 p-0 space-y-md pb-2"
                   aria-disabled={isContentReadOnly}
                 >
                   {quickSetupMode === 'quick' &&
@@ -3977,15 +3915,16 @@ const BotForm: React.FC<BotFormProps> = ({
             transition={{ duration: 0.3, delay: 0.4 }}
           >
             {shouldWarnRestart && !allStrategiesOpen && (
-              <Alert className="mb-4">
-                <RotateCcw className="h-5 w-5 text-muted-foreground" />
-                <AlertTitle>Bot restart required</AlertTitle>
-                <AlertDescription>
-                  {requiresActiveRestartConfirmation
-                    ? 'These changes will require restarting the bot. You will be asked to confirm before saving.'
-                    : 'These changes will require a bot restart before they take effect. Save the changes, then restart the bot when ready.'}
-                </AlertDescription>
-              </Alert>
+              <SettingsAlert
+                className="mb-4"
+                variant="warning"
+                title="Bot restart required"
+                description={
+                  requiresActiveRestartConfirmation
+                    ? 'You will be asked to confirm the restart before saving.'
+                    : 'Save the changes, then restart the bot when ready.'
+                }
+              />
             )}
             {!hideFooter && !allStrategiesOpen && (
               <BotFormFooter
@@ -4048,15 +3987,19 @@ const BotForm: React.FC<BotFormProps> = ({
                 }
                 toggleDisabled={
                   footerOverride?.toggleDisabled ??
-                  (statusToggleMutation.isPending ||
-                    !botId ||
+                  (formActions.statusPending ||
+                    !formBotSaved ||
                     (isPlacingOrders &&
                       !gridPlacementProgress?.isAllowedToCancel))
                 }
                 togglePending={
                   footerOverride?.togglePending ??
-                  statusToggleMutation.isPending
+                  formActions.statusPending
                 }
+                {...(footerOverride?.togglePending === undefined &&
+                formActions.statusPendingLabel
+                  ? { togglePendingLabel: formActions.statusPendingLabel }
+                  : {})}
                 botStatus={footerOverride?.botStatus ?? bot?.status ?? null}
                 bot={botForOperations}
                 menuConfig={
@@ -4082,6 +4025,7 @@ const BotForm: React.FC<BotFormProps> = ({
         </div>
       </div>
 
+      {singlePosition.dialog}
       <ConfirmationDialog
         open={showRestartDialog}
         onOpenChange={setShowRestartDialog}
@@ -4153,6 +4097,7 @@ const BotForm: React.FC<BotFormProps> = ({
           strategy={backtestResult.strategy}
           settings={backtestResult.settings}
           meta={backtestResult.meta}
+          randomTest={backtestResult.randomTest}
         />
       )}
       {/* <SmartOrderMergeDialog
@@ -4251,6 +4196,8 @@ const BotForm: React.FC<BotFormProps> = ({
           </div>
         </motion.div>
       )}
+
+      {draftNotice && <div className="shrink-0 px-3 pt-3">{draftNotice}</div>}
 
       {/* Scrollable content area */}
       <div className="flex-1 overflow-hidden">
@@ -4473,15 +4420,16 @@ const BotForm: React.FC<BotFormProps> = ({
           transition={{ duration: 0.3, delay: 0.2 }}
         >
           {shouldWarnRestart && (
-            <Alert className="mb-2 mx-1">
-              <RotateCcw className="h-4 w-4 text-muted-foreground" />
-              <AlertTitle className="text-sm">Bot restart required</AlertTitle>
-              <AlertDescription className="text-xs">
-                {requiresActiveRestartConfirmation
-                  ? 'Changes will require restarting the bot.'
-                  : 'Changes require a bot restart to take effect.'}
-              </AlertDescription>
-            </Alert>
+            <SettingsAlert
+              className="mb-2 mx-1"
+              variant="warning"
+              title="Bot restart required"
+              description={
+                requiresActiveRestartConfirmation
+                  ? 'You will be asked to confirm the restart before saving.'
+                  : 'Save the changes, then restart the bot when ready.'
+              }
+            />
           )}
           <BotFormFooter
             currentExchange={currentExchange}
@@ -4532,11 +4480,15 @@ const BotForm: React.FC<BotFormProps> = ({
             }
             toggleDisabled={
               footerOverride?.toggleDisabled ??
-              (statusToggleMutation.isPending || !botId)
+              (formActions.statusPending || !formBotSaved)
             }
             togglePending={
-              footerOverride?.togglePending ?? statusToggleMutation.isPending
+              footerOverride?.togglePending ?? formActions.statusPending
             }
+            {...(footerOverride?.togglePending === undefined &&
+            formActions.statusPendingLabel
+              ? { togglePendingLabel: formActions.statusPendingLabel }
+              : {})}
             botStatus={footerOverride?.botStatus ?? bot?.status ?? null}
             bot={botForOperations}
             menuConfig={
@@ -4559,6 +4511,7 @@ const BotForm: React.FC<BotFormProps> = ({
       )}
 
       {/* Dialogs - same as shellContent */}
+      {singlePosition.dialog}
       <ConfirmationDialog
         open={showRestartDialog}
         onOpenChange={setShowRestartDialog}
@@ -4628,6 +4581,7 @@ const BotForm: React.FC<BotFormProps> = ({
           strategy={backtestResult.strategy}
           settings={backtestResult.settings}
           meta={backtestResult.meta}
+          randomTest={backtestResult.randomTest}
         />
       )}
       {/* <SmartOrderMergeDialog
@@ -4736,13 +4690,6 @@ const BotForm: React.FC<BotFormProps> = ({
 
   return (
     <AllStrategiesPanelContext.Provider value={allStrategiesCtxValue}>
-      {/* Rendered above every variant (widget / panel / mobile) so the
-          restore is announced exactly once, whatever shell the form is in. */}
-      <DraftRestoredNotice
-        savedAt={draftRestoredAt}
-        onKeep={dismissDraftNotice}
-        onDiscard={discardDraft}
-      />
       {rendered}
     </AllStrategiesPanelContext.Provider>
   );

@@ -13,6 +13,7 @@ import {
   comboDealFragment,
   dcaBotSettingsFragment,
   dcaDealFragment,
+  orderCosts,
   orders,
 } from './GraphQLQueries-fragments';
 
@@ -81,7 +82,62 @@ const toDealSettingsInput = (settings: DealSettingsInput): DealSettingsInput =>
     })
   ) as DealSettingsInput;
 
+// A deal's fees + slippage. Newer backends only (see `getDealCosts`). The
+// deal's own profit comes along: the breakdown is scaled to USD by it, and the
+// trade object a view holds does not always carry `profit.total` as is.
+const dealCostsSelection = `
+  _id
+  profit {
+    total
+    totalUsd
+  }
+  slippage {
+    quote
+    bps
+    orders
+    reconstructed
+  }
+  costBreakdown {
+    grossQuote
+    feesQuote
+    feesEstimated
+    slippageQuote
+    netQuote
+    unbookedFeesQuote
+    unbookedFeesPartial
+    unbookedFeeAssets
+    unbookedFeesInUsdProfit
+    unbookedFeesUsd
+  }
+`;
+
 export const dealQueries = {
+  /**
+   * One deal's cost breakdown, by id. Kept out of the shared deal fragments on
+   * purpose: a backend without these fields rejects the whole document, and
+   * here that only hides the breakdown instead of every deal list.
+   */
+  getDealCosts: (
+    kind: 'dca' | 'combo',
+    input: { botId: string; dealId: string }
+  ) => {
+    const field =
+      kind === 'combo' ? 'getComboBotDealsById' : 'getDCABotDealsById';
+    const query = `query ${field}($input: getComboBotDealsByIdInput!) {
+  ${field}(input: $input) {
+  status
+  reason
+  data {
+  deals {
+  ${dealCostsSelection}
+  }
+  }
+  }
+  }`;
+    const variables = { input: { botId: input.botId, id: [input.dealId] } };
+    return { query, variables };
+  },
+
   getDCADeals: (input?: { terminal?: boolean }) => {
     const query = `query getDCADeals($input: getDCADealsInput) {
         getDCADeals(input: $input) {
@@ -822,18 +878,23 @@ export const dealQueries = {
     return { query, variables };
   },
 
-  getDealOrders: (input: {
-    id: string;
-    shareId?: string;
-    dealId: string;
-    all?: boolean;
-  }) => {
+  getDealOrders: (
+    input: {
+      id: string;
+      shareId?: string;
+      dealId: string;
+      all?: boolean;
+    },
+    /** Also select the per-order fee + slippage fields (newer backends only). */
+    withCosts = false
+  ) => {
     const query = `query getDealOrders($input: getDealOrdersInput!) {
   getDealOrders(input: $input) {
   status
   reason
   data {
   ${orders}
+  ${withCosts ? orderCosts : ''}
   }
   }
   }`;
@@ -841,18 +902,23 @@ export const dealQueries = {
     return { query, variables };
   },
 
-  getComboDealOrders: (input: {
-    id: string;
-    shareId?: string;
-    dealId: string;
-    all?: boolean;
-  }) => {
+  getComboDealOrders: (
+    input: {
+      id: string;
+      shareId?: string;
+      dealId: string;
+      all?: boolean;
+    },
+    /** Also select the per-order fee + slippage fields (newer backends only). */
+    withCosts = false
+  ) => {
     const query = `query getComboDealOrders($input: getDealOrdersInput!) {
   getComboDealOrders(input: $input) {
   status
   reason
   data {
   ${orders}
+  ${withCosts ? orderCosts : ''}
   }
   }
   }`;
@@ -1179,7 +1245,16 @@ export const dealQueries = {
     return { query, variables };
   },
 
-  mergeDeals: (input: { botId: string; dealIds: string[] }) => {
+  mergeDeals: (input: {
+    botId: string;
+    dealIds: string[];
+    /** Merged deal takes the bot's TP / SL. Omitted: the engine's default. */
+    useTp?: boolean | undefined;
+    useSl?: boolean | undefined;
+    /** Restart the bot's DCA ladder from the merged average. */
+    useDca?: boolean | undefined;
+    dcaOrders?: number | undefined;
+  }) => {
     const query = `mutation mergeDeals($input: mergeDealsInput!) {
   mergeDeals(input: $input) {
   status
@@ -1188,6 +1263,31 @@ export const dealQueries = {
   }
   }`;
     const variables = { input };
+    return { query, variables };
+  },
+
+  /**
+   * Fold open deals into a single-position bot's open deal, which keeps its
+   * id. Same answer shape as `mergeDeals`. The input is written inline from
+   * scalar variables so the document does not depend on the input type name.
+   */
+  adoptDeals: (input: {
+    botId: string;
+    targetDealId: string;
+    dealIds: string[];
+  }) => {
+    const query = `mutation adoptDeals($botId: String!, $targetDealId: String!, $dealIds: [String!]!) {
+  adoptDeals(input: { botId: $botId, targetDealId: $targetDealId, dealIds: $dealIds }) {
+  status
+  reason
+  data
+  }
+  }`;
+    const variables = {
+      botId: input.botId,
+      targetDealId: input.targetDealId,
+      dealIds: input.dealIds,
+    };
     return { query, variables };
   },
 

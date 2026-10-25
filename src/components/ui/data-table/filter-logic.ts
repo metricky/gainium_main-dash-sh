@@ -10,6 +10,7 @@
  * definitions in page files (TradingBots, ComboBots, GridBots, etc.).
  */
 
+import { usdToReporting } from '@/utils/reportingCurrency';
 import type { ColumnFiltersState } from '@tanstack/react-table';
 
 import { getTzDayBounds } from '@/utils/timeUtils';
@@ -57,13 +58,13 @@ function equalsAny(strings: string[], search: string): boolean {
 // Date helpers
 // ---------------------------------------------------------------------------
 
-/** What `<input type="date">` emits — a calendar day, never an instant. */
+/** What a date filter emits: 'YYYY-MM-DD', a calendar day, never an instant. */
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
  * The interval a date filter value denotes.
  *
- * Every date operator's input is an `<input type="date">`, so its value is a
+ * Every date operator's input is a `DateInput`, so its value is a
  * DAY (`YYYY-MM-DD`) while the cell it is compared against holds a full
  * timestamp. Comparing the two as instants is what makes `=` match nothing:
  * no row's `closeTime` is exactly `2026-09-20T00:00:00`. A day therefore
@@ -483,6 +484,9 @@ export function createEnhancedColumnFilter(
   // a date column's `equals` / `between` are matched as the date operators
   // the user was offered rather than as their string / number namesakes.
   const filterType = meta?.['filterType'] as string | undefined;
+  // A column whose value is a USD amount shown in the reporting currency:
+  // compare the converted number, so `> 100` means 100 of what is on screen.
+  const reportingUsd = meta?.['reportingUsd'] === true;
 
   return (
     row: { getValue: (columnId: string) => unknown; original?: unknown },
@@ -493,10 +497,14 @@ export function createEnhancedColumnFilter(
 
     const resolved = resolveFilterValue(row, columnId, getFilterValueFn);
     const { searchableStrings } = resolved;
-    const cellValue =
+    const rawValue =
       getNumericFilterValueFn && row.original !== undefined
         ? getNumericFilterValueFn(row.original)
         : resolved.cellValue;
+    const cellValue =
+      reportingUsd && !getNumericFilterValueFn && typeof rawValue === 'number'
+        ? usdToReporting(rawValue)
+        : rawValue;
     const optionStrings = resolveOptionValues(row, getOptionValueFn);
 
     // Array of filter conditions → AND logic

@@ -18,6 +18,7 @@ import {
 import type { ViewOrder } from '@/types/bots';
 import { applyFrozenIndicatorLevels } from '@/utils/bots/dca/frozen-indicator-levels';
 import { projectIndicatorDcaThresholds } from '@/utils/bots/dca/indicator-dca-thresholds';
+import { smartOrderProjectionBound } from '@/utils/bots/dca/smart-order-bound';
 import {
   createComboOrders,
   createDCAOrders,
@@ -242,7 +243,9 @@ export function useDealSmartOrders({
       symbol &&
       mergedSettings &&
       (isCombo
-        ? comboProjectsDca || comboProjectsGrid
+        ? comboProjectsDca ||
+          comboProjectsGrid ||
+          computeRegardlessOfSmartOrders
         : mergedSettings.useSmartOrders ||
           isIndicatorDca ||
           computeRegardlessOfSmartOrders)
@@ -395,18 +398,9 @@ export function useDealSmartOrders({
     const projectionLabelFor = (type: DCAOrderTypeEnum | undefined) =>
       type === DCAOrderTypeEnum.grid ? 'Combo grid order' : dcaProjectionLabel;
 
-    // Lowest/highest pending real DCA order — the legacy bound.
-    const pendingDcaPrices = pendingOrders
-      .filter((o) => o.typeOrder === 'dealRegular')
-      .map((o) => o.price)
-      .filter((p) => p > 0);
-    const boundPrice = isLong
-      ? pendingDcaPrices.length
-        ? Math.min(...pendingDcaPrices)
-        : Infinity
-      : pendingDcaPrices.length
-      ? Math.max(...pendingDcaPrices)
-      : 0;
+    // Lowest/highest pending real DCA order — the legacy bound. Add-funds
+    // orders are not ladder levels and do not move it.
+    const boundPrice = smartOrderProjectionBound(pendingOrders, isLong);
 
     // Stop-loss line from the computed ladder (legacy uses the SL order price).
     const slPrice = ladder.find((o) => o.type === DCAOrderTypeEnum.sl)?.price;

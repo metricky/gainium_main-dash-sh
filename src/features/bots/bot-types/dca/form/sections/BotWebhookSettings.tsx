@@ -1,10 +1,9 @@
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import SettingsAlert from '@/components/ui/SettingsAlert';
 import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
@@ -24,7 +23,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs';
-import { Tooltip } from '@/components/ui/tooltip';
+import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import SettingsRow from '@/components/widgets/shared/SettingsRow';
 import {
   useBotFormSelector,
@@ -39,16 +38,19 @@ import {
   useBotWebhookOptions,
   useUpdateBotWebhookOptions,
 } from '@/hooks/useBotWebhooks';
+import { useWebhookEligibility } from '@/hooks/useWebhookEligibility';
 import { copyToClipboard, generateWebhookUrl } from '@/lib/webhookUtils';
 import { useUIStore } from '@/stores/uiStore';
+import { BotTypesEnum } from '@/types';
 import {
   BotWebhookOptionMethodEnum,
   BotWebhookOptionTriggerEnum,
   type BotWebhookOption,
 } from '@/types/webhook';
 import { resolveDealStartWebhookAvailability } from '@/utils/bots/dca/deal-start-behaviours';
-import { Check, Copy, ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { Check, Copy, ExternalLink, Lock, Plus, Trash2 } from 'lucide-react';
 import React from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 
 const TRIGGER_LABELS: Record<BotWebhookOptionTriggerEnum, string> = {
   [BotWebhookOptionTriggerEnum.startBot]: 'Bot Started',
@@ -77,9 +79,36 @@ const DEFAULT_OUTGOING_PAYLOAD = JSON.stringify(
 
 const MAX_OUTGOING_PAYLOAD = 500;
 
-export const BotWebhookSettings: React.FC = () => {
+type FundsOrderType = 'market' | 'limit';
+
+interface BotWebhookSettingsProps {
+  /**
+   * Render the terminal-deal variant (legacy `WebhookData terminal`): one deal,
+   * no bot lifecycle / open-deal / pair payloads, no outgoing webhooks, and
+   * paid plans only. Defaults to the form's own `terminal` flag.
+   */
+  terminal?: boolean;
+  /**
+   * The bot uuid when the form's query context has no bot — the deal edit
+   * drawer loads the terminal deal's bot itself.
+   */
+  botUuid?: string;
+}
+
+export const BotWebhookSettings: React.FC<BotWebhookSettingsProps> = ({
+  terminal,
+  botUuid,
+}) => {
   const { botId, bot } = useBotFormQuery();
+  const formTerminal = useBotFormTopLevelSelector('terminal');
+  const isTerminal = terminal ?? Boolean(formTerminal);
+  const { isLocked: webhooksLocked } = useWebhookEligibility({
+    isTerminalOverride: isTerminal,
+    context: 'drawer',
+  });
   const formPair = useBotFormTopLevelSelector('pair');
+  const formType = useBotFormTopLevelSelector('type');
+  const isCombo = formType === BotTypesEnum.combo;
   const formPairMetadata = useBotFormTopLevelSelector('pairMetadata');
   const [copiedId, setCopiedId] = React.useState<string | null>(null);
   const copyTimeoutRef = React.useRef<number | null>(null);
@@ -113,8 +142,9 @@ export const BotWebhookSettings: React.FC = () => {
   // `dcaBotDb.readData({ uuid })`). Legacy main-dash has always emitted
   // `bot.uuid` here — emitting `_id` produces payloads that silently match no
   // bot.
-  const resolvedBotUuid = bot?.uuid ?? 'YOUR_BOT_UUID';
-  const missingBotUuid = !bot?.uuid;
+  const knownBotUuid = botUuid ?? bot?.uuid;
+  const resolvedBotUuid = knownBotUuid ?? 'YOUR_BOT_UUID';
+  const missingBotUuid = !knownBotUuid;
   // Outgoing webhooks are persisted through the bot API, which keys off `_id`.
   const missingBotId = !botId && !bot?._id;
 
@@ -140,7 +170,12 @@ export const BotWebhookSettings: React.FC = () => {
   const [addQtyType, setAddQtyType] = React.useState<string>('perc');
   const [reduceQty, setReduceQty] = React.useState<string>('10');
   const [reduceQtyType, setReduceQtyType] = React.useState<string>('perc');
+  const [addOrderType, setAddOrderType] =
+    React.useState<FundsOrderType>('market');
+  const [reduceOrderType, setReduceOrderType] =
+    React.useState<FundsOrderType>('market');
   const [targetSymbol, setTargetSymbol] = React.useState<string>(sampleSymbol);
+  const [exitsType, setExitsType] = React.useState<'perc' | 'price'>('perc');
 
   const useBotController = useBotFormSelector('useBotController');
   const startCondition = useBotFormSelector('startCondition');
@@ -148,11 +183,12 @@ export const BotWebhookSettings: React.FC = () => {
   const useMulti = useBotFormSelector('useMulti');
   const useTp = useBotFormSelector('useTp');
   const useSl = useBotFormSelector('useSl');
+  const baseOrderSize = useBotFormSelector('baseOrderSize');
   const dealCloseCondition = useBotFormSelector('dealCloseCondition');
   const dealCloseConditionSL = useBotFormSelector('dealCloseConditionSL');
 
   const availability = React.useMemo(() => {
-    return resolveDealStartWebhookAvailability({
+    const resolved = resolveDealStartWebhookAvailability({
       startCondition: startCondition,
       strategy: strategy,
       useMulti: useMulti,
@@ -163,7 +199,10 @@ export const BotWebhookSettings: React.FC = () => {
       primarySymbol: sampleSymbol,
       symbolExamples: [sampleSymbol],
     });
+    // A terminal deal is opened from the terminal, never by a signal.
+    return isTerminal ? { ...resolved, openDeal: false } : resolved;
   }, [
+    isTerminal,
     startCondition,
     strategy,
     useMulti,
@@ -175,7 +214,7 @@ export const BotWebhookSettings: React.FC = () => {
   ]);
 
   const lifecyclePayloads: WebhookPayloadEntry[] = [];
-  if (useBotController) {
+  if (useBotController && !isTerminal) {
     lifecyclePayloads.push(
       {
         title: 'Start bot',
@@ -226,9 +265,57 @@ export const BotWebhookSettings: React.FC = () => {
       copyLabel: 'Copy',
     });
   }
+  if (availability.openDeal) {
+    // Prices belong to one pair, and Combo deals take percentages only.
+    const byPrice = exitsType === 'price' && !isCombo;
+    dealPayloads.push({
+      title: 'Open deal with its own size, TP and SL (example)',
+      tooltip: `Optional fields, each replacing the bot's setting for this deal only: baseOrderSize (in the bot's base order unit), ${
+        isCombo ? 'tpPerc and slPerc' : 'tpPerc or tpPrice, slPerc or slPrice'
+      }. Send only the ones you need.`,
+      payload: JSON.stringify(
+        {
+          action: 'startDeal',
+          uuid: resolvedBotUuid,
+          ...(useMulti ? { symbol: sampleSymbol } : {}),
+          baseOrderSize: baseOrderSize || '10',
+          ...(byPrice
+            ? { tpPrice: 'X', slPrice: 'X' }
+            : { tpPerc: '2', slPerc: '1' }),
+        },
+        null,
+        2
+      ),
+      optionalKeys: [
+        'baseOrderSize',
+        'tpPerc',
+        'slPerc',
+        'tpPrice',
+        'slPrice',
+      ],
+      copyLabel: 'Copy',
+      headerControls: isCombo ? undefined : (
+        <div className="flex items-center gap-xs">
+          <Label className="text-xs">TP/SL</Label>
+          <Select
+            value={exitsType}
+            onValueChange={(v) => setExitsType(v as 'perc' | 'price')}
+          >
+            <SelectTrigger id="open-deal-exits-type" className="w-20">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="perc">perc</SelectItem>
+              <SelectItem value="price">price</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      ),
+    });
+  }
   if (availability.closeDeal) {
     dealPayloads.push({
-      title: 'Close deal for all symbols',
+      title: isTerminal ? 'Close deal' : 'Close deal for all symbols',
       payload: JSON.stringify(
         { action: 'closeDeal', uuid: resolvedBotUuid },
         null,
@@ -240,7 +327,9 @@ export const BotWebhookSettings: React.FC = () => {
 
   if (availability.closeDealSl) {
     dealPayloads.push({
-      title: 'Close deal by SL for all symbols',
+      title: isTerminal
+        ? 'Close deal by SL'
+        : 'Close deal by SL for all symbols',
       payload: JSON.stringify(
         { action: 'closeDealSl', uuid: resolvedBotUuid },
         null,
@@ -250,7 +339,7 @@ export const BotWebhookSettings: React.FC = () => {
     });
   }
 
-  if (useMulti) {
+  if (useMulti && !isTerminal) {
     if (availability.openDeal) {
       dealPayloads.push({
         title: 'Open deal for symbol (example)',
@@ -288,27 +377,53 @@ export const BotWebhookSettings: React.FC = () => {
     }
   }
 
-  const fundsPayloads: WebhookPayloadEntry[] = [
-    {
-      title: 'Add base amount to all deals for symbol (example)',
+  const fundsPayload = (
+    action: 'addFunds' | 'reduceFunds',
+    asset: 'base' | 'quote',
+    title: string,
+    withSymbol: boolean
+  ): WebhookPayloadEntry => {
+    const isAdd = action === 'addFunds';
+    const qty = isAdd ? addQty : reduceQty;
+    const qtyType = isAdd ? addQtyType : reduceQtyType;
+    // One price is only right for one pair: on a multi-pair bot, a signal for
+    // all symbols cannot carry one (the API rejects it), so it stays market.
+    const canLimit = isTerminal || withSymbol || !useMulti;
+    const orderType: FundsOrderType = !canLimit
+      ? 'market'
+      : isAdd
+        ? addOrderType
+        : reduceOrderType;
+    const id = `${action}-${asset}-${withSymbol ? 'symbol' : 'all'}`;
+    return {
+      title,
+      tooltip:
+        orderType === 'limit'
+          ? 'price places a limit order at that price instead of a market order. Leave it out to fill at market.'
+          : undefined,
       payload: JSON.stringify(
         {
-          action: 'addFunds',
+          action,
           uuid: resolvedBotUuid,
-          asset: 'base',
-          qty: addQty,
-          symbol: sampleSymbol,
-          type: addQtyType,
+          asset,
+          qty,
+          ...(withSymbol ? { symbol: sampleSymbol } : {}),
+          type: qtyType,
+          ...(orderType === 'limit' ? { price: '{{close}}' } : {}),
         },
         null,
         2
       ),
+      optionalKeys: orderType === 'limit' ? ['price'] : undefined,
       copyLabel: 'Copy',
       headerControls: (
         <div className="flex items-center gap-xs">
           <Label className="text-xs">type</Label>
-          <Select value={addQtyType} onValueChange={setAddQtyType}>
-            <SelectTrigger id="add-base-type" className="w-20">
+          <Select
+            value={qtyType}
+            onValueChange={isAdd ? setAddQtyType : setReduceQtyType}
+          >
+            <SelectTrigger id={`${id}-type`} className="w-20">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -318,192 +433,85 @@ export const BotWebhookSettings: React.FC = () => {
           </Select>
           <Label className="text-xs">qty</Label>
           <Input
-            value={addQty}
-            onChange={(e) => setAddQty(e.target.value)}
+            value={qty}
+            onChange={(e) =>
+              (isAdd ? setAddQty : setReduceQty)(e.target.value)
+            }
             className="w-20"
           />
+          {canLimit && (
+            <>
+              <Label className="text-xs">order</Label>
+              <Select
+                value={orderType}
+                onValueChange={(v) =>
+                  (isAdd ? setAddOrderType : setReduceOrderType)(
+                    v as FundsOrderType
+                  )
+                }
+              >
+                <SelectTrigger id={`${id}-order`} className="w-24">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="market">market</SelectItem>
+                  <SelectItem value="limit">limit</SelectItem>
+                </SelectContent>
+              </Select>
+            </>
+          )}
         </div>
       ),
-    },
-    {
-      title: 'Add quote amount to all deals for all symbols',
-      payload: JSON.stringify(
-        {
-          action: 'addFunds',
-          uuid: resolvedBotUuid,
-          asset: 'quote',
-          qty: addQty,
-          type: addQtyType,
-        },
-        null,
-        2
-      ),
-      copyLabel: 'Copy',
-      headerControls: (
-        <div className="flex items-center gap-xs">
-          <Label className="text-xs">type</Label>
-          <Select value={addQtyType} onValueChange={setAddQtyType}>
-            <SelectTrigger id="add-quote-all-type" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perc">perc</SelectItem>
-              <SelectItem value="fixed">fixed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label className="text-xs">qty</Label>
-          <Input
-            value={addQty}
-            onChange={(e) => setAddQty(e.target.value)}
-            className="w-20"
-          />
-        </div>
-      ),
-    },
-    {
-      title: 'Add quote amount to all deals for symbol (example)',
-      payload: JSON.stringify(
-        {
-          action: 'addFunds',
-          uuid: resolvedBotUuid,
-          asset: 'quote',
-          qty: addQty,
-          symbol: sampleSymbol,
-          type: addQtyType,
-        },
-        null,
-        2
-      ),
-      copyLabel: 'Copy',
-      headerControls: (
-        <div className="flex items-center gap-xs">
-          <Label className="text-xs">type</Label>
-          <Select value={addQtyType} onValueChange={setAddQtyType}>
-            <SelectTrigger id="add-quote-symbol-type" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perc">perc</SelectItem>
-              <SelectItem value="fixed">fixed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label className="text-xs">qty</Label>
-          <Input
-            value={addQty}
-            onChange={(e) => setAddQty(e.target.value)}
-            className="w-20"
-          />
-        </div>
-      ),
-    },
-    {
-      title: 'Reduce base amount in all deals for symbol (example)',
-      payload: JSON.stringify(
-        {
-          action: 'reduceFunds',
-          uuid: resolvedBotUuid,
-          asset: 'base',
-          qty: reduceQty,
-          symbol: sampleSymbol,
-          type: reduceQtyType,
-        },
-        null,
-        2
-      ),
-      copyLabel: 'Copy',
-      headerControls: (
-        <div className="flex items-center gap-xs">
-          <Label className="text-xs">type</Label>
-          <Select value={reduceQtyType} onValueChange={setReduceQtyType}>
-            <SelectTrigger id="reduce-base-type" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perc">perc</SelectItem>
-              <SelectItem value="fixed">fixed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label className="text-xs">qty</Label>
-          <Input
-            value={reduceQty}
-            onChange={(e) => setReduceQty(e.target.value)}
-            className="w-20"
-          />
-        </div>
-      ),
-    },
-    {
-      title: 'Reduce quote amount in all deals for all symbols',
-      payload: JSON.stringify(
-        {
-          action: 'reduceFunds',
-          uuid: resolvedBotUuid,
-          asset: 'quote',
-          qty: reduceQty,
-          type: reduceQtyType,
-        },
-        null,
-        2
-      ),
-      copyLabel: 'Copy',
-      headerControls: (
-        <div className="flex items-center gap-xs">
-          <Label className="text-xs">type</Label>
-          <Select value={reduceQtyType} onValueChange={setReduceQtyType}>
-            <SelectTrigger id="reduce-quote-all-type" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perc">perc</SelectItem>
-              <SelectItem value="fixed">fixed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label className="text-xs">qty</Label>
-          <Input
-            value={reduceQty}
-            onChange={(e) => setReduceQty(e.target.value)}
-            className="w-20"
-          />
-        </div>
-      ),
-    },
-    {
-      title: 'Reduce quote amount in all deals for symbol (example)',
-      payload: JSON.stringify(
-        {
-          action: 'reduceFunds',
-          uuid: resolvedBotUuid,
-          asset: 'quote',
-          qty: reduceQty,
-          symbol: sampleSymbol,
-          type: reduceQtyType,
-        },
-        null,
-        2
-      ),
-      copyLabel: 'Copy',
-      headerControls: (
-        <div className="flex items-center gap-xs">
-          <Label className="text-xs">type</Label>
-          <Select value={reduceQtyType} onValueChange={setReduceQtyType}>
-            <SelectTrigger id="reduce-quote-symbol-type" className="w-20">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="perc">perc</SelectItem>
-              <SelectItem value="fixed">fixed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Label className="text-xs">qty</Label>
-          <Input
-            value={reduceQty}
-            onChange={(e) => setReduceQty(e.target.value)}
-            className="w-20"
-          />
-        </div>
-      ),
-    },
+    };
+  };
+
+  // A terminal deal is one deal on one pair: base amounts need no symbol.
+  const terminalFundsPayloads: WebhookPayloadEntry[] = [
+    fundsPayload('addFunds', 'base', 'Add base amount to deal', false),
+    fundsPayload('addFunds', 'quote', 'Add quote amount to deal', false),
+    fundsPayload('reduceFunds', 'base', 'Reduce base amount in deal', false),
+    fundsPayload('reduceFunds', 'quote', 'Reduce quote amount in deal', false),
   ];
+
+  const botFundsPayloads: WebhookPayloadEntry[] = [
+    fundsPayload(
+      'addFunds',
+      'base',
+      'Add base amount to all deals for symbol (example)',
+      true
+    ),
+    fundsPayload(
+      'addFunds',
+      'quote',
+      'Add quote amount to all deals for all symbols',
+      false
+    ),
+    fundsPayload(
+      'addFunds',
+      'quote',
+      'Add quote amount to all deals for symbol (example)',
+      true
+    ),
+    fundsPayload(
+      'reduceFunds',
+      'base',
+      'Reduce base amount in all deals for symbol (example)',
+      true
+    ),
+    fundsPayload(
+      'reduceFunds',
+      'quote',
+      'Reduce quote amount in all deals for all symbols',
+      false
+    ),
+    fundsPayload(
+      'reduceFunds',
+      'quote',
+      'Reduce quote amount in all deals for symbol (example)',
+      true
+    ),
+  ];
+  const fundsPayloads = isTerminal ? terminalFundsPayloads : botFundsPayloads;
 
   const pairPayloads: WebhookPayloadEntry[] = [
     {
@@ -596,9 +604,11 @@ export const BotWebhookSettings: React.FC = () => {
   if (dealPayloads.length > 0) {
     webhookPayloadGroups.push({
       title: 'Deal management',
-      description: useMulti
-        ? 'Manage deals for the bot, specify symbol for multipair bots.'
-        : 'Manually open or close deals for this bot.',
+      description: isTerminal
+        ? 'Close this deal from external signals.'
+        : useMulti
+          ? 'Manage deals for the bot, specify symbol for multipair bots.'
+          : 'Manually open or close deals for this bot.',
       payloads: dealPayloads,
     });
   }
@@ -606,12 +616,14 @@ export const BotWebhookSettings: React.FC = () => {
   if (fundsPayloads.length > 0) {
     webhookPayloadGroups.push({
       title: 'Funds management',
-      description: 'Add or remove allocated capital via webhooks.',
+      description: isTerminal
+        ? 'Add or remove funds in this deal via webhooks.'
+        : 'Add or remove allocated capital via webhooks.',
       payloads: fundsPayloads,
     });
   }
 
-  if (pairPayloads.length > 0) {
+  if (pairPayloads.length > 0 && !isTerminal) {
     webhookPayloadGroups.push({
       title: 'Pair management',
       description:
@@ -624,8 +636,9 @@ export const BotWebhookSettings: React.FC = () => {
   // dedicated mutation (independent of the main bot save), mirroring
   // main-dash's webhookDialog. `realBotId` is undefined for unsaved bots.
   const realBotId = botId ?? bot?._id;
+  // Terminal deals have no outgoing webhooks (legacy never offered them).
   const { data: webhookOptionsResult, isLoading: webhooksLoading } =
-    useBotWebhookOptions(realBotId);
+    useBotWebhookOptions(isTerminal ? undefined : realBotId);
   const updateWebhooks = useUpdateBotWebhookOptions(realBotId);
   const outgoingWebhooks: BotWebhookOption[] = React.useMemo(
     () => webhookOptionsResult?.data ?? [],
@@ -744,7 +757,14 @@ export const BotWebhookSettings: React.FC = () => {
     >
       <div className="flex flex-col gap-xs sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
         <div className="space-y-1 min-w-0 flex-1">
-          <p className="text-sm font-semibold leading-tight">{entry.title}</p>
+          <div className="flex items-center gap-xs">
+            <p className="text-sm font-semibold leading-tight">{entry.title}</p>
+            {entry.tooltip ? (
+              <Tooltip tooltip={entry.tooltip} side="right">
+                <InfoIcon />
+              </Tooltip>
+            ) : null}
+          </div>
           {entry.description ? (
             <p className="text-xs text-muted-foreground">{entry.description}</p>
           ) : null}
@@ -759,7 +779,28 @@ export const BotWebhookSettings: React.FC = () => {
       <div className="relative flex gap-xs">
         <div className="flex-1 max-h-64 overflow-auto rounded-md border border-border/40 bg-muted/40 p-sm">
           <pre className="font-mono text-xs leading-relaxed text-foreground/90 whitespace-pre-wrap break-all">
-            {entry.payload}
+            {entry.optionalKeys?.length
+              ? entry.payload.split('\n').map((line, i, lines) => {
+                  const optional = entry.optionalKeys?.some((key) =>
+                    line.trimStart().startsWith(`"${key}":`)
+                  );
+                  const eol = i < lines.length - 1 ? '\n' : '';
+                  return optional ? (
+                    <span key={i} className="text-muted-foreground">
+                      {line}
+                      <span className="select-none italic">
+                        {'  // optional'}
+                      </span>
+                      {eol}
+                    </span>
+                  ) : (
+                    <React.Fragment key={i}>
+                      {line}
+                      {eol}
+                    </React.Fragment>
+                  );
+                })
+              : entry.payload}
           </pre>
         </div>
         <Tooltip tooltip={copiedId === trackingId ? 'Copied!' : 'Copy payload'}>
@@ -784,10 +825,12 @@ export const BotWebhookSettings: React.FC = () => {
 
   return (
     <Tabs defaultValue="incoming" className="space-y-md">
-      <TabsList className="w-full" fullWidth>
-        <TabsTrigger value="incoming">Incoming webhooks</TabsTrigger>
-        <TabsTrigger value="outgoing">Outgoing webhooks</TabsTrigger>
-      </TabsList>
+      {!isTerminal && (
+        <TabsList className="w-full" fullWidth>
+          <TabsTrigger value="incoming">Incoming webhooks</TabsTrigger>
+          <TabsTrigger value="outgoing">Outgoing webhooks</TabsTrigger>
+        </TabsList>
+      )}
 
       <TabsContent value="incoming" className="space-y-md">
         <Card position={2} className="space-y-md">
@@ -795,10 +838,6 @@ export const BotWebhookSettings: React.FC = () => {
           <div className="flex flex-col gap-sm sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
             <div className="space-y-1 min-w-0">
               <CardTitle className="text-base">Webhook endpoint</CardTitle>
-              <CardDescription>
-                Use this URL to trigger bot lifecycle and deal actions from
-                external systems.
-              </CardDescription>
             </div>
             <div className="flex flex-wrap items-center gap-xs">
               <Badge variant={isPaper ? 'outline' : 'default'}>
@@ -854,21 +893,33 @@ export const BotWebhookSettings: React.FC = () => {
               </a>
             </Button>
           </div>
-          {missingBotUuid ? (
-            <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-              <AlertTitle className="text-sm font-semibold">
-                Bot UUID required
-              </AlertTitle>
-              <AlertDescription className="text-xs sm:text-sm">
-                Save the bot first to generate a persistent identifier. Webhook
-                payloads need a valid bot UUID.
-              </AlertDescription>
-            </Alert>
+          {webhooksLocked ? (
+            <div className="flex items-center gap-xs text-xs text-muted-foreground">
+              <Lock className="h-3 w-3" />
+              Paid plans ·
+              <RouterLink to="/subscription" className="font-medium underline">
+                Upgrade
+              </RouterLink>
+            </div>
+          ) : missingBotUuid ? (
+            <SettingsAlert
+              variant="info"
+              title={
+                isTerminal
+                  ? 'Available after placing the deal'
+                  : 'Available after saving'
+              }
+              description={
+                isTerminal
+                  ? 'The webhook UUID is created with the deal. After placing it, open Open orders → Edit → Webhooks to copy these payloads.'
+                  : 'Payloads need the bot UUID, which is created when the bot is saved.'
+              }
+            />
           ) : null}
         </CardContent>
       </Card>
 
-      {webhookPayloadGroups.map((group) => (
+      {!webhooksLocked && webhookPayloadGroups.map((group) => (
         <SettingsRow
           key={group.title}
           name={group.title}
@@ -892,22 +943,18 @@ export const BotWebhookSettings: React.FC = () => {
       >
         <div className="space-y-md">
           {missingBotId ? (
-            <Alert className="border-amber-500/40 bg-amber-500/10 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-              <AlertTitle className="text-sm font-semibold">
-                Save the bot first
-              </AlertTitle>
-              <AlertDescription className="text-xs sm:text-sm">
-                Outgoing webhooks are stored per bot. Create the bot before
-                configuring webhook notifications.
-              </AlertDescription>
-            </Alert>
+            <SettingsAlert
+              variant="info"
+              title="Available after saving"
+              description="Outgoing webhooks are stored per bot."
+            />
           ) : webhooksLoading ? (
             <div className="rounded-lg border border-border/60 bg-muted/30 p-md text-sm text-muted-foreground">
               Loading webhooks…
             </div>
           ) : outgoingWebhooks.length === 0 ? (
             <div className="rounded-lg border border-border/60 bg-muted/30 p-md text-sm text-muted-foreground">
-              No outgoing webhooks configured. Click Add to create one.
+              No outgoing webhooks
             </div>
           ) : (
             <div className="space-y-sm">

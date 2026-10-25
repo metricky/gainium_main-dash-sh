@@ -4,15 +4,53 @@ import { GraphQLClient, type ReturnResult } from '@/lib/api';
 import { dealQueries } from '@/lib/api/GraphQLQueries-deal-queries';
 import { logger } from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
+import { POSITION_ENTRIES_QUERY_KEY } from '@/hooks/useSinglePosition';
+import { findPositionDeal } from '@/lib/singlePosition/singlePosition';
+import {
+  adoptDeals,
+  fetchBotOpenDeals,
+  fetchSinglePositionSettings,
+} from '@/lib/singlePosition/singlePositionApi';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 
 export interface MergeSmartOrdersInput {
   botId: string;
   dealIds: string[];
+  /**
+   * The deals' pair. When given and the target bot is single-position with an
+   * open deal on it, the deals are adopted into that position instead of
+   * merged into a new deal (spec 139 §5.2.1).
+   */
+  symbol?: string | undefined;
+  /** The merged deal takes the bot's take profit / stop loss. */
+  useTp?: boolean | undefined;
+  useSl?: boolean | undefined;
+  /** The merged deal restarts the bot's DCA ladder, with this many levels. */
+  useDca?: boolean | undefined;
+  dcaOrders?: number | undefined;
 }
 
-export type MergeSmartOrdersResult = ReturnResult<string>;
+export type MergeSmartOrdersResult = ReturnResult<string> & {
+  /** Set when the deals were adopted into an existing position. */
+  adoptedInto?: string;
+};
+
+/**
+ * The single-position bot's open position the deals fold into, or null when
+ * the plain merge applies (bot not single-position, no position on the pair,
+ * or a backend without the feature).
+ */
+async function findAdoptionTarget(
+  client: GraphQLClient,
+  botId: string,
+  symbol: string
+): Promise<string | null> {
+  const { backend, byBot } = await fetchSinglePositionSettings(client, [botId]);
+  if (backend !== 'new' || !byBot[botId]?.singlePosition) return null;
+  const position = findPositionDeal(await fetchBotOpenDeals(client, botId), symbol);
+  return position?._id ?? null;
+}
 
 export function useMergeSmartOrders() {
   const queryClient = useQueryClient();
@@ -21,7 +59,15 @@ export function useMergeSmartOrders() {
 
   return useMutation<MergeSmartOrdersResult, Error, MergeSmartOrdersInput>({
     mutationKey: ['merge-smart-orders'],
-    mutationFn: async ({ botId, dealIds }) => {
+    mutationFn: async ({
+      botId,
+      dealIds,
+      symbol,
+      useTp,
+      useSl,
+      useDca,
+      dcaOrders,
+    }) => {
       if (!tokens?.accessToken) {
         throw new Error('Authentication required to merge smart orders.');
       }
@@ -42,9 +88,43 @@ export function useMergeSmartOrders() {
         !isLiveTrading
       );
 
+      const targetDealId = symbol
+        ? await findAdoptionTarget(client, botId, symbol).catch((error) => {
+            logger.warn('[useMergeSmartOrders] Single-position check failed', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          })
+        : null;
+      if (targetDealId) {
+        const sources = dealIds.filter((id) => id !== targetDealId);
+        if (sources.length === 0) {
+          throw new Error('Select at least one other deal to merge.');
+        }
+        const adopted = await adoptDeals(client, {
+          botId,
+          targetDealId,
+          dealIds: sources,
+        });
+        logger.info('[useMergeSmartOrders] Adopted into open position', {
+          botId,
+          dealIdsCount: sources.length,
+        });
+        return {
+          status: 'OK',
+          reason: null,
+          data: typeof adopted.data === 'string' ? adopted.data : '',
+          adoptedInto: targetDealId,
+        } as MergeSmartOrdersResult;
+      }
+
       const { query, variables } = dealQueries.mergeDeals({
         botId,
         dealIds,
+        ...(useTp !== undefined ? { useTp } : {}),
+        ...(useSl !== undefined ? { useSl } : {}),
+        ...(useDca !== undefined ? { useDca } : {}),
+        ...(dcaOrders !== undefined ? { dcaOrders } : {}),
       });
 
       const response = await client.request<{
@@ -72,7 +152,7 @@ export function useMergeSmartOrders() {
 
       return payload;
     },
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables) => {
       // Invalidate all deal-related queries to ensure UI updates
       queryClient.invalidateQueries({ queryKey: ['getDCADeals'] });
       queryClient.invalidateQueries({ queryKey: ['dcaDealList'] });
@@ -92,6 +172,13 @@ export function useMergeSmartOrders() {
         dealCount: variables.dealIds.length,
       });
 
+      if (data?.adoptedInto) {
+        void queryClient.invalidateQueries({
+          queryKey: [POSITION_ENTRIES_QUERY_KEY],
+        });
+        toast.success('Merged into the open position');
+        return;
+      }
       toast.success(`Successfully merged ${variables.dealIds.length} deals`);
     },
     onError: (error) => {

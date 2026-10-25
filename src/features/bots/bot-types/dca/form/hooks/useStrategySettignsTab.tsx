@@ -1,5 +1,6 @@
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
 import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
+import type { MarginNotice } from '@/types/bots/form';
 import {
   useBotFormContext,
   useBotFormFieldLock,
@@ -589,39 +590,38 @@ export const useStrategySettingsTab = ({
 
   const marginNotices = useMemo(() => {
     if (!showMarginControls) {
-      return [] as string[];
+      return [] as MarginNotice[];
     }
 
-    const notices: string[] = [];
+    const notices: MarginNotice[] = [];
 
     if (isPaperTrading) {
-      notices.push('Cross margin is not available while paper trading.');
+      notices.push({ message: 'Cross margin is not available while paper trading.', variant: 'info' });
     }
 
     if (!crossSupportedByPairs) {
-      notices.push('Cross margin type is not available for selected symbols.');
+      notices.push({ message: 'Cross margin type is not available for selected symbols.', variant: 'info' });
     }
 
     if (shouldFetchLeverage && leverageFetchState.isLoading) {
-      notices.push('Fetching leverage limits from your exchange…');
+      notices.push({ message: 'Fetching leverage limits from your exchange…', variant: 'info' });
     }
 
     if (shouldFetchLeverage && leverageFetchState.error) {
-      notices.push(leverageFetchState.error);
+      notices.push({ message: leverageFetchState.error, variant: 'warning' });
     }
 
     if (leverageExceedsMax) {
-      notices.push(
-        `Leverage cannot be higher than ${maxLeverage}x for the selected symbols.`
-      );
+      notices.push({ message: `Leverage cannot be higher than ${maxLeverage}x for the selected symbols.`, variant: 'warning' });
     }
 
     if (marginControlsLocked) {
-      notices.push(
-        activeDealsCount > 0
+      notices.push({
+        message: activeDealsCount > 0
           ? 'Margin settings are locked while the bot has active deals.'
-          : 'Margin settings are currently locked by your configuration.'
-      );
+          : 'Margin settings are currently locked by your configuration.',
+        variant: 'info',
+      });
     }
 
     return notices;
@@ -1025,11 +1025,15 @@ export const useStrategySettingsTab = ({
   // counts the pool converted to the base coin at the current price; a USD- or
   // USDC-quoted linear contract counts it as quote. The pool replaces the
   // funding balance only when larger; `null` keeps every figure as before.
+  const resolvedProvider = Array.isArray(exchanges)
+    ? exchanges.find((exchange) => exchange.uuid === resolvedExchangeUuid)
+        ?.provider
+    : undefined;
   const { pooledUsd: pooledMarginUsd } = usePooledMarginUsd(
     resolvedExchangeUuid,
     !!futures &&
       !isPaperTrading &&
-      (!!coinm || poolCoversQuote(resolvedQuoteAsset))
+      (!!coinm || poolCoversQuote(resolvedQuoteAsset, resolvedProvider))
   );
   const fundingBalances = useMemo(() => {
     if (pooledMarginUsd === null) {
@@ -1132,19 +1136,25 @@ export const useStrategySettingsTab = ({
   // (pair query failed, or nothing picked yet) they degenerate to a 1:1 echo of
   // the canonical figure — a 10 USDT total rendered as "10 BTC". Show nothing
   // rather than a number that is wrong by five orders of magnitude.
+  //
+  // Both fields show the size through `convertNotionalToDisplay`, like the bot
+  // form's `baseOrderDisplayValue`: under the futures "Cost" reference they read
+  // notional ÷ leverage, the inverse of what the change handlers below store.
   const hasUsablePrice = effectivePrice > 0;
-  const amountFieldValue =
+  const amountFieldValue = convertNotionalToDisplay(
     orderSizeType === OrderSizeTypeEnum.base
       ? +(baseOrderSize ?? 0)
       : hasUsablePrice
         ? amountInBaseDisplay
-        : 0;
-  const totalFieldValue =
+        : 0
+  );
+  const totalFieldValue = convertNotionalToDisplay(
     orderSizeType === OrderSizeTypeEnum.quote
       ? +(baseOrderSize ?? 0)
       : hasUsablePrice
         ? totalInQuote
-        : 0;
+        : 0
+  );
 
   // Amount USD adornment: USD of the value SHOWN in the Amount field, not the
   // derived base figure (legacy computes from `orderSizeType===base ?
@@ -1221,6 +1231,35 @@ export const useStrategySettingsTab = ({
       precisionQuote,
     ]
   );
+
+  // The max figures as the fields show them. Anything typed under "Cost" is
+  // stored × leverage, so the typeable ceiling is the notional max ÷ leverage.
+  // `setPercent` / `updatePercent` keep working off the notional maxes above.
+  const maxAmountDisplay = useMemo(() => {
+    if (!isCostReference) {
+      return maxAmount;
+    }
+    return math.convertFromExponential(
+      math.round(convertNotionalToDisplay(+maxAmount), precisionBase, true),
+      precisionBase
+    );
+  }, [isCostReference, convertNotionalToDisplay, maxAmount, precisionBase]);
+  const maxTotalDisplay = useMemo(() => {
+    if (!isCostReference) {
+      return maxTotal;
+    }
+    const decimals = coinm ? 0 : precisionQuote;
+    return math.convertFromExponential(
+      math.round(convertNotionalToDisplay(+maxTotal), decimals, true),
+      decimals
+    );
+  }, [
+    isCostReference,
+    convertNotionalToDisplay,
+    maxTotal,
+    coinm,
+    precisionQuote,
+  ]);
 
   const [activePerc, setActivePerc] = useState<string>('');
 
@@ -1360,8 +1399,9 @@ export const useStrategySettingsTab = ({
       if (!Number.isFinite(n)) {
         return;
       }
-      updateFormData('baseOrderSize', String(convertDisplayToNotional(n)));
-      updatePercent(String(n));
+      const notional = convertDisplayToNotional(n);
+      updateFormData('baseOrderSize', String(notional));
+      updatePercent(String(notional));
     },
     [baseOrderLocked, convertDisplayToNotional, updateFormData, updatePercent]
   );
@@ -1375,8 +1415,9 @@ export const useStrategySettingsTab = ({
       if (!Number.isFinite(n)) {
         return;
       }
-      updateFormData('baseOrderSize', String(convertDisplayToNotional(n)));
-      updatePercent(String(n));
+      const notional = convertDisplayToNotional(n);
+      updateFormData('baseOrderSize', String(notional));
+      updatePercent(String(notional));
     },
     [baseOrderLocked, convertDisplayToNotional, updateFormData, updatePercent]
   );
@@ -1637,8 +1678,8 @@ export const useStrategySettingsTab = ({
     amountFieldValue,
     totalFieldValue,
     amountUsdEquivalent,
-    maxAmount,
-    maxTotal,
+    maxAmount: maxAmountDisplay,
+    maxTotal: maxTotalDisplay,
     // USD pool on a pooled-collateral COIN-M connection, else null.
     pooledMarginUsd,
     // Decimals for whichever of the Amount/Total pair is currently DERIVED.

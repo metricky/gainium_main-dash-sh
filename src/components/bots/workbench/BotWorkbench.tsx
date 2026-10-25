@@ -8,6 +8,7 @@ import {
 import BotChartPanel from '@/components/bots/panels/contents/chart/BotChartPanel';
 import BotFormPanel from '@/components/bots/panels/contents/form/BotFormPanel';
 import { BotBacktestPanel } from '@/components/bots/panels/contents/insights/BotBacktestPanel';
+import { BotEditDealsTab } from '@/components/bots/workbench/BotEditDealsTab';
 import { usePanelMenuBridge } from '@/components/bots/panels/hooks/usePanelMenuBridge';
 import { type PanelContentConfig } from '@/components/bots/panels/PanelContainer';
 import type {
@@ -67,6 +68,8 @@ interface BotWorkbenchEditProps<TResult extends BacktestRowBase> {
   contentWrapper?: (node: ReactNode) => ReactNode;
 }
 
+const DEALS_TAB_KEY = 'deals';
+
 export type BotWorkbenchProps<
   TResult extends BacktestRowBase = DCABacktestingResultHistory,
 > = {
@@ -89,9 +92,10 @@ export function BotWorkbench<
   // Shared across BotBacktestPanel, the loading-state BotPanelInsights, and the
   // mobile top-level tabs, so it must be owned here (above BotBacktestPanel).
   // Seeded from the descriptor so combo starts on 'history', dca/grid on
-  // 'backtests'.
+  // 'backtests' — except an edit page with a Deals tab, which opens on it.
+  const hasDealsTab = mode === 'edit' && Boolean(descriptor.editDealsTab);
   const [activeInsightsTab, setActiveInsightsTab] = useState(
-    descriptor.backtests.tabKey
+    hasDealsTab ? DEALS_TAB_KEY : descriptor.backtests.tabKey
   );
 
   // Chart state block — identical on both sides. Hooks stay unconditional
@@ -249,6 +253,23 @@ export function BotWorkbench<
     };
   }, [mode]);
 
+  const dealsTabs = useMemo<BotPanelInsightsTab[] | undefined>(() => {
+    if (!hasDealsTab || !editBotId) return undefined;
+    return [
+      {
+        key: DEALS_TAB_KEY,
+        title: 'Deals',
+        bodyClassName: 'p-0',
+        content: (
+          <BotEditDealsTab
+            widgetId={`edit-bot-deals-${descriptor.layoutType}`}
+            botId={editBotId}
+          />
+        ),
+      },
+    ];
+  }, [hasDealsTab, editBotId, descriptor.layoutType]);
+
   const loadingInsightsTabs = useMemo<BotPanelInsightsTab[]>(() => {
     const backtestsTab: BotPanelInsightsTab = {
       key: descriptor.backtests.tabKey,
@@ -262,10 +283,14 @@ export function BotWorkbench<
         </div>
       ),
     };
+    const leading: BotPanelInsightsTab[] = hasDealsTab
+      ? [{ key: DEALS_TAB_KEY, title: 'Deals', content: backtestsTab.content }]
+      : [];
     // dca/combo edit show a disabled Stats tab during load; grid does not
     // (loadingHasStatsTab=false). Defaults to true when the flag is absent.
     if (mode === 'edit' && (descriptor.loadingHasStatsTab ?? true)) {
       return [
+        ...leading,
         backtestsTab,
         {
           key: 'stats',
@@ -275,8 +300,9 @@ export function BotWorkbench<
         },
       ];
     }
-    return [backtestsTab];
+    return [...leading, backtestsTab];
   }, [
+    hasDealsTab,
     mode,
     descriptor.backtests.tabKey,
     descriptor.backtests.tabTitle,
@@ -304,6 +330,7 @@ export function BotWorkbench<
         summaryMessages={descriptor.backtests.summaryMessages?.edit}
         activeInsightsTab={activeInsightsTab}
         onActiveInsightsTabChange={setActiveInsightsTab}
+        {...(dealsTabs ? { leadingTabs: dealsTabs } : {})}
         onLoadBacktestIntoForm={onLoadBacktestIntoForm}
       >
         {({ insights, onBacktestComplete }) => {

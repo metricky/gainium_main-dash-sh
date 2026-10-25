@@ -1,8 +1,8 @@
+import { useBillableIndicatorCount } from '@/hooks/bots/useBillableIndicatorCount';
 import { DynamicArIndicatorConfig } from '@/components/indicators/DynamicArIndicatorConfig';
 import WebhooksDisabledWarning from '@/components/webhook/WebhooksDisabledWarning';
 import { IndicatorList } from '@/components/indicators/IndicatorList';
 import { TerminalButtonStack } from '@/components/ui';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { FieldVariableBinding } from '@/components/ui/field-variable-binding';
 import { Label } from '@/components/ui/label';
@@ -113,7 +113,7 @@ import {
     isCloseIndicatorUsedByCondition,
     sanitizeIndicatorParams,
 } from '@/utils/indicators/indicatorConfigUtils';
-import { AlertTriangle, Info } from 'lucide-react';
+import { Info } from 'lucide-react';
 import React, {
     useCallback,
     useEffect,
@@ -523,10 +523,8 @@ export const TakeProfitSettings: React.FC = () => {
     [indicatorGroups]
   );
 
-  const indicatorLimitReached = useMemo(
-    () => indicators.length >= indicatorsLimit,
-    [indicators]
-  );
+  const billableIndicatorCount = useBillableIndicatorCount();
+  const indicatorLimitReached = billableIndicatorCount >= indicatorsLimit;
 
   const syncCloseIndicatorGroups = useCallback(
     (nextGroups: IndicatorGroup[]) => {
@@ -861,9 +859,7 @@ export const TakeProfitSettings: React.FC = () => {
     isIndicatorMutating,
   } = useFavoriteIndicators();
 
-  const totalIndicatorsAcrossBot = useMemo(() => {
-    return indicators.length;
-  }, [indicators]);
+  const totalIndicatorsAcrossBot = useBillableIndicatorCount();
 
   // Reuse the earlier `indicatorLimitReached` computed above.
   const closeIndicatorErrorMessage = mergedErrors['indicatorsClose'];
@@ -2050,27 +2046,63 @@ export const TakeProfitSettings: React.FC = () => {
     [updateFormData, indicators]
   );
 
-  const handleAddCloseGroup = useCallback(() => {
-    if (indicatorLimitReached) {
-      return;
-    }
+  const handleAddCloseGroup = useCallback(
+    (join?: IndicatorsLogicEnum) => {
+      if (indicatorLimitReached) {
+        return;
+      }
 
-    const newGroup: IndicatorGroup = {
-      id: createCloseGroupId(),
-      logic:
-        stopDealLogic === IndicatorsLogicEnum.or
-          ? IndicatorsLogicEnum.or
-          : IndicatorsLogicEnum.and,
-      action: IndicatorAction.closeDeal,
-    };
+      const newGroup: IndicatorGroup = {
+        id: createCloseGroupId(),
+        logic:
+          stopDealLogic === IndicatorsLogicEnum.or
+            ? IndicatorsLogicEnum.or
+            : IndicatorsLogicEnum.and,
+        action: IndicatorAction.closeDeal,
+        ...(join ? { join } : {}),
+      };
 
-    syncCloseIndicatorGroups([...closeIndicatorGroups, newGroup]);
-  }, [
-    closeIndicatorGroups,
-    stopDealLogic,
-    indicatorLimitReached,
-    syncCloseIndicatorGroups,
-  ]);
+      syncCloseIndicatorGroups([...closeIndicatorGroups, newGroup]);
+      // A new group starts with a default RSI rather than empty.
+      const type = IndicatorEnum.rsi;
+      const newIndicator = buildIndicatorConfig(
+        type,
+        sanitizeIndicatorParams(
+          (getIndicatorDefaultParams(type, IndicatorAction.closeDeal) ??
+            {}) as IndicatorParamsState
+        ),
+        {
+          uuid: createCloseIndicatorId(),
+          indicatorAction: IndicatorAction.closeDeal,
+        }
+      );
+      updateFormData('indicators', [
+        ...indicators,
+        { ...newIndicator, groupId: newGroup.id },
+      ]);
+    },
+    [
+      closeIndicatorGroups,
+      stopDealLogic,
+      indicatorLimitReached,
+      syncCloseIndicatorGroups,
+      updateFormData,
+      indicators,
+    ]
+  );
+
+  const handleChangeGroupJoins = useCallback(
+    (joins: Record<string, IndicatorsLogicEnum>) => {
+      updateFormData(
+        'indicatorGroups',
+        indicatorGroups.map((group) =>
+          joins[group.id] ? { ...group, join: joins[group.id] } : group
+        )
+      );
+    },
+    [indicatorGroups, updateFormData]
+  );
+
 
   const handleRemoveCloseGroup = useCallback(
     (groupId: string) => {
@@ -2500,16 +2532,11 @@ export const TakeProfitSettings: React.FC = () => {
           >
             {takeProfitLocked && (
               <SettingsRow colSpan="full">
-                <Alert className="border-blue-500/40 bg-blue-500/10 text-blue-900 dark:border-blue-400/40 dark:bg-blue-400/10 dark:text-blue-50">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle className="text-sm font-semibold">
-                    Take profit managed by risk/reward
-                  </AlertTitle>
-                  <AlertDescription className="text-xs leading-relaxed">
-                    Risk/reward automation is enforcing the take profit target.
-                    Disable the risk/reward ratio to edit these settings.
-                  </AlertDescription>
-                </Alert>
+                <SettingsAlert
+                  variant="info"
+                  title="Set by Risk/Reward"
+                  description="Turn off the risk/reward ratio to edit take profit."
+                />
               </SettingsRow>
             )}
 
@@ -2691,31 +2718,24 @@ export const TakeProfitSettings: React.FC = () => {
             >
               {takeProfitLocked && !isDealEdit && (
                 <SettingsRow colSpan="full">
-                  <Alert className="border-blue-500/40 bg-blue-500/10 text-blue-900 dark:border-blue-400/40 dark:bg-blue-400/10 dark:text-blue-50">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle className="text-sm font-semibold">
-                      Take profit managed by risk/reward
-                    </AlertTitle>
-                    <AlertDescription className="text-xs leading-relaxed">
-                      Risk/reward automation is enforcing the take profit
-                      target. Disable the risk/reward ratio to edit these
-                      settings.
-                    </AlertDescription>
-                  </Alert>
+                  <SettingsAlert
+                  variant="info"
+                  title="Set by Risk/Reward"
+                  description="Turn off the risk/reward ratio to edit take profit."
+                />
                 </SettingsRow>
               )}
 
               {option.value === CloseConditionEnum.webhook && !isDealEdit ? (
-                <Alert>
-                  <AlertTitle className="text-sm font-semibold">
-                    Webhook-managed take profit
-                  </AlertTitle>
-                  <AlertDescription className="text-xs leading-relaxed">
-                    Take profit management will rely on webhook signals.
-                    Configure your payload in the webhook section to control
-                    exits.
-                  </AlertDescription>
-                </Alert>
+                <SettingsAlert
+                  variant="info"
+                  title="Closes on webhook signal"
+                  description={
+                    formTerminal
+                      ? 'The webhook UUID is created with the deal. After placing it, open Open orders → Edit → Webhooks to copy its payloads.'
+                      : 'Set up the payload in the Webhooks section.'
+                  }
+                />
               ) : null}
 
               {option.value === CloseConditionEnum.webhook ? (
@@ -2749,26 +2769,18 @@ export const TakeProfitSettings: React.FC = () => {
                   />
                   <BotFieldManagedFieldset path="tpPerc">
                     {hasAllocationOverflow ? (
-                      <Alert variant="destructive" className="py-2 text-xs">
-                        <AlertTitle className="text-sm font-semibold">
-                          Allocation exceeds 100%
-                        </AlertTitle>
-                        <AlertDescription>
-                          Adjust target percentages so the total does not exceed
-                          100%.
-                        </AlertDescription>
-                      </Alert>
+                      <SettingsAlert
+                        variant="error"
+                        title="Allocation exceeds 100%"
+                        description="Adjust target percentages so the total is 100% or less."
+                      />
                     ) : null}
                     {hasAmountOverflow ? (
-                      <Alert variant="destructive" className="py-2 text-xs">
-                        <AlertTitle className="text-sm font-semibold">
-                          Position allocation exceeds 100%
-                        </AlertTitle>
-                        <AlertDescription>
-                          Reduce the position percentages so the sum of the
-                          distributed position equals 100% or less.
-                        </AlertDescription>
-                      </Alert>
+                      <SettingsAlert
+                        variant="error"
+                        title="Position allocation exceeds 100%"
+                        description="Reduce the position percentages so they add up to 100% or less."
+                      />
                     ) : null}
                     <MasonryLayout
                       gap={16}
@@ -2992,6 +3004,7 @@ export const TakeProfitSettings: React.FC = () => {
                     errorMessage={closeIndicatorErrorMessage}
                     totalIndicatorsAcrossBot={totalIndicatorsAcrossBot}
                     indicatorAction={IndicatorAction.closeDeal}
+                    formulaLabel="Close the deal when"
                     exchange={currentExchange?.provider}
                     emptyStateMessage="No indicator groups configured yet. Add a group to start building your close conditions."
                     emptyIndicatorsAlertTitle="No close indicators yet"
@@ -3035,6 +3048,7 @@ export const TakeProfitSettings: React.FC = () => {
                       </div>
                     }
                     onAddGroup={handleAddCloseGroup}
+                    onChangeGroupJoins={handleChangeGroupJoins}
                     onRemoveGroup={handleRemoveCloseGroup}
                     onChangeGroupLogic={handleChangeCloseGroupLogic}
                     onAddIndicatorToGroup={handleAddIndicatorToCloseGroup}
@@ -3124,19 +3138,11 @@ export const TakeProfitSettings: React.FC = () => {
                   </div>
 
                   {dynamicArIndicators.length === 0 ? (
-                    <Alert
-                      variant="destructive"
-                      className="border-destructive/40 bg-destructive/10"
-                    >
-                      <AlertTitle className="text-sm font-semibold">
-                        Add an ATR or ADR indicator
-                      </AlertTitle>
-                      <AlertDescription className="text-xs leading-relaxed">
-                        Dynamic ATR/ADR requires at least one ATR or ADR
-                        indicator. Add an indicator to compute take profit
-                        distance.
-                      </AlertDescription>
-                    </Alert>
+                    <SettingsAlert
+                        variant="error"
+                        title="Add an ATR or ADR indicator"
+                        description="Dynamic ATR/ADR needs at least one ATR or ADR indicator to compute the take profit distance."
+                      />
                   ) : null}
                 </SettingsRow>
               ) : null}
@@ -3306,7 +3312,7 @@ export const TakeProfitSettings: React.FC = () => {
                     <SettingsRow
                       key="trailing-tp"
                       name="Trailing take profit"
-                      tooltip="Follow the price after the initial target is reached."
+                      tooltip={`Follow the price after the initial target is reached, by the deviation set here (${TRAILING_TP_MIN}%–${TRAILING_TP_MAX}%).`}
                       tooltipURL="/help/trailing-take-profit"
                       colSpan="full"
                       className={interactionDisabledClass}
@@ -3404,11 +3410,6 @@ export const TakeProfitSettings: React.FC = () => {
                             />
                           </FieldVariableBinding>
                           <BotFieldExtensionPanel path="trailingTpPerc" />
-                          <p className="text-xs text-muted-foreground">
-                            Once the take profit is hit, trailing keeps
-                            following the price by the deviation set here. Valid
-                            range is {TRAILING_TP_MIN}%–{TRAILING_TP_MAX}%.
-                          </p>
                         </div>
                       ) : null}
                       <BotFieldExtensionPanel

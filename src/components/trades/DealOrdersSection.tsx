@@ -24,9 +24,8 @@ import React, {
 import logger from '../../lib/loggerInstance';
 import {
   formatOrderTime,
-  formatPriceWithPrecision,
+  formatPriceInQuote as priceInQuote,
   formatQuoteAmount,
-  quoteUnits,
 } from '@/utils/formatters';
 import { toast } from '@/lib/toast';
 import {
@@ -51,6 +50,8 @@ import { formatNumber } from '@/utils/numberFormatter';
 import { useOrderStore } from '@/stores/live/orderStore';
 import type { ViewOrder } from '@/types/bots';
 import type { SmartViewOrder } from '@/hooks/bots/dca/useDealSmartOrders';
+import { OrderFee, OrderSlippage } from './OrderCostCells';
+import { orderHasFee, orderHasSlippage } from '@/utils/tradingCosts';
 
 type PendingFundsEntry = AddFundsSettings & { id: string };
 
@@ -163,16 +164,6 @@ interface OrderCardContextValue {
   requestCancel: (order: OrderRowModel) => void;
   isCanceling: boolean;
 }
-
-/**
- * A price rendered in the pair's own quote asset rather than a hardcoded "$".
- * `formatPriceWithPrecision` keeps its adaptive-decimals behaviour; all this
- * decides is the unit that goes around the number.
- */
-const priceInQuote = (value: number, quoteAsset?: string | null): string => {
-  const { prefix, suffix } = quoteUnits(quoteAsset);
-  return formatPriceWithPrecision(value, prefix, suffix);
-};
 
 const OrderCardContext = createContext<OrderCardContextValue | null>(null);
 
@@ -319,6 +310,20 @@ const OrderCard: React.FC<{ item: OrderRowModel; index: number }> = ({
             {/* Order Details Grid */}
             <div className="grid grid-cols-2 gap-md">
               <div className="space-y-sm">
+                {orderHasFee(order) && (
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">Fee</span>
+                    <OrderFee order={order} />
+                  </div>
+                )}
+                {orderHasSlippage(order) && (
+                  <div className="flex flex-col">
+                    <span className="text-xs text-muted-foreground">
+                      Slippage
+                    </span>
+                    <OrderSlippage order={order} />
+                  </div>
+                )}
                 <div className="flex flex-col">
                   <span className="text-xs text-muted-foreground">
                     Order Price
@@ -672,6 +677,19 @@ export const DealOrdersSection: React.FC<DealOrdersSectionProps> = ({
     }
   };
 
+  // The fee and slippage columns only earn their space once an order carries
+  // a figure (an older backend sends neither).
+  const showFee = useMemo(
+    () => pendingOrders.some(orderHasFee) || completedOrders.some(orderHasFee),
+    [pendingOrders, completedOrders]
+  );
+  const showSlippage = useMemo(
+    () =>
+      pendingOrders.some(orderHasSlippage) ||
+      completedOrders.some(orderHasSlippage),
+    [pendingOrders, completedOrders]
+  );
+
   // Table columns. Cells close over the cancel handlers directly; the card
   // renderer reads them from OrderCardContext instead (see OrderCard).
   const columns = useMemo<ColumnDef<OrderRowModel>[]>(
@@ -711,6 +729,29 @@ export const DealOrdersSection: React.FC<DealOrdersSectionProps> = ({
           );
         },
       },
+      // Fee and slippage come straight after the order's name: the drawer's
+      // table is ~540px wide at its default width, and anything past the
+      // second column is behind a horizontal scroll.
+      ...(showFee
+        ? [
+            {
+              id: 'fee',
+              header: 'FEE',
+              enableSorting: false,
+              cell: ({ row }) => <OrderFee order={row.original} />,
+            } satisfies ColumnDef<OrderRowModel>,
+          ]
+        : []),
+      ...(showSlippage
+        ? [
+            {
+              id: 'slippage',
+              header: 'SLIPPAGE',
+              enableSorting: false,
+              cell: ({ row }) => <OrderSlippage order={row.original} />,
+            } satisfies ColumnDef<OrderRowModel>,
+          ]
+        : []),
       {
         accessorKey: 'status',
         header: 'STATUS',
@@ -829,7 +870,14 @@ export const DealOrdersSection: React.FC<DealOrdersSectionProps> = ({
         },
       },
     ],
-    [isOrderCancellable, isCanceling, nextDcaRowId, onExecuteNextDca]
+    [
+      isOrderCancellable,
+      isCanceling,
+      nextDcaRowId,
+      onExecuteNextDca,
+      showFee,
+      showSlippage,
+    ]
   );
 
   const cardContext = useMemo<OrderCardContextValue>(

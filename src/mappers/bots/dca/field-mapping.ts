@@ -1,9 +1,14 @@
+import { toBaseFundingMode } from '@/lib/baseFunding/baseFundingApi';
 /**
  * Modular field mapping utilities for DCA bot forms.
  * Provides organized, debuggable field mapping for bot settings.
  */
 
 import { DCA_FORM_DEFAULTS } from '@/contexts/bots/form/formDefaults';
+import {
+  maxPositionEntriesError,
+  normalizeMaxPositionEntries,
+} from '@/lib/singlePosition/singlePosition';
 import type {
   MultipleSLVarBindingPath,
   MultipleTPVarBindingPath,
@@ -17,6 +22,7 @@ import {
   CloseDCATypeEnum,
   ComboTpBase,
   CooldownOptionsEnum,
+  CooldownStopTriggerEnum,
   CooldownUnits,
   DCAConditionEnum,
   DCATypeEnum,
@@ -34,6 +40,8 @@ import {
   PairPrioritizationEnum,
   RiskSlTypeEnum,
   RRSlTypeEnum,
+  SessionLevelEnum,
+  SessionRuleEnum,
   StartConditionEnum,
   StrategyEnum,
   TerminalDealTypeEnum,
@@ -57,6 +65,10 @@ import {
   isCloseIndicatorUsedByCondition,
 } from '@/utils/indicators/indicatorConfigUtils';
 import { withFieldDefaults } from '@/utils/indicators/indicatorFieldGating';
+import {
+  DEFAULT_SMOOTHING_LENGTH,
+  normalizeSmoothingFields,
+} from '@/utils/indicators/smoothing';
 import { normalizeMultiTpTargets } from '@/utils/bots/dca/take-profit';
 import { enforceMultiTargetLimit } from '@/utils/bots/dca/take-profit-behaviours';
 import {
@@ -129,6 +141,7 @@ const normalizeIndicatorParamsRecord = (
     'xOscillator2voLong',
     'percentileLookback',
     'percentilePercentage',
+    'smoothingLength',
     'mar1length',
     'mar2length',
     'bbwMult',
@@ -262,11 +275,14 @@ const serializeIndicatorConfig = (
   const { params: _legacyParams, ...withoutLegacyParams } = filled as
     IndicatorConfig & { params?: unknown };
 
-  const payload: IndicatorConfig = {
+  // Smoothing saves only while it is on (an unsmoothed indicator keeps the
+  // exact payload it had before the setting existed); a type outside the
+  // smoothing scope never carries it.
+  const payload: IndicatorConfig = normalizeSmoothingFields({
     ...withoutLegacyParams,
     ...paramsRecord,
     ...overrides,
-  };
+  });
 
   // Same "fill the structural holes" contract as `withFieldDefaults` above,
   // for the two ids that are NOT catalog fields. `buildIndicatorConfig` now
@@ -366,6 +382,7 @@ export const mapBasicFields = (formData: BotFormData): FieldMappingResult => {
     ? formData.combo.hodlHourly
     : formData.dca.hodlHourly;
   const hodlAt = isComboBot ? formData.combo.hodlAt : formData.dca.hodlAt;
+  const hodlWeekdays = isComboBot ? undefined : formData.dca.hodlWeekdays;
   const hodlNextBuy = isComboBot
     ? formData.combo.hodlNextBuy
     : formData.dca.hodlNextBuy;
@@ -458,6 +475,7 @@ export const mapBasicFields = (formData: BotFormData): FieldMappingResult => {
         | 'useLimitTimeout'
         | 'hodlDay'
         | 'hodlHourly'
+        | 'hodlWeekdays'
         | 'hodlAt'
         | 'hodlNextBuy'
         | 'terminalDealType'
@@ -558,6 +576,14 @@ export const mapBasicFields = (formData: BotFormData): FieldMappingResult => {
 
     if (resolvedStartCondition === StartConditionEnum.timer) {
       fieldsProcessed.push('hodlDay', 'hodlHourly', 'hodlAt', 'hodlNextBuy');
+
+      // always sent for a DCA timer, so clearing every day is saved too
+      if (!isComboBot) {
+        basicFields['hodlWeekdays'] = Array.isArray(hodlWeekdays)
+          ? [...hodlWeekdays]
+          : [];
+        fieldsMapped.push('hodlWeekdays');
+      }
 
       const parsedInterval = parseFloat(hodlDay);
       if (!hodlDay || Number.isNaN(parsedInterval) || parsedInterval <= 0) {
@@ -806,7 +832,7 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
     ? formData.combo.dcaByMarket
     : formData.dca.dcaByMarket;
   const allowRaiseToExchangeMin = isComboBot
-    ? false
+    ? formData.combo.allowRaiseToExchangeMin
     : formData.dca.allowRaiseToExchangeMin;
   const reduceToAvailableBalance = isComboBot
     ? false
@@ -814,6 +840,9 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
   const reduceToAvailableMinSize = isComboBot
     ? ''
     : formData.dca.reduceToAvailableMinSize;
+  const baseFunding = isComboBot
+    ? formData.combo.baseFunding
+    : formData.dca.baseFunding;
   const _activeOrdersCount = isComboBot
     ? formData.combo.activeOrdersCount
     : formData.dca.activeOrdersCount;
@@ -940,6 +969,9 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
         | 'allowRaiseToExchangeMin'
         | 'reduceToAvailableBalance'
         | 'reduceToAvailableMinSize'
+        | 'baseFunding'
+        | 'singlePosition'
+        | 'maxPositionEntries'
         | 'activeOrdersCount'
         | 'gridLevel'
         | 'baseGridLevels'
@@ -1011,13 +1043,21 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
     dcaFields['dcaByMarket'] = Boolean(dcaByMarket);
     fieldsMapped.push('dcaByMarket');
 
-    // DCA bots only — the combo engine does not implement the refusal. Always
-    // written explicitly so a new bot stores `false` rather than relying on
-    // the engine's missing-means-refuse.
-    if (!isComboBot) {
-      dcaFields['allowRaiseToExchangeMin'] = Boolean(allowRaiseToExchangeMin);
-      fieldsMapped.push('allowRaiseToExchangeMin');
+    // DCA and combo bots (and hedge sides). Always written explicitly so a
+    // new bot stores `false` rather than relying on the engine's
+    // missing-means-refuse.
+    dcaFields['allowRaiseToExchangeMin'] = Boolean(allowRaiseToExchangeMin);
+    fieldsMapped.push('allowRaiseToExchangeMin');
 
+    // DCA and combo bots, once the backend is known to have it (an older one
+    // rejects the whole save on an unknown input field). map-form-data-to-
+    // payload strips it otherwise.
+    if (formData.baseFundingSupported) {
+      dcaFields['baseFunding'] = toBaseFundingMode(baseFunding);
+      fieldsMapped.push('baseFunding');
+    }
+
+    if (!isComboBot) {
       // DCA bots only — open a smaller deal on a balance shortfall.
       dcaFields['reduceToAvailableBalance'] = Boolean(reduceToAvailableBalance);
       fieldsMapped.push('reduceToAvailableBalance');
@@ -1034,6 +1074,26 @@ export const mapDcaFields = (formData: BotFormData): FieldMappingResult => {
       } else {
         errors.push('Minimum reduced base order must be a non-negative number');
         fieldsSkipped.push('reduceToAvailableMinSize');
+      }
+
+      // Single position per pair — DCA bots only, and only once the backend
+      // is known to have it (an older one rejects the whole save on an
+      // unknown input field). map-form-data-to-payload strips both otherwise.
+      if (formData.singlePositionSupported) {
+        dcaFields['singlePosition'] = Boolean(formData.dca.singlePosition);
+        fieldsMapped.push('singlePosition');
+        const maxEntriesError = maxPositionEntriesError(
+          formData.dca.maxPositionEntries
+        );
+        if (maxEntriesError) {
+          errors.push(maxEntriesError);
+          fieldsSkipped.push('maxPositionEntries');
+        } else {
+          dcaFields['maxPositionEntries'] = normalizeMaxPositionEntries(
+            formData.dca.maxPositionEntries
+          );
+          fieldsMapped.push('maxPositionEntries');
+        }
       }
     }
 
@@ -4058,6 +4118,9 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
   const cooldownAfterDealStopOption = isComboBot
     ? formData.combo.cooldownAfterDealStopOption
     : formData.dca.cooldownAfterDealStopOption;
+  const cooldownAfterDealStopTrigger = isComboBot
+    ? formData.combo.cooldownAfterDealStopTrigger
+    : formData.dca.cooldownAfterDealStopTrigger;
   const useStaticPriceFilter = isComboBot
     ? formData.combo.useStaticPriceFilter
     : formData.dca.useStaticPriceFilter;
@@ -4100,6 +4163,7 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
       'cooldownAfterDealStopInterval',
       'cooldownAfterDealStopUnits',
       'cooldownAfterDealStopOption',
+      'cooldownAfterDealStopTrigger',
       'useStaticPriceFilter',
       'minOpenDeal',
       'maxOpenDeal',
@@ -4125,6 +4189,7 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
         | 'cooldownAfterDealStopInterval'
         | 'cooldownAfterDealStopUnits'
         | 'cooldownAfterDealStopOption'
+        | 'cooldownAfterDealStopTrigger'
         | 'useStaticPriceFilter'
         | 'minOpenDeal'
         | 'maxOpenDeal'
@@ -4259,12 +4324,20 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
           filterFields['cooldownAfterDealStopOption'] = CooldownOptionsEnum.bot;
           fieldsMapped.push('cooldownAfterDealStopOption');
         }
+
+        filterFields['cooldownAfterDealStopTrigger'] = Object.values(
+          CooldownStopTriggerEnum
+        ).includes(cooldownAfterDealStopTrigger as CooldownStopTriggerEnum)
+          ? cooldownAfterDealStopTrigger
+          : CooldownStopTriggerEnum.any;
+        fieldsMapped.push('cooldownAfterDealStopTrigger');
       } else {
         fieldsSkipped.push(
           'cooldownAfterDealStop',
           'cooldownAfterDealStopInterval',
           'cooldownAfterDealStopUnits',
-          'cooldownAfterDealStopOption'
+          'cooldownAfterDealStopOption',
+          'cooldownAfterDealStopTrigger'
         );
       }
     } else {
@@ -4277,7 +4350,8 @@ export const mapFilterFields = (formData: BotFormData): FieldMappingResult => {
         'cooldownAfterDealStop',
         'cooldownAfterDealStopInterval',
         'cooldownAfterDealStopUnits',
-        'cooldownAfterDealStopOption'
+        'cooldownAfterDealStopOption',
+        'cooldownAfterDealStopTrigger'
       );
     }
 
@@ -4551,7 +4625,28 @@ export const mapFormDataToBackend = (
         i.lwMaxDuration = `${i.lwMaxDuration || '1000'}`.trim() || undefined;
         i.lwThreshold = `${i.lwThreshold || '2'}`.trim() || undefined;
       }
-      return i;
+      if (i.type === IndicatorEnum.ote) {
+        i.oteLeftBars = `${i.oteLeftBars || '10'}`.trim() || undefined;
+        i.oteMinLegSize = `${i.oteMinLegSize || '1'}`.trim() || undefined;
+        i.oteLevel = `${i.oteLevel || '0.705'}`.trim() || undefined;
+      }
+      if (
+        i.type === IndicatorEnum.session &&
+        i.sessionRule === SessionRuleEnum.levels
+      ) {
+        i.sessionLevelA = i.sessionLevelA || SessionLevelEnum.price;
+        i.sessionLevelB = i.sessionLevelB || SessionLevelEnum.prevHigh;
+      }
+      // An entry no serializer claimed (see the merge above) still saves its
+      // smoothing in the stored shape; the length the form showed is the
+      // default when the row never held one.
+      if (i.smoothing) {
+        return normalizeSmoothingFields({
+          ...i,
+          smoothingLength: i.smoothingLength ?? DEFAULT_SMOOTHING_LENGTH,
+        });
+      }
+      return normalizeSmoothingFields(i);
     });
 
     if (result.errors) {

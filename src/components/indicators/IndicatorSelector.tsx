@@ -1,4 +1,5 @@
 import React from 'react';
+import { HelpArticlePill } from '@/components/ui/HelpArticlePill';
 import { Loader2, Star } from 'lucide-react';
 import { DialogSearchInput } from '@/components/common/DialogSearchInput';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,7 @@ import {
   groupIndicatorsByCategory,
 } from '@/types/indicators/indicatorLogic';
 import type { IndicatorDefinition } from '@/types/indicators/indicatorTypes';
+import { getPopularIndicators } from '@/types/indicators/popularIndicators';
 import type { IndicatorAction, IndicatorEnum } from '@/types';
 
 const normalize = (value: string) => value.toLowerCase();
@@ -118,6 +120,28 @@ export const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
     overrideIndicators,
   ]);
 
+  // The usual first picks, right under the user's favorites. Hidden while
+  // searching: the category results cover them then.
+  const popularDefinitions = React.useMemo(() => {
+    if (search) {
+      return [] as IndicatorDefinition[];
+    }
+    return getPopularIndicators().filter(
+      (definition) =>
+        !favorites.includes(definition.type) &&
+        matchesAction(definition) &&
+        matchesAllowedType(definition) &&
+        (overrideIndicators.length === 0 ||
+          overrideIndicators.includes(definition.type))
+    );
+  }, [
+    favorites,
+    matchesAction,
+    matchesAllowedType,
+    search,
+    overrideIndicators,
+  ]);
+
   const groupedIndicators = React.useMemo(() => {
     if (!search) {
       const grouped = groupIndicatorsByCategory();
@@ -213,16 +237,12 @@ export const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
             {definition.description}
           </div>
           {documentationUrl && parseHelpUrl(documentationUrl).helpSlug ? (
-            <button
-              type="button"
-              className="text-xs font-medium text-primary hover:underline text-left"
-              onClick={(event) => {
-                event.stopPropagation();
-                setDocHelpSlug(parseHelpUrl(documentationUrl).helpSlug);
-              }}
-            >
-              Learn more
-            </button>
+            <div>
+              <HelpArticlePill
+                url={documentationUrl}
+                onActivate={setDocHelpSlug}
+              />
+            </div>
           ) : null}
           {isPendingPort ? (
             <div className="text-xs font-medium text-amber-600">
@@ -302,6 +322,18 @@ export const IndicatorSelector: React.FC<IndicatorSelectorProps> = ({
               </h4>
               <div className="grid gap-sm sm:grid-cols-2 sm:auto-rows-fr">
                 {favoriteDefinitions.map((definition) =>
+                  renderIndicatorButton(definition)
+                )}
+              </div>
+            </section>
+          )}
+          {popularDefinitions.length > 0 && (
+            <section className="space-y-sm">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Popular
+              </h4>
+              <div className="grid gap-sm sm:grid-cols-2 sm:auto-rows-fr">
+                {popularDefinitions.map((definition) =>
                   renderIndicatorButton(definition)
                 )}
               </div>

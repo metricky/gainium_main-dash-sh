@@ -120,6 +120,8 @@ const dcaTabConfig: TabDescriptorInput[] = [
     icon: Cpu,
     Component: BotControllerSettingsTab,
     description: 'Automation controls and bot behavior settings',
+    tooltipText:
+      'Switches the whole bot on or off automatically, by price or indicators. It does not open deals: entry conditions for each deal are set in Deal Start.',
     tooltipUrl: '/help/bot-controller',
     featureFlag: 'botControllerTab',
     isDca: true,
@@ -141,6 +143,7 @@ const dcaTabConfig: TabDescriptorInput[] = [
     icon: ExternalLink,
     Component: WebhookSettingsTab,
     description: 'Webhook helper and prebuilt payloads',
+    isTerminal: true,
     isDca: true,
   },
 ];

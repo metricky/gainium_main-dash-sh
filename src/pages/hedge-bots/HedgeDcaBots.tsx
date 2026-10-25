@@ -10,6 +10,9 @@
  *
  * Routes: `/hedge/bot`.
  */
+import { PendingLiveValue } from '@/components/ui/pending-live-value';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
+import { dcaBotProfitUsdForReporting } from '@/utils/bots/reportingProfit';
 import { useCallback, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Archive, Bot, Plus } from 'lucide-react';
@@ -35,6 +38,8 @@ import { DataTable } from '@/components/ui/data-table/data-table';
 import { DualArcProgressGauge } from '@/components/ui/DualArcProgressGauge';
 import EmptyState from '@/components/ui/empty-state';
 import { HedgeBotActionsCell } from './HedgeBotActionsCell';
+import { toBotRef } from '@/features/bots/actions/botRef';
+import { useBulkBotRunner } from '@/hooks/useBulkBotRunner';
 import { Button } from '@/components/ui/button';
 import { MotionButton } from '@/components/ui/MotionWrapper';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -139,6 +144,7 @@ type EnrichedHedgeBot = HedgeBot & {
   __unPnlPerc?: number;
   __totalProfitUsd?: number;
   __currentCost?: number;
+  __positionValue?: number | undefined;
   __maxCost?: number;
   __avgDaily?: number;
   __avgDailyPerc?: number;
@@ -147,6 +153,8 @@ type EnrichedHedgeBot = HedgeBot & {
   __legCost?: { long?: number; short?: number };
   __legMaxCost?: { long?: number; short?: number };
   __legUnPnl?: { long?: number; short?: number };
+  __unPnlPending?: boolean;
+  __legUnPnlPending?: { long?: boolean; short?: boolean };
   __legUnPnlPerc?: { long?: number; short?: number };
 };
 
@@ -179,6 +187,10 @@ const HedgeDcaBotCardWrapper = ({
     {...(item.__legCost ? { legCost: item.__legCost } : {})}
     {...(item.__legMaxCost ? { legMaxCost: item.__legMaxCost } : {})}
     {...(item.__legUnPnl ? { legUnPnl: item.__legUnPnl } : {})}
+    unPnlPending={item.__unPnlPending}
+    {...(item.__legUnPnlPending
+      ? { legUnPnlPending: item.__legUnPnlPending }
+      : {})}
     {...(item.__legUnPnlPerc ? { legUnPnlPerc: item.__legUnPnlPerc } : {})}
   />
   );
@@ -242,6 +254,7 @@ const HedgeDcaBots = () => {
   const bots = botListPaging.bots;
   const unPnlMap = useHedgeUnPnlMap(bots, false);
   const privacyMode = useUIStore((s) => s.privacyMode);
+  const { formatUsd } = useReportingCurrency();
   // Demo/read-only sessions can't create bots — gate the "New" button the
   // same way the regular bot lists do.
   const readOnly = useIsReadOnly();
@@ -266,7 +279,7 @@ const HedgeDcaBots = () => {
           return {
             status: bot.status,
             totalProfitUsd: legs.reduce(
-              (sum, leg) => sum + (leg.profit?.totalUsd || 0),
+              (sum, leg) => sum + dcaBotProfitUsdForReporting(leg),
               0
             ),
             todayProfitUsd: legs.reduce(
@@ -302,7 +315,7 @@ const HedgeDcaBots = () => {
         // arithmetic and don't render 0 when only one leg has closed
         // deals.
         const totalProfitUsd = (bot.bots ?? []).reduce(
-          (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
+          (acc, leg) => acc + dcaBotProfitUsdForReporting(leg),
           0
         );
         // Deal-derived unrealized per leg + combined.
@@ -312,9 +325,12 @@ const HedgeDcaBots = () => {
         const shortLeg = (bot.bots ?? []).find(
           (l) => l.settings?.strategy === StrategyEnum.short
         );
-        const longUn = longLeg ? (legUnrealized.get(longLeg._id) ?? 0) : 0;
-        const shortUn = shortLeg ? (legUnrealized.get(shortLeg._id) ?? 0) : 0;
+        const longUn = longLeg ? (legUnrealized.byLeg.get(longLeg._id) ?? 0) : 0;
+        const shortUn = shortLeg ? (legUnrealized.byLeg.get(shortLeg._id) ?? 0) : 0;
         const combinedUn = longUn + shortUn;
+        const longPending = !!longLeg && legUnrealized.pending.has(longLeg._id);
+        const shortPending =
+          !!shortLeg && legUnrealized.pending.has(shortLeg._id);
         const longCost = u?.legCost?.long ?? 0;
         const shortCost = u?.legCost?.short ?? 0;
         const currentCost = u?.currentValue ?? 0;
@@ -325,6 +341,7 @@ const HedgeDcaBots = () => {
             currentCost > 0 ? (combinedUn / currentCost) * 100 : 0,
           __totalProfitUsd: totalProfitUsd,
           __currentCost: u?.currentValue,
+          __positionValue: u?.positionValue,
           __maxCost: u?.maxValue,
           __avgDaily: u?.avgDaily,
           __avgDailyPerc: u?.avgDailyPerc,
@@ -333,6 +350,8 @@ const HedgeDcaBots = () => {
           ...(u?.legCost ? { __legCost: u.legCost } : {}),
           ...(u?.legMaxCost ? { __legMaxCost: u.legMaxCost } : {}),
           __legUnPnl: { long: longUn, short: shortUn },
+          __unPnlPending: longPending || shortPending,
+          __legUnPnlPending: { long: longPending, short: shortPending },
           __legUnPnlPerc: {
             long: longCost > 0 ? (longUn / longCost) * 100 : 0,
             short: shortCost > 0 ? (shortUn / shortCost) * 100 : 0,
@@ -395,7 +414,7 @@ const HedgeDcaBots = () => {
       unPnlMap.get(selectedHedgeBot._id) ??
       computeHedgeUnPnl(selectedHedgeBot, getLocalPrices(), [], false, exchanges);
     const totalProfitUsd = (selectedHedgeBot.bots ?? []).reduce(
-      (acc, leg) => acc + (leg.profit?.totalUsd ?? 0),
+      (acc, leg) => acc + dcaBotProfitUsdForReporting(leg),
       0
     );
     return {
@@ -405,9 +424,19 @@ const HedgeDcaBots = () => {
       totalProfitUsd,
       isCombo: false,
       wrapperId: selectedHedgeBot._id,
+      status: selectedHedgeBot.status,
       sharedSettings: selectedHedgeBot.sharedSettings,
+      wrapper: selectedHedgeBot,
     };
   }, [selectedHedgeBot, drawerPrimaryBot, longBot, shortBot, unPnlMap, exchanges]);
+
+  // Bulk toolbar (row selection): the same registry-driven bulk actions as
+  // the other bot lists, acting on the hedge wrappers.
+  const toBulkRef = useCallback(
+    (row: EnrichedHedgeBot) => toBotRef(row, 'hedgeDca'),
+    []
+  );
+  const bulk = useBulkBotRunner(toBulkRef);
 
   const handleSelectBot = useCallback(
     (botId: string) => navigate(`/hedge/bot/view/${botId}`),
@@ -455,7 +484,13 @@ const HedgeDcaBots = () => {
   });
 
   const hedgeDealsAsOpenTrades = useMemo(
-    () => hedgeDealsForTab.map(dcaDealToOpenTrade),
+    // Leg deals keep the plain 'DCA' type for display; `hedge` makes the deal
+    // actions treat them as hedge deals.
+    () =>
+      hedgeDealsForTab.map((deal) => ({
+        ...dcaDealToOpenTrade(deal),
+        hedge: true,
+      })),
     [hedgeDealsForTab]
   );
 
@@ -500,8 +535,12 @@ const HedgeDcaBots = () => {
           description: BOT_METRIC_DESCRIPTIONS.hedge.status,
         },
         accessorFn: (row) => row.status,
-        cell: ({ getValue }) => (
-          <StatusChip status={getValue() as string} size="sm" />
+        cell: ({ getValue, row }) => (
+          <StatusChip
+            status={getValue() as string}
+            size="sm"
+            botId={row.original._id}
+          />
         ),
       },
       {
@@ -597,7 +636,7 @@ const HedgeDcaBots = () => {
         accessorFn: (row) => row.__currentCost ?? 0,
         cell: ({ getValue }) => (
           <span className="text-sm">
-            ${(getValue() as number).toFixed(2)}
+            {privacyMode ? '***' : formatUsd(getValue() as number)}
           </span>
         ),
         meta: {
@@ -608,7 +647,40 @@ const HedgeDcaBots = () => {
         },
         aggregationFn: 'sum',
         footerValue: (value: number) => (
-          <span className="text-sm font-bold">${value.toFixed(2)}</span>
+          <span className="text-sm font-bold">
+            {privacyMode ? '***' : formatUsd(value)}
+          </span>
+        ),
+      },
+      {
+        id: 'positionValue',
+        header: 'Current value',
+        accessorFn: (row) => row.__positionValue,
+        sortUndefined: 'last',
+        cell: ({ row }) => {
+          const value = row.original.__positionValue;
+          if (value === undefined) {
+            return <span className="text-sm text-muted-foreground">-</span>;
+          }
+          return (
+            <PendingLiveValue pending={row.original.__unPnlPending}>
+              <span className="text-sm">
+                {privacyMode ? '***' : formatUsd(value)}
+              </span>
+            </PendingLiveValue>
+          );
+        },
+        meta: {
+          description: BOT_METRIC_DESCRIPTIONS.hedge.currentValue,
+          filterType: 'number' as const,
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+        },
+        aggregationFn: 'sum',
+        footerValue: (value: number) => (
+          <span className="text-sm font-bold">
+            {privacyMode ? '***' : formatUsd(value)}
+          </span>
         ),
       },
       {
@@ -617,7 +689,7 @@ const HedgeDcaBots = () => {
         accessorFn: (row) => row.__maxCost ?? 0,
         cell: ({ getValue }) => (
           <span className="text-sm text-muted-foreground">
-            ${(getValue() as number).toFixed(2)}
+            {privacyMode ? '***' : formatUsd(getValue() as number)}
           </span>
         ),
         meta: {
@@ -629,7 +701,7 @@ const HedgeDcaBots = () => {
         aggregationFn: 'sum',
         footerValue: (value: number) => (
           <span className="text-sm font-bold text-muted-foreground">
-            ${value.toFixed(2)}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -684,7 +756,7 @@ const HedgeDcaBots = () => {
         ),
         meta: {
           description: BOT_METRIC_DESCRIPTIONS.hedge.realizedPnl,
-          filterType: 'number' as const,
+          filterType: 'number', reportingUsd: true as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
         },
@@ -699,7 +771,7 @@ const HedgeDcaBots = () => {
                   : 'text-sm text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -715,6 +787,7 @@ const HedgeDcaBots = () => {
             percentage={row.original.__unPnlPerc ?? 0}
             privacyMode={privacyMode}
             size="sm"
+            pending={row.original.__unPnlPending}
           />
         ),
         meta: {
@@ -734,7 +807,7 @@ const HedgeDcaBots = () => {
                   : 'text-sm text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -759,12 +832,13 @@ const HedgeDcaBots = () => {
               percentage={cost > 0 ? (net / cost) * 100 : 0}
               privacyMode={privacyMode}
               size="sm"
+              pending={row.original.__unPnlPending}
             />
           );
         },
         meta: {
           description: BOT_METRIC_DESCRIPTIONS.hedge.netPnl,
-          filterType: 'number' as const,
+          filterType: 'number', reportingUsd: true as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
         },
@@ -779,7 +853,7 @@ const HedgeDcaBots = () => {
                   : 'text-sm text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -814,7 +888,7 @@ const HedgeDcaBots = () => {
                   : 'text-sm text-destructive font-bold'
             }
           >
-            {privacyMode ? '***' : `$${value.toFixed(2)}`}
+            {privacyMode ? '***' : formatUsd(value)}
           </span>
         ),
       },
@@ -876,7 +950,7 @@ const HedgeDcaBots = () => {
     // (the unrealized values are baked into `enrichedBots`). The only reactive
     // dep is privacyMode, which the profit/PnL cells honor by masking values,
     // plus the account zone the Created cell renders its day in.
-    [privacyMode, accountTimeZone]
+    [privacyMode, accountTimeZone, formatUsd]
   );
   // Server mode only honours sorts/filters with a server field.
   const serverColumns = useMemo(
@@ -936,7 +1010,10 @@ const HedgeDcaBots = () => {
           verticalGap
           className="h-full min-h-0 flex-1"
         >
-          <motion.div {...HEDGE_BOTS_WIDGET_MOTION}>
+          <motion.div
+            {...HEDGE_BOTS_WIDGET_MOTION}
+            className="md:flex md:min-h-0 md:flex-1 md:flex-col"
+          >
             <Widget
               className="p-sm text-card-foreground flex-1 min-h-[500px]"
               noPadding
@@ -945,8 +1022,9 @@ const HedgeDcaBots = () => {
               <Tabs
                 value={pageTab}
                 onValueChange={(v) => setPageTab(v as 'bots' | 'deals')}
+                className="md:flex md:min-h-0 md:flex-1 md:flex-col"
               >
-              <div className="flex h-full min-h-[500px] flex-col">
+              <div className="flex h-full min-h-[500px] flex-col md:h-auto md:flex-1">
                 <motion.div
                   className="shrink-0"
                   {...HEDGE_BOTS_HEADER_MOTION}
@@ -1048,7 +1126,7 @@ const HedgeDcaBots = () => {
                   className="flex-1 min-h-[400px] overflow-hidden mt-0"
                 >
                 <motion.div
-                  className="flex-1 min-h-[400px] overflow-hidden"
+                  className="flex-1 min-h-[400px] overflow-hidden md:h-full"
                   {...HEDGE_BOTS_TABLE_MOTION}
                 >
                     <DataTable
@@ -1057,12 +1135,13 @@ const HedgeDcaBots = () => {
                       serverSide={botListPaging.serverSide}
                       data={enrichedBots}
                       getRowId={(row) => row._id}
+                      bulkActions={bulk.bulkActions}
                       enableGlobalFilter
                       enableColumnFilters
                       enableQuickFilterBar
                       quickFilterBarStorageKey="hedge-dca-bots-filters"
                       enableColumnVisibility
-                      defaultColumnVisibility={{ botId: false }}
+                      defaultColumnVisibility={{ botId: false, positionValue: false }}
                       enableSorting
                       enableCardView
                       defaultView="cards"
@@ -1161,6 +1240,7 @@ const HedgeDcaBots = () => {
                       }
                       onRowClick={(row) => handleSelectBot(row._id)}
                     />
+                    {bulk.dialogs}
                 </motion.div>
                 </TabsContent>
 
@@ -1169,6 +1249,7 @@ const HedgeDcaBots = () => {
                   className="flex-1 min-h-[400px] overflow-hidden mt-0"
                 >
                   <OpenOrdersWidget
+                    pinHeaderOnPageScroll
                     widgetId="hedge-dca-bot-deals"
                     data={{ trades: hedgeDealsAsOpenTrades }}
                     rawDeals={hedgeDealsForTab}

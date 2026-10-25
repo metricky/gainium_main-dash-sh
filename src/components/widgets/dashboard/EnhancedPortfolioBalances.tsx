@@ -62,6 +62,7 @@ import {
   type FilterItem,
 } from '../shared/WidgetFilterArea';
 import { ExportDialog } from './ExportDialog';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 
 // Mock logger to replace removed logger calls
 const logger = {
@@ -252,7 +253,6 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
   //   'selectedCategories',
   //   ['ALL']
   // );
-  const [selectedCurrency, setSelectedCurrency] = useState('USD');
   const [customName, setCustomName] = usePersistedState('customName', '');
 
   // Get privacy mode state
@@ -414,50 +414,31 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
 
   const data = getEnhancedBalanceData();
 
-  // Available currencies (simplified for this widget)
-  const availableCurrencies = useMemo(
-    () => [
-      { code: 'USD', name: 'US Dollar', symbol: '$', rate: 1 },
-      { code: 'EUR', name: 'Euro', symbol: '€', rate: 0.85 },
-      { code: 'GBP', name: 'British Pound', symbol: '£', rate: 0.73 },
-      { code: 'JPY', name: 'Japanese Yen', symbol: '¥', rate: 110.0 },
-    ],
-    []
-  );
+  const { currency, holding, toReporting, format } = useReportingCurrency();
 
-  // Get currency conversion rate and formatting
-  const getCurrencyInfo = useCallback(
-    (currencyCode: string) => {
-      const currency = availableCurrencies.find((c) => c.code === currencyCode);
-      return currency || availableCurrencies[0];
-    },
-    [availableCurrencies]
-  );
-
-  // Format value in selected currency
+  // Format a value already in the reporting currency
   const formatValueInCurrency = useCallback(
-    (value: number, showSymbol = true) => {
-      if (privacyMode) {
-        return '***';
-      }
-      const currencyInfo = getCurrencyInfo(selectedCurrency);
-      const convertedValue = value * currencyInfo.rate;
-      const formatted = convertedValue.toLocaleString('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
-      return showSymbol ? `${currencyInfo.symbol}${formatted}` : formatted;
-    },
-    [selectedCurrency, getCurrencyInfo, privacyMode]
+    (value: number) => (privacyMode ? '***' : format(value)),
+    [format, privacyMode]
+  );
+
+  // A row's value in the reporting currency: a fiat balance in that currency
+  // keeps its face amount, everything else converts from its USD value.
+  const rowValue = useCallback(
+    (row: EnhancedBalanceData, amount: number, usd: number) =>
+      holding(row.token, amount || 0, usd || 0),
+    [holding]
   );
 
   // A holding no price source could value must say so. Rendering it as $0.00
   // is a confident claim that a real balance is worthless, and it silently
   // understates every total it feeds.
   const formatRowValue = useCallback(
-    (row: EnhancedBalanceData, value: number) =>
-      row.priceUnavailable ? 'price unavailable' : formatValueInCurrency(value),
-    [formatValueInCurrency]
+    (row: EnhancedBalanceData, amount: number, usd: number) =>
+      row.priceUnavailable
+        ? 'price unavailable'
+        : formatValueInCurrency(rowValue(row, amount, usd)),
+    [formatValueInCurrency, rowValue]
   );
 
   // Handle bot legend popover
@@ -467,7 +448,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
 
   // Memoize columns to prevent infinite renders
   const columns = useMemo<ColumnDef<EnhancedBalanceData>[]>(() => {
-    // The USD-valued columns render in the SELECTED display currency, so their
+    // The USD-valued columns render in the reporting currency, so their
     // number filter compares against that converted figure (what the user
     // reads), not the raw USD the accessor holds. An unpriced asset has no
     // value to compare, so it matches no numeric operator.
@@ -476,7 +457,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       (row: unknown): number | undefined => {
         const balance = row as EnhancedBalanceData;
         if (balance.priceUnavailable) return undefined;
-        return (pick(balance) || 0) * getCurrencyInfo(selectedCurrency).rate;
+        return pick(balance) || 0;
       };
 
     const cols: ColumnDef<EnhancedBalanceData>[] = [
@@ -558,7 +539,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatRowValue(row.original, freeUsd)}
+              {token} • {formatRowValue(row.original, amount, freeUsd)}
             </div>
           </div>
         );
@@ -569,9 +550,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         filterType: 'number',
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
-        totalsValueFn: (row: EnhancedBalanceData) => row.freeUsd || 0,
+        totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.free, row.freeUsd),
         getNumericFilterValue: displayCurrencyFilterValue(
-          (balance) => balance.freeUsd
+          (balance) => rowValue(balance, balance.free, balance.freeUsd)
         ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
@@ -592,7 +574,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatRowValue(row.original, usedUsd)}
+              {token} • {formatRowValue(row.original, amount, usedUsd)}
             </div>
           </div>
         );
@@ -603,9 +585,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         filterType: 'number',
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
-        totalsValueFn: (row: EnhancedBalanceData) => row.usedUsd || 0,
+        totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.used, row.usedUsd),
         getNumericFilterValue: displayCurrencyFilterValue(
-          (balance) => balance.usedUsd
+          (balance) => rowValue(balance, balance.used, balance.usedUsd)
         ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
@@ -626,7 +609,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
               {formatTokenAmount(amount)}
             </div>
             <div className="text-xs text-muted-foreground">
-              {token} • {formatRowValue(row.original, totalUsd)}
+              {token} • {formatRowValue(row.original, amount, totalUsd)}
             </div>
           </div>
         );
@@ -637,9 +620,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
         filterType: 'number',
         enableTotalsRow: true,
         totalsDefaultAggregation: 'sum' as const,
-        totalsValueFn: (row: EnhancedBalanceData) => row.totalUsd || 0,
+        totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.total, row.totalUsd),
         getNumericFilterValue: displayCurrencyFilterValue(
-          (balance) => balance.totalUsd
+          (balance) => rowValue(balance, balance.total, balance.totalUsd)
         ),
       },
       footerValue: (value: number) => formatValueInCurrency(value),
@@ -718,7 +702,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 )}
               </div>
               <div className="text-xs text-muted-foreground">
-                {formatRowValue(row.original, requiredUsd)}
+                {formatRowValue(row.original, amount, requiredUsd)}
               </div>
             </div>
           );
@@ -729,9 +713,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
-          totalsValueFn: (row: EnhancedBalanceData) => row.requiredUsd || 0,
+          totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.required, row.requiredUsd),
           getNumericFilterValue: displayCurrencyFilterValue(
-            (balance) => balance.requiredUsd
+            (balance) => rowValue(balance, balance.required, balance.requiredUsd)
           ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
@@ -751,7 +736,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 {formatTokenAmount(amount)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {token} • {formatRowValue(row.original, plannedUsd)}
+                {token} • {formatRowValue(row.original, amount, plannedUsd)}
               </div>
             </div>
           );
@@ -762,9 +747,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
-          totalsValueFn: (row: EnhancedBalanceData) => row.plannedUsd || 0,
+          totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.planned, row.plannedUsd),
           getNumericFilterValue: displayCurrencyFilterValue(
-            (balance) => balance.plannedUsd
+            (balance) => rowValue(balance, balance.planned, balance.plannedUsd)
           ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
@@ -789,7 +775,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
                 {formatTokenAmount(amount)}
               </div>
               <div className="text-xs text-muted-foreground">
-                {token} • {formatRowValue(row.original, freeAndOverUsd)}
+                {token} • {formatRowValue(row.original, amount, freeAndOverUsd)}
               </div>
             </div>
           );
@@ -800,9 +786,10 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           filterType: 'number',
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum' as const,
-          totalsValueFn: (row: EnhancedBalanceData) => row.freeAndOverUsd || 0,
+          totalsValueFn: (row: EnhancedBalanceData) =>
+          rowValue(row, row.freeAndOver, row.freeAndOverUsd),
           getNumericFilterValue: displayCurrencyFilterValue(
-            (balance) => balance.freeAndOverUsd
+            (balance) => rowValue(balance, balance.freeAndOver, balance.freeAndOverUsd)
           ),
         },
         footerValue: (value: number) => formatValueInCurrency(value),
@@ -815,11 +802,9 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       header: 'CURRENT PRICE',
       cell: ({ row, getValue }) => {
         const price = getValue() as number;
-        const currencyInfo = getCurrencyInfo(selectedCurrency);
-        const convertedPrice = price * currencyInfo.rate;
         const formattedPrice = row.original.priceUnavailable
           ? 'price unavailable'
-          : formatPriceWithPrecision(convertedPrice, currencyInfo.symbol);
+          : formatPriceWithPrecision(toReporting(price), currency.symbol);
 
         return (
           <div className="text-right">
@@ -845,7 +830,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
       meta: {
         filterType: 'number',
         getNumericFilterValue: displayCurrencyFilterValue(
-          (balance) => balance.currentPrice
+          (balance) => toReporting(balance.currentPrice)
         ),
       },
     });
@@ -898,11 +883,12 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
     showBotUsage,
     formatValueInCurrency,
     formatRowValue,
+    rowValue,
     botLegendPopover.isOpen,
     botLegendPopover.balance?.id,
     screenerMap,
-    selectedCurrency,
-    getCurrencyInfo,
+    currency,
+    toReporting,
     resolvePairAsset,
   ]);
 
@@ -981,7 +967,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
 
   // Calculate total portfolio value
   const totalPortfolioValue = filteredData.reduce(
-    (sum, item) => sum + item.totalUsd,
+    (sum, item) => sum + rowValue(item, item.total, item.totalUsd),
     0
   );
 
@@ -1220,7 +1206,7 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
   const portfolioChange = getPortfolioChange();
   const portfolioValue = {
     primary: totalPortfolioValue,
-    secondary: selectedCurrency,
+    secondary: currency.code,
     change: portfolioChange,
   };
 
@@ -1353,52 +1339,6 @@ const EnhancedPortfolioBalances: React.FC<EnhancedBalanceTableProps> = ({
           </div>
         </div>
 
-        {/* Currency Selection */}
-        <div>
-          <label className="text-sm font-medium text-foreground mb-2 block">
-            Display Currency
-          </label>
-          <div className="space-y-xs">
-            {availableCurrencies.map((currency) => (
-              <div
-                key={currency.code}
-                className="flex items-center justify-between p-xs rounded hover:bg-muted/50 cursor-pointer"
-                onClick={() => {
-                  setSelectedCurrency(currency.code);
-                }}
-              >
-                <div className="flex items-center gap-sm">
-                  <div className="w-6 h-6 rounded-full bg-muted flex items-center justify-center text-xs font-semibold">
-                    {currency.symbol}
-                  </div>
-                  <div>
-                    <div className="text-foreground font-medium text-sm">
-                      {currency.code}
-                    </div>
-                    <div className="text-muted-foreground text-xs">
-                      {currency.name}
-                    </div>
-                  </div>
-                </div>
-                {selectedCurrency === currency.code && (
-                  <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center">
-                    <svg
-                      className="w-3 h-3 text-primary-foreground"
-                      fill="currentColor"
-                      viewBox="0 0 20 20"
-                    >
-                      <path
-                        fillRule="evenodd"
-                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                        clipRule="evenodd"
-                      />
-                    </svg>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     ),
     ...(onRemove && { onRemove }),

@@ -5,6 +5,7 @@ import { logger } from '@/lib/loggerInstance';
 import { getCSSVar } from '@/lib/utils/chart';
 import {
   BotOrderSideEnum,
+  IndicatorEnum,
   type AvgPrice,
   type ChartIndicatorsConfig,
   type ChartOrderDrawing,
@@ -37,6 +38,56 @@ import type {
   TransactionExtended,
 } from './types';
 import { useInitializeWidget } from './useInitializeWidget';
+
+// The slice of TradingView's ITimeScaleApi the Session view restore uses.
+interface ChartTimeScale {
+  barSpacing: () => number;
+  rightOffset: () => number;
+  setBarSpacing: (spacing: number) => void;
+  setRightOffset: (offset: number) => void;
+  defaultRightOffset?: () => { value: () => number };
+  rightOffsetChanged?: () => {
+    subscribe: (obj: null, cb: () => void) => void;
+    unsubscribe: (obj: null, cb: () => void) => void;
+  };
+}
+
+// A right margin wider than this many bars is not one the user set (it is
+// the Session study's look-ahead, e.g. from a saved layout): use the default.
+const MAX_KEPT_RIGHT_OFFSET_BARS = 50;
+const SESSION_REFIT_WINDOW_MS = 3_000;
+
+const restoreTimeScaleView = (
+  timeScale: ChartTimeScale,
+  view: { spacing: number; offset: number }
+) => {
+  const offset =
+    view.offset > MAX_KEPT_RIGHT_OFFSET_BARS
+      ? (timeScale.defaultRightOffset?.().value() ?? 10)
+      : view.offset;
+  const apply = () => {
+    timeScale.setBarSpacing(view.spacing);
+    timeScale.setRightOffset(offset);
+  };
+  apply();
+  // TradingView refits when the study's data lands, after createStudy has
+  // resolved: undo that one refit, then stop listening.
+  const changed = timeScale.rightOffsetChanged?.();
+  if (!changed) return;
+  let done = false;
+  const onChange = () => {
+    if (done) return;
+    done = true;
+    changed.unsubscribe(null, onChange);
+    apply();
+  };
+  changed.subscribe(null, onChange);
+  setTimeout(() => {
+    if (done) return;
+    done = true;
+    changed.unsubscribe(null, onChange);
+  }, SESSION_REFIT_WINDOW_MS);
+};
 
 interface BasicChartAPI {
   setResolution?: (interval: string) => void;
@@ -355,6 +406,29 @@ export const TradingViewChartCore = forwardRef<
 
       return chartCandidate as OverlayChart;
     }, [widgetRef]);
+
+    // A visible range asked for while a symbol / resolution is loading. The
+    // load ends by scrolling to the latest bar, discarding any range set
+    // mid-load, so it is applied once the new data is in.
+    const pendingFrameRef = useRef<{ from: number; to: number } | null>(null);
+    const applyFrame = useCallback(
+      (range: { from: number; to: number }) => {
+        const api = getActiveChart() as BasicChartAPI | null;
+        if (api?.setVisibleRange) api.setVisibleRange(range);
+        else api?.scrollToTime?.(range.from, true, true);
+      },
+      [getActiveChart]
+    );
+    const applyPendingFrame = useCallback(() => {
+      const range = pendingFrameRef.current;
+      pendingFrameRef.current = null;
+      if (!range) return;
+      try {
+        applyFrame(range);
+      } catch (e) {
+        logger.error('Deferred chart frame failed', e);
+      }
+    }, [applyFrame]);
 
     const renderOrderLines = useCallback(
       (chart: OverlayChart) => {
@@ -864,6 +938,7 @@ export const TradingViewChartCore = forwardRef<
         // than leave the chart bare.
         logger.warn('[Overlays] Chart load never signalled completion');
         pendingLoadSinceRef.current = null;
+        applyPendingFrame();
       }
 
       const chart = getActiveChart();
@@ -889,7 +964,7 @@ export const TradingViewChartCore = forwardRef<
       } else {
         retryAttemptsRef.current = 0;
       }
-    }, [getActiveChart, scheduleOverlayRetry]);
+    }, [applyPendingFrame, getActiveChart, scheduleOverlayRetry]);
     flushOverlaysRef.current = flushOverlays;
 
     const requestOverlays = useCallback(
@@ -922,9 +997,10 @@ export const TradingViewChartCore = forwardRef<
         // release the newer load.
         if (token != null && token !== pendingLoadTokenRef.current) return;
         pendingLoadSinceRef.current = null;
+        applyPendingFrame();
         requestOverlays();
       },
-      [requestOverlays]
+      [applyPendingFrame, requestOverlays]
     );
 
     /** Hold the overlays until the chart's current data has loaded. */
@@ -1065,6 +1141,7 @@ export const TradingViewChartCore = forwardRef<
           // load's own callback or the next data-loaded event).
           if (key === pendingLoadFromKeyRef.current) return;
           pendingLoadSinceRef.current = null;
+          applyPendingFrame();
           requestOverlays();
           return;
         }
@@ -1085,7 +1162,7 @@ export const TradingViewChartCore = forwardRef<
           /* chart already torn down */
         }
       };
-    }, [getActiveChart, isChartReady, requestOverlays]);
+    }, [applyPendingFrame, getActiveChart, isChartReady, requestOverlays]);
 
     useEffect(
       () => () => {
@@ -1400,10 +1477,29 @@ export const TradingViewChartCore = forwardRef<
           // when the chart iframe has been torn down.
           const chart = getActiveChart();
           if (!chart) return;
-          clearCustomIndicators(chart as never);
           const configs = Array.isArray(indicators) ? indicators : [];
+          // The Session study paints upcoming sessions through a forward
+          // plot offset. When its data arrives TradingView widens the right
+          // margin to fit those future points and shrinks the bar spacing,
+          // so the candles end up squeezed into a corner. Put the view back.
+          const timeScale = configs.some(
+            (config) => config.type === IndicatorEnum.session
+          )
+            ? (chart as { getTimeScale?: () => ChartTimeScale })
+                .getTimeScale?.()
+            : undefined;
+          const keepView = timeScale
+            ? {
+                spacing: timeScale.barSpacing(),
+                offset: timeScale.rightOffset(),
+              }
+            : null;
+          clearCustomIndicators(chart as never);
           for (const config of configs) {
             await addTradingViewIndicator(chart as never, config);
+          }
+          if (timeScale && keepView) {
+            restoreTimeScaleView(timeScale, keepView);
           }
         },
         centerAtTimestampMs: (timestampMs: number, endTimestampMs?: number) => {
@@ -1438,8 +1534,14 @@ export const TradingViewChartCore = forwardRef<
               const halfWindow = Math.max(1, 100 * secondsPerBar);
               range = { from: startSec - halfWindow, to: startSec + halfWindow };
             }
-            if (api.setVisibleRange) api.setVisibleRange(range);
-            else api.scrollToTime?.(startSec, true, true);
+            // Mid-load (e.g. a deal on another pair just switched the
+            // symbol): hold the frame until the new data is in.
+            if (pendingLoadSinceRef.current != null) {
+              pendingFrameRef.current = range;
+              return;
+            }
+            pendingFrameRef.current = null;
+            applyFrame(range);
           } catch (e) {
             logger.error('centerAtTimestampMs failed', e);
           }
@@ -1950,6 +2052,7 @@ export const TradingViewChartCore = forwardRef<
 
       return _ensureHandleMatches;
     }, [
+      applyFrame,
       beginChartLoad,
       endChartLoad,
       getActiveChart,

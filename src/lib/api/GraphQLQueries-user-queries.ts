@@ -11,7 +11,16 @@ import type { ExchangeEnum } from '../../types/exchange.types';
 import { IS_CLOUD } from '../../config/mode';
 import { credits, period } from './GraphQLQueries-fragments';
 
-type FavoriteIndicatorInput = { indicator: IndicatorEnum | string };
+type FavoriteIndicatorInput = {
+  indicator: IndicatorEnum | string;
+  /** JSON of the indicator settings kept with the favorite */
+  params?: string;
+};
+
+// Saved settings ride along only when the backend has them (see
+// requestFavoriteIndicators); older backends reject the field.
+const favoritePresetsSelection = (withPresets: boolean) =>
+  withPresets ? 'presets { indicator params }' : '';
 
 // 2FA is a cloud-only feature: app-sh has no OTP in its GraphQL layer and
 // doesn't expose `otp` on the `user` type, so gate behind IS_CLOUD to avoid a
@@ -423,6 +432,21 @@ export const userQueries = {
     return { query };
   },
 
+  // Kept out of the `user`/`userSettings` selections on purpose: a backend
+  // that predates the field rejects the whole query, and this one failing
+  // must only cost the reporting currency (USD), not the user.
+  userReportingCurrency: () => {
+    const query = `query userReportingCurrency{
+                        user {
+                            status
+                            data {
+                                reportingCurrency
+                            }
+                        }
+                    }`;
+    return { query };
+  },
+
   user: () => {
     const query = `query user{
                         user {
@@ -519,6 +543,7 @@ export const userQueries = {
       timeframe?: number;
       botType?: BotTypesEnum;
       terminal?: boolean;
+      exchangeUUIDs?: string[];
     },
     fields?: string
   ) => {
@@ -545,6 +570,7 @@ export const userQueries = {
   setUserSettings: (input: {
     timezone?: string;
     theme?: string;
+    reportingCurrency?: string;
     paperContext?: boolean;
     shouldOnBoard?: boolean;
     shouldOnBoardExchange?: boolean;
@@ -1107,26 +1133,31 @@ export const userQueries = {
     return { query, variables };
   },
 
-  getUserFavoriteIndicators: () => {
+  getUserFavoriteIndicators: (withPresets = false) => {
     const query = `query getUserFavoriteIndicators{
   getUserFavoriteIndicators {
   status
   reason
   data {
   indicators
+  ${favoritePresetsSelection(withPresets)}
   }
   }
   }`;
     return { query };
   },
 
-  addUserFavoriteIndicator: (input: FavoriteIndicatorInput) => {
+  addUserFavoriteIndicator: (
+    input: FavoriteIndicatorInput,
+    withPresets = false
+  ) => {
     const query = `mutation addUserFavoriteIndicator($input: favoriteIndicatorInput!) {
   addUserFavoriteIndicator(input: $input) {
   status
   reason
   data {
   indicators
+  ${favoritePresetsSelection(withPresets)}
   } 
   }
   }`;
@@ -1134,13 +1165,17 @@ export const userQueries = {
     return { query, variables };
   },
 
-  removeUserFavoriteIndicator: (input: FavoriteIndicatorInput) => {
+  removeUserFavoriteIndicator: (
+    input: FavoriteIndicatorInput,
+    withPresets = false
+  ) => {
     const query = `mutation removeUserFavoriteIndicator($input: favoriteIndicatorInput!) {
   removeUserFavoriteIndicator(input: $input) {
   status
   reason
   data {
   indicators
+  ${favoritePresetsSelection(withPresets)}
   }
   }
   }`;

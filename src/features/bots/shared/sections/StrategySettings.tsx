@@ -10,11 +10,15 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { TerminalButtonStack } from '@/components/ui/terminal-button-stack';
 import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
+import { IS_CLOUD } from '@/config/mode';
 import MarginTypeSelector from '@/components/widgets/bots/MarginTypeSelector';
 import OrderSizeReferenceSelector from '@/components/widgets/bots/OrderSizeReferenceSelector';
 import StrategySelector from '@/components/widgets/bots/StrategySelector';
 import LeverageSlider from '@/components/widgets/shared/LeverageSlider';
 import LiquidationSummary from '@/components/widgets/bots/LiquidationSummary';
+import { AllowRaiseToExchangeMinRow } from './AllowRaiseToExchangeMinRow';
+import { BaseFundingRow } from './BaseFundingRow';
+import { useBaseFundingState } from './useBaseFundingState';
 import SettingsRow, {
   SettingsRowSurface,
 } from '@/components/widgets/shared/SettingsRow';
@@ -46,6 +50,9 @@ import React, { useCallback, useMemo } from 'react';
 import { useStrategySettingsTab } from '../../bot-types/dca/form/hooks/useStrategySettignsTab';
 import { useHedgeBotFormOptional } from '@/contexts/bots/form/HedgeBotFormProvider';
 import { formatNumericInput } from '../../bot-types/dca/form/hooks/useTerminalControls';
+
+const DIRECTION_TOOLTIP =
+  'Choose the direction of your trades. Long means buying low and selling high, while short means selling high and buying low.';
 import { PERCENTAGE_GUARD } from '../utils/order-guard';
 
 export interface StrategySettingsProps {
@@ -163,7 +170,6 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
   const reinvestValue = useBotFormSelector('reinvestValue');
   const notUseLimitReposition = useBotFormSelector('notUseLimitReposition');
   const skipBalanceCheck = useBotFormSelector('skipBalanceCheck');
-  const allowRaiseToExchangeMin = useBotFormSelector('allowRaiseToExchangeMin');
   const reduceToAvailableBalance = useBotFormSelector(
     'reduceToAvailableBalance'
   );
@@ -174,6 +180,7 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
   // Hedge-DCA legs render this form too, but the engine never refuses on a
   // hedge leg, so the switch would do nothing there.
   const isHedgeContext = useHedgeBotFormOptional() !== undefined;
+  const { active: baseFundingActive } = useBaseFundingState();
   const futures = useBotFormSelector('futures');
   // Estimated liquidation price for the ladder this form describes. Null for
   // spot bots and leverage <= 1, in which case nothing renders.
@@ -275,7 +282,11 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
         {shouldShowDirectionControl && (
           <SettingsRow
             name="Direction"
-            tooltip="Choose the direction of your trades. Long means buying low and selling high, while short means selling high and buying low."
+            tooltip={
+              directionDisabled && futures && IS_CLOUD
+                ? `${DIRECTION_TOOLTIP} To switch an existing futures bot, use Reverse in its ⋮ menu: it closes the open deal at market, then restarts the bot in the other direction.`
+                : DIRECTION_TOOLTIP
+            }
           >
             <StrategySelector
               strategy={strategy}
@@ -356,9 +367,9 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
                   <div className="space-y-xs">
                     {marginNotices.map((notice) => (
                       <SettingsAlert
-                        key={notice}
-                        variant="warning"
-                        title={notice}
+                        key={notice.message}
+                        variant={notice.variant}
+                        title={notice.message}
                       />
                     ))}
                   </div>
@@ -463,7 +474,11 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
                     // capital is committed to an open position). Validating
                     // against it produced a false "exceeds available balance"
                     // error on the hedge-combo edit form (forum #4921 / bug #94).
-                    disableBalanceValidation={Boolean(futures)}
+                    // With base funding on, a short spot deal does not need the
+                    // base coin in the account (main-app spec 044).
+                    disableBalanceValidation={
+                      Boolean(futures) || baseFundingActive
+                    }
                     {...(typeof baseOrderGuard?.min === 'number'
                       ? { min: baseOrderGuard.min }
                       : {})}
@@ -786,21 +801,9 @@ export const StrategySettings: React.FC<StrategySettingsRootProps> = ({
           )}
         </SettingsRow>
 
-        {!isComboBot && !isHedgeContext && (
-          <SettingsRow
-            name="Allow increasing orders to exchange minimum"
-            tooltip="If a Base or Safety Order is smaller than the exchange's minimum order size for a pair, the bot won't open a deal on that pair and will notify you, so your configured sizes are never exceeded. Turn this on to let the bot increase those orders to the exchange minimum instead. Increases of up to 10% (rounding) are always allowed."
-            trailing={
-              <Switch
-                id="allow-raise-to-exchange-min"
-                checked={!!allowRaiseToExchangeMin}
-                onCheckedChange={(checked) =>
-                  updateFormData('allowRaiseToExchangeMin', checked)
-                }
-              />
-            }
-          />
-        )}
+        <AllowRaiseToExchangeMinRow updateFormData={updateFormData} />
+
+        <BaseFundingRow updateFormData={updateFormData} />
 
         {/* Regular DCA with a fixed order size only: a balance-percentage size
             already follows the balance, risk/reward sizes by risk, and the

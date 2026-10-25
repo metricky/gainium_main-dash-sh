@@ -25,6 +25,7 @@ import {
   BacktestStatsTab,
   ShareBacktestButton,
 } from '@/components/widgets/bots/backtest';
+import { BacktestSettingsTab } from '@/components/widgets/bots/backtest/BacktestSettingsTab';
 import {
   BacktestResultsFullModal,
   RedesignOverviewTab,
@@ -132,6 +133,9 @@ export interface BotBacktestPanelProps<TResult extends BacktestRowBase> {
   activeInsightsTab: string;
   onActiveInsightsTabChange: (tab: string) => void;
 
+  /** Tabs rendered before the backtests tab (edit: the bot's Deals). */
+  leadingTabs?: BotPanelInsightsTab[];
+
   /** Passed to useBacktests({ enabled }). New: omit/true. Edit: hasBotId. */
   backtestsEnabled?: boolean;
 
@@ -164,6 +168,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
   mode,
   activeInsightsTab,
   onActiveInsightsTabChange,
+  leadingTabs,
   backtestsEnabled,
   summaryMessages,
   onLoadBacktestIntoForm,
@@ -741,6 +746,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
     ];
 
     const tabs: BotPanelInsightsTab[] = [
+      ...(leadingTabs ?? []),
       {
         key: descriptor.tabKey,
         title: descriptor.tabTitle,
@@ -781,6 +787,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
 
     return tabs;
   }, [
+    leadingTabs,
     backtestsBadge,
     tableId,
     rows,
@@ -847,7 +854,7 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
   const isShareMode = Boolean(enableShareViewer) && Boolean(backtestShareId);
 
   // Share-mode: render the shared backtest detail with the full set of
-  // tabs (Overview / Stats / Deals / Analysis). The page wraps this in
+  // tabs (Overview / Stats / Deals / Analysis / Settings). The page wraps this in
   // its own MainLayout(pageTitle="Shared backtest").
   const shareContent = useMemo<ReactNode>(() => {
     if (!isShareMode) return null;
@@ -903,6 +910,9 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
               <TabsTrigger value="bt-analysis" disabled={!hasAnalysis}>
                 Analysis
               </TabsTrigger>
+              {shareBacktest.settings && (
+                <TabsTrigger value="bt-settings">Settings</TabsTrigger>
+              )}
             </TabsList>
             <TabsContent value="bt-overview" className="">
               {shareVm && <RedesignOverviewTab vm={shareVm} />}
@@ -921,6 +931,12 @@ export function BotBacktestPanel<TResult extends BacktestRowBase>({
                   No analysis data available for this backtest.
                 </div>
               )}
+            </TabsContent>
+            <TabsContent value="bt-settings" className="">
+              <BacktestSettingsTab
+                backtest={shareBacktest}
+                kind={descriptor.shareSubKind}
+              />
             </TabsContent>
           </Tabs>
         ) : (

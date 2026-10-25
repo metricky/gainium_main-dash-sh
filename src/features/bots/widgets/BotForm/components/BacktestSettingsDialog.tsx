@@ -1,4 +1,6 @@
 import { Button } from '@/components/ui/button';
+import { HelpArticlePill } from '@/components/ui/HelpArticlePill';
+import SettingsAlert from '@/components/ui/SettingsAlert';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
@@ -8,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { DateTimeInput } from '@/components/ui/date-time-input';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ProgressBar } from '@/components/ui/ProgressBar';
@@ -470,10 +473,10 @@ export const BacktestSettingsDialog: React.FC<{
             <DialogTitle>Saved Periods</DialogTitle>
           </DialogHeader>
           <DialogBody>
-            <p className="text-xs text-muted-foreground">
-              Note that the actual backtesting period might be slightly modified
-              to accommodate the chosen timeframe.
-            </p>
+            <SettingsAlert
+              variant="info"
+              title="Periods snap to the chosen timeframe"
+            />
             {periods.length === 0 ? (
               <p className="text-xs text-muted-foreground text-center py-4">
                 {periodsLoading ? 'Loading saved periods…' : 'No saved periods yet'}
@@ -549,24 +552,22 @@ export const BacktestSettingsDialog: React.FC<{
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">Start date &amp; time</Label>
-                <input
-                  type="datetime-local"
+                <DateTimeInput
+                  aria-label="Start"
                   value={formatLocalDateTime(new Date(editFrom))}
-                  onChange={(e) => {
-                    setEditFrom(parseLocalDateTime(e.target.value).getTime());
+                  onChange={(value) => {
+                    setEditFrom(parseLocalDateTime(value).getTime());
                   }}
-                  className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">End date &amp; time</Label>
-                <input
-                  type="datetime-local"
+                <DateTimeInput
+                  aria-label="End"
                   value={formatLocalDateTime(new Date(editTo))}
-                  onChange={(e) => {
-                    setEditTo(parseLocalDateTime(e.target.value).getTime());
+                  onChange={(value) => {
+                    setEditTo(parseLocalDateTime(value).getTime());
                   }}
-                  className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
               </div>
               {editFrom >= editTo && (
@@ -786,23 +787,21 @@ export const BacktestSettingsDialog: React.FC<{
                   <div className="grid grid-cols-2 gap-sm">
                     <div className="space-y-1">
                       <Label className="text-xs">Start date &amp; time</Label>
-                      <input
-                        type="datetime-local"
+                      <DateTimeInput
+                        aria-label="Start"
                         value={startDate}
                         max={formatLocalDateTime(new Date())}
-                        onChange={(e) => setStartDate(e.target.value)}
-                        className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        onChange={setStartDate}
                       />
                     </div>
 
                     <div className="space-y-1">
                       <Label className="text-xs">End date &amp; time</Label>
-                      <input
-                        type="datetime-local"
+                      <DateTimeInput
+                        aria-label="End"
                         value={endDate}
                         max={formatLocalDateTime(new Date())}
-                        onChange={(e) => setEndDate(e.target.value)}
-                        className="h-9 w-full rounded-md border border-border/50 bg-foreground/[0.04] hover:bg-foreground/[0.06] transition-colors px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20 focus-visible:border-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        onChange={setEndDate}
                       />
                     </div>
                   </div>
@@ -918,14 +917,7 @@ export const BacktestSettingsDialog: React.FC<{
                     your backtest freezes, try on a smaller period. Also, Chrome
                     browser is the fastest among all browsers tested.
                     {' '}
-                    <a
-                      href="/help/backtesting-trading-bots"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-primary underline hover:text-primary/80"
-                    >
-                      Learn more
-                    </a>
+                    <HelpArticlePill url="/help/backtesting-trading-bots" />
                   </>
                 )}
                 {mode === 'server' && (
@@ -933,14 +925,7 @@ export const BacktestSettingsDialog: React.FC<{
                     The backtest will be run on our server and we will notify
                     you of the results (on app and via email) when ready.
                     {' '}
-                    <a
-                      href="/help/strategy-vs-random-scatterplot"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-primary underline hover:text-primary/80"
-                    >
-                      Strategy vs random
-                    </a>
+                    <HelpArticlePill url="/help/strategy-vs-random-scatterplot" />
                   </>
                 )}
               </div>

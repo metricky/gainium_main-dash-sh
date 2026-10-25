@@ -1,6 +1,6 @@
 import { DynamicArIndicatorConfig } from '@/components/indicators/DynamicArIndicatorConfig';
+import { HelpArticlePill } from '@/components/ui/HelpArticlePill';
 import { InlineIndicatorConfig } from '@/components/indicators/InlineIndicatorConfig';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { FieldVariableBinding } from '@/components/ui/field-variable-binding';
@@ -26,9 +26,9 @@ import SettingsRow, {
 import {
     DealOverviewGraphTab,
     DealOverviewTableTab,
-    formatTotalFunds,
     useDealOverviewData,
 } from '@/components/widgets/trading/DealOverview';
+import { fundsTiles } from '@/utils/bots/dca/deal-summary';
 import useLadderLiquidation from '@/hooks/bots/dca/useLadderLiquidation';
 import {
   useBotFormSelector,
@@ -105,7 +105,6 @@ import {
 import { sanitizeIndicatorParams } from '@/utils/indicators/indicatorConfigUtils';
 import { withFieldDefaults } from '@/utils/indicators/indicatorFieldGating';
 import {
-    AlertTriangle,
     Crosshair,
     DollarSign,
     Trash2,
@@ -353,11 +352,11 @@ interface SmartOrdersControlProps {
   tradingContext?: DcaTradingContext;
 }
 
-const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
+export const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
   idPrefix,
   //formData,
   updateFormData,
-  //errors,
+  errors,
   tradingContext,
 }) => {
   const useSmartOrders = useBotFormSelector('useSmartOrders');
@@ -443,12 +442,17 @@ const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
     [combinedSmartOrdersRange.max, combinedSmartOrdersRange.min]
   );
 
+  // Show the stored value as-is: it is what gets saved. An out-of-range count
+  // is reported by the form validator (`activeOrdersCount` error), never hidden
+  // behind a clamped stand-in.
   const smartOrdersCount = useMemo(() => {
-    if (!Number.isFinite(activeOrdersCount)) {
+    const numeric = Number(activeOrdersCount);
+    if (activeOrdersCount === '' || !Number.isFinite(numeric)) {
       return combinedSmartOrdersRange.min;
     }
-    return clampSmartOrders(Number(activeOrdersCount));
-  }, [clampSmartOrders, combinedSmartOrdersRange.min, activeOrdersCount]);
+    return numeric;
+  }, [combinedSmartOrdersRange.min, activeOrdersCount]);
+  const smartOrdersCountError = errors['activeOrdersCount'] ?? null;
 
   const helperMessage = useMemo(() => {
     const segments: string[] = [];
@@ -511,27 +515,6 @@ const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
     [clampSmartOrders, updateFormData]
   );
 
-  useEffect(() => {
-    if (!smartOrdersEnabled || isSmartOrdersVarBound) {
-      return;
-    }
-
-    if (!Number.isFinite(activeOrdersCount)) {
-      return;
-    }
-
-    const clamped = clampSmartOrders(Number(activeOrdersCount));
-    if (clamped !== +activeOrdersCount) {
-      updateFormData('activeOrdersCount', clamped);
-    }
-  }, [
-    clampSmartOrders,
-    activeOrdersCount,
-    isSmartOrdersVarBound,
-    smartOrdersEnabled,
-    updateFormData,
-  ]);
-
   return (
     <div className="space-y-sm">
       <div className="flex items-center justify-between gap-md">
@@ -573,11 +556,14 @@ const SmartOrdersControl: React.FC<SmartOrdersControlProps> = ({
                 max={combinedSmartOrdersRange.max}
                 step={1}
                 showControls={false}
-                className="w-full"
+                className={`w-full${smartOrdersCountError ? ' border-destructive' : ''}`}
                 disabled={isSmartOrdersVarBound}
               />
             </FieldVariableBinding>
           </div>
+          {smartOrdersCountError && (
+            <p className="text-xs text-destructive">{smartOrdersCountError}</p>
+          )}
           <p className="text-xs text-muted-foreground">{helperMessage}</p>
         </SettingsRowSurface>
       )}
@@ -614,7 +600,8 @@ interface DCASectionProps {
 // numbers without depending on the shared, form-owned store.
 const useDcaOverviewSource = (
   mode: BotFormMode,
-  projection: BotDcaProjection
+  projection: BotDcaProjection,
+  tradingContext: Pick<DcaTradingContext, 'baseAsset' | 'quoteAsset'>
 ) => {
   const { summary: storeSummary } = useDealOverviewData();
   const isReadonly = mode === 'settings-readonly';
@@ -638,9 +625,38 @@ const useDcaOverviewSource = (
     ordersOverride
   );
 
+  const coinm = useBotFormSelector('coinm');
+  const summary = isReadonly ? projection.summary : storeSummary;
+  const fundsBoxes = useMemo(
+    () =>
+      fundsTiles(summary, {
+        strategy: strategy as string | undefined,
+        futures,
+        coinm,
+        leverage: Number(leverage) || 0,
+        marginType: marginType as string | undefined,
+        baseAsset: tradingContext.baseAsset,
+        quoteAsset: tradingContext.quoteAsset,
+      }).map((tile) => ({
+        ...tile,
+        icon: <DollarSign className="w-4 h-4" />,
+      })),
+    [
+      summary,
+      strategy,
+      futures,
+      coinm,
+      leverage,
+      marginType,
+      tradingContext.baseAsset,
+      tradingContext.quoteAsset,
+    ]
+  );
+
   return {
     isReadonly,
-    summary: isReadonly ? projection.summary : storeSummary,
+    summary,
+    fundsBoxes,
     // Passed to the table/graph as an override only in read-only mode; the live
     // form leaves it undefined so those components read the store.
     ordersOverride,
@@ -678,8 +694,6 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
   const comboActiveMinigrids = useBotFormSelector('comboActiveMinigrids');
   const comboSmartGridsCount = useBotFormSelector('comboSmartGridsCount');
   const futures = useBotFormSelector('futures');
-  const coinm = useBotFormSelector('coinm');
-  const strategy = useBotFormSelector('strategy');
   const useActiveMinigrids = useBotFormSelector('useActiveMinigrids');
   const comboUseSmartGrids = useBotFormSelector('comboUseSmartGrids');
   const useDca = useBotFormSelector('useDca');
@@ -769,10 +783,8 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
     summary: dealOverviewSummary,
     ordersOverride,
     liquidation: ladderLiquidation,
-  } = useDcaOverviewSource(
-    mode,
-    projection
-  );
+    fundsBoxes,
+  } = useDcaOverviewSource(mode, projection, tradingContext);
   const showTpLines = useTp === true || useMultiTp === true;
 
   const clampOrdersCount = useCallback(
@@ -1295,7 +1307,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
           1024: 3,
         }}
       >
-        <SettingsRow name="DCA orders" description={ordersHelperMessage}>
+        <SettingsRow
+          name="DCA orders"
+          description={ordersHelperMessage}
+          tooltip="Number of averaging orders. The base order is not counted: DCA order 1 is the first order placed after the base order."
+        >
           <div className="flex w-full max-w-xs flex-col gap-sm">
             <FieldVariableBinding
               path="ordersCount"
@@ -1724,16 +1740,11 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                           : 'Match the number of DCA orders you intend to preload.'}
                       </p>
                       {isActiveMinigridsOverLimit ? (
-                        <Alert className="border-warning/60 bg-warning/10 text-warning">
-                          <AlertTriangle className="h-4 w-4" />
-                          <AlertTitle className="text-sm font-semibold">
-                            Active minigrids exceed configured orders
-                          </AlertTitle>
-                          <AlertDescription className="text-sm">
-                            Reduce the minigrid count or increase DCA orders so
-                            every active minigrid has a matching order slot.
-                          </AlertDescription>
-                        </Alert>
+                        <SettingsAlert
+                          variant="warning"
+                          title={`Exceeds DCA orders (${totalOrdersCount ?? 0})`}
+                          description="Reduce the minigrid count or increase DCA orders so every active minigrid has an order slot."
+                        />
                       ) : null}
                     </SettingsRowSurface>
                   ) : null}
@@ -1741,7 +1752,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
 
                 <SettingsRow
                   name="Smart grid orders"
-                  tooltip="Limit how many grid orders are placed simultaneously to manage locked funds."
+                  tooltip="Limit how many grid orders are live at once, so less capital is locked. The remaining grids wait as pending orders."
                   tooltipURL="/help/smart-orders"
                   trailing={
                     <Switch
@@ -1799,11 +1810,6 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                           />
                         </FieldVariableBinding>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {totalOrdersCount
-                          ? `Locks funds for up to ${totalOrdersCount} active limit orders; remaining grids stage as pending.`
-                          : 'Submit only the first batch of grid orders to keep capital flexible.'}
-                      </p>
                       {isSmartGridsOverLimit && (
                         <SettingsAlert
                           variant="warning"
@@ -1993,6 +1999,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
 
               <div className="md:pt-0">
                 <StatsBoxes
+                  wrap
                   boxes={[
                     {
                       title: 'Coverage',
@@ -2004,17 +2011,7 @@ const ScaledDCA: React.FC<DCASectionProps> = ({
                       value: `${parseFloat(dealOverviewSummary.avgDownPower || '0').toFixed(1)}%`,
                       icon: <TrendingUp className="w-4 h-4" />,
                     },
-                    {
-                      title: 'Total Funds',
-                      value: formatTotalFunds(dealOverviewSummary, {
-                        strategy,
-                        futures,
-                        coinm,
-                        baseAsset: tradingContext.baseAsset,
-                        quoteAsset: tradingContext.quoteAsset,
-                      }),
-                      icon: <DollarSign className="w-4 h-4" />,
-                    },
+                    ...fundsBoxes,
                   ]}
                 />
               </div>
@@ -2078,8 +2075,6 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
   const orderSizeType = useBotFormSelector('orderSizeType');
   const dcaVolumeBaseOn = useBotFormSelector('dcaVolumeBaseOn');
   const indicators = useBotFormSelector('indicators');
-  const futures = useBotFormSelector('futures');
-  const coinm = useBotFormSelector('coinm');
   const orderSize = useBotFormSelector('orderSize');
   const dcaCustom = useBotFormSelector('dcaCustom');
   const strategy = useBotFormSelector('strategy');
@@ -2316,10 +2311,8 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
     summary: dealOverviewSummary,
     ordersOverride,
     liquidation: ladderLiquidation,
-  } = useDcaOverviewSource(
-    mode,
-    projection
-  );
+    fundsBoxes,
+  } = useDcaOverviewSource(mode, projection, tradingContext);
   const showTpLines = useTp === true || useMultiTp === true;
 
   // Compute a fallback TP % for the graph when deal close is not fixed TP
@@ -2478,6 +2471,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
 
             <div className="md:pt-0">
               <StatsBoxes
+                wrap
                 boxes={[
                   {
                     title: 'Coverage',
@@ -2489,17 +2483,7 @@ const TechnicalIndicatorsDCA: React.FC<DCASectionProps> = ({
                     value: `${parseFloat(dealOverviewSummary.avgDownPower || '0').toFixed(1)}%`,
                     icon: <TrendingUp className="w-4 h-4" />,
                   },
-                  {
-                    title: 'Total Funds',
-                    value: formatTotalFunds(dealOverviewSummary, {
-                      strategy,
-                      futures,
-                      coinm,
-                      baseAsset: tradingContext.baseAsset,
-                      quoteAsset: tradingContext.quoteAsset,
-                    }),
-                    icon: <DollarSign className="w-4 h-4" />,
-                  },
+                  ...fundsBoxes,
                 ]}
               />
             </div>
@@ -2738,133 +2722,140 @@ const CustomDcaOrderRow = React.memo<CustomDcaOrderRowProps>(({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-sm">
-        <div className="space-y-xs">
-          <Label htmlFor={`step-${order.uuid}`}>
-            Step % from previous order
-          </Label>
-          <Slider
-            value={sliderValue}
-            onChange={handleSliderChange}
-            min={stepRangeMin}
-            max={stepSliderMax}
-            step={0.01}
-            disabled={isStepVarBound}
-          />
-          <FieldVariableBinding
-            path={stepVariablePath}
-            varType="float"
-            tooltip="Bind step %"
-            variant="inline"
-            onVariableSelected={applyStepVariable}
-            onVariableResolved={applyStepVariable}
-          >
-            <NumberInput
-              id={`step-${order.uuid}`}
-              value={order.step}
-              onChange={handleNumberInputChange}
-              min={stepRangeMin}
-              {...(typeof stepRangeMax === 'number' &&
-              Number.isFinite(stepRangeMax)
-                ? { max: stepRangeMax }
-                : {})}
-              step={0.01}
-              precision={2}
-              disabled={isStepVarBound}
-              className={`w-full${stepError ? ' border-destructive' : ''}`}
-              showControls={false}
-              endAdornment={unitAdornment('%')}
-            />
-          </FieldVariableBinding>
-          <p className="text-xs text-muted-foreground">{stepHelperMessage}</p>
-        </div>
-
-        {isTerminal && (
+      {/* Sized by the card, not the viewport: this card sits in a 1–3 column
+          masonry, so a wide screen can still give it little room. The order
+          size field overlays its coin label, balance and binding button on
+          the input, and side by side in a narrow card those cover the whole
+          input — so the columns only split once the card is wide enough. */}
+      <div className="@container">
+        <div className="grid grid-cols-1 @2xl:grid-cols-2 gap-sm">
           <div className="space-y-xs">
-            <Label htmlFor={`fixed-${order.uuid}`}>Fixed Price</Label>
-            <NumberInput
-              id={`fixed-${order.uuid}`}
-              value={order.fixed || ''}
-              onChange={(value) =>
-                onUpdateOrder(order.uuid, 'fixed', String(value))
-              }
-              min={0}
-              max={currentPrice * 10}
+            <Label htmlFor={`step-${order.uuid}`}>
+              Step % from previous order
+            </Label>
+            <Slider
+              value={sliderValue}
+              onChange={handleSliderChange}
+              min={stepRangeMin}
+              max={stepSliderMax}
               step={0.01}
-              precision={8}
-              placeholder={currentPrice > 0 ? currentPrice.toFixed(2) : '0.00'}
-              disabled={false}
-              showControls={false}
-              endAdornment={
-                <span className="inline-flex items-center gap-2">
-                  {unitAdornment(
-                    (() => {
-                      const pairKey = Array.isArray(formData.pair)
-                        ? formData.pair[0]
-                        : formData.pair;
-                      const pairMeta = pairKey
-                        ? formData.pairMetadata?.[pairKey]
-                        : undefined;
-                      const base =
-                        pairMeta?.baseAsset?.name ??
-                        (typeof pairKey === 'string'
-                          ? pairKey.split('/')[0]
-                          : undefined);
-                      const quote =
-                        pairMeta?.quoteAsset?.name ??
-                        (typeof pairKey === 'string'
-                          ? pairKey.split('/')[1]
-                          : undefined);
-                      return strategy === StrategyEnum.short
-                        ? (base ?? 'Price')
-                        : (quote ?? 'Price');
-                    })()
-                  )}
-
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => {
-                      // Toggle picker for this specific custom order fixed field
-                      setActivePickerField?.((prev: string | false) =>
-                        prev === `dcaCustom.${order.uuid}.fixed`
-                          ? false
-                          : `dcaCustom.${order.uuid}.fixed`
-                      );
-                    }}
-                    className={
-                      activePickerField === `dcaCustom.${order.uuid}.fixed`
-                        ? 'bg-primary/10 text-primary h-6 w-6'
-                        : 'h-6 w-6'
-                    }
-                    aria-label="Pick price from chart"
-                    title="Pick price from chart"
-                  >
-                    <Crosshair className="h-4 w-4" />
-                  </Button>
-                </span>
-              }
+              disabled={isStepVarBound}
             />
+            <FieldVariableBinding
+              path={stepVariablePath}
+              varType="float"
+              tooltip="Bind step %"
+              variant="inline"
+              onVariableSelected={applyStepVariable}
+              onVariableResolved={applyStepVariable}
+            >
+              <NumberInput
+                id={`step-${order.uuid}`}
+                value={order.step}
+                onChange={handleNumberInputChange}
+                min={stepRangeMin}
+                {...(typeof stepRangeMax === 'number' &&
+                Number.isFinite(stepRangeMax)
+                  ? { max: stepRangeMax }
+                  : {})}
+                step={0.01}
+                precision={2}
+                disabled={isStepVarBound}
+                className={`w-full${stepError ? ' border-destructive' : ''}`}
+                showControls={false}
+                endAdornment={unitAdornment('%')}
+              />
+            </FieldVariableBinding>
+            <p className="text-xs text-muted-foreground">{stepHelperMessage}</p>
           </div>
-        )}
 
-        <DcaOrderSizingControl
-          formData={formData}
-          updateFormData={updateFormData}
-          errors={errors}
-          tradingContext={tradingContext}
-          idPrefix={`custom-${order.uuid}`}
-          label="Order size"
-          variablePath={`dcaCustom.${order.uuid}.size`}
-          value={order.size}
-          onValueChange={(next: string) =>
-            onUpdateOrder(order.uuid, 'size', next)
-          }
-          onRefreshBalance={onRefreshBalances}
-          showRefreshButton={canTriggerBalanceRefresh}
-          mode={mode}
-        />
+          {isTerminal && (
+            <div className="space-y-xs">
+              <Label htmlFor={`fixed-${order.uuid}`}>Fixed Price</Label>
+              <NumberInput
+                id={`fixed-${order.uuid}`}
+                value={order.fixed || ''}
+                onChange={(value) =>
+                  onUpdateOrder(order.uuid, 'fixed', String(value))
+                }
+                min={0}
+                max={currentPrice * 10}
+                step={0.01}
+                precision={8}
+                placeholder={currentPrice > 0 ? currentPrice.toFixed(2) : '0.00'}
+                disabled={false}
+                showControls={false}
+                endAdornment={
+                  <span className="inline-flex items-center gap-2">
+                    {unitAdornment(
+                      (() => {
+                        const pairKey = Array.isArray(formData.pair)
+                          ? formData.pair[0]
+                          : formData.pair;
+                        const pairMeta = pairKey
+                          ? formData.pairMetadata?.[pairKey]
+                          : undefined;
+                        const base =
+                          pairMeta?.baseAsset?.name ??
+                          (typeof pairKey === 'string'
+                            ? pairKey.split('/')[0]
+                            : undefined);
+                        const quote =
+                          pairMeta?.quoteAsset?.name ??
+                          (typeof pairKey === 'string'
+                            ? pairKey.split('/')[1]
+                            : undefined);
+                        return strategy === StrategyEnum.short
+                          ? (base ?? 'Price')
+                          : (quote ?? 'Price');
+                      })()
+                    )}
+
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => {
+                        // Toggle picker for this specific custom order fixed field
+                        setActivePickerField?.((prev: string | false) =>
+                          prev === `dcaCustom.${order.uuid}.fixed`
+                            ? false
+                            : `dcaCustom.${order.uuid}.fixed`
+                        );
+                      }}
+                      className={
+                        activePickerField === `dcaCustom.${order.uuid}.fixed`
+                          ? 'bg-primary/10 text-primary h-6 w-6'
+                          : 'h-6 w-6'
+                      }
+                      aria-label="Pick price from chart"
+                      title="Pick price from chart"
+                    >
+                      <Crosshair className="h-4 w-4" />
+                    </Button>
+                  </span>
+                }
+              />
+            </div>
+          )}
+
+          <DcaOrderSizingControl
+            formData={formData}
+            updateFormData={updateFormData}
+            errors={errors}
+            tradingContext={tradingContext}
+            idPrefix={`custom-${order.uuid}`}
+            label="Order size"
+            variablePath={`dcaCustom.${order.uuid}.size`}
+            value={order.size}
+            onValueChange={(next: string) =>
+              onUpdateOrder(order.uuid, 'size', next)
+            }
+            onRefreshBalance={onRefreshBalances}
+            showRefreshButton={canTriggerBalanceRefresh}
+            mode={mode}
+          />
+        </div>
       </div>
     </Card>
   );
@@ -3216,14 +3207,9 @@ const TechnicalIndicatorCard: React.FC<TechnicalIndicatorCardProps> = ({
       </div>
 
       {indicator.type === IndicatorEnum.pc ? (
-        <a
-          href="/help/price-change-indicator"
-          target="_blank"
-          rel="noreferrer"
-          className="text-sm text-primary transition hover:text-primary/80 hover:underline"
-        >
-          Learn more
-        </a>
+        <div>
+          <HelpArticlePill url="/help/price-change-indicator" />
+        </div>
       ) : null}
     </SettingsRowSurface>
   );
@@ -3499,10 +3485,8 @@ const CustomDCA: React.FC<DCASectionProps> = ({
     summary: dealOverviewSummary,
     ordersOverride,
     liquidation: ladderLiquidation,
-  } = useDcaOverviewSource(
-    mode,
-    projection
-  );
+    fundsBoxes,
+  } = useDcaOverviewSource(mode, projection, tradingContext);
   const showTpLines = useTp === true || useMultiTp === true;
 
   const addCustomOrder = () => {
@@ -3530,8 +3514,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
       <SettingsRow name="DCA targets" colSpan="full" className="space-y-0!">
         {(dcaCustom || []).length === 0 ? (
           <div className="text-sm text-muted-foreground">
-            No custom DCA orders configured. Add orders with specific step
-            percentages and sizes.
+            No custom DCA orders
           </div>
         ) : (
           <MasonryLayout
@@ -3634,6 +3617,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
 
             <div className="md:pt-0">
               <StatsBoxes
+                wrap
                 boxes={[
                   {
                     title: 'Coverage',
@@ -3645,17 +3629,7 @@ const CustomDCA: React.FC<DCASectionProps> = ({
                     value: `${parseFloat(dealOverviewSummary.avgDownPower || '0').toFixed(1)}%`,
                     icon: <TrendingUp className="w-4 h-4" />,
                   },
-                  {
-                    title: 'Total Funds',
-                    value: formatTotalFunds(dealOverviewSummary, {
-                      strategy,
-                      futures,
-                      coinm,
-                      baseAsset: tradingContext.baseAsset,
-                      quoteAsset: tradingContext.quoteAsset,
-                    }),
-                    icon: <DollarSign className="w-4 h-4" />,
-                  },
+                  ...fundsBoxes,
                 ]}
               />
             </div>
@@ -3753,7 +3727,7 @@ export const DCASettings: React.FC<Partial<DCASettingsProps>> = ({
     ) {
       return (
         <SettingsAlert
-          variant="warning"
+          variant="info"
           title="DCA condition cannot be changed for existing deals. Showing percentage-based DCA settings."
         />
       );

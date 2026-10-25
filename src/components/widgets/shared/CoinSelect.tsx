@@ -1,11 +1,12 @@
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
 import {
-  useBotFormActions,
-  useBotFormPick,
-} from '@/features/bots';
-import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
+  useOptionalBotFormContext,
+  useOptionalBotFormPick,
+} from '@/contexts/bots/form/BotFormProvider';
+import { BotFormQueryContext } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { type AssetClass, type TradingPair } from '@/hooks/useTradingPairs';
 import {
+  hasPairMarketDataProvider,
   usePairMarketData,
   type PairRoiContext,
 } from '@/lib/pairMarketData';
@@ -17,8 +18,24 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import CoinIcon from './CoinIcon';
 import CoinPair from './CoinPair';
 import { ListModal, type ListModalSortOption } from './ListModal';
+import { PairPickerDialog, type PairPickerRow } from './PairPickerDialog';
+
+// The screener-backed fields (loading together).
+const MARKET_FIELDS = [
+  'price',
+  'change1h',
+  'change24h',
+  'change7d',
+  'change30d',
+  'volume24h',
+  'marketCap',
+  'marketCapRank',
+  'volatility',
+] as const;
+import { usePairPickerLimits } from './usePairPickerLimits';
 
 const NO_TOP_KEYS = [] as const;
+const NO_PAIR_ITEMS: CoinListItem[] = [];
 const STRATEGY_KEY = ['strategy'] as const;
 
 const PAIR_SORT_OPTIONS: ListModalSortOption[] = [
@@ -88,6 +105,21 @@ export interface CoinFilterProps {
   onReplaceCoin?: (previous: string, next: string) => void;
   /** Stacking order of the pick dialog (e.g. above another dialog). */
   modalZIndex?: number;
+  /**
+   * Pairs mode: the pairs to offer, for a picker used outside the bot form
+   * (see `buildExchangePairItems`). Omit to offer the bot form's current
+   * exchange pairs.
+   */
+  pairItems?: CoinListItem[];
+  /** The plan's pair limit — caps the table picker's "Select all matching". */
+  maxPairs?: number;
+  /**
+   * Bulk add for the table picker's "Select all matching"; returns a message
+   * to show in the dialog. Falls back to `onPairsPaste`.
+   */
+  onAddPairs?: (symbols: string[]) => string | undefined;
+  /** Removes several pairs at once (the table picker's select-all, unticked). */
+  onRemovePairs?: (symbols: string[]) => void;
 }
 
 export const CoinFilter: React.FC<CoinFilterProps> = ({
@@ -106,6 +138,10 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   allowedPairs,
   onReplaceCoin,
   modalZIndex,
+  pairItems: pairItemsProp,
+  maxPairs,
+  onAddPairs,
+  onRemovePairs,
 }) => {
   const [showCoinDialog, setShowCoinDialog] = useState(false);
   // When the dialog is opened via the change/swap icon on the only chip,
@@ -124,9 +160,11 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // only (provider-injected); favorites are local (Zustand + localStorage).
   const [sortMode, setSortMode] = useState('marketcap');
   const [favoritesFirst, setFavoritesFirst] = useState(false);
-  const { updateFormData } = useBotFormActions();
+  // Provider-optional: outside the bot form the picker edits its own
+  // selection through the callbacks (`onReplaceCoin`) and `pairItems`.
+  const updateFormData = useOptionalBotFormContext()?.updateFormData;
   // Only the fields this picker reads (type + direction) — not every keystroke.
-  const formData = useBotFormPick(NO_TOP_KEYS, STRATEGY_KEY);
+  const formData = useOptionalBotFormPick(NO_TOP_KEYS, STRATEGY_KEY);
 
   // Surface the curated ROI that matches the bot form's risk-profile
   // cards: DCA & Combo read the DCA leaderboard, Grid reads grid; the
@@ -152,7 +190,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
 
   // Only fetch market data while the dialog is open (non-blocking for the
   // bot form); the underlying queries are cached so reopening is instant.
-  const { lookup: marketLookup } = usePairMarketData(
+  const { lookup: marketLookup, loading: marketLoading } = usePairMarketData(
     showCoinDialog,
     roiContext
   );
@@ -170,7 +208,11 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // than hidden (each row explains itself on hover) — a hidden row is
   // indistinguishable from a pair the venue doesn't offer. To change the
   // anchored asset the user clears the selection via the chip's ✕.
-  const filterActive = Boolean(pairFilter) && replacingSymbol === null;
+  // Replacing is anchor-free only while it really is a swap of the bot's one
+  // pair. Once the dialog has added more (select all), the anchor is back: a
+  // later pick is an add like any other, so a second quote can't slip in.
+  const replaceActive = replacingSymbol !== null && selectedCoins.length <= 1;
+  const filterActive = Boolean(pairFilter) && !replaceActive;
 
   const {
     pairsByExchange,
@@ -233,7 +275,22 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // (e.g. last-used `BTCUSDC` on the terminal) silently constrained
   // the search to USDC. Any "single quote currency per bot" constraint
   // should be enforced at submit time, not by hiding pairs from search.
-  const { pairItems } = useBotFormQuery();
+  const botFormQuery = React.useContext(BotFormQueryContext);
+  const pairItems = pairItemsProp ?? botFormQuery?.pairItems ?? NO_PAIR_ITEMS;
+
+  // Pairs mode has ONE picker (spec 115): the pair dialog, for adding and for
+  // changing a pair alike. Where the bot holds a single pair (no add button:
+  // grid, terminal, single-pair-only bots) picking a row swaps the pair.
+  // Limits are computed whenever it's mounted so the leverage query is warm
+  // before the dialog opens.
+  const tablePicker = isPairsMode;
+  const singlePick = isPairsMode && !shouldShowAddButton;
+  const tableDialogOpen = isPairsMode && showCoinDialog;
+  const pairLimits = usePairPickerLimits(
+    tablePicker,
+    tableDialogOpen,
+    botFormQuery?.pairMetadata?.bySelectionSymbol
+  );
 
   const coinItems = useMemo(() => {
     if (isPairsMode || !pairsByExchange) {
@@ -404,6 +461,11 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
     assetCategoryByBase,
   ]);
 
+  const listModalItemsBySymbol = useMemo(
+    () => new Map(listModalItems.map((item) => [item.symbol, item])),
+    [listModalItems]
+  );
+
   // Asset classes actually present among the modal items (drives which filter
   // chips render). Missing class counts as crypto.
   const availableAssetClasses = useMemo<AssetClass[]>(() => {
@@ -428,9 +490,57 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
     [isPairsMode, modalItems, marketLookup]
   );
 
+  const pickerRows = useMemo<PairPickerRow[]>(() => {
+    if (!tablePicker) return [];
+    const rows: PairPickerRow[] = [];
+    for (const item of filteredPairItems) {
+      if (!item.baseAsset || !item.quoteAsset) continue;
+      const enriched = listModalItemsBySymbol.get(item.symbol);
+      if (!enriched) continue;
+      const { pending, ...limits } = pairLimits(item.symbol) ?? {};
+      // "Loading…" for a value whose source hasn't answered yet.
+      const loading: PairPickerRow['loading'] = { ...(pending ?? {}) };
+      const datum = enriched as Partial<Record<string, unknown>>;
+      if (marketLoading?.market) {
+        for (const f of MARKET_FIELDS) {
+          if (datum[f] == null) loading[f] = true;
+        }
+      }
+      if (marketLoading?.roi && datum['roi'] == null) loading['roi'] = true;
+      if (marketLoading?.rsi && datum['rsi'] == null) loading['rsi'] = true;
+      rows.push({
+        ...enriched,
+        baseAsset: item.baseAsset,
+        quoteAsset: item.quoteAsset,
+        ...limits,
+        ...(Object.keys(loading).length ? { loading } : {}),
+      });
+    }
+    return rows;
+  }, [
+    tablePicker,
+    filteredPairItems,
+    listModalItemsBySymbol,
+    pairLimits,
+    marketLoading,
+  ]);
+
+  // "Select all matching" goes through the form's bulk-add path, which owns
+  // the anchor and plan-limit rules and their messages.
+  const handleAddMany = useCallback(
+    (symbols: string[]) =>
+      onAddPairs
+        ? onAddPairs(symbols)
+        : onPairsPaste?.(symbols.join('\n')),
+    [onAddPairs, onPairsPaste]
+  );
+
   const isLastCoin = selectedCoins.length === 1;
   const changeLabel = isPairsMode ? 'Change pair' : 'Change coin';
 
+  // The change icon opens the same dialog as "Add pairs", as a replace:
+  // no quote/base anchor (the pick becomes the only pair, so there is
+  // nothing to stay consistent with) and a pick swaps the pair.
   const openChangeDialog = (symbol: string) => {
     setReplacingSymbol(symbol);
     setShowCoinDialog(true);
@@ -452,13 +562,19 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
   // every selection toggle — only the row whose selected state changed.
   const handleDialogToggle = useCallback(
     (symbol: string) => {
-      if (replacingSymbol !== null) {
-        if (symbol === replacingSymbol) {
+      // Single-pair pickers swap the current pair for the picked one.
+      const replaceFrom = replaceActive
+        ? replacingSymbol
+        : singlePick && selectedCoins.length === 1
+          ? selectedCoins[0]
+          : null;
+      if (replaceFrom != null) {
+        if (symbol === replaceFrom) {
           handleDialogClose();
           return;
         }
         if (onReplaceCoin) {
-          onReplaceCoin(replacingSymbol, symbol);
+          onReplaceCoin(replaceFrom, symbol);
           handleDialogClose();
           return;
         }
@@ -489,14 +605,18 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
             : null
         );
         // Atomic single-write replacement.
-        updateFormData('pair', [stored]);
+        updateFormData?.('pair', [stored]);
         handleDialogClose();
         return;
       }
       onCoinToggle(symbol);
+      if (singlePick) handleDialogClose();
     },
     [
+      replaceActive,
       replacingSymbol,
+      singlePick,
+      selectedCoins,
       handleDialogClose,
       updateFormData,
       onCoinToggle,
@@ -536,7 +656,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
       return (
         <div
           key={`ALL-${index}`}
-          className="bg-card rounded-lg p-xs flex items-center gap-xs min-w-0"
+          className="bg-muted rounded-lg p-xs flex items-center gap-xs min-w-0"
         >
           <div className="flex items-center gap-xs flex-1 min-w-0">
             <CoinIcon symbol="ALL" size="w-4 h-4" />
@@ -595,7 +715,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
       return (
         <div
           key={`${symbol}-${index}`}
-          className="bg-card rounded-lg p-xs flex items-center gap-xs min-w-0"
+          className="bg-muted rounded-lg p-xs flex items-center gap-xs min-w-0"
         >
           {onPairClick ? (
             <button
@@ -621,7 +741,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
     return (
       <div
         key={`${symbol}-${index}`}
-        className="bg-card rounded-lg p-xs flex items-center gap-xs min-w-0"
+        className="bg-muted rounded-lg p-xs flex items-center gap-xs min-w-0"
       >
         <div className="flex items-center gap-xs flex-1 min-w-0">
           <CoinIcon
@@ -649,8 +769,9 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
 
   return (
     <>
-      {/* Coins Section */}
-      <div className="rounded-lg p-sm space-y-sm bg-inner-container">
+      {/* Coins Section — no surface of its own (DESIGN_SYSTEM §3): the
+          selected items are muted chips on the host's surface. */}
+      <div className="space-y-sm">
         {isPairsMode && tradingPairsError && (
           <div className="flex items-center gap-sm text-xs text-destructive">
             <span>
@@ -717,7 +838,7 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
               (!shouldShowAddButton && selectedCoins.length === 0)) && (
               <button
                 onClick={() => setShowCoinDialog(true)}
-                className="border border-border rounded-lg p-xs flex items-center gap-xs text-muted-foreground hover:text-foreground bg-card hover:border-primary transition-all disabled:cursor-not-allowed disabled:opacity-60"
+                className="border border-border rounded-lg p-xs flex items-center gap-xs text-muted-foreground hover:text-foreground hover:border-primary transition-all disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={isPairsMode && tradingPairsLoading}
                 aria-busy={isPairsMode && tradingPairsLoading}
               >
@@ -740,9 +861,36 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
       </div>
 
       {/* Selection Modal */}
-      <ListModal
+      {tableDialogOpen ? (
+        <PairPickerDialog
+          {...(modalZIndex !== undefined ? { zIndex: modalZIndex } : {})}
+          isOpen
+          onClose={handleDialogClose}
+          title={
+            singlePick || replacingSymbol !== null
+              ? 'Select Pair'
+              : 'Select Pairs'
+          }
+          singlePick={singlePick}
+          hasMarketData={hasPairMarketDataProvider()}
+          {...(onRemovePairs ? { onRemoveMany: onRemovePairs } : {})}
+          rows={pickerRows}
+          selectedItems={selectedCoins}
+          onItemToggle={handleDialogToggle}
+          onToggleFavorite={toggleStarredPair}
+          onAddMany={handleAddMany}
+          {...(maxPairs !== undefined ? { maxSelectable: maxPairs } : {})}
+          anchor={
+            filterActive && pairFilter
+              ? { dimension: pairFilter.dimension, asset: pairFilter.anchor }
+              : null
+          }
+          isLoading={tradingPairsLoading}
+        />
+      ) : (
+        <ListModal
         {...(modalZIndex !== undefined ? { zIndex: modalZIndex } : {})}
-        isOpen={showCoinDialog}
+        isOpen={showCoinDialog && !isPairsMode}
         onClose={handleDialogClose}
         title={
           replacingSymbol !== null
@@ -794,7 +942,8 @@ export const CoinFilter: React.FC<CoinFilterProps> = ({
             // handler could only ever answer "Maximum pairs to choose is 1".
             { onPaste: onPairsPaste }
           : {})}
-      />
+        />
+      )}
     </>
   );
 };

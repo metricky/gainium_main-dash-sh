@@ -29,6 +29,7 @@ import Dashboard from './pages/Dashboard';
 import DualArcProgressGaugeTest from './pages/DualArcProgressGaugeTest';
 import Exchanges from './pages/Exchanges';
 import GlobalVariables from './pages/GlobalVariables';
+import Notifications from './pages/Notifications';
 import DiscordCallback from './pages/DiscordCallback';
 import Login from './pages/Login';
 import MagicLinkConsume from './pages/MagicLinkConsume';
@@ -45,9 +46,14 @@ import TradingTerminal from './pages/TradingTerminal';
 // the component library; doesn't need to ride the main bundle for everyone.
 const UIShowcase = lazy(() => import('./pages/UIShowcase'));
 import { useUIStore } from './stores/uiStore';
+import { useReportingCurrencyStore } from './stores/reportingCurrencyStore';
+import { ReportingCurrencySync } from './components/layout/ReportingCurrencySync';
 
 function App() {
   const initializeFromUrlParams = useUIStore((s) => s.initializeFromUrlParams);
+  // Remount pages when the reporting currency changes, so values formatted by
+  // plain functions (not hooks) re-render in the new currency.
+  const reportingCode = useReportingCurrencyStore((s) => s.currency.code);
   useApplyVisualSettings();
 
   // Initialize keyboard shortcuts
@@ -85,9 +91,10 @@ function App() {
   return (
     <>
       <OfflineHandler />
+      <ReportingCurrencySync />
       {/* Draggable Dev Tools Button - available on all pages including login */}
       <DraggableDevButton />
-      <Routes>
+      <Routes key={reportingCode}>
         <Route
           path="/"
           element={
@@ -207,6 +214,14 @@ function App() {
           element={
             <ProtectedRoute>
               <GlobalVariables />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/notifications"
+          element={
+            <ProtectedRoute>
+              <Notifications />
             </ProtectedRoute>
           }
         />

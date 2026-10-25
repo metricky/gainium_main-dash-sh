@@ -8,21 +8,22 @@ import {
 import { getTargetStatus } from '@/utils/botStatusUtils';
 import { BotTypesEnum } from '@/types';
 import type { BotActionsModalProps } from '@/hooks/useBotActions';
+import { ReverseBotDialog } from '@/features/bots/actions/reverse/ReverseBotDialog';
+import { HedgeStartDialog } from '@/features/bots/shared/runtime/dialogs/HedgeStartDialog';
 
 /**
  * The three confirmation/feedback modals every bot surface needs, driven
  * entirely by the state `useBotActions` owns. Spread the hook's `modalProps`:
  *
  * ```tsx
- * const botActions = useBotActions({ … });
+ * const actions = useBotActions(toBotRef(bot, 'dca'));
  * // …
- * <BotActionsMenuItems bot={{ id, name, type, status }} {...botActions.menuProps} />
- * <BotActionsModals {...botActions.modalProps} />
+ * <BotActionsMenuItems actions={actions} surface="card" />
+ * <BotActionsModals {...actions.modalProps} />
  * ```
  *
- * A hook can't render JSX and stay a hook, and each surface used to hand-roll
- * these three modals (with subtly different props). This is the shared render
- * half of the pair.
+ * A hook can't render JSX and stay a hook; this is the shared render half of
+ * the pair.
  */
 export const BotActionsModals: React.FC<BotActionsModalProps> = ({
   botName,
@@ -50,6 +51,8 @@ export const BotActionsModals: React.FC<BotActionsModalProps> = ({
   onSuccessModalOpenChange,
   successType,
   successNewItemId,
+  hedgeStart,
+  reverse,
 }) => {
   const isGrid = botType === BotTypesEnum.grid;
 
@@ -105,6 +108,30 @@ export const BotActionsModals: React.FC<BotActionsModalProps> = ({
             : undefined
         }
       />
+
+      {hedgeStart?.open && (
+        <HedgeStartDialog
+          open={hedgeStart.open}
+          onOpenChange={hedgeStart.onOpenChange}
+          botName={botName}
+          combo={hedgeStart.combo}
+          hedge={hedgeStart.hedge}
+          onConfirm={hedgeStart.onConfirm}
+          isProcessing={statusPending}
+        />
+      )}
+
+      {reverse?.open && (
+        <ReverseBotDialog
+          open={reverse.open}
+          onOpenChange={reverse.onOpenChange}
+          botId={reverse.botId}
+          botType={reverse.botType}
+          botName={botName}
+          {...(reverse.quoteAsset ? { quoteAsset: reverse.quoteAsset } : {})}
+          {...(reverse.baseAsset ? { baseAsset: reverse.baseAsset } : {})}
+        />
+      )}
     </>
   );
 };

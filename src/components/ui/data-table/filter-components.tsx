@@ -13,6 +13,7 @@ import React, { useMemo, useState } from 'react';
 
 import { Badge } from '../badge';
 import { Button } from '../button';
+import { DateInput } from '../date-input';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -102,12 +103,13 @@ const DateFilterInput: React.FC<{
   onChange: (value: unknown) => void;
   placeholder?: string;
 }> = ({ value, onChange, placeholder }) => (
-  <Input
-    type="date"
+  <DateInput
+    clearable
     value={String(value ?? '')}
-    onChange={(e) => onChange(e.target.value)}
+    onChange={onChange}
     placeholder={placeholder}
-    className="h-8 text-xs w-full pr-8 scheme-light dark:scheme-dark border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
+    aria-label={placeholder || 'Date'}
+    className="h-8 text-xs w-full border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
   />
 );
 
@@ -181,19 +183,23 @@ const DateRangeFilterInput: React.FC<{
 
   return (
     <div className="flex gap-1 w-full min-w-0">
-      <Input
-        type="date"
+      <DateInput
+        clearable
         value={String(startDate ?? '')}
-        onChange={(e) => handleStartDateChange(e.target.value)}
+        onChange={handleStartDateChange}
         placeholder="From"
-        className="h-8 text-xs flex-1 min-w-0 scheme-light dark:scheme-dark border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
+        aria-label="From"
+        containerClassName="flex-1 min-w-0"
+        className="h-8 text-xs border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
       />
-      <Input
-        type="date"
+      <DateInput
+        clearable
         value={String(endDate ?? '')}
-        onChange={(e) => handleEndDateChange(e.target.value)}
+        onChange={handleEndDateChange}
         placeholder="To"
-        className="h-8 text-xs flex-1 min-w-0 scheme-light dark:scheme-dark border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
+        aria-label="To"
+        containerClassName="flex-1 min-w-0"
+        className="h-8 text-xs border-0 bg-transparent rounded-none focus-visible:ring-0 focus-visible:ring-offset-0"
       />
     </div>
   );
@@ -429,22 +435,6 @@ const MultiSelectFilterInput: React.FC<{
       open={dropdownOpen && filteredOptions.length > 0}
       onOpenChange={setDropdownOpen}
     >
-      {/* Radix sizes and aligns the option list from the ANCHOR, and with no
-          explicit anchor the trigger becomes its own. The trigger here is only
-          the residual input, which `shrink-0` pins at 24px once chips appear —
-          so the list opened as a sliver in the gap where the next chip goes,
-          and the column had to be dragged wider to read it. Anchor to the
-          filter cell instead; a virtual anchor renders no DOM of its own. */}
-      {cellAnchorRef?.current && (
-        /* Rebuild the ref from the element the guard just proved is there:
-           Radix types `virtualRef` as `RefObject<Measurable>`, whose
-           `current` is non-null, and the guard narrows the render rather
-           than the context object's type. Radix re-reads `.current` on
-           every anchor render and only reacts when the resolved ELEMENT
-           changes, so a per-render object is no staler than a memoized one
-           and costs no extra positioning work. */
-        <PopoverAnchor virtualRef={{ current: cellAnchorRef.current }} />
-      )}
       {/* Single row, never wrapping: this renders inside a fixed-height table
           filter cell whose width is the column width, so wrapping would push
           the chips out of the cell. Chips shrink and truncate instead. */}
@@ -504,6 +494,33 @@ const MultiSelectFilterInput: React.FC<{
           </div>
         </PopoverTrigger>
       </div>
+      {/* Radix sizes and aligns the option list from the ANCHOR, and with no
+          explicit anchor the trigger becomes its own. The trigger here is only
+          the residual input, which `shrink-0` pins at 24px once chips appear —
+          so the list opened as a sliver in the gap where the next chip goes,
+          and the column had to be dragged wider to read it. Anchor to the
+          filter cell instead; a virtual anchor renders no DOM of its own.
+
+          It must come AFTER the trigger. When this input mounts into a cell
+          that is already attached (switching the operator between "Is any
+          of" and "Is none of", or clearing back to the default), the first
+          commit renders both this anchor and the trigger still wrapped as an
+          anchor. Each reports itself on mount in tree order, so whichever is
+          later wins. If the trigger won, Radix then unwraps it and React
+          replaces its DOM node, so the list measured a detached 0x0 node and
+          opened in the page's top-left corner until a reload. This anchor
+          only reports again when its own element changes, so it never
+          reclaimed the position. */}
+      {cellAnchorRef?.current && (
+        /* Rebuild the ref from the element the guard just proved is there:
+           Radix types `virtualRef` as `RefObject<Measurable>`, whose
+           `current` is non-null, and the guard narrows the render rather
+           than the context object's type. Radix re-reads `.current` on
+           every anchor render and only reacts when the resolved ELEMENT
+           changes, so a per-render object is no staler than a memoized one
+           and costs no extra positioning work. */
+        <PopoverAnchor virtualRef={{ current: cellAnchorRef.current }} />
+      )}
       {/* Width tracks the anchor — the filter cell — with a floor so a very
           narrow column still yields a legible list rather than a sliver. */}
       <PopoverContent

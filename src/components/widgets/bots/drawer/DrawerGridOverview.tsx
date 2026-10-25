@@ -3,8 +3,11 @@ import type { GridBot } from '@/types/gridBot';
 import { Activity, Layers, TrendingUp } from 'lucide-react';
 import React, { useMemo } from 'react';
 /* import { useGridBots } from '../../../../hooks/useGridBots'; */
-import { formatCurrency } from '../../../../lib/utils';
+import { formatQuoteAmount } from '@/utils/formatters';
+import { extractPairAssets } from '@/utils/pairs';
 import { DrawerSection } from './DrawerSection';
+import { PendingLiveValue } from '@/components/ui/pending-live-value';
+import { useLivePairPrice } from '@/hooks/useLatestPrices';
 import type { AdditionalBotData } from '@/types';
 
 export interface DrawerGridOverviewProps {
@@ -47,6 +50,11 @@ const DrawerGridOverview: React.FC<DrawerGridOverviewProps> = ({
   const rawGrid = useMemo(
     () => botSnapshot as (GridBot & AdditionalBotData) | undefined,
     [botSnapshot]
+  );
+
+  const livePrice = useLivePairPrice(
+    rawGrid?.exchange,
+    rawGrid?.settings?.pair
   );
 
   const grid = useMemo(() => {
@@ -112,7 +120,10 @@ const DrawerGridOverview: React.FC<DrawerGridOverviewProps> = ({
                 {formatMaybePrice(grid.topPrice)}
               </div>
               <div className="text-xs text-muted-foreground">
-                Current price {formatMaybePrice(grid.currentPrice)}
+                Current price{' '}
+                <PendingLiveValue pending={!livePrice.live}>
+                  {formatMaybePrice(livePrice.price ?? grid.currentPrice)}
+                </PendingLiveValue>
               </div>
             </div>
             <div className="rounded-lg border border-border/60 bg-muted/20 p-sm">
@@ -135,7 +146,11 @@ const DrawerGridOverview: React.FC<DrawerGridOverviewProps> = ({
                 {formatMaybePrice(grid.gridStep)}
               </div>
               <div className="text-xs text-muted-foreground">
-                Invested {formatCurrency(investedBudget)}
+                Invested{' '}
+                {formatQuoteAmount(
+                  investedBudget,
+                  extractPairAssets(rawGrid?.settings?.pair ?? '').quoteAsset
+                )}
               </div>
             </div>
           </div>

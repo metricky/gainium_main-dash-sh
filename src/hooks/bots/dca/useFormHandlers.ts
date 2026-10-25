@@ -8,7 +8,10 @@ import {
   type BotFormUpdateValue,
   type Fields,
 } from '@/contexts/bots/form/BotFormProvider';
-import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
+import {
+  listedPairKeys,
+  useBotFormQuery,
+} from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import {
   prepareBacktestInput,
   useRunBacktest,
@@ -31,11 +34,15 @@ import {
   type MapGridFormDataToPayloadResult,
   type UpdateDCABotPayload,
 } from '@/mappers/bots/dca/map-form-data-to-payload';
-import { stripUndeclaredUpdateFields } from '@/mappers/bots/dca/update-payload-denylist';
+import {
+  pairListChanged,
+  stripUndeclaredUpdateFields,
+} from '@/mappers/bots/dca/update-payload-denylist';
 import { formatGridInitialPrice } from '@/mappers/bots/grid/map-grid-bot-settings-to-form-data';
 import {
   BotTypesEnum,
   BuyTypeEnum,
+  CloseConditionEnum,
   ExchangeIntervals,
   TerminalDealTypeEnum,
   type BotVars,
@@ -84,6 +91,16 @@ interface UseFormHandlersOptions {
     vars?: BotVars | undefined | null,
     exchange?: ExchangeInUser | undefined | null
   ) => MapFormDataToPayloadResult | MapGridFormDataToPayloadResult;
+  /** A save the server refused; receives the reason. */
+  onSaveError?: (message: string) => void;
+  /** An edit save the server accepted. */
+  onUpdateSuccess?: () => void;
+}
+
+/** Top-level input an edit save can carry beside the settings. */
+export interface SaveExtraInput {
+  /** Single position per pair: the user confirmed adopting the open deals. */
+  adoptOpenDeals?: boolean;
 }
 
 /**
@@ -104,7 +121,8 @@ export interface UseFormHandlersReturn {
   updateFormData: (field: Fields, value: BotFormUpdateValue) => void;
   handleSave: (
     e?: React.FormEvent,
-    gridRebalance?: GridRebalanceChoice
+    gridRebalance?: GridRebalanceChoice,
+    extra?: SaveExtraInput
   ) => Promise<void>;
   handleBacktest: (overrides?: BacktestOverrides) => Promise<void>;
   backtestPending: boolean;
@@ -227,7 +245,8 @@ export const useFormHandlers = (
 
   const handleSave = async (
     e?: React.FormEvent,
-    gridRebalance?: GridRebalanceChoice
+    gridRebalance?: GridRebalanceChoice,
+    extra?: SaveExtraInput
   ) => {
     e?.preventDefault();
     // The form as it is at the moment of the click.
@@ -405,13 +424,27 @@ export const useFormHandlers = (
           }
         }
 
-        toast.success(
-          terminal
-            ? formData.dca.terminalDealType === TerminalDealTypeEnum.import
-              ? 'Deal succesfully imported'
-              : 'Deal created, waiting to place orders'
-            : 'Bot created successfully!'
-        );
+        // A webhook-managed terminal deal is useless until the user copies
+        // its payloads, and the uuid they need only exists from now on.
+        const terminalUsesWebhook =
+          terminal &&
+          ((formData.dca.useTp &&
+            formData.dca.dealCloseCondition === CloseConditionEnum.webhook) ||
+            (formData.dca.useSl &&
+              formData.dca.dealCloseConditionSL === CloseConditionEnum.webhook));
+        const createdMessage = terminal
+          ? formData.dca.terminalDealType === TerminalDealTypeEnum.import
+            ? 'Deal succesfully imported'
+            : 'Deal created, waiting to place orders'
+          : 'Bot created successfully!';
+        if (terminalUsesWebhook) {
+          toast.success(
+            `${createdMessage}. To get its webhook UUID and payloads, edit the deal: Open orders → Edit → Webhooks.`,
+            { duration: 10000 }
+          );
+        } else {
+          toast.success(createdMessage);
+        }
         options.onCreateSuccess?.(createdBot);
         setErrors({});
         setIsDirty(false);
@@ -447,6 +480,10 @@ export const useFormHandlers = (
           updatePayloadBase as Record<string, unknown>,
           { botType: 'dca', stripPair: !useMulti && hasStoredPair }
         ) as UpdateDCABotPayload;
+        // Top-level beside the settings, only when the user confirmed it.
+        if (extra?.adoptOpenDeals) {
+          (upb as Record<string, unknown>)['adoptOpenDeals'] = true;
+        }
         sentSettings = upb as Record<string, unknown>;
         await updateMutation.mutateAsync({
           id: bot._id,
@@ -457,12 +494,25 @@ export const useFormHandlers = (
       if (formData.type === BotTypesEnum.combo) {
         const upb = stripUndeclaredUpdateFields(
           updatePayloadBase as Record<string, unknown>,
-          // Combo strips `pair` on every save today, multi or not; only the
-          // emptied-bot repair above is exempted. Keyed on `hasStoredPair`
-          // alone rather than `!useMulti && hasStoredPair` so a multi-pair
-          // combo bot keeps sending nothing — starting to send its
-          // client-filtered pair list is a different change with its own risk.
-          { botType: 'combo', stripPair: hasStoredPair }
+          // A multi-pair combo bot sends its pair list only when the user
+          // changed it. The form's list is client-filtered (pairs the venue no
+          // longer lists are dropped on load), so an untouched save must not
+          // send it — `pairListChanged` compares against the stored list
+          // narrowed the same way. Single-pair bots keep the DCA rule above.
+          {
+            botType: 'combo',
+            stripPair:
+              hasStoredPair &&
+              !(
+                useMulti &&
+                pairListChanged(
+                  formData.pair,
+                  (bot.settings as { pair?: string | string[] } | undefined)
+                    ?.pair,
+                  listedPairKeys(formData.pairMetadata)
+                )
+              ),
+          }
         ) as UpdateDCABotPayload;
         sentSettings = upb as Record<string, unknown>;
         await updateMutation.mutateAsync({
@@ -523,6 +573,7 @@ export const useFormHandlers = (
       setErrors({});
       setIsDirty(false);
       disableEditing();
+      options.onUpdateSuccess?.();
       toast.success('Bot updated successfully!');
       logger.info('[BotForm] Bot updated successfully', {
         botId: bot._id,
@@ -533,6 +584,7 @@ export const useFormHandlers = (
       const message = err?.message || 'Failed to update bot';
       logger.error('[BotForm] Save failed', serializeSaveError(error));
       toast.error(`Save failed: ${message}`);
+      options.onSaveError?.(message);
     }
   };
 

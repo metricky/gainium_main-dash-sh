@@ -1,7 +1,20 @@
 import { logger } from '@/lib/loggerInstance';
-import { IndicatorEnum, MAEnum, type ChartIndicatorConfig } from '@/types';
+import {
+  IndicatorEnum,
+  MAEnum,
+  StochRangeEnum,
+  tvIntervalMap,
+  type ChartIndicatorConfig,
+} from '@/types';
+import {
+  DEFAULT_SMOOTHING_LENGTH,
+  resolveSmoothing,
+  supportsSmoothing,
+} from '@/utils/indicators/smoothing';
 import {} from '@/types/indicators/indicatorTypes';
 import { OBFVGValueEnum } from '@gainium/backtester/dist/types';
+import { parseSessionTime } from '@/utils/indicators/sessionWindow';
+import { DEFAULT_OTE_LEVELS } from '@/utils/indicators/oteLevels';
 
 type TradingViewInput = Record<string, string | number | boolean>;
 
@@ -62,6 +75,7 @@ const STUDY_NAME_MAP: Omit<
   [IndicatorEnum.obfvg]: 'Fair Value Gaps',
   [IndicatorEnum.session]: 'Session Selector',
   [IndicatorEnum.lw]: 'Long Wick Detector',
+  [IndicatorEnum.ote]: 'Discount/Premium OTE Levels',
 };
 
 // AR-price variants: drawn as a price level on the candle pane when
@@ -209,14 +223,14 @@ const buildPercentileInputs = (
     return {
       usePercentile: false,
       percentileLookback: toNumber(indicator.percentileLookback, 150),
-      percentilePercentage: toNumber(indicator.percentilePercentage, 50),
+      percentilePercentage: toNumber(indicator.percentilePercentage, 80),
     };
   }
 
   return {
     usePercentile: true,
     percentileLookback: toNumber(indicator.percentileLookback, 150),
-    percentilePercentage: toNumber(indicator.percentilePercentage, 50),
+    percentilePercentage: toNumber(indicator.percentilePercentage, 80),
   };
 };
 
@@ -232,6 +246,27 @@ const mergeInputs = (
     ...extra,
   };
 };
+
+// The `smoothingMa` / `smoothingMaLength` inputs every smoothable study takes
+// (`withSmoothing` in customIndicators.js). Same on/off reading as the form
+// and the bot: an unknown average or an unusable length draws the raw line.
+const buildSmoothingInputs = (
+  indicator: ChartIndicatorConfig
+): TradingViewInput => {
+  const smoothing = resolveSmoothing(indicator);
+  return {
+    smoothingMa: smoothing ? smoothing.type.toUpperCase() : 'None',
+    smoothingMaLength: smoothing?.length ?? DEFAULT_SMOOTHING_LENGTH,
+  };
+};
+
+// The resolution Oscillator Crossover's second oscillator runs on when it is
+// not the chart's ('' = the chart's): the chart conversion sets
+// `xOscillator2Interval` only then.
+const xoSecondResolution = (indicator: ChartIndicatorConfig): string =>
+  indicator.xOscillator2Interval
+    ? (tvIntervalMap[indicator.xOscillator2Interval] ?? '')
+    : '';
 
 const buildInputs = (
   indicator: ChartIndicatorConfig,
@@ -256,8 +291,6 @@ const buildInputs = (
       return mergeInputs(
         {
           length: toNumber(indicator.length, 14),
-          smoothingLine: 'WMA',
-          smoothingLength: toNumber(indicator.length, 14),
         },
         percentileInputs
       );
@@ -382,7 +415,7 @@ const buildInputs = (
     case IndicatorEnum.mfi:
       return mergeInputs(
         {
-          in_o: toNumber(indicator.length, 14),
+          in_0: toNumber(indicator.length, 14),
         },
         percentileInputs
       );
@@ -417,7 +450,7 @@ const buildInputs = (
           length: toNumber(indicator.length, 20),
           mult: toNumber(indicator.bbwMult, 2),
           range: toUpperCase(indicator.kcRange, 'atr'),
-          rangeLength: toNumber(indicator.kcRangeLength, 10),
+          rangeLength: toNumber(indicator.kcRangeLength, 20),
           showUpper: toBoolean(indicator.showUpper, true),
           showBasis: toBoolean(indicator.showMiddle, true),
           showLower: toBoolean(indicator.showLower, true),
@@ -510,7 +543,7 @@ const buildInputs = (
       };
     case IndicatorEnum.tv:
       return {
-        checkLevel: toNumber(indicator.length, 14),
+        checkLevel: toNumber(indicator.length, 15),
         showStrongBuy: ['bothbuy', 'strongbuy'].includes(
           String(indicator.signal ?? '').toLowerCase()
         ),
@@ -543,6 +576,8 @@ const buildInputs = (
         xOscillator2length: toNumber(indicator.xOscillator2length, 14),
         xOscillator2voLong: toNumber(indicator.xOscillator2voLong, 10),
         xOscillator2voShort: toNumber(indicator.xOscillator2voShort, 5),
+        // '' = the chart's resolution; another one is computed off-chart
+        xOscillator2Resolution: xoSecondResolution(indicator),
       };
     case IndicatorEnum.lw: {
       const lwVal = indicator.lwValue ?? 'any';
@@ -554,8 +589,21 @@ const buildInputs = (
         id: '',
       };
     }
+    case IndicatorEnum.ote: {
+      const leg = indicator.oteLeg ?? 'any';
+      return {
+        leftBars: toNumber(indicator.oteLeftBars, 10),
+        minLegSize: toNumber(indicator.oteMinLegSize, 1),
+        levels: DEFAULT_OTE_LEVELS,
+        showBullish: leg === 'bullish' || leg === 'any',
+        showBearish: leg === 'bearish' || leg === 'any',
+        id: '',
+      };
+    }
     case IndicatorEnum.session: {
       const days = indicator.sessionDays ?? [1, 2, 3, 4, 5];
+      const rule = indicator.sessionRule ?? 'in';
+      const levels = rule === 'levels';
       return {
         sun: days.includes(0),
         mon: days.includes(1),
@@ -564,7 +612,15 @@ const buildInputs = (
         thu: days.includes(4),
         fri: days.includes(5),
         sat: days.includes(6),
-        inSession: (indicator.sessionRule ?? 'in') === 'in',
+        // Price levels shade the session the condition can fire in.
+        inSession: rule !== 'out',
+        // -1 = no hours: the whole day counts.
+        startMinute: parseSessionTime(indicator.sessionStart) ?? -1,
+        endMinute: parseSessionTime(indicator.sessionEnd) ?? -1,
+        timezone: indicator.sessionTimezone || 'UTC',
+        // Price levels: the two compared series; '' draws no line.
+        levelA: levels ? indicator.sessionLevelA || 'price' : '',
+        levelB: levels ? indicator.sessionLevelB || 'prevHigh' : '',
       };
     }
     default:
@@ -647,10 +703,17 @@ const buildOverrides = (
     IndicatorEnum.stochRSI,
   ]);
 
+  // Stochastic's Lower&Upper zone is two bands (0 to its lower line, its
+  // upper line to 100); a single-band zone arrives as one band between its
+  // two limits (Lower: 0 and its band, Upper: its band and 100), shaded like
+  // any other band. The top/bottom fills run from the limit lines to 100 and
+  // 0, so on a single-band zone they shaded the wrong side.
   if (
     indicator.upperLimit !== undefined &&
     indicator.lowerLimit !== undefined &&
-    boundedRangeIndicators.has(type)
+    boundedRangeIndicators.has(type) &&
+    indicator.stochRange !== StochRangeEnum.lower &&
+    indicator.stochRange !== StochRangeEnum.upper
   ) {
     overrides['hlines top background.visible'] = true;
     overrides['hlines bottom background.visible'] = true;
@@ -811,7 +874,11 @@ export function buildTradingViewStudyDescriptor(
     return null;
   }
 
-  const inputs = buildInputs(indicator, type);
+  const baseInputs = buildInputs(indicator, type);
+  const inputs =
+    baseInputs && supportsSmoothing(type)
+      ? { ...baseInputs, ...buildSmoothingInputs(indicator) }
+      : baseInputs;
   if (!inputs) {
     logger.warn('Unable to build TradingView inputs for indicator', {
       type,

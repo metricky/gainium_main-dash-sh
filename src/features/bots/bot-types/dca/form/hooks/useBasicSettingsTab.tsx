@@ -27,6 +27,7 @@ import {
   resolvePairSelectionSymbol,
   resolveStoredPairSymbol,
 } from '@/utils/pairs';
+import { isDatedContract } from '@/utils/pairPicker';
 
 const HELPER_TOKEN_PATTERN = /^[A-Z0-9]+_ALL$/u;
 
@@ -184,10 +185,20 @@ export const useBasicSettingsTab = (
     () =>
       resolveMultiToggleState({
         isUseMultiLocked,
-        isComboBot,
         planRestrictsMulti,
       }),
-    [isComboBot, isUseMultiLocked, planRestrictsMulti]
+    [isUseMultiLocked, planRestrictsMulti]
+  );
+
+  // The most pairs this bot can hold once it is multi-pair (the plan limit),
+  // or 1 when it can't become multi-pair. Bulk add caps at this, not at single
+  // mode's 1, because adding a second pair switches the bot to multi-pair.
+  const planMaxPairs = useMemo(
+    () =>
+      !useMulti && multiToggleState.disabled
+        ? 1
+        : resolveMaxAllowedPairs({ isFreePlan, useMulti: true }),
+    [useMulti, multiToggleState.disabled, isFreePlan]
   );
 
   const multiToggleDescriptor = useMemo(
@@ -534,6 +545,11 @@ export const useBasicSettingsTab = (
 
       return Object.entries(pairMetadata.byPair)
         .filter(([, metadata]) => {
+          // "Select all" never adds dated futures contracts (they deliver
+          // on a fixed date); they can still be picked one by one.
+          if (isDatedContract(metadata)) {
+            return false;
+          }
           const pairExchange = metadata.exchange?.toUpperCase?.();
           if (
             normalizedExchangeProvider &&
@@ -633,16 +649,22 @@ export const useBasicSettingsTab = (
   const applyPairsInput = useCallback(
     // `surfaceError: false` for input coming from the pair dialog: the form's
     // error slot is behind that modal, so the dialog shows the message itself.
-    (rawValue: string, options?: { surfaceError?: boolean }) => {
+    // `multi: true` adds as a multi-pair bot (the caller switches the bot to
+    // multi-pair), capped at the plan limit instead of single mode's 1.
+    // `replace: true` swaps the whole list instead of adding to it.
+    (
+      rawValue: string,
+      options?: { surfaceError?: boolean; multi?: boolean; replace?: boolean }
+    ) => {
       if (pairLockState.locked) {
         return null;
       }
 
       const context: ProcessPairsPasteContext = {
         raw: rawValue,
-        existingPairs: pairs,
-        maxAllowedPairs,
-        useMulti: Boolean(useMulti),
+        existingPairs: options?.replace ? [] : pairs,
+        maxAllowedPairs: options?.multi ? planMaxPairs : maxAllowedPairs,
+        useMulti: options?.multi ? true : Boolean(useMulti),
         isPairsLocked: pairLockState.locked,
         multiAssetAnchor,
         multiAssetConstraintLabel,
@@ -668,6 +690,7 @@ export const useBasicSettingsTab = (
       useMulti,
       pairLockState.locked,
       maxAllowedPairs,
+      planMaxPairs,
       multiAssetAnchor,
       multiAssetConstraintLabel,
       pairs,
@@ -708,6 +731,23 @@ export const useBasicSettingsTab = (
         (item) => normalizePair(item) !== sanitized
       );
       updateFormData('pair', nextPairs);
+      setPairError('');
+    },
+    [pairLockState.locked, normalizePair, pairs, updateFormData]
+  );
+
+  // Bulk remove from the pair dialog (its select-all, unticked) — one write,
+  // since removing pair by pair would each start from the same stale list.
+  const handleRemovePairs = useCallback(
+    (symbols: string[]) => {
+      if (pairLockState.locked || !symbols.length) {
+        return;
+      }
+      const drop = new Set(symbols.map((s) => normalizePair(s)));
+      updateFormData(
+        'pair',
+        pairs.filter((item) => !drop.has(normalizePair(item)))
+      );
       setPairError('');
     },
     [pairLockState.locked, normalizePair, pairs, updateFormData]
@@ -827,6 +867,106 @@ export const useBasicSettingsTab = (
       selectTargetAsset,
       splitPair,
       updateFormData,
+    ]
+  );
+
+  // The picker's single-pair "Change pair" swap. Routed through here rather
+  // than written by the picker itself so a fresh pick also clears the pair
+  // alert — otherwise a "Removed … unsupported" notice left by an exchange
+  // switch stays up after every later pick and reads as that pick failing.
+  const handleReplacePair = useCallback(
+    (previous: string, next: string) => {
+      if (pairLockState.locked) {
+        return;
+      }
+      const storedSymbol = resolveStoredPairSymbol(
+        next,
+        pairMetadata.bySelectionSymbol[next] ??
+          resolvePairMetadata(normalizePair(next))
+      );
+      const previousKey = normalizePair(previous);
+      updateFormData(
+        'pair',
+        pairs.some((item) => normalizePair(item) === previousKey)
+          ? pairs.map((item) =>
+              normalizePair(item) === previousKey ? storedSymbol : item
+            )
+          : [storedSymbol]
+      );
+      setPairError('');
+    },
+    [
+      normalizePair,
+      pairLockState.locked,
+      pairMetadata.bySelectionSymbol,
+      pairs,
+      resolvePairMetadata,
+      updateFormData,
+    ]
+  );
+
+  // Bulk add from the pair dialog ("Select all matching"). Adding a second
+  // pair switches a single-pair bot to multi-pair, exactly as clicking a
+  // second pair does; where multi-pair isn't allowed it stays capped at 1.
+  const handleAddPairs = useCallback(
+    (symbols: string[]) => {
+      if (pairLockState.locked || !symbols.length) {
+        return undefined;
+      }
+      const canGoMulti = Boolean(useMulti) || !multiToggleState.disabled;
+      const result = applyPairsInput(symbols.join('\n'), {
+        surfaceError: false,
+        multi: canGoMulti,
+      });
+      if (
+        canGoMulti &&
+        !useMulti &&
+        result?.shouldUpdatePairs &&
+        (result.nextPairs?.length ?? 0) > 1
+      ) {
+        updateFormData('useMulti', true);
+      }
+      return result?.error || undefined;
+    },
+    [
+      applyPairsInput,
+      multiToggleState.disabled,
+      pairLockState.locked,
+      updateFormData,
+      useMulti,
+    ]
+  );
+
+  // Replace the list with another one (a hedge leg copying the opposite
+  // leg's pairs). Symbols this leg's exchange doesn't list come back in
+  // `invalidPairs`; the rest are resolved to this exchange's own symbols.
+  const handleCopyPairs = useCallback(
+    (symbols: string[]) => {
+      if (pairLockState.locked || !symbols.length) {
+        return null;
+      }
+      const canGoMulti = Boolean(useMulti) || !multiToggleState.disabled;
+      const result = applyPairsInput(symbols.join('\n'), {
+        surfaceError: false,
+        multi: canGoMulti,
+        replace: true,
+      });
+      if (
+        canGoMulti &&
+        !useMulti &&
+        result?.shouldUpdatePairs &&
+        (result.nextPairs?.length ?? 0) > 1
+      ) {
+        updateFormData('useMulti', true);
+      }
+      return result;
+    },
+    [
+      applyPairsInput,
+      multiToggleState.disabled,
+      pairLockState.locked,
+      updateFormData,
+      useMulti,
     ]
   );
 
@@ -1011,9 +1151,14 @@ export const useBasicSettingsTab = (
     pairSelectionFilter,
     applyPairsInput,
     handleCoinToggle,
+    handleReplacePair,
     handlePairsPaste,
+    handleAddPairs,
+    handleRemovePairs,
+    planMaxPairs,
     handleSelectAllMatching,
     handleClearPairs,
+    handleCopyPairs,
     precisionMap,
     handleRemovePair,
     isExchangeLocked,

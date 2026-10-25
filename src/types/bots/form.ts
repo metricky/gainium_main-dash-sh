@@ -40,6 +40,12 @@ export type BotFormErrors = Partial<
 
 export type AlertVariant = 'error' | 'warning' | 'info';
 
+/** A margin/leverage notice: a fact (info) or a problem to fix (warning). */
+export interface MarginNotice {
+  message: string;
+  variant: Exclude<AlertVariant, 'error'>;
+}
+
 export interface BotFormAlert {
   variant: AlertVariant;
   /** Title shown inline in the chip */
@@ -117,6 +123,17 @@ export interface BotFormData {
   askToReset?: boolean;
   dcaOrderGuard?: PrecisionGuard | null | undefined;
   terminal: boolean;
+  /**
+   * Bookkeeping, never sent: the backend knows single position per pair. Off
+   * until the capability probe says so; while off the setting is neither
+   * shown nor sent, because an older backend rejects the whole save.
+   */
+  singlePositionSupported?: boolean;
+  /**
+   * Bookkeeping, never sent: the backend knows `baseFunding`. Off until the
+   * capability probe says so; while off the setting is neither shown nor sent.
+   */
+  baseFundingSupported?: boolean;
 }
 
 /* export type HedgeLegFormDraft = Partial<

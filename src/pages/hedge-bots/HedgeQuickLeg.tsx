@@ -27,6 +27,10 @@ import { useHedgeBotFormOptional } from '@/contexts/bots/form/HedgeBotFormProvid
 import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
 import { useExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import { BasicSettings } from '@/features/bots/bot-types/dca/form/sections/BasicSettings';
+import {
+  applyHedgePresetToLeg,
+  type HedgeQuickPreset,
+} from '@/features/bots/bot-types/hedge/quickPresets';
 import { tryGetBotExperience } from '@/features/bots/catalog/BotExperienceCatalog';
 import {
   BotFormFooter,
@@ -52,6 +56,7 @@ import {
   resolveBaseOrderContext,
   useDcaTradingContext,
 } from '@/hooks/bots/dca/useDcaTradingContext';
+import { convertOrderSizesForUnit } from '@/utils/bots/dca/order-size-convert';
 import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
 import {
   BotTypesEnum,
@@ -167,37 +172,12 @@ const LegStrategyPinner: React.FC<{ strategy: StrategyEnum }> = ({
  * strategy / order-size denomination survive.
  */
 const LegPresetApplier: React.FC<{
-  targetRef: MutableRefObject<((nextDca: BotFormData['dca']) => void) | null>;
+  targetRef: MutableRefObject<((preset: HedgeQuickPreset) => void) | null>;
 }> = ({ targetRef }) => {
   const { setFormData } = useBotFormState();
   useEffect(() => {
-    targetRef.current = (nextDca: BotFormData['dca']) => {
-      setFormData((prev) => {
-        const prevDca = prev.dca;
-        const currentInvestment = computeInvestmentFromDca(prevDca);
-        // Derive from the pair's real order-size scale; the old base?8:2
-        // ternary rounded quote-denominated sizes to 2dp, zeroing sub-0.01
-        // sizes on BTC-/ETH-quoted pairs (bug #467).
-        const prevPair = Array.isArray(prev.pair) ? prev.pair[0] : prev.pair;
-        const precision = resolveOrderSizeDecimals(
-          prevDca.orderSizeType,
-          prevPair ? prev.pairPrecisionMap?.[prevPair] : undefined
-        );
-        const merged = {
-          ...nextDca,
-          strategy: prevDca.strategy,
-          orderSizeType: prevDca.orderSizeType,
-        } as BotFormData['dca'];
-        const { baseOrderSize, orderSize } = distributeInvestmentToDca(
-          currentInvestment,
-          merged,
-          precision
-        );
-        return {
-          ...prev,
-          dca: { ...merged, baseOrderSize, orderSize },
-        };
-      });
+    targetRef.current = (preset: HedgeQuickPreset) => {
+      setFormData((prev) => applyHedgePresetToLeg(prev, preset));
     };
     return () => {
       targetRef.current = null;
@@ -412,15 +392,36 @@ export const HedgeQuickInvestment: React.FC = () => {
         ? OrderSizeTypeEnum.base
         : OrderSizeTypeEnum.quote;
 
+  const tradingContext = useDcaTradingContext(formData);
+
   // Keep the leg denominated in its natural side even if the user never
   // touches the field (so the saved bot + balance check use the right wallet).
+  // The sizes move with the unit: re-pinning without converting them read a
+  // quote figure as base (10 USDT -> 10 BTC).
   useEffect(() => {
-    if (dcaState.orderSizeType !== unit) {
-      updateFormData('orderSizeType' as Fields, unit);
+    if (dcaState.orderSizeType === unit) return;
+    const legPair = Array.isArray(formData.pair)
+      ? formData.pair[0]
+      : formData.pair;
+    const converted = convertOrderSizesForUnit(
+      dcaState,
+      dcaState.orderSizeType,
+      unit,
+      tradingContext.latestPrice,
+      resolveOrderSizeDecimals(
+        unit,
+        legPair ? formData.pairPrecisionMap?.[legPair] : undefined
+      )
+    );
+    if (converted) {
+      updateFormData('baseOrderSize' as Fields, converted.baseOrderSize);
+      updateFormData('orderSize' as Fields, converted.orderSize);
     }
+    updateFormData('orderSizeType' as Fields, unit);
+    // Only a unit mismatch should trigger this; the sizes and price are read
+    // at that moment, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dcaState.orderSizeType, unit, updateFormData]);
-
-  const tradingContext = useDcaTradingContext(formData);
   const { availableBalance, currencyLabel } = useMemo(() => {
     const params: Parameters<typeof resolveBaseOrderContext>[0] = {
       currencyReference: unit,
@@ -488,28 +489,49 @@ export const HedgeQuickInvestment: React.FC = () => {
       ? [formData.pair]
       : [];
   const pairListKey = pairList.join(',');
+  const precisionConstraints = useMemo(
+    () =>
+      aggregatePrecisionConstraints(pairList, formData.pairPrecisionMap ?? {}),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pairListKey, formData.pairPrecisionMap]
+  );
   const orderGuard = useMemo(
     () =>
       createOrderGuard(
         unit,
-        aggregatePrecisionConstraints(pairList, formData.pairPrecisionMap ?? {}),
+        precisionConstraints,
         {
           base: tradingContext.baseAsset || undefined,
           quote: tradingContext.quoteAsset || undefined,
         }
       ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       unit,
-      pairListKey,
-      formData.pairPrecisionMap,
+      precisionConstraints,
       tradingContext.baseAsset,
       tradingContext.quoteAsset,
     ]
   );
-  const orderMinimum =
+  // A coin-sized leg (spot short, COIN-M) must also clear the exchange's
+  // notional minimum, which is quoted in the quote asset; the base guard only
+  // knows the base-amount minimum. Convert it at the live price, rounded up
+  // to the leg's precision so the figure is actually sufficient.
+  const notionalMinInBase = (() => {
+    if (unit !== OrderSizeTypeEnum.base) return 0;
+    const minQuote = precisionConstraints?.minQuoteAmount;
+    const price = tradingContext.latestPrice;
+    if (!(typeof minQuote === 'number' && minQuote > 0)) return 0;
+    if (!(typeof price === 'number' && price > 0)) return 0;
+    const factor = Math.pow(10, precision);
+    return Math.ceil((minQuote / price) * factor) / factor;
+  })();
+  const guardMinimum =
     typeof orderGuard?.min === 'number' && orderGuard.min > 0
       ? orderGuard.min
+      : 0;
+  const orderMinimum =
+    Math.max(guardMinimum, notionalMinInBase) > 0
+      ? Math.max(guardMinimum, notionalMinInBase)
       : null;
   const orderMinUnit = orderGuard?.unit ?? currencyLabel ?? '';
 
@@ -523,11 +545,23 @@ export const HedgeQuickInvestment: React.FC = () => {
   // Below-minimum alerts, matching the standalone Quick form's format so the
   // Investment row surfaces a chip + tooltip via BotFormAlertSummary.
   const investmentAlerts = useMemo<BotFormAlert[]>(() => {
-    if (orderMinimum === null) return [];
     const alerts: BotFormAlert[] = [];
+    const navId = `hedge-investment-${strategy}`;
+    // A small investment spread over many orders rounds the base order to 0
+    // at the pair's precision — the leg cannot run or be backtested.
+    if (!(baseOrderNum > 0)) {
+      alerts.push({
+        variant: 'error',
+        title: 'Base order is 0',
+        message: 'Base order is 0',
+        description:
+          "Increase this leg's investment or reduce its safety-order count.",
+        navId,
+      });
+    }
+    if (orderMinimum === null) return alerts;
     const fmt = (n: number) => formatNumberWithTrim(n, precision);
     const minLabel = `${orderMinimum}${orderMinUnit ? ` ${orderMinUnit}` : ''}`;
-    const navId = `hedge-investment-${strategy}`;
     if (baseOrderBelowMin) {
       alerts.push({
         variant: 'error',
@@ -590,12 +624,19 @@ export const HedgeQuickInvestment: React.FC = () => {
     updateFormData('orderSize' as Fields, orderSize);
   };
 
-  // Cap the slider at the leg's available balance when we know it; before a
-  // pair (and therefore balance) resolves, fall back to a usable range.
-  const sliderMax =
+  // Slider spans [min to run, available balance], like the standalone Quick
+  // form: dragging fully left lands on the minimum, never on a size that
+  // rounds orders below it (or to 0). Before a pair (and therefore balance)
+  // resolves, fall back to a usable range. The top never drops below the
+  // minimum, so a balance short of it still reaches a runnable size (a
+  // backtest needs no balance); the number input stays free.
+  const sliderFloor = minInvestment ?? 0;
+  const sliderMax = Math.max(
     availableBalance > 0
       ? availableBalance
-      : Math.max(100, displayInvestment);
+      : Math.max(100, displayInvestment),
+    sliderFloor
+  );
 
   return (
     <SettingsRow
@@ -624,10 +665,10 @@ export const HedgeQuickInvestment: React.FC = () => {
           }
         />
         <Slider
-          value={Math.min(Math.max(0, displayInvestment), sliderMax)}
-          min={0}
+          value={Math.min(Math.max(sliderFloor, displayInvestment), sliderMax)}
+          min={sliderFloor}
           max={sliderMax}
-          step={sliderMax > 0 ? sliderMax / 100 : 1}
+          step={sliderMax > sliderFloor ? (sliderMax - sliderFloor) / 100 : 1}
           onChange={(v) => setInvestment(v)}
           aria-label="Investment amount"
         />
@@ -690,9 +731,7 @@ export interface HedgeQuickLegProps {
    * this leg without remounting it (avoids scroll reset / flash). Registered
    * by LegPresetApplier once the leg's provider is mounted.
    */
-  presetApplyRef?: MutableRefObject<
-    ((nextDca: BotFormData['dca']) => void) | null
-  >;
+  presetApplyRef?: MutableRefObject<((preset: HedgeQuickPreset) => void) | null>;
   /**
    * When set, this leg isolates its side-effect stores (example orders /
    * indicators) so two co-mounted Quick legs don't clobber the shared globals,

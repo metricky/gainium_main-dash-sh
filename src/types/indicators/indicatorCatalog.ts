@@ -10,6 +10,7 @@ import {
   MAEnum,
   OBFVGRefEnum,
   OBFVGValueEnum,
+  SessionLevelEnum,
   SessionRuleEnum,
   LWValueEnum,
   ppValueEnum,
@@ -25,12 +26,31 @@ import {
   TradingviewAnalysisSignalEnum,
   TrendFilterOperatorEnum,
   LWConditionEnum,
+  OTELegEnum,
+  type SettingsIndicators,
 } from '..';
 import {
   IndicatorCategories,
   type IndicatorDefinition,
   type IndicatorFieldDefinition,
 } from './indicatorTypes';
+import {
+  DEFAULT_SMOOTHING_LENGTH,
+  MAX_SMOOTHING_LENGTH,
+  SMOOTHING_TYPES,
+  deriveSmoothingGatingParams,
+  resolveSmoothing,
+  resolveSmoothingCompare,
+  supportsSmoothing,
+} from '@/utils/indicators/smoothing';
+import {
+  resolveSessionPreset,
+  SESSION_ALL_DAY,
+  SESSION_CUSTOM,
+  SESSION_PRESETS,
+  sessionPresetParams,
+  sessionRuleParams,
+} from '@/utils/indicators/sessionWindow';
 
 /**
  * Static catalog describing every supported indicator, ported from the legacy dashboard.
@@ -57,6 +77,39 @@ const makeNumberField = (
   type: 'number',
   ...def,
 });
+
+const makeTimeField = (
+  def: Omit<IndicatorFieldDefinition, 'type'>
+): IndicatorFieldDefinition => ({
+  type: 'time',
+  ...def,
+});
+
+// Time zones offered for a session: UTC plus the main market centres.
+const SESSION_TIMEZONE_OPTIONS = [
+  { value: 'UTC', label: 'UTC' },
+  { value: 'America/New_York', label: 'New York' },
+  { value: 'America/Chicago', label: 'Chicago' },
+  { value: 'America/Los_Angeles', label: 'Los Angeles' },
+  { value: 'America/Sao_Paulo', label: 'São Paulo' },
+  { value: 'Europe/London', label: 'London' },
+  { value: 'Europe/Berlin', label: 'Frankfurt' },
+  { value: 'Europe/Zurich', label: 'Zurich' },
+  { value: 'Asia/Dubai', label: 'Dubai' },
+  { value: 'Asia/Kolkata', label: 'Mumbai' },
+  { value: 'Asia/Singapore', label: 'Singapore' },
+  { value: 'Asia/Hong_Kong', label: 'Hong Kong' },
+  { value: 'Asia/Shanghai', label: 'Shanghai' },
+  { value: 'Asia/Seoul', label: 'Seoul' },
+  { value: 'Asia/Tokyo', label: 'Tokyo' },
+  { value: 'Australia/Sydney', label: 'Sydney' },
+];
+
+const sessionTimezoneLabel = (timezone?: string) =>
+  SESSION_TIMEZONE_OPTIONS.find((o) => o.value === (timezone || 'UTC'))
+    ?.label ??
+  timezone ??
+  'UTC';
 
 const makeIntervalField = (
   def: Omit<IndicatorFieldDefinition, 'type'>
@@ -87,6 +140,21 @@ const SR_CONDITION_OPTIONS = [
 // Legacy renders the condition for the [bb, kc, sr, psar, pp] group with a
 // `Price ` prefix (indicators.tsx:1813-1822). The full four-option variant is
 // used by kc.
+const SESSION_LEVEL_OPTIONS = [
+  { value: SessionLevelEnum.price, label: 'Price' },
+  { value: SessionLevelEnum.prevOpen, label: 'Previous session open' },
+  { value: SessionLevelEnum.prevHigh, label: 'Previous session high' },
+  { value: SessionLevelEnum.prevMid, label: 'Previous session midpoint' },
+  { value: SessionLevelEnum.prevLow, label: 'Previous session low' },
+  { value: SessionLevelEnum.prevClose, label: 'Previous session close' },
+  { value: SessionLevelEnum.curOpen, label: 'Current session open' },
+  { value: SessionLevelEnum.curMid, label: 'Current session midpoint' },
+];
+
+const SESSION_LEVELS_ONLY = [
+  { field: 'sessionRule' as const, equals: SessionRuleEnum.levels },
+];
+
 const PRICE_CONDITION_OPTIONS = [
   { value: IndicatorStartConditionEnum.cd, label: 'Price crossing down' },
   { value: IndicatorStartConditionEnum.cu, label: 'Price crossing up' },
@@ -121,6 +189,38 @@ const MA_TYPE_OPTIONS = [
   { value: MAEnum.vwma, label: 'VWMA' },
   { value: MAEnum.rma, label: 'RMA' },
 ];
+
+const SMOOTHING_OPTIONS = [
+  { value: 'none', label: 'None' },
+  ...MA_TYPE_OPTIONS.filter((option) =>
+    (SMOOTHING_TYPES as readonly string[]).includes(option.value)
+  ),
+];
+
+const SMOOTHING_COMPARE_OPTIONS = [
+  { value: 'value', label: 'Smoothed line vs value' },
+  { value: 'line', label: 'Line vs smoothed line' },
+];
+
+// Card summary: "Smoothing: EMA 14", and "Compare: Line vs smoothed line" only
+// when the condition tests the line against its smoothed copy. Nothing while
+// smoothing is off.
+const summarizeSmoothing = (params: SettingsIndicators): string | null => {
+  const smoothing = resolveSmoothing(params);
+  if (!smoothing) {
+    return null;
+  }
+  const label =
+    SMOOTHING_OPTIONS.find((option) => option.value === smoothing.type)
+      ?.label ?? smoothing.type.toUpperCase();
+  return `${label} ${smoothing.length}`;
+};
+
+const summarizeSmoothingCompare = (params: SettingsIndicators): string | null =>
+  resolveSmoothingCompare(params) === 'line'
+    ? (SMOOTHING_COMPARE_OPTIONS.find((option) => option.value === 'line')
+        ?.label ?? null)
+    : null;
 
 const MA_REFERENCE_OPTIONS = [
   { value: MAEnum.price, label: 'Current price' },
@@ -182,6 +282,89 @@ const STOCH_RANGE_OPTIONS = [
   { value: StochRangeEnum.upper, label: 'Upper' },
   { value: StochRangeEnum.both, label: 'Lower&Upper' },
   { value: StochRangeEnum.none, label: 'Anywhere' },
+];
+
+// The Stochastic band keys as the bot engine reads them: with Zone
+// Lower&Upper (or Anywhere) stochLower is the lower band and stochUpper the
+// upper band, but a single-band zone reads its one band from the OTHER key —
+// Lower reads its lower band from stochUpper, Upper its upper band from
+// stochLower. Saved bots rely on this, so the storage stays as it is. Each
+// field binds the key its zone reads, the hidden band keeps the other key,
+// and changing Zone between a single-band zone and a two-band one swaps the
+// two values, so "Lower band" and "Upper band" keep what the user typed.
+const isSingleBandZone = (range: unknown) =>
+  range === StochRangeEnum.lower || range === StochRangeEnum.upper;
+
+export const stochZoneParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> => {
+  const next = { stochRange: value as StochRangeEnum };
+  if (
+    isSingleBandZone(params.stochRange ?? StochRangeEnum.lower) ===
+    isSingleBandZone(value)
+  ) {
+    return next;
+  }
+  return {
+    ...next,
+    stochLower: params.stochUpper,
+    stochUpper: params.stochLower,
+  };
+};
+
+const STOCH_LOWER_BAND_DEFAULT = '20';
+const STOCH_UPPER_BAND_DEFAULT = '80';
+
+const stochZoneFields: IndicatorFieldDefinition[] = [
+  makeSelectField({
+    key: 'stochRange',
+    label: 'Zone',
+    defaultValue: StochRangeEnum.lower,
+    options: STOCH_RANGE_OPTIONS,
+    tooltip: 'This is the area where the condition must be met',
+    hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
+    derive: {
+      get: (params) => params.stochRange ?? StochRangeEnum.lower,
+      set: stochZoneParams,
+    },
+  }),
+  makeNumberField({
+    key: 'stochLower',
+    label: 'Lower band',
+    defaultValue: STOCH_LOWER_BAND_DEFAULT,
+    allowVariables: true,
+    tooltip: 'Define the lower band range where the condition must be met',
+    keyWhen: [StochRangeEnum.lower, StochRangeEnum.upper].map((equals) => ({
+      field: 'stochRange' as const,
+      equals,
+      key: 'stochUpper' as const,
+      defaultValue: STOCH_LOWER_BAND_DEFAULT,
+    })),
+    hiddenWhen: [
+      { field: 'stochRange', equals: StochRangeEnum.upper },
+      { field: 'stochRange', equals: StochRangeEnum.none },
+      { field: 'rsiValue2', equals: rsiValue2Enum.custom },
+    ],
+  }),
+  makeNumberField({
+    key: 'stochUpper',
+    label: 'Upper band',
+    defaultValue: STOCH_UPPER_BAND_DEFAULT,
+    allowVariables: true,
+    tooltip: 'Define the upper band range where the condition must be met',
+    keyWhen: [StochRangeEnum.upper, StochRangeEnum.lower].map((equals) => ({
+      field: 'stochRange' as const,
+      equals,
+      key: 'stochLower' as const,
+      defaultValue: STOCH_UPPER_BAND_DEFAULT,
+    })),
+    hiddenWhen: [
+      { field: 'stochRange', equals: StochRangeEnum.lower },
+      { field: 'stochRange', equals: StochRangeEnum.none },
+      { field: 'rsiValue2', equals: rsiValue2Enum.custom },
+    ],
+  }),
 ];
 
 const RANGE_TYPE_OPTIONS = [
@@ -373,6 +556,7 @@ export const INDICATOR_DOCUMENTATION_URLS = {
   [IndicatorEnum.unpnl]: '/help/avp',
   [IndicatorEnum.session]: '/help/sessions',
   [IndicatorEnum.lw]: '/help/long-wick-detector',
+  [IndicatorEnum.ote]: '/help/discount-premium-ote-levels',
 } satisfies Partial<Record<IndicatorEnum, string>>;
 
 export const MARKET_STRUCTURE_VALUE_GROUPS = {
@@ -428,12 +612,89 @@ const percentileFields: IndicatorDefinition['fields'] = [
   makeNumberField({
     key: 'percentilePercentage',
     label: 'Percentile',
-    defaultValue: 90,
+    // the bot's value for a condition saved without one
+    defaultValue: 80,
     step: 1,
     allowVariables: true,
     hiddenWhen: [{ field: 'percentile', equals: false }],
   }),
 ];
+
+// Optional smoothing of a single-line oscillator (`SMOOTHING_INDICATOR_TYPES`),
+// spread after Length / Interval so the grid reads Smoothing | Smoothing
+// length, then Compare on its own row. The line-mode rules for the entry's
+// own Condition / Value fields are added by `withSmoothingGates` below.
+const smoothingFields: IndicatorDefinition['fields'] = [
+  makeSelectField({
+    key: 'smoothing',
+    label: 'Smoothing',
+    tooltip:
+      'Moving average applied to the indicator line. With smoothing on, the condition uses the smoothed line.',
+    defaultValue: 'none',
+    options: SMOOTHING_OPTIONS,
+    rowStart: true,
+    summary: summarizeSmoothing,
+  }),
+  makeNumberField({
+    key: 'smoothingLength',
+    label: 'Smoothing length',
+    defaultValue: DEFAULT_SMOOTHING_LENGTH,
+    min: 1,
+    max: MAX_SMOOTHING_LENGTH,
+    step: 1,
+    hiddenWhen: [{ field: 'smoothing', equals: 'none' }],
+    // Folded into the Smoothing item ("EMA 14").
+    summary: () => null,
+  }),
+  makeSelectField({
+    key: 'smoothingCompare',
+    label: 'Compare',
+    tooltip:
+      'Smoothed line vs value: the condition tests the smoothed line against Value. Line vs smoothed line: the condition tests the indicator against its own moving average, a momentum-turn signal. Percentile mode always compares against a value.',
+    defaultValue: 'value',
+    options: SMOOTHING_COMPARE_OPTIONS,
+    span: 'full',
+    hiddenWhen: [
+      { field: 'smoothing', equals: 'none' },
+      { field: 'percentile', equals: true },
+    ],
+    summary: summarizeSmoothingCompare,
+  }),
+];
+
+const SMOOTHING_LINE_CONDITION = {
+  field: 'smoothingCompare' as const,
+  equals: 'line',
+};
+
+// In "Line vs smoothed line" mode there is no value to test: the entry's
+// Value / Upper value hide and "Between" leaves the condition list. The gates
+// read the EFFECTIVE compare mode (`deriveSmoothingGatingParams`), so a stored
+// 'line' stops applying once smoothing is None or percentile is on.
+const withSmoothingGates = (
+  definition: IndicatorDefinition
+): IndicatorDefinition => ({
+  ...definition,
+  deriveGatingParams: deriveSmoothingGatingParams,
+  fields: definition.fields.map((field) => {
+    if (field.key === 'indicatorCondition') {
+      return {
+        ...field,
+        optionsWhen: [
+          ...(field.optionsWhen ?? []),
+          { ...SMOOTHING_LINE_CONDITION, options: INDICATOR_CONDITION_OPTIONS },
+        ],
+      };
+    }
+    if (field.key === 'indicatorValue' || field.key === 'indicatorValue2') {
+      return {
+        ...field,
+        hiddenWhen: [...(field.hiddenWhen ?? []), SMOOTHING_LINE_CONDITION],
+      };
+    }
+    return field;
+  }),
+});
 
 // Trend filter — legacy "Use Trend Filter" block, only exposed on MAR
 // (the sole entry in the legacy `trendIndicators` list). When enabled it
@@ -494,7 +755,7 @@ const keepConditionBarsField: IndicatorFieldDefinition = makeNumberField({
  * NOTE: The legacy dashboard exposes many composite options (e.g., MA type select with nested defaults).
  * We keep the structure declarative so downstream editors can render controls dynamically.
  */
-export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
+const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
   [IndicatorEnum.adx]: {
     type: IndicatorEnum.adx,
     label: 'Average Directional Index (ADX)',
@@ -517,6 +778,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -816,6 +1078,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -833,7 +1096,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorValue',
         label: 'Value',
         defaultValue: 0.05,
-        step: 1,
+        // a ratio of a few hundredths: whole steps jump past every level
+        step: 0.01,
         allowVariables: true,
         hiddenWhen: [{ field: 'percentile', equals: true }],
       }),
@@ -841,7 +1105,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorValue2',
         label: 'Upper value',
         tooltip: 'Between: the value must stay above Value and below this.',
-        step: 1,
+        step: 0.01,
         allowVariables: true,
         shownWhen: [
           {
@@ -950,6 +1214,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1015,6 +1280,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1081,6 +1347,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1152,6 +1419,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1237,6 +1505,9 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'valueInsteadof',
         label: 'Enter Value',
+        // Belongs to Second Variable (full row) above it; keeps Smooth D |
+        // Smooth K paired below.
+        span: 'full',
         defaultValue: 1,
         allowVariables: true,
         hiddenWhen: [
@@ -1259,64 +1530,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 1,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'stochRange',
-        label: 'Zone',
-        defaultValue: StochRangeEnum.lower,
-        options: STOCH_RANGE_OPTIONS,
-        tooltip: 'This is the area where the condition must be met',
-        hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
-      }),
-      // Legacy "Lower band" (indicators.tsx:2452-2498): shows when stochRange is
-      // lower or both. Storage key swaps with stochRange — stochRange===lower
-      // writes stochUpper (default '80'); otherwise (both) writes stochLower
-      // (default '20').
-      makeNumberField({
-        key: 'stochLower',
-        label: 'Lower band',
-        defaultValue: '20',
-        allowVariables: true,
-        tooltip:
-          'Define the lower band range where the condition must be met',
-        keyWhen: [
-          {
-            field: 'stochRange',
-            equals: StochRangeEnum.lower,
-            key: 'stochUpper',
-            defaultValue: '80',
-          },
-        ],
-        hiddenWhen: [
-          { field: 'stochRange', equals: StochRangeEnum.upper },
-          { field: 'stochRange', equals: StochRangeEnum.none },
-          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
-        ],
-      }),
-      // Legacy "Upper band" (indicators.tsx:2502-2547): shows when stochRange is
-      // upper or both. Storage key swaps with stochRange — stochRange===upper
-      // writes stochLower (default '80'); otherwise (both) writes stochUpper
-      // (default '20').
-      makeNumberField({
-        key: 'stochUpper',
-        label: 'Upper band',
-        defaultValue: '20',
-        allowVariables: true,
-        tooltip:
-          'Define the upper band range where the condition must be met',
-        keyWhen: [
-          {
-            field: 'stochRange',
-            equals: StochRangeEnum.upper,
-            key: 'stochLower',
-            defaultValue: '80',
-          },
-        ],
-        hiddenWhen: [
-          { field: 'stochRange', equals: StochRangeEnum.lower },
-          { field: 'stochRange', equals: StochRangeEnum.none },
-          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
-        ],
-      }),
+      ...stochZoneFields,
       keepConditionBarsField,
     ],
   },
@@ -1375,6 +1589,9 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'valueInsteadof',
         label: 'Enter Value',
+        // Belongs to Second Variable (full row) above it; keeps Smooth D |
+        // Smooth K paired below.
+        span: 'full',
         defaultValue: 1,
         allowVariables: true,
         hiddenWhen: [
@@ -1397,60 +1614,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 3,
         allowVariables: true,
       }),
-      makeSelectField({
-        key: 'stochRange',
-        label: 'Zone',
-        defaultValue: StochRangeEnum.lower,
-        options: STOCH_RANGE_OPTIONS,
-        tooltip: 'This is the area where the condition must be met',
-        hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
-      }),
-      // Legacy "Lower band" key-swap (see stoch entry above): stochRange===lower
-      // writes stochUpper (default '80'); otherwise (both) writes stochLower ('20').
-      makeNumberField({
-        key: 'stochLower',
-        label: 'Lower band',
-        defaultValue: '20',
-        allowVariables: true,
-        tooltip:
-          'Define the lower band range where the condition must be met',
-        keyWhen: [
-          {
-            field: 'stochRange',
-            equals: StochRangeEnum.lower,
-            key: 'stochUpper',
-            defaultValue: '80',
-          },
-        ],
-        hiddenWhen: [
-          { field: 'stochRange', equals: StochRangeEnum.upper },
-          { field: 'stochRange', equals: StochRangeEnum.none },
-          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
-        ],
-      }),
-      // Legacy "Upper band" key-swap: stochRange===upper writes stochLower
-      // (default '80'); otherwise (both) writes stochUpper (default '20').
-      makeNumberField({
-        key: 'stochUpper',
-        label: 'Upper band',
-        defaultValue: '20',
-        allowVariables: true,
-        tooltip:
-          'Define the upper band range where the condition must be met',
-        keyWhen: [
-          {
-            field: 'stochRange',
-            equals: StochRangeEnum.upper,
-            key: 'stochLower',
-            defaultValue: '80',
-          },
-        ],
-        hiddenWhen: [
-          { field: 'stochRange', equals: StochRangeEnum.lower },
-          { field: 'stochRange', equals: StochRangeEnum.none },
-          { field: 'rsiValue2', equals: rsiValue2Enum.custom },
-        ],
-      }),
+      ...stochZoneFields,
       keepConditionBarsField,
     ],
   },
@@ -1663,7 +1827,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'kcRangeLength',
         label: 'Range length',
-        defaultValue: 10,
+        // the bot's and the backtest's value for a condition saved without one
+        defaultValue: 20,
         min: 1,
         max: 200,
         step: 1,
@@ -1744,6 +1909,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1760,8 +1926,10 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'indicatorValue',
         label: 'Value',
-        defaultValue: 80,
-        step: 1,
+        // %B is the close's place in the channel: 0 at the lower band, 1 at
+        // the upper one. 0 is the lower band (the bot API's default too).
+        defaultValue: 0,
+        step: 0.01,
         allowVariables: true,
         hiddenWhen: [{ field: 'percentile', equals: true }],
       }),
@@ -1769,7 +1937,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorValue2',
         label: 'Upper value',
         tooltip: 'Between: the value must stay above Value and below this.',
-        step: 1,
+        step: 0.01,
         allowVariables: true,
         shownWhen: [
           {
@@ -1827,6 +1995,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1844,7 +2013,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorValue',
         label: 'Value',
         defaultValue: 0.05,
-        step: 1,
+        // a ratio of a few hundredths: whole steps jump past every level
+        step: 0.01,
         allowVariables: true,
         hiddenWhen: [{ field: 'percentile', equals: true }],
       }),
@@ -1852,7 +2022,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'indicatorValue2',
         label: 'Upper value',
         tooltip: 'Between: the value must stay above Value and below this.',
-        step: 1,
+        step: 0.01,
         allowVariables: true,
         shownWhen: [
           {
@@ -1925,6 +2095,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -1986,6 +2157,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -2045,6 +2217,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -2119,6 +2292,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -2142,7 +2316,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       }),
       makeNumberField({
         key: 'indicatorValue2',
-        label: 'Level',
+        label: 'Upper value',
+        tooltip: 'Between: the value must stay above Level and below this.',
         step: 1,
         allowVariables: true,
         shownWhen: [
@@ -2185,6 +2360,7 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      ...smoothingFields,
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
@@ -2201,14 +2377,18 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       makeNumberField({
         key: 'indicatorValue',
         label: 'Level',
-        defaultValue: 70,
+        // Momentum is a price difference (price now minus price n bars ago),
+        // in the pair's price units, so the only level that means the same
+        // on every pair is the zero line.
+        defaultValue: 0,
         step: 1,
         allowVariables: true,
         hiddenWhen: [{ field: 'percentile', equals: true }],
       }),
       makeNumberField({
         key: 'indicatorValue2',
-        label: 'Level',
+        label: 'Upper value',
+        tooltip: 'Between: the value must stay above Level and below this.',
         step: 1,
         allowVariables: true,
         shownWhen: [
@@ -2361,18 +2541,30 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: TradingviewAnalysisSignalEnum.strongBuy,
         options: TV_SIGNAL_OPTIONS,
       }),
+      // The bot, the backtester and the chart read the trigger from
+      // `condition`. Rows saved while this field wrote `indicatorCondition`
+      // show the trigger they chose until they are saved again.
       makeSelectField({
-        key: 'indicatorCondition',
+        key: 'condition',
         label: 'Trigger',
         defaultValue: TradingviewAnalysisConditionEnum.entry,
         options: TV_CONDITION_OPTIONS,
+        keyWhen: [
+          {
+            field: 'indicatorCondition',
+            equals: TradingviewAnalysisConditionEnum.every,
+            key: 'condition',
+            defaultValue: TradingviewAnalysisConditionEnum.every,
+          },
+        ],
       }),
       makeNumberField({
         key: 'checkLevel',
         label: 'Check level',
         defaultValue: 15,
         min: 1,
-        max: 100,
+        // the rating sums 28 signals of +1 or -1, so it never passes 28
+        max: 28,
         step: 1,
         allowVariables: true,
       }),
@@ -2500,7 +2692,8 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Min number of divergences',
         defaultValue: 2,
         min: 1,
-        max: 10,
+        // one divergence per oscillator, and there are nine to choose from
+        max: DIV_OSCILLATOR_OPTIONS.length,
         step: 1,
         allowVariables: true,
       }),
@@ -2885,9 +3078,102 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     shortLabel: 'Session',
     category: IndicatorCategories.Filter,
     description:
-      'Filters signals based on the day of the week (UTC). Select which days are active and whether to trade in or out of the selected sessions.',
+      'Filters signals by day of the week and, optionally, time of day in a chosen time zone. Pick a market session or set your own hours, and whether to trade in or out of it.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      makeSelectField({
+        key: 'sessionPreset',
+        label: 'Session',
+        span: 'full',
+        tooltip:
+          'Fills the hours and time zone of a market session on its local clock, so daylight saving moves it with that market. Edit the hours to make it your own.',
+        options: [
+          { value: SESSION_ALL_DAY, label: 'All day' },
+          ...SESSION_PRESETS.map((p) => ({
+            value: p.value,
+            label: `${p.label} ${p.start}–${p.end}`,
+          })),
+          { value: SESSION_CUSTOM, label: 'Custom' },
+        ],
+        derive: { get: resolveSessionPreset, set: sessionPresetParams },
+        summary: (params) => {
+          const preset = resolveSessionPreset(params);
+          if (preset === SESSION_ALL_DAY) return null;
+          const match = SESSION_PRESETS.find((p) => p.value === preset);
+          return `${match ? `${match.label} ` : ''}${params.sessionStart}–${params.sessionEnd} ${sessionTimezoneLabel(params.sessionTimezone)}`;
+        },
+      }),
+      makeTimeField({
+        key: 'sessionStart',
+        label: 'Start',
+        tooltip:
+          'Local time the session opens. Leave Start and End empty for the whole day.',
+        summary: () => null,
+      }),
+      makeTimeField({
+        key: 'sessionEnd',
+        label: 'End',
+        tooltip:
+          'Local time the session closes. An End before Start runs overnight and belongs to the day it opens.',
+        summary: () => null,
+      }),
+      makeSelectField({
+        key: 'sessionTimezone',
+        label: 'Time zone',
+        defaultValue: 'UTC',
+        options: SESSION_TIMEZONE_OPTIONS,
+        tooltip: 'Session days and hours are read on this clock.',
+        summary: () => null,
+      }),
+      makeSelectField({
+        key: 'sessionRule',
+        label: 'Rule',
+        defaultValue: SessionRuleEnum.in,
+        options: [
+          { value: SessionRuleEnum.in, label: 'In session' },
+          { value: SessionRuleEnum.out, label: 'Out of session' },
+          { value: SessionRuleEnum.levels, label: 'Price levels' },
+        ],
+        derive: {
+          get: (params) => params.sessionRule ?? SessionRuleEnum.in,
+          set: sessionRuleParams,
+        },
+        tooltip:
+          'In or out of session filters by time. Price levels compares two session prices and is true only during the session.',
+      }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.fifteenM,
+        tooltip: 'Candles the session prices are read from.',
+        shownWhen: SESSION_LEVELS_ONLY,
+      }),
+      makeSelectField({
+        key: 'sessionLevelA',
+        label: 'Compare',
+        defaultValue: SessionLevelEnum.price,
+        options: SESSION_LEVEL_OPTIONS,
+        tooltip:
+          'Price is the close of the latest candle. Previous session values come from the last session that has ended. Current session open and midpoint have no value outside a session; the midpoint is halfway between the session high and low so far.',
+        shownWhen: SESSION_LEVELS_ONLY,
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cu,
+        options: INDICATOR_CONDITION_OPTIONS,
+        tooltip:
+          'Crossing compares two candles of the same session; a new session moving the levels is not a crossing. Nothing triggers before a whole session has ended.',
+        shownWhen: SESSION_LEVELS_ONLY,
+      }),
+      makeSelectField({
+        key: 'sessionLevelB',
+        label: 'With',
+        defaultValue: SessionLevelEnum.prevHigh,
+        options: SESSION_LEVEL_OPTIONS,
+        tooltip: 'The value Compare is tested against.',
+        shownWhen: SESSION_LEVELS_ONLY,
+      }),
       makeSelectField({
         key: 'sessionDays',
         label: 'Session Days',
@@ -2901,15 +3187,6 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
           { value: 4, label: 'Thu' },
           { value: 5, label: 'Fri' },
           { value: 6, label: 'Sat' },
-        ],
-      }),
-      makeSelectField({
-        key: 'sessionRule',
-        label: 'Rule',
-        defaultValue: SessionRuleEnum.in,
-        options: [
-          { value: SessionRuleEnum.in, label: 'In session' },
-          { value: SessionRuleEnum.out, label: 'Out of session' },
         ],
       }),
     ],
@@ -2964,7 +3241,87 @@ export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       keepConditionBarsField,
     ],
   },
+  [IndicatorEnum.ote]: {
+    type: IndicatorEnum.ote,
+    label: 'Discount/Premium OTE Levels',
+    shortLabel: 'OTE Levels',
+    category: IndicatorCategories.Chart,
+    description:
+      'Fibonacci retracement levels of the latest valid swing leg: discount and premium zones around the 0.5 equilibrium and the optimal trade entry (OTE) zone around 0.618–0.79.',
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeNumberField({
+        key: 'oteLeftBars',
+        label: 'Swing sensitivity',
+        defaultValue: 10,
+        min: 1,
+        max: 500,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'A swing high or low must be the highest or lowest point of at least this many bars to its left. It is confirmed one bar after it prints.',
+      }),
+      makeNumberField({
+        key: 'oteMinLegSize',
+        label: 'Minimum leg size',
+        defaultValue: 1,
+        min: 0.01,
+        max: 100,
+        step: 0.1,
+        suffix: '%',
+        allowVariables: true,
+        tooltip:
+          'A move between a swing low and a swing high counts as a leg only when it is at least this many percent of its low.',
+      }),
+      makeSelectField({
+        key: 'oteLeg',
+        label: 'Leg',
+        defaultValue: OTELegEnum.bullish,
+        options: [
+          { value: OTELegEnum.bullish, label: 'Bullish' },
+          { value: OTELegEnum.bearish, label: 'Bearish' },
+          { value: OTELegEnum.any, label: 'Any' },
+        ],
+        tooltip:
+          'Bullish legs run from a swing low up to a swing high, bearish legs from a swing high down to a swing low. Only the latest leg is read.',
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: PRICE_CONDITION_OPTIONS,
+        tooltip:
+          'Crossing compares the close with the level on two candles of the same leg; a new leg moving the level is not a crossing.',
+      }),
+      makeNumberField({
+        key: 'oteLevel',
+        label: 'Level',
+        defaultValue: 0.705,
+        min: 0,
+        max: 1,
+        step: 0.001,
+        allowVariables: true,
+        tooltip:
+          'Retracement of the leg the price is compared with: 0 is the end of the leg, 1 its origin, 0.5 the equilibrium. 0.618–0.79 is the OTE zone; above 0.5 is discount in a bullish leg and premium in a bearish one.',
+      }),
+      keepConditionBarsField,
+    ],
+  },
 };
+
+export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> =
+  Object.fromEntries(
+    Object.entries(BASE_INDICATOR_CATALOG).map(([type, definition]) => [
+      type,
+      supportsSmoothing(type) ? withSmoothingGates(definition) : definition,
+    ])
+  ) as Record<IndicatorEnum, IndicatorDefinition>;
 
 Object.entries(INDICATOR_DOCUMENTATION_URLS).forEach(([type, url]) => {
   if (!url) {

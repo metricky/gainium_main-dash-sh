@@ -22,6 +22,8 @@ import { BalanceInput } from '@/components/ui/balance-input';
 import CoinIcon from '@/components/widgets/shared/CoinIcon';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import SettingsAlert from '@/components/ui/SettingsAlert';
+import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
 import {
   ADD_AMOUNT_MODE_ORDER,
@@ -30,13 +32,21 @@ import {
   resolvePercentOfAvailable,
   amountModeLabel,
   fromAmountMode,
-  percentClosesDeal,
-  resolvePercentQuantity,
   toAmountMode,
   type AmountMode,
   type PercentBasis,
 } from './adjustFundsAmount';
 import { useDealFreeBalance } from './useDealFreeBalance';
+import {
+  comboFundsOutcome,
+  dcaFundsOutcome,
+  percentHint,
+  type FundsOutcome,
+  type PairLimits,
+  type PendingLevels,
+} from './fundsOutcome';
+import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
+import { isCoinmExchange, removePaperPrefix } from '@/utils/exchangeUtils';
 import {
   AddFundsTypeEnum,
   ExchangeEnum,
@@ -125,6 +135,13 @@ interface AdjustFundsDialogBaseProps {
    * entered here is applied to EACH selected deal, not split between them.
    */
   targetCount?: number;
+  /**
+   * Combo deals scale every DCA level by one factor instead of placing a
+   * single order: market only, and the preview explains the scaling.
+   */
+  dealKind?: 'dca' | 'combo' | undefined;
+  /** Combo: the deal's DCA levels still resting, which the scaling resizes. */
+  pendingLevels?: PendingLevels | undefined;
 }
 
 export type AdjustFundsDialogMode = 'add' | 'reduce';
@@ -162,20 +179,47 @@ const SECONDARY_ACTION_TEXT: Record<AdjustFundsDialogMode, string> = {
   reduce: 'Reduce funds',
 };
 
-const BULK_DESCRIPTIONS: Record<AdjustFundsDialogMode, (count: number) => string> =
-  {
-    add: (count) =>
-      `Inject additional capital into each of the ${count} selected deals.`,
-    reduce: (count) =>
-      `Withdraw capital from each of the ${count} selected deals.`,
-  };
-
 const BULK_FOOTNOTES: Record<AdjustFundsDialogMode, (count: number) => string> = {
   add: (count) =>
     `The selected amount is appended to each of the ${count} deals — it is not split between them.`,
   reduce: (count) =>
     `The selected amount is withdrawn from each of the ${count} deals — it is not split between them.`,
 };
+
+const COMBO_SCALE_TOOLTIP =
+  'Every DCA level of the deal is scaled by this factor. Filled levels are topped up at market now and their minigrid orders grow with them; levels still pending are resized. No new level is added.';
+
+const COMBO_REDUCE_SCALE_TOOLTIP =
+  'Every DCA level of the deal is scaled by this factor. Part of the filled position is sold at market now and its minigrid orders shrink with it; levels still pending are resized.';
+
+const COMBO_AMOUNT_TOOLTIP =
+  'An amount is spread over every DCA level: what the filled levels cost at today’s price plus what the pending levels will spend.';
+
+const RAISED_TO_MINIMUM_TOOLTIP =
+  'Below the exchange minimum order size, so the order is raised to it.';
+
+const formatPrice = (value: number) =>
+  value.toLocaleString(undefined, {
+    maximumFractionDigits: value >= 100 ? 2 : value >= 1 ? 4 : 8,
+  });
+
+const OutcomeRow: React.FC<{
+  label: string;
+  tooltip?: string;
+  children: React.ReactNode;
+}> = ({ label, tooltip, children }) => (
+  <div className="flex items-center justify-between gap-sm">
+    <span className="flex items-center gap-xs text-muted-foreground">
+      {label}
+      {tooltip ? (
+        <Tooltip tooltip={tooltip}>
+          <InfoIcon />
+        </Tooltip>
+      ) : null}
+    </span>
+    <span className="font-medium tabular-nums text-right">{children}</span>
+  </div>
+);
 
 const RESET_PAYLOAD = {
   qty: '',
@@ -208,9 +252,9 @@ const normalizeNumberString = (value: string) => {
 
 /**
  * Enough digits to be useful for both a ~1900-XPL position and a 0.0024-BTC
- * one, without implying a precision the exchange will honour: the engine
- * rounds to the pair's own base precision, which this dialog does not have.
- * Every number built from this is therefore prefixed with "≈".
+ * one. The order itself is rounded to the pair's lot step when the pair's
+ * filters are known (`usePairLimits`); the price it fills at is not, so every
+ * number built from this is prefixed with "≈".
  */
 const formatQty = (value: number) =>
   value
@@ -262,6 +306,50 @@ const useMarketPrice = (symbol?: string, exchange?: string) => {
   return price;
 };
 
+/**
+ * The pair's lot step and exchange minimums, which the engine rounds and
+ * checks the order against. Null when the pair is not in the loaded list, or
+ * on a coin-margined deal, whose orders the engine sizes in contracts.
+ */
+const usePairLimits = (
+  symbol?: string,
+  exchange?: string,
+  baseAsset?: string,
+  quoteAsset?: string
+): PairLimits | null => {
+  const { pairsByExchange } = useTradingPairsFromContext();
+  return React.useMemo(() => {
+    if (!symbol || !exchange || !pairsByExchange || isCoinmExchange(exchange)) {
+      return null;
+    }
+    const base = (baseAsset ?? '').toUpperCase();
+    const quote = (quoteAsset ?? '').toUpperCase();
+    const venues = [
+      exchange,
+      removePaperPrefix(exchange as ExchangeEnum),
+    ].map((e) => e.toUpperCase());
+    for (const venue of venues) {
+      const entry = Object.entries(pairsByExchange).find(
+        ([name]) => name.toUpperCase() === venue
+      );
+      const match = entry?.[1].find((p) =>
+        base && quote
+          ? (p.baseAsset?.name ?? '').toUpperCase() === base &&
+            (p.quoteAsset?.name ?? '').toUpperCase() === quote
+          : p.pair === symbol
+      );
+      if (match && match.baseAsset.step > 0) {
+        return {
+          step: match.baseAsset.step,
+          minBase: match.baseAsset.minAmount ?? 0,
+          minQuote: match.quoteAsset.minAmount ?? 0,
+        };
+      }
+    }
+    return null;
+  }, [symbol, exchange, baseAsset, quoteAsset, pairsByExchange]);
+};
+
 export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   mode,
   open,
@@ -281,8 +369,11 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   futures = false,
   long = true,
   targetCount = 1,
+  dealKind = 'dca',
+  pendingLevels,
 }) => {
   const isBulk = targetCount > 1;
+  const isCombo = dealKind === 'combo';
   const [quantity, setQuantity] = React.useState<string>(RESET_PAYLOAD.qty);
   const [asset, setAsset] = React.useState<OrderSizeTypeEnum>(
     defaultSettings?.asset ?? RESET_PAYLOAD.asset
@@ -290,9 +381,10 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   const [type, setType] = React.useState<AddFundsTypeEnum>(
     defaultSettings?.type ?? RESET_PAYLOAD.type
   );
-  const [useLimitPrice, setUseLimitPrice] = React.useState<boolean>(
+  const [useLimitPriceState, setUseLimitPrice] = React.useState<boolean>(
     defaultSettings?.useLimitPrice ?? RESET_PAYLOAD.useLimitPrice
   );
+  const useLimitPrice = !isCombo && useLimitPriceState;
   const [limitPrice, setLimitPrice] = React.useState<string>(
     defaultSettings?.limitPrice ?? RESET_PAYLOAD.limitPrice
   );
@@ -329,15 +421,7 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
   };
 
   const marketPrice = useMarketPrice(symbol, exchange);
-
-  // The base amount behind the percentage, computed exactly as the engine
-  // computes it — see `percentBasis`. Rendered only when every input was
-  // available; a confident "0" would read as "this order does nothing".
-  const resolvedQty = isPercentOfPosition
-    ? resolvePercentQuantity(percentBasis, quantity)
-    : null;
-  const willCloseDeal =
-    mode === 'reduce' && percentClosesDeal(percentBasis, resolvedQty);
+  const pairLimits = usePairLimits(symbol, exchange, baseAsset, quoteAsset);
 
   // What caps this adjustment, in the unit the user is currently typing in.
   //
@@ -520,6 +604,11 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
       }
     }
 
+    if (minimumError) {
+      setFormError(minimumError);
+      return;
+    }
+
     const settings: AddFundsSettings = {
       qty:
         percentOfAvailable && resolvedFromAvailable !== null
@@ -560,6 +649,84 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
     return null;
   }, [limitPrice, quantity, type, useLimitPrice, percentOfAvailable]);
 
+  const outcome = React.useMemo<FundsOutcome | null>(() => {
+    if (isBulk || !percentBasis || !conversionPrice || percentOfAvailable) {
+      return null;
+    }
+    const qty = toNumber(sanitizeQuantity(quantity));
+    if (!qty) return null;
+    const req = {
+      qty,
+      asset: asset === OrderSizeTypeEnum.base ? ('base' as const) : ('quote' as const),
+      perc: isPercentOfPosition,
+      price: conversionPrice,
+    };
+    return isCombo
+      ? comboFundsOutcome(
+          mode,
+          percentBasis,
+          req,
+          pendingLevels ?? { base: 0, quote: 0 },
+          long,
+          pairLimits
+        )
+      : dcaFundsOutcome(mode, percentBasis, req, long, pairLimits);
+  }, [
+    isBulk,
+    percentBasis,
+    conversionPrice,
+    percentOfAvailable,
+    quantity,
+    asset,
+    isPercentOfPosition,
+    isCombo,
+    mode,
+    pendingLevels,
+    long,
+    pairLimits,
+  ]);
+
+  // The base amount behind the percentage, as the engine will send it — see
+  // `percentHint`. DCA: the engine's percent basis rounded to the lot step;
+  // Combo: the order the outcome describes (k = 1 ± p/100 of the position).
+  // Rendered only when every input was available; a confident "0" would read
+  // as "this order does nothing".
+  const hint = isPercentOfPosition
+    ? percentHint(
+        isCombo ? 'combo' : 'dca',
+        mode,
+        percentBasis,
+        quantity,
+        outcome,
+        pairLimits
+      )
+    : null;
+  const resolvedQty = hint?.qty ?? null;
+  const willCloseDeal = !!hint?.closesDeal;
+  const buysNow = (mode === 'add') === long;
+
+  // The engine would refuse this request outright, so it is not sent.
+  const minimumError = React.useMemo(() => {
+    if (!outcome?.belowMinimum || !pairLimits) return null;
+    if (outcome.belowMinimum === 'level') {
+      return outcome.maxReducePerc
+        ? `A resting order would fall below the exchange minimum — at most ${outcome.maxReducePerc}%.`
+        : 'Resting orders are already at the exchange minimum.';
+    }
+    const parts = [
+      pairLimits.minBase > 0
+        ? `${formatQty(pairLimits.minBase)} ${baseAsset ?? ''}`.trim()
+        : null,
+      pairLimits.minQuote > 0
+        ? `${formatPrice(pairLimits.minQuote)} ${quoteAsset ?? ''}`.trim()
+        : null,
+    ].filter(Boolean);
+    return parts.length
+      ? `Below the exchange minimum order (${parts.join(' / ')}).`
+      : 'Below the exchange minimum order.';
+  }, [outcome, pairLimits, baseAsset, quoteAsset]);
+  const blockingError = error ?? minimumError;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-w-[95vw]">
@@ -568,12 +735,16 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
             <Icon className="h-5 w-5" />
             {TITLES[mode]}
           </DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">
+          <DialogDescription
+            className={
+              isBulk || targetName
+                ? 'text-sm text-muted-foreground'
+                : 'sr-only text-sm text-muted-foreground'
+            }
+          >
             {isBulk
-              ? BULK_DESCRIPTIONS[mode](targetCount)
-              : targetName
-                ? `${DESCRIPTIONS[mode]} (${targetName}).`
-                : DESCRIPTIONS[mode]}
+              ? `${targetCount} selected deals`
+              : (targetName ?? DESCRIPTIONS[mode])}
           </DialogDescription>
         </DialogHeader>
 
@@ -703,7 +874,7 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {(mode === 'add' && !futures
+                    {(mode === 'add' && !futures && !isCombo
                       ? ADD_AMOUNT_MODE_ORDER
                       : AMOUNT_MODE_ORDER
                     ).map((option) => (
@@ -725,6 +896,7 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
                 grows a line taller when the market-price hint is showing, and
                 bottom alignment pushed its label out of line with "Order
                 type". */}
+            {isCombo ? null : (
             <div className="grid gap-md sm:grid-cols-2 sm:items-start">
               <div className="space-y-xs">
                 <Label htmlFor="adjust-funds-order-type">Order type</Label>
@@ -770,6 +942,76 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
                 <div />
               )}
             </div>
+            )}
+
+            {outcome && !outcome.belowMinimum ? (
+              <div
+                className="space-y-xs rounded-lg bg-muted/20 p-sm text-sm"
+                data-testid="adjust-funds-outcome"
+              >
+                {outcome.scale !== null && !outcome.closesDeal ? (
+                  <OutcomeRow
+                    label="Every DCA level"
+                    tooltip={
+                      mode === 'add'
+                        ? COMBO_SCALE_TOOLTIP
+                        : COMBO_REDUCE_SCALE_TOOLTIP
+                    }
+                  >
+                    ×{outcome.scale.toFixed(outcome.scale < 10 ? 3 : 1).replace(/0+$/, '').replace(/\.$/, '')}
+                  </OutcomeRow>
+                ) : null}
+                <OutcomeRow
+                  label={
+                    buysNow
+                      ? 'Buys now'
+                      : 'Sells now'
+                  }
+                  {...(outcome.raisedToMinimum
+                    ? { tooltip: RAISED_TO_MINIMUM_TOOLTIP }
+                    : isCombo && !isPercent
+                      ? { tooltip: COMBO_AMOUNT_TOOLTIP }
+                      : {})}
+                >
+                  ≈ {formatQty(outcome.orderBase)} {baseAsset ?? ''} (
+                  {formatPrice(outcome.orderQuote)} {quoteAsset ?? ''})
+                </OutcomeRow>
+                {outcome.pendingQuoteDelta ? (
+                  <OutcomeRow label="Pending levels">
+                    {outcome.pendingQuoteDelta > 0 ? '+' : '−'}
+                    {formatPrice(Math.abs(outcome.pendingQuoteDelta))}{' '}
+                    {quoteAsset ?? ''}
+                  </OutcomeRow>
+                ) : null}
+                <OutcomeRow label="Position">
+                  {formatQty(outcome.positionBefore)} →{' '}
+                  {formatQty(outcome.positionAfter)} {baseAsset ?? ''}
+                </OutcomeRow>
+                {!outcome.closesDeal ? (
+                  <OutcomeRow label="Average price">
+                    {formatPrice(outcome.avgBefore)}
+                    {outcome.avgAfter !== outcome.avgBefore
+                      ? ` → ${formatPrice(outcome.avgAfter)}`
+                      : ''}
+                  </OutcomeRow>
+                ) : null}
+                {outcome.realized !== null ? (
+                  <OutcomeRow label="Realized P&L">
+                    <span
+                      className={
+                        outcome.realized >= 0 ? 'text-success' : 'text-destructive'
+                      }
+                    >
+                      {outcome.realized >= 0 ? '+' : '−'}
+                      {formatPrice(Math.abs(outcome.realized))} {quoteAsset ?? ''}
+                    </span>
+                  </OutcomeRow>
+                ) : null}
+                {outcome.closesDeal ? (
+                  <div className="text-warning">Closes the deal</div>
+                ) : null}
+              </div>
+            ) : null}
 
             {/* {scopeOptions.length > 1 ? (
               <div className="space-y-xs">
@@ -801,45 +1043,48 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
               </div>
             ) : null} */}
 
-            <div className="rounded-lg border border-dashed border-border/60 bg-muted/5 p-sm text-xs text-muted-foreground">
-              <p>
-                {isBulk
-                  ? BULK_FOOTNOTES[mode](targetCount)
-                  : mode === 'add'
-                    ? 'The selected amount will be appended to the deal once confirmed.'
-                    : 'The selected amount will be withdrawn from the deal once confirmed.'}
-              </p>
-              {isPercentOfPosition ? (
-                <p className="mt-1">
-                  The percentage is taken from the position this deal currently
-                  holds — not from your exchange balance.
-                </p>
-              ) : null}
-              {percentOfAvailable ? (
-                <p className="mt-1">
-                  The percentage is taken from your free exchange balance, and
-                  is converted to a fixed amount when you confirm — not re-read
-                  when the order is placed.
-                </p>
-              ) : null}
-              {willCloseDeal && percentBasis ? (
-                <p className="mt-1 text-warning">
-                  That is at or above the whole remaining position (
-                  {formatQty(percentBasis.remainingBase)}
-                  {baseAsset ? ` ${baseAsset}` : ''}), so this will close the
-                  deal rather than reduce it.
-                </p>
-              ) : null}
-            </div>
-            {!!error && <div className="text-sm text-destructive">{error}</div>}
+            {isBulk ||
+            isPercentOfPosition ||
+            percentOfAvailable ||
+            (willCloseDeal && percentBasis) ? (
+              <div className="flex flex-col gap-1">
+                {isBulk ? (
+                  <SettingsAlert
+                    variant="info"
+                    title="Applied to each deal, not split"
+                    description={BULK_FOOTNOTES[mode](targetCount)}
+                  />
+                ) : null}
+                {isPercentOfPosition ? (
+                  <SettingsAlert
+                    variant="info"
+                    title="% of the deal's position"
+                    description="The percentage is taken from the position this deal currently holds — not from your exchange balance."
+                  />
+                ) : null}
+                {percentOfAvailable ? (
+                  <SettingsAlert
+                    variant="info"
+                    title="% of free balance, fixed on confirm"
+                    description="The percentage is taken from your free exchange balance, and is converted to a fixed amount when you confirm — not re-read when the order is placed."
+                  />
+                ) : null}
+                {willCloseDeal && percentBasis ? (
+                  <SettingsAlert
+                    variant="warning"
+                    title="This closes the deal"
+                    description={`That is at or above the whole remaining position (${formatQty(percentBasis.remainingBase)}${baseAsset ? ` ${baseAsset}` : ''}), so this will close the deal rather than reduce it.`}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+            {!!blockingError && (
+              <div className="text-sm text-destructive">{blockingError}</div>
+            )}
           </div>
 
           {formError ? (
-            <Alert className="border-destructive/40 bg-destructive/10">
-              <AlertDescription className="text-sm text-destructive">
-                {formError}
-              </AlertDescription>
-            </Alert>
+            <SettingsAlert variant="error" title={formError} />
           ) : null}
         </div>
 
@@ -856,7 +1101,7 @@ export const AdjustFundsDialog: React.FC<AdjustFundsDialogProps> = ({
           <Button
             type="button"
             onClick={handleConfirm}
-            disabled={isProcessing || !!error}
+            disabled={isProcessing || !!blockingError}
             className="w-full sm:w-auto"
           >
             {isProcessing

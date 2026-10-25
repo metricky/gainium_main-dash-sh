@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { IS_CLOUD } from '@/config/mode';
 import { GraphQLClient, GraphQlQuery } from '@/lib/api';
+import type { BotMessageView } from '@/lib/api/GraphQLQueries-bot-queries';
 import { queryClient } from '@/lib/queryClient';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
@@ -21,6 +22,15 @@ interface UseNotificationsOptions {
   page?: number;
   pageSize?: number;
   unreadOnly?: boolean;
+  /**
+   * Which bot messages the feed lists: `unread` (default), `read` history, or
+   * `all`. Read messages are kept server-side, so history is just a view.
+   */
+  botView?: BotMessageView;
+  /** Narrow bot messages to one severity (error | warning | info). */
+  botSeverity?: string;
+  /** Narrow bot messages to one bot. */
+  botId?: string;
   /**
    * Badge mode: fetch one row per feed and read the server `total`s. Only a
    * countOnly instance writes the unread counts to the notifications store.
@@ -64,6 +74,10 @@ interface PlatformNotification {
   isRead: boolean;
 }
 
+interface BotMessageRow extends MessageSocket {
+  isRead?: boolean | null;
+}
+
 interface ChangeLog {
   id: number;
   title: string;
@@ -78,7 +92,7 @@ const ITEMS_PER_PAGE = 10;
 
 // One-shot cleanup of the deprecated client-side bot-read tracking.
 // Previous versions stored read bot ids in localStorage; bot read state
-// is now handled server-side via deleteBotMessage, so this key is dead.
+// is now handled server-side (markBotMessageRead), so this key is dead.
 if (typeof window !== 'undefined') {
   try {
     window.localStorage.removeItem('readBotNotifications');
@@ -96,6 +110,9 @@ export function useNotifications(
     page = 1,
     pageSize = ITEMS_PER_PAGE,
     unreadOnly = false,
+    botView = 'unread',
+    botSeverity,
+    botId,
     countOnly = false,
     enabled = true,
   } = options;
@@ -123,6 +140,24 @@ export function useNotifications(
         page: 1,
         pageSize: 1,
       });
+    }
+
+    // History views and filtered queries name their view; only the plain
+    // unread inbox keeps the legacy no-input / unreadOnly shapes below
+    // (older APIs understand those).
+    if (botView !== 'unread' || botSeverity || botId) {
+      const historyParams: {
+        view: BotMessageView;
+        page: number;
+        pageSize: number;
+        search?: string;
+        type?: string;
+        botId?: string;
+      } = { view: botView, page, pageSize };
+      if (search && search.trim()) historyParams.search = search.trim();
+      if (botSeverity) historyParams.type = botSeverity;
+      if (botId) historyParams.botId = botId;
+      return GraphQlQuery.getMessageBot(historyParams);
     }
 
     // Try different parameter combinations based on what works in legacy dashboard
@@ -163,7 +198,17 @@ export function useNotifications(
     }
 
     return GraphQlQuery.getMessageBot(params);
-  }, [type, unreadOnly, page, pageSize, search, countOnly]);
+  }, [
+    type,
+    unreadOnly,
+    page,
+    pageSize,
+    search,
+    countOnly,
+    botView,
+    botSeverity,
+    botId,
+  ]);
 
   const {
     data: botData,
@@ -338,12 +383,11 @@ export function useNotifications(
     // Add bot messages with enhanced error handling
     try {
       if (botData?.status === 'OK' && Array.isArray(botData.data?.result)) {
-        // Bot messages have no backend isRead field — legacy treats
-        // "mark as read" as a delete via deleteBotMessage(), so any row
-        // present in the feed is by definition unread.
+        // Read state is server-side (`isRead`); rows written before it
+        // existed come back without it and are unread.
         const botNotifications = botData.data.result
           .filter((msg: any) => msg && msg._id) // Filter out invalid messages
-          .map((msg: MessageSocket) => ({
+          .map((msg: BotMessageRow) => ({
             id: msg._id,
             type: msg.type || 'info',
             title: msg.terminal
@@ -360,7 +404,7 @@ export function useNotifications(
             exchange: msg.exchange,
             terminal: msg.terminal,
             notificationType: 'bot' as const,
-            isRead: false,
+            isRead: msg.isRead === true,
           }));
         unified.push(...botNotifications);
       } else if (botData && botData.status !== 'OK') {
@@ -458,7 +502,13 @@ export function useNotifications(
       );
     }
 
-    const sortedUnified = unified.sort((a, b) => b.time - a.time);
+    // Changelogs have no server-side unread filter (read state is derived
+    // from the unread count above), so an unread-only caller drops the read
+    // ones here. Bots and announcements are already filtered by the API.
+    const visible = unreadOnly
+      ? unified.filter((n) => n.notificationType !== 'changelog' || !n.isRead)
+      : unified;
+    const sortedUnified = visible.sort((a, b) => b.time - a.time);
 
     // If caller requested a specific notification type, filter the results so that
     // we don't return notifications from other categories. React Query may return
@@ -467,7 +517,14 @@ export function useNotifications(
     // selected. This ensures the hook returns only the requested type.
     if (type === 'all') return sortedUnified;
     return sortedUnified.filter((n) => n.notificationType === type);
-  }, [botData, announcementData, changelogData, unreadChangelogData, type]);
+  }, [
+    botData,
+    announcementData,
+    changelogData,
+    unreadChangelogData,
+    type,
+    unreadOnly,
+  ]);
 
   // Calculate totals and update unread counts
   const totals = useMemo(() => {
@@ -597,13 +654,12 @@ export function useNotifications(
     },
   });
 
-  // Bot mark-as-read = backend deletion (parity with legacy main-dash:
-  // there is no isRead on bot messages, so legacy clears them with
-  // deleteBotMessage). With an id it deletes one row; with no id it
-  // clears the user's entire bot inbox.
-  const deleteBotMessageMutation = useMutation({
+  // Bot mark-as-read acknowledges the message server-side; it stays in the
+  // Read / All history views. With an id it marks one row; with no id every
+  // unread bot message of the user.
+  const markBotMessageReadMutation = useMutation({
     mutationFn: async (id?: string) => {
-      const query = GraphQlQuery.deleteBotMessage(id ? { id } : {});
+      const query = GraphQlQuery.markBotMessageRead(id ? { id } : {});
       const result = await authenticatedClient.request(
         query.query,
         query.variables
@@ -694,13 +750,12 @@ export function useNotifications(
             );
           }
         } else if (notification.notificationType === 'bot') {
-          // Bot ids are Mongo ObjectId strings; legacy uses deleteBotMessage.
-          const result = await deleteBotMessageMutation.mutateAsync(
+          const result = await markBotMessageReadMutation.mutateAsync(
             notification.id
           );
-          if ((result as any)?.deleteBotMessage?.status !== 'OK') {
+          if ((result as any)?.markBotMessageRead?.status !== 'OK') {
             throw new Error(
-              `Backend failed: ${(result as any)?.deleteBotMessage?.reason || 'Unknown error'}`
+              `Backend failed: ${(result as any)?.markBotMessageRead?.reason || 'Unknown error'}`
             );
           }
         } else {
@@ -722,7 +777,7 @@ export function useNotifications(
     [
       markNotificationAsReadMutation,
       markChangelogAsReadMutation,
-      deleteBotMessageMutation,
+      markBotMessageReadMutation,
     ]
   );
 
@@ -788,17 +843,15 @@ export function useNotifications(
         await markAllAnnouncementsAsReadMutation.mutateAsync();
       }
 
-      // Mark bot notifications as read = delete them on the backend
-      // (parity with legacy main-dash, which has no per-message isRead).
-      // deleteBotMessage({}) clears the whole bot inbox in one call.
+      // markBotMessageRead({}) marks every unread bot message in one call.
       // Same status check as markAsRead above: mutateAsync resolves on a
       // `status: 'NOTOK'` payload, so without it the panel's bulk handlers
       // toast "Marked N notifications as read" over a backend failure.
       if (botNotifications.length > 0) {
-        const result = await deleteBotMessageMutation.mutateAsync(undefined);
-        if ((result as any)?.deleteBotMessage?.status !== 'OK') {
+        const result = await markBotMessageReadMutation.mutateAsync(undefined);
+        if ((result as any)?.markBotMessageRead?.status !== 'OK') {
           throw new Error(
-            `Backend failed: ${(result as any)?.deleteBotMessage?.reason || 'Unknown error'}`
+            `Backend failed: ${(result as any)?.markBotMessageRead?.reason || 'Unknown error'}`
           );
         }
       }
@@ -811,7 +864,7 @@ export function useNotifications(
     [
       markAllAnnouncementsAsReadMutation,
       markChangelogAsReadMutation,
-      deleteBotMessageMutation,
+      markBotMessageReadMutation,
     ]
   );
 

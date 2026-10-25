@@ -20,7 +20,7 @@
  *  - Create-from-template flow (`?load=<botId>`) still uses defaults; will
  *    use getHedge*BotSettings in a follow-up slice.
  */
-import { ArrowLeftRight, Bookmark, FolderOpen, RotateCcw, Trash2 } from 'lucide-react';
+import { Bookmark, FolderOpen, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -93,10 +93,6 @@ import { GraphQLClient, getGraphQLConfig } from '@/lib/api';
 import { botQueries } from '@/lib/api/GraphQLQueries-bot-queries';
 import { otherQueries } from '@/lib/api/GraphQLQueries-other-queries';
 import { logger } from '@/lib/loggerInstance';
-import {
-  patchBotInListCaches,
-  BOT_LIST_QUERY_KEYS_BY_TYPE,
-} from '@/lib/queryCacheUtils';
 import { toast } from '@/lib/toast';
 import { mapBotSettingsToFormData } from '@/mappers/bots/dca/map-bot-settings-to-form-data';
 import { mapFormDataToPayload } from '@/mappers/bots/dca/map-form-data-to-payload';
@@ -106,13 +102,24 @@ import {
   useBotTemplatesStore,
   type BotTemplate,
 } from '@/stores/botTemplatesStore';
-import { useHedgeComboBotsStore } from '@/stores/live/hedgeComboBotsStore';
-import { useHedgeDcaBotsStore } from '@/stores/live/hedgeDcaBotsStore';
+import { useBotActions } from '@/hooks/useBotActions';
+import {
+  buildSurfaceItems,
+  chooseStatusDialog,
+  type BotActionId,
+  type BotFormActionContext,
+} from '@/features/bots/actions/botActions';
+import { HedgeStartDialog } from '@/features/bots/shared/runtime/dialogs/HedgeStartDialog';
+import { isSpotHedge } from '@/lib/baseFunding/hedgeFunding';
+import { useBaseFundingAccess } from '@/hooks/useBaseFundingAccess';
+import { botKindFromType, formBotRef } from '@/features/bots/actions/botRef';
 import { useShortcutStore } from '@/stores/shortcutStore';
 import { useUIStore } from '@/stores/uiStore';
 import {
   BotTypesEnum,
+  CloseDCATypeEnum,
   ComboTpBase,
+  type ActionsEnum,
   ExchangeIntervals,
   StrategyEnum,
   type BotVars,
@@ -135,6 +142,7 @@ import { validateDcaFormData } from '@/utils/bots/dca/validation';
 import { buildBotListRoute, buildBotViewRoute } from '@/utils/bots/navigation';
 import HedgeChartPanel from './HedgeChartPanel';
 import { HedgeNameInput } from './HedgeNameInput';
+import { usePostSaveRemount } from './usePostSaveRemount';
 import HedgeQuickLeg, {
   HedgeFooterShell,
   HedgeLegAlertPublisher,
@@ -289,6 +297,11 @@ const HedgeHeaderAlertButton: React.FC<{
   return <BotFormAlertButton alerts={alertMap[activeContext] ?? {}} />;
 };
 
+const HEDGE_FORM_CONTEXT: Record<'create' | 'edit', BotFormActionContext> = {
+  create: { mode: 'create' },
+  edit: { mode: 'edit' },
+};
+
 export const HedgeBotEditLayout: React.FC = () => {
   const {
     mode,
@@ -308,6 +321,7 @@ export const HedgeBotEditLayout: React.FC = () => {
     hedgeBot,
     refetchHedgeBot,
     setActiveLegBotId,
+    legFormDataReaderRef,
   } = useHedgeBotForm();
 
   const navigate = useNavigate();
@@ -335,7 +349,9 @@ export const HedgeBotEditLayout: React.FC = () => {
   // server's confirmed state. Without the remount, the leg's existing
   // BotFormProvider keeps its (now stale) `isDirty` flag and
   // `useBotFormInitialization` skips re-mapping.
-  const [postSaveSeq, setPostSaveSeq] = useState(0);
+  const { seq: postSaveSeq, remountAfterRefetch } = usePostSaveRemount(
+    hedgeBot?.bots
+  );
 
   // Hedge backtest is local-only (no SSB hedge variant). We open the
   // settings dialog from the footer's onBacktest hook, run via the
@@ -390,14 +406,38 @@ export const HedgeBotEditLayout: React.FC = () => {
   const shortSeedRef = useRef<Partial<BotFormData> | undefined>(
     shortInitialFormData
   );
+  // The snapshot handleTabChange last took per leg. While a leg's seed is
+  // still that object it holds unsaved edits: the loader must not replace it
+  // and the remounted leg must not re-map its saved bot over it. Any other
+  // seed writer replaces the object, which ends the protection.
+  const longSnapshotRef = useRef<Partial<BotFormData> | undefined>(undefined);
+  const shortSnapshotRef = useRef<Partial<BotFormData> | undefined>(undefined);
+  const longSeedIsSnapshot =
+    !!longSnapshotRef.current &&
+    longSeedRef.current === longSnapshotRef.current;
+  const shortSeedIsSnapshot =
+    !!shortSnapshotRef.current &&
+    shortSeedRef.current === shortSnapshotRef.current;
   // Keep seed refs in sync with the loader as it produces new initial
   // form data — important on first edit-mode load where the hedge fetch
   // resolves AFTER the initial render of this layout.
   useEffect(() => {
-    if (longInitialFormData) longSeedRef.current = longInitialFormData;
+    if (!longInitialFormData) return;
+    if (
+      longSnapshotRef.current &&
+      longSeedRef.current === longSnapshotRef.current
+    )
+      return;
+    longSeedRef.current = longInitialFormData;
   }, [longInitialFormData]);
   useEffect(() => {
-    if (shortInitialFormData) shortSeedRef.current = shortInitialFormData;
+    if (!shortInitialFormData) return;
+    if (
+      shortSnapshotRef.current &&
+      shortSeedRef.current === shortSnapshotRef.current
+    )
+      return;
+    shortSeedRef.current = shortInitialFormData;
   }, [shortInitialFormData]);
 
   const handleTabChange = useCallback(
@@ -407,8 +447,10 @@ export const HedgeBotEditLayout: React.FC = () => {
       // these refs current up to this point.
       if (activeTab === 'long' && longFormDataRef.current) {
         longSeedRef.current = longFormDataRef.current;
+        longSnapshotRef.current = longFormDataRef.current;
       } else if (activeTab === 'short' && shortFormDataRef.current) {
         shortSeedRef.current = shortFormDataRef.current;
+        shortSnapshotRef.current = shortFormDataRef.current;
       }
       setActiveTab(next);
     },
@@ -482,10 +524,10 @@ export const HedgeBotEditLayout: React.FC = () => {
   // place — no remount, so the scroll position is preserved and the form
   // doesn't flash. Mirrors the regular Quick form's in-provider applyPreset.
   const longPresetApplyRef = useRef<
-    ((nextDca: BotFormData['dca']) => void) | null
+    ((preset: HedgeQuickPreset) => void) | null
   >(null);
   const shortPresetApplyRef = useRef<
-    ((nextDca: BotFormData['dca']) => void) | null
+    ((preset: HedgeQuickPreset) => void) | null
   >(null);
 
   // Both-legs chart orders (legacy `chartView === 'both'` parity). In Quick
@@ -572,6 +614,17 @@ export const HedgeBotEditLayout: React.FC = () => {
   useEffect(() => {
     setActiveLegBotId(activeLegBotId);
   }, [activeLegBotId, setActiveLegBotId]);
+
+  // Lets a leg's pair picker copy the other leg's pairs. Quick mounts both
+  // legs; Manual mounts one, so the other is read from its last snapshot.
+  legFormDataReaderRef.current = (leg) =>
+    leg === 'long'
+      ? hedgeMode === 'quick'
+        ? longQuickRef.current
+        : (longFormDataRef.current ?? longSeedRef.current)
+      : hedgeMode === 'quick'
+        ? shortQuickRef.current
+        : (shortFormDataRef.current ?? shortSeedRef.current);
 
   const handleSave = useCallback(async () => {
     if (saving) return;
@@ -839,9 +892,10 @@ export const HedgeBotEditLayout: React.FC = () => {
           string,
           unknown
         >[]) {
-          delete payload['allowRaiseToExchangeMin'];
           delete payload['reduceToAvailableBalance'];
           delete payload['reduceToAvailableMinSize'];
+          delete payload['singlePosition'];
+          delete payload['maxPositionEntries'];
         }
         const input = {
           long: longPayload as Parameters<
@@ -1029,6 +1083,7 @@ export const HedgeBotEditLayout: React.FC = () => {
       const newBotId = payload.data?._id;
       if (mode === 'create' && newBotId) {
         setCreatedBotId(newBotId);
+        setCreatedHedge(payload.data);
         setShowCelebration(true);
       } else if (mode === 'edit') {
         // Refetch first so the mapped longInitialFormData /
@@ -1036,11 +1091,16 @@ export const HedgeBotEditLayout: React.FC = () => {
         // bump the post-save counter — the seedRef sync effects pick up
         // the fresh formData and the leg widgets remount keyed off the
         // new seq, replacing user-edited state with the persisted state.
-        refetchHedgeBot();
+        // The bump waits for a render that carries the refetched legs: a
+        // remount before that seeds the forms with the pre-save settings.
+        const savedBots = hedgeBot?.bots;
         // Bindings, like settings, come back from the refetched legs.
         longVarsRef.current = undefined;
         shortVarsRef.current = undefined;
-        setPostSaveSeq((n) => n + 1);
+        // The snapshots are saved now: let the refetch replace the seeds.
+        longSnapshotRef.current = undefined;
+        shortSnapshotRef.current = undefined;
+        await remountAfterRefetch(savedBots, refetchHedgeBot);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1065,6 +1125,7 @@ export const HedgeBotEditLayout: React.FC = () => {
     hedgeName,
     exchanges,
     refetchHedgeBot,
+    remountAfterRefetch,
     activeTab,
     longLegBot,
     shortLegBot,
@@ -1075,16 +1136,40 @@ export const HedgeBotEditLayout: React.FC = () => {
     return mode === 'edit' ? 'Save hedge bot' : 'Create hedge bot';
   }, [saving, mode]);
 
-  // Hedge start/stop. The leg's BotFormFooter would otherwise call
-  // changeStatus with the leg's id + dca/combo type, which only flips
-  // the leg bot status — the hedge wrapper (and the live bots store)
-  // never sees the change. This handler dispatches changeStatus with the
-  // hedge id + hedgeDca/hedgeCombo type, optimistically updates the
-  // matching live bots store (so the badge / list reflect immediately),
-  // and refetches the hedge bot so the form rebinds to the new status.
-  const [togglingStatus, setTogglingStatus] = useState(false);
+  // Hedge start/stop. The leg's BotFormFooter would otherwise change the
+  // LEG's status (leg id + dca/combo type) and the hedge wrapper would never
+  // see it. The footer's toggle is routed to the shared bot-actions runner
+  // with the hedge wrapper (its id + hedgeDca/hedgeCombo type), which
+  // optimistically updates the hedge store (badge + lists flip at once) and
+  // rolls back on failure. It does not refetch this page's hedge-bot query,
+  // so a racing read cannot overwrite the optimistic status.
+  // `botId` here is the route's hedge WRAPPER id (never a leg id).
+  const hedgeBotRef = useMemo(
+    () =>
+      formBotRef({
+        bot: hedgeBot,
+        kind: botKindFromType(botType),
+        mode,
+        botId,
+      }),
+    [hedgeBot, botType, botId, mode]
+  );
+  const hedgeBotLoaded = hedgeBot != null;
+  const hedgeActions = useBotActions(hedgeBotRef, {
+    form: HEDGE_FORM_CONTEXT[mode === 'edit' ? 'edit' : 'create'],
+  });
+  const togglingStatus = hedgeActions.statusPending;
+  const baseFundingAccess = useBaseFundingAccess();
+  const changeHedgeStatus = hedgeActions.changeStatus;
+  const runHedgeAction = hedgeActions.run;
   const [showCelebration, setShowCelebration] = useState(false);
   const [createdBotId, setCreatedBotId] = useState<string | undefined>();
+  // The hedge just created (create mode): a spot one starts through the
+  // hedge start dialog, like a saved one does.
+  const [createdHedge, setCreatedHedge] = useState<HedgeBot | undefined>();
+  const [createdStart, setCreatedStart] = useState<
+    { id: string; hedge: HedgeBot } | undefined
+  >();
 
   // Set by the dialog's buttons so the onClose that Celebration fires right
   // after them doesn't override their navigation with the edit page.
@@ -1098,52 +1183,86 @@ export const HedgeBotEditLayout: React.FC = () => {
     [botType]
   );
 
+  // Fire-and-forget: navigate immediately, let the start mutation resolve in
+  // the background. Matches the DCA/Combo/Grid pattern in BotForm/index.tsx →
+  // handleCelebrationStartBot.
+  const startCreatedHedge = useCallback(
+    (
+      idToStart: string,
+      hedgeConfig?: { [x in StrategyEnum]: ActionsEnum }
+    ) => {
+      (async () => {
+        if (!tokens?.accessToken) {
+          toast.error('Not authenticated.');
+          return;
+        }
+        try {
+          const endpoint =
+            import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
+          const config = getGraphQLConfig(tokens, isLiveTrading);
+          const client = new GraphQLClient(
+            endpoint,
+            config.token,
+            config.paperContext
+          );
+          const { query, variables } = otherQueries.changeStatus({
+            id: idToStart,
+            status: 'open',
+            type: botType,
+            ...(hedgeConfig ? { hedgeConfig } : {}),
+          });
+          const response = await client.request<{
+            changeStatus: { status: string; reason?: string };
+          }>(query, variables);
+          if (response.changeStatus.status !== 'OK') {
+            throw new Error(
+              response.changeStatus.reason || 'Failed to start hedge bot'
+            );
+          }
+          toast.success('Hedge bot started');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error('[HedgeBotEditLayout] Post-create start failed', {
+            error: message,
+          });
+          toast.error(`Failed to start hedge bot: ${message}`);
+        }
+      })();
+      // `{base}/view/:id` is the list page with the bot open in its sidebar.
+      navigate(buildBotViewRoute(botType, idToStart));
+    },
+    [botType, tokens, isLiveTrading, navigate]
+  );
+
   const handleHedgeCelebrationStartBot = useCallback(() => {
     if (!createdBotId) return;
     celebrationActionRef.current = true;
-    const idToStart = createdBotId;
-    // Fire-and-forget: navigate immediately, let the start mutation
-    // resolve in the background. Matches the DCA/Combo/Grid pattern in
-    // BotForm/index.tsx → handleCelebrationStartBot.
-    (async () => {
-      if (!tokens?.accessToken) {
-        toast.error('Not authenticated.');
-        return;
-      }
-      try {
-        const endpoint =
-          import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
-        const config = getGraphQLConfig(tokens, isLiveTrading);
-        const client = new GraphQLClient(
-          endpoint,
-          config.token,
-          config.paperContext
-        );
-        const { query, variables } = otherQueries.changeStatus({
-          id: idToStart,
-          status: 'open',
-          type: botType,
-        });
-        const response = await client.request<{
-          changeStatus: { status: string; reason?: string };
-        }>(query, variables);
-        if (response.changeStatus.status !== 'OK') {
-          throw new Error(
-            response.changeStatus.reason || 'Failed to start hedge bot'
-          );
-        }
-        toast.success('Hedge bot started');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error('[HedgeBotEditLayout] Post-create start failed', {
-          error: message,
-        });
-        toast.error(`Failed to start hedge bot: ${message}`);
-      }
-    })();
-    // `{base}/view/:id` is the list page with the bot open in its sidebar.
-    navigate(buildBotViewRoute(botType, idToStart));
-  }, [createdBotId, botType, tokens, isLiveTrading, navigate]);
+    if (baseFundingAccess && createdHedge && isSpotHedge(createdHedge)) {
+      setCreatedStart({ id: createdBotId, hedge: createdHedge });
+      return;
+    }
+    startCreatedHedge(createdBotId);
+  }, [createdBotId, createdHedge, startCreatedHedge, baseFundingAccess]);
+
+  const handleCreatedStartOpenChange = useCallback(
+    (open: boolean) => {
+      if (open || !createdStart) return;
+      // Dismissed without starting: the new bot's edit page, as when the
+      // celebration itself is dismissed.
+      setCreatedStart(undefined);
+      navigate(buildHedgeEditPath(createdStart.id));
+    },
+    [createdStart, navigate, buildHedgeEditPath]
+  );
+
+  const handleCreatedStartConfirm = useCallback(
+    (hedgeConfig: { [x in StrategyEnum]: ActionsEnum }) => {
+      if (!createdStart) return;
+      setCreatedStart(undefined);
+      startCreatedHedge(createdStart.id, hedgeConfig);
+    },
+    [createdStart, startCreatedHedge]
+  );
 
   const handleHedgeCelebrationAllBots = useCallback(() => {
     celebrationActionRef.current = true;
@@ -1166,98 +1285,31 @@ export const HedgeBotEditLayout: React.FC = () => {
       navigate(buildHedgeEditPath(createdBotId));
     }
     setCreatedBotId(undefined);
+    setCreatedHedge(undefined);
   }, [createdBotId, navigate, buildHedgeEditPath]);
   const handleHedgeToggleStatus = useCallback(
-    async (payload: { nextStatus: string; closeType?: string }) => {
-      const nextStatus =
-        payload.nextStatus === 'open' ? ('open' as const) : ('closed' as const);
-      if (togglingStatus) return;
-      if (!tokens?.accessToken) {
-        toast.error('Not authenticated.');
-        return;
-      }
-      if (!botId || !hedgeBot) {
+    (payload: { nextStatus: string; closeType?: string }) => {
+      if (!hedgeBotRef.id || !hedgeBot) {
         toast.error('Hedge bot context is missing.');
         return;
       }
-
-      setTogglingStatus(true);
-
-      // Optimistic store update so the toggle button + any list views
-      // reflect the requested status immediately.
-      const store =
-        botType === BotTypesEnum.hedgeCombo
-          ? useHedgeComboBotsStore.getState()
-          : useHedgeDcaBotsStore.getState();
-      const previousStatus = hedgeBot.status;
-      const hedgeType =
-        botType === BotTypesEnum.hedgeCombo ? 'hedgeCombo' : 'hedgeDca';
-      store.updateBot({ ...hedgeBot, status: nextStatus });
-      // Keep the persisted list cache from replaying the pre-toggle status.
-      patchBotInListCaches(
-        botId,
-        { status: nextStatus },
-        BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
-      );
-
-      try {
-        const endpoint =
-          import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
-        const config = getGraphQLConfig(tokens, isLiveTrading);
-        const client = new GraphQLClient(
-          endpoint,
-          config.token,
-          config.paperContext
-        );
-        const { query, variables } = otherQueries.changeStatus({
-          id: botId,
-          status: nextStatus,
-          type: botType,
-          ...(payload.closeType
-            ? { closeType: payload.closeType as never }
-            : {}),
-        });
-        const response = await client.request<{
-          changeStatus: {
-            status: string;
-            reason?: string;
-            data?: { _id: string };
-          };
-        }>(query, variables);
-        if (response.changeStatus.status !== 'OK') {
-          throw new Error(
-            response.changeStatus.reason || 'Failed to change hedge status'
-          );
-        }
-        toast.success(
-          nextStatus === 'open' ? 'Hedge bot started' : 'Hedge bot stopped'
-        );
-        // Intentionally NOT refetching here. The hedge bot's GraphQL
-        // endpoint can race the backend's status propagation — a refetch
-        // fired right after `changeStatus` succeeds occasionally returns
-        // the pre-toggle status, which then overwrites our optimistic
-        // update via the provider's "push query data into store"
-        // useEffect. WebSocket events for the hedge wrapper / its legs
-        // sync the rest of the bot state, and the optimistic status set
-        // above is what we trust until those land.
-      } catch (error) {
-        // Roll back the optimistic update on failure.
-        store.updateBot({ ...hedgeBot, status: previousStatus });
-        patchBotInListCaches(
-          botId,
-          { status: previousStatus },
-          BOT_LIST_QUERY_KEYS_BY_TYPE[hedgeType]
-        );
-        const message = error instanceof Error ? error.message : String(error);
-        logger.error('[HedgeBotEditLayout] Toggle status failed', {
-          error: message,
-        });
-        toast.error(`Failed to update hedge status: ${message}`);
-      } finally {
-        setTogglingStatus(false);
+      // A spot hedge starts through the hedge start dialog (per-leg action).
+      if (
+        payload.nextStatus === 'open' &&
+        // The runner's ref: spot only with base funding access.
+        chooseStatusDialog(hedgeActions.bot, 'form') === 'hedgeStart'
+      ) {
+        runHedgeAction('start');
+        return;
       }
+      changeHedgeStatus({
+        nextStatus: payload.nextStatus === 'open' ? 'open' : 'closed',
+        ...(payload.closeType
+          ? { closeType: payload.closeType as CloseDCATypeEnum }
+          : {}),
+      });
     },
-    [togglingStatus, tokens, botId, hedgeBot, botType, isLiveTrading]
+    [hedgeBotRef, hedgeBot, changeHedgeStatus, runHedgeAction, hedgeActions.bot]
   );
 
   // The unified footer is the regular BotFormFooter rendered by each leg's
@@ -1325,7 +1377,13 @@ export const HedgeBotEditLayout: React.FC = () => {
           enrichedMeta[pair] = match as BotFormData['pairMetadata'][string];
         }
       }
-      return { ...data, pairMetadata: enrichedMeta };
+      // The hedge name lives at hedge level; the legs can be blank, which the
+      // mapper rejects. handleSave fans it out the same way.
+      return {
+        ...data,
+        name: hedgeName || data.name,
+        pairMetadata: enrichedMeta,
+      };
     };
 
     return {
@@ -1335,8 +1393,18 @@ export const HedgeBotEditLayout: React.FC = () => {
       shortExchange,
       sharedSettings,
       hedgeBotType: botType,
+      longVars: resolveLegVars(longVarsRef.current, longLegBot),
+      shortVars: resolveLegVars(shortVarsRef.current, shortLegBot),
     };
-  }, [exchanges, sharedSettings, botType, pairsByExchange]);
+  }, [
+    exchanges,
+    sharedSettings,
+    botType,
+    pairsByExchange,
+    hedgeName,
+    longLegBot,
+    shortLegBot,
+  ]);
 
   const backtestRunner = useHedgeBacktestRunner({
     getSnapshot: getBacktestSnapshot,
@@ -1522,7 +1590,7 @@ export const HedgeBotEditLayout: React.FC = () => {
       hideTemplates: true,
       creditsMultiplier: 2,
       onToggleStatus: handleHedgeToggleStatus,
-      toggleDisabled: togglingStatus || !botId || mode !== 'edit',
+      toggleDisabled: togglingStatus || !hedgeBotRef.id || !hedgeBotLoaded,
       togglePending: togglingStatus,
       botStatus: hedgeBot?.status ?? null,
       activeDeals: totalActiveDeals,
@@ -1535,7 +1603,8 @@ export const HedgeBotEditLayout: React.FC = () => {
       mode,
       handleHedgeToggleStatus,
       togglingStatus,
-      botId,
+      hedgeBotRef.id,
+      hedgeBotLoaded,
       hedgeBot?.status,
       totalActiveDeals,
       backtestRunner,
@@ -1559,7 +1628,7 @@ export const HedgeBotEditLayout: React.FC = () => {
 
       <SettingsRow
         name="Take Profit (hedge)"
-        tooltip="A take profit on the hedge's combined PnL. When on, the controller closes both legs together once their combined profit reaches this percentage. It runs in addition to each leg's own take profit — whichever triggers first closes."
+        tooltip="A take profit on each pair's combined PnL. When on, a pair's long and short deals close together once their combined profit reaches this percentage; other pairs keep running. A pair with only one leg open is judged on that leg alone. While it is on, the legs' own fixed take profit is not used; this combined check closes the deals."
         navId="hedge-tp"
         trailing={
           <Switch
@@ -1608,7 +1677,7 @@ export const HedgeBotEditLayout: React.FC = () => {
 
       <SettingsRow
         name="Stop Loss (hedge)"
-        tooltip="A stop loss on the hedge's combined PnL — enter a negative percentage (a loss). When on, the controller closes both legs together once their combined loss reaches this level. It runs in addition to each leg's own stop loss — whichever triggers first closes."
+        tooltip="A stop loss on each pair's combined PnL — enter a negative percentage (a loss). When on, a pair's long and short deals close together once their combined loss reaches this level; other pairs keep running. A pair with only one leg open is judged on that leg alone. While it is on, the legs' own percentage stop loss is not used; this combined check closes the deals."
         navId="hedge-sl"
         trailing={
           <Switch
@@ -1740,9 +1809,8 @@ export const HedgeBotEditLayout: React.FC = () => {
   // (writeSeeds(null) on mode switch) both pick them up with no extra seeding.
   const applyHedgePreset = useCallback(
     (preset: HedgeQuickPreset) => {
-      const nextDca = getHedgeLegDcaState(preset);
-      longPresetApplyRef.current?.(nextDca);
-      shortPresetApplyRef.current?.(nextDca);
+      longPresetApplyRef.current?.(preset);
+      shortPresetApplyRef.current?.(preset);
       Object.entries(preset.shared).forEach(([key, value]) => {
         updateSharedSetting(key as keyof typeof preset.shared, value as never);
       });
@@ -2028,18 +2096,23 @@ export const HedgeBotEditLayout: React.FC = () => {
   // Reset, Save as template) plus a Load entry since hedge has no Quick
   // template picker.
   const hedgeFooterMenuConfig = useMemo(() => {
-    const items: WidgetMenuActionItem[] = [
-      {
-        label: 'Import / Export settings',
-        icon: ArrowLeftRight,
-        onSelect: openImportExport,
-      },
-      {
-        label: 'Reset to defaults',
-        icon: RotateCcw,
-        onSelect: () => setShowResetConfirm(true),
-        disabled: mode === 'edit',
-      },
+    // Bot-level entries come from the actions registry (`hedgeForm`
+    // surface); this page supplies the dialogs they open.
+    const hedgeFormHandlers: Partial<Record<BotActionId, () => void>> = {
+      importExport: openImportExport,
+      resetDefaults: () => setShowResetConfirm(true),
+    };
+    const items: WidgetMenuActionItem[] = buildSurfaceItems(
+      'hedgeForm',
+      hedgeActions.bot,
+      hedgeActions.ctx
+    ).map((item) => ({
+      label: item.label,
+      icon: item.icon,
+      onSelect: hedgeFormHandlers[item.id] ?? (() => runHedgeAction(item.id)),
+      disabled: item.disabled,
+    }));
+    items.push(
       {
         label: 'Save as template',
         icon: Bookmark,
@@ -2050,13 +2123,19 @@ export const HedgeBotEditLayout: React.FC = () => {
         icon: FolderOpen,
         onSelect: () => setShowLoadTemplate(true),
         disabled: hedgeTemplates.length === 0,
-      },
-    ];
+      }
+    );
     return mapWidgetMenuItemsToPanelMenu(items, {
       triggerAriaLabel: 'Hedge bot options',
       idPrefix: 'hedge-form-menu',
     });
-  }, [openImportExport, mode, hedgeTemplates.length]);
+  }, [
+    openImportExport,
+    hedgeActions.bot,
+    hedgeActions.ctx,
+    runHedgeAction,
+    hedgeTemplates.length,
+  ]);
 
   // Inject the hedge menu into the leg footers (footerOverride/quick are
   // defined above without it).
@@ -2243,6 +2322,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 isNestedLeg
                 footerOverride={footerOverrideWithMenu}
                 initialBot={longLegBot}
+                skipInitialBotHydration={longSeedIsSnapshot}
                 innerSlot={
                   <>
                     <HedgeLegActiveChartPublisher leg="long" />
@@ -2268,6 +2348,7 @@ export const HedgeBotEditLayout: React.FC = () => {
                 isNestedLeg
                 footerOverride={footerOverrideWithMenu}
                 initialBot={shortLegBot}
+                skipInitialBotHydration={shortSeedIsSnapshot}
                 innerSlot={
                   <>
                     <HedgeLegActiveChartPublisher leg="short" />
@@ -2506,6 +2587,34 @@ export const HedgeBotEditLayout: React.FC = () => {
         variant="destructive"
         onConfirm={handleHedgeReset}
       />
+
+      {hedgeActions.modalProps.hedgeStart?.open && (
+        <HedgeStartDialog
+          open
+          onOpenChange={hedgeActions.modalProps.hedgeStart.onOpenChange}
+          botName={hedgeActions.modalProps.botName}
+          combo={hedgeActions.modalProps.hedgeStart.combo}
+          hedge={hedgeActions.modalProps.hedgeStart.hedge}
+          onConfirm={hedgeActions.modalProps.hedgeStart.onConfirm}
+          isProcessing={togglingStatus}
+        />
+      )}
+
+      {createdStart && (
+        <HedgeStartDialog
+          open
+          onOpenChange={handleCreatedStartOpenChange}
+          botName={formBotRef({
+            bot: createdStart.hedge,
+            kind: botKindFromType(botType),
+            mode: 'edit',
+            botId: createdStart.id,
+          }).name}
+          combo={botType === BotTypesEnum.hedgeCombo}
+          hedge={createdStart.hedge}
+          onConfirm={handleCreatedStartConfirm}
+        />
+      )}
 
       <Celebration
         open={showCelebration}

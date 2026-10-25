@@ -20,6 +20,7 @@ import {
   FileText,
   Info,
   Loader2,
+  History,
   Megaphone,
   Search,
 } from 'lucide-react';
@@ -42,6 +43,9 @@ import { Input } from '../ui/input';
 import { ScrollArea } from '../ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
 import { Timeline, type TimelineItem } from '../ui/timeline';
+import { botUrlFor } from './botUrl';
+import { canMarkSingleRead } from './markRead';
+import { NotificationMarket } from './NotificationMarket';
 import { NotificationRichContent } from './NotificationRichContent';
 
 const timelineVariantForType = (
@@ -155,36 +159,10 @@ const NotificationPanel: React.FC = () => {
     // The feed is only fetched while the panel is open; the bell badge
     // comes from the navbar's count-only query.
     enabled: isNotificationsPanelOpen,
+    // The panel is the unread inbox for every feed: a read bot message,
+    // announcement or update leaves it and stays on the Notifications page.
+    unreadOnly: true,
   });
-
-  const getBotUrl = useCallback((notification: (typeof notifications)[0]) => {
-    if (!notification.botId || notification.botId === 'system') return null;
-
-    const botType = notification.botType;
-    const demo = false; // Adjust this based on your app's demo context
-
-    let urlPath = 'bot/view'; // default
-
-    switch (botType) {
-      case 'hedgeCombo':
-        urlPath = 'hedge/combo/view';
-        break;
-      case 'hedgeDca':
-        urlPath = 'hedge/bot/view';
-        break;
-      case 'grid':
-        urlPath = 'grid/view';
-        break;
-      case 'combo':
-        urlPath = 'combo/view';
-        break;
-      default:
-        urlPath = 'bot/view';
-        break;
-    }
-
-    return `${demo ? '/demo/' : '/'}${urlPath}/${notification.botId}`;
-  }, []);
 
   // Removed unused functions to fix TypeScript errors
 
@@ -200,14 +178,14 @@ const NotificationPanel: React.FC = () => {
           navigate('/terminal');
         } else {
           // Generate proper bot URL based on botType
-          const botUrl = getBotUrl(notification);
+          const botUrl = botUrlFor(notification);
           if (botUrl) {
             navigate(botUrl);
           }
         }
       }
     },
-    [getBotUrl, navigate]
+    [navigate]
   );
 
   const handleMarkTypeAsRead = useCallback(
@@ -450,8 +428,9 @@ const NotificationPanel: React.FC = () => {
         // mutation and nothing on screen changed — which reads as a broken
         // button. Users whose Updates/News are fully read (unread count 0)
         // saw an active ✓✓ on every card that could never do anything.
-        // Same `!isRead` gate NotificationItem already uses.
-        const actions = notification.isRead ? null : (
+        // Same `!isRead` gate NotificationItem already uses. Updates never
+        // get one: see canMarkSingleRead.
+        const actions = !canMarkSingleRead(notification) ? null : (
           <Button
             size="sm"
             variant="ghost"
@@ -513,24 +492,12 @@ const NotificationPanel: React.FC = () => {
           content: (
             <NotificationRichContent notification={unified} clampLines={3} />
           ),
-          metadata:
-            notification.symbol || notification.exchange ? (
-              <div className="flex flex-wrap items-center gap-xs text-xs text-muted-foreground">
-                {notification.symbol && (
-                  <Badge
-                    variant="secondary"
-                    className="px-1.5 py-0 h-4 text-xs uppercase"
-                  >
-                    {notification.symbol}
-                  </Badge>
-                )}
-                {notification.exchange && (
-                  <span className="uppercase tracking-wide text-xs">
-                    {notification.exchange}
-                  </span>
-                )}
-              </div>
-            ) : null,
+          metadata: (
+            <NotificationMarket
+              symbol={notification.symbol}
+              exchange={notification.exchange}
+            />
+          ),
           actions,
           titleAddon: statusAddon,
           // Mirrors NotificationItem's read treatment.
@@ -617,7 +584,7 @@ const NotificationPanel: React.FC = () => {
             updates
           </DetailDrawerDescription>
         </DetailDrawerHeader>
-        <DetailDrawerBody className="p-0 flex flex-col flex-1 min-h-0">
+        <DetailDrawerBody fill className="p-0 flex flex-col flex-1 min-h-0">
           {/* Search */}
           <div className="shrink-0 p-md">
             <div className="relative">
@@ -777,6 +744,22 @@ const NotificationPanel: React.FC = () => {
                 )}
               </div>
             </ScrollArea>
+          </div>
+
+          {/* The panel is the unread inbox; read history lives on its own page. */}
+          <div className="shrink-0 border-t p-sm">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-center gap-xs text-xs"
+              onClick={() => {
+                closeNotificationsPanel();
+                navigate('/notifications');
+              }}
+            >
+              <History className="h-3.5 w-3.5" />
+              View all notifications
+            </Button>
           </div>
         </DetailDrawerBody>
       </DetailDrawerContent>

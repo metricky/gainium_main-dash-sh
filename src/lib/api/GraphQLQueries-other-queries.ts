@@ -581,9 +581,25 @@ export const otherQueries = {
     return { query };
   },
 
-  // `withUnderlying: false` builds the same query without `underlying`, for
-  // `useGraphQL`'s `fallbackQuery` against a backend that predates the field.
-  getAllPairs: (fields?: string, withUnderlying = true) => {
+  getFiatRates: () => {
+    const query = `query getFiatRates{
+                        getFiatRates{
+                            status
+                            reason
+                            data {
+                                asset
+                                usdRate
+                            }
+                        }
+                    }`;
+    return { query };
+  },
+
+  // `withNewerFields: false` builds the same query without the fields older
+  // backends lack (`underlying`, `minLeverage`, `maxLeverage`,
+  // `deliveryTime`), for
+  // `useGraphQL`'s `fallbackQuery` — one unknown field fails the whole query.
+  getAllPairs: (fields?: string, withNewerFields = true) => {
     const query = `query getAllPairs{
             getAllPairs{
                 status
@@ -611,7 +627,14 @@ export const otherQueries = {
                         crossAvailable
                         assetCategory
                         isCanonical
-                        ${withUnderlying ? 'underlying' : ''}
+                        ${
+                          withNewerFields
+                            ? `underlying
+                        minLeverage
+                        maxLeverage
+                        deliveryTime`
+                            : ''
+                        }
                         source`
                         }
                     }
@@ -933,42 +956,9 @@ export const otherQueries = {
     return { query, variables };
   },
 
-  // Notification queries
-  getMessageBot: (input?: {
-    unreadOnly?: boolean;
-    page?: number;
-    pageSize?: number;
-    search?: string;
-  }) => {
-    // Always use parameterized query structure (matching legacy dashboard exactly)
-    const query = `query getMessageBot ($input: getMessageBotInput){
-         getMessageBot(input: $input) {
-            status
-            reason
-            data {
-                result {
-                        _id
-                        userId
-                        botId
-                        botType
-                        botName
-                        message
-                        time
-                        type
-                        paperContext
-                        terminal
-                        symbol
-                        exchange
-                }
-            }
-            total
-        }
-    } `;
-
-    // Always pass { input } in variables, even if input is undefined (like legacy dashboard)
-    const variables = { input };
-    return { query, variables };
-  },
+  // getMessageBot lives in GraphQLQueries-bot-queries. A second copy here
+  // used to shadow it in the merged GraphQlQuery object (otherQueries is
+  // spread last), so fields added there never reached the wire.
 
   getPlatformNotifications: (input: {
     unreadOnly: boolean;

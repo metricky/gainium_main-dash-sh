@@ -49,6 +49,7 @@ const botSettings = `
 const orders = `
     clientOrderId
     reduceFundsId
+    addFundsId
     origQty
     executedQty
     price
@@ -70,6 +71,21 @@ const orders = `
     symbol
     exchange
     typeOrder
+`;
+
+// What an order cost beyond its price: the fee in the quote asset, and the
+// execution slippage of a MARKET order against the market when the bot decided
+// to send it. Newer backends only: a schema without these fields rejects the
+// whole document, so request them with a fallback to `orders` (see
+// `useDealOrders`).
+const orderCosts = `
+    refPrice
+    slippageBps
+    slippageQuote
+    slippageSource
+    feeQuote
+    feeEstimated
+    feeConverted
 `;
 
 const varsFragment = `
@@ -292,6 +308,7 @@ pair
                 useDca
                 hodlAt
                 hodlHourly
+                hodlWeekdays
                 hodlDay
                 hodlNextBuy
                 maxNumberOfOpenDeals
@@ -303,6 +320,7 @@ pair
                  logic
                  action
                  section
+                 join
                 }
                 indicators {
                     type
@@ -364,6 +382,9 @@ xOscillator2voShort
                     percentile
                     percentileLookback
                     percentilePercentage
+                    smoothing
+                    smoothingLength
+                    smoothingCompare
                     mar1type
                     mar1length
                     mar2type
@@ -389,10 +410,19 @@ xOscillator2voShort
   obfvgRef
   sessionDays
   sessionRule
+  sessionStart
+  sessionEnd
+  sessionTimezone
+  sessionLevelA
+  sessionLevelB
   lwThreshold
   lwMaxDuration
   lwValue
   lwCondition
+  oteLeftBars
+  oteMinLegSize
+  oteLevel
+  oteLeg
   factor
   atrLength
   pcUp
@@ -425,6 +455,7 @@ kcRangeLength
                 cooldownAfterDealStopInterval
                 cooldownAfterDealStartOption
                 cooldownAfterDealStopOption
+                cooldownAfterDealStopTrigger
                 moveSL
                 moveSLTrigger
                 moveSLValue
@@ -507,6 +538,7 @@ dcaCondition
     dcaVolumeRequiredChangeRef
     dcaVolumeMaxValue
 skipBalanceCheck
+allowRaiseToExchangeMin
 baseSlOn
 closeByTimer
                     closeByTimerValue
@@ -591,6 +623,7 @@ pair
                 useDca
                 hodlAt
                 hodlHourly
+                hodlWeekdays
                 hodlDay
                 hodlNextBuy
                 maxNumberOfOpenDeals
@@ -602,6 +635,7 @@ pair
                  logic
                  action
                  section
+                 join
                 }
                 indicators {
                     type
@@ -663,6 +697,9 @@ xOscillator2voShort
                     percentile
                     percentileLookback
                     percentilePercentage
+                    smoothing
+                    smoothingLength
+                    smoothingCompare
                     mar1type
                     mar1length
                     mar2type
@@ -688,10 +725,19 @@ xOscillator2voShort
   obfvgRef
   sessionDays
   sessionRule
+  sessionStart
+  sessionEnd
+  sessionTimezone
+  sessionLevelA
+  sessionLevelB
   lwThreshold
   lwMaxDuration
   lwValue
   lwCondition
+  oteLeftBars
+  oteMinLegSize
+  oteLevel
+  oteLeg
     factor
   atrLength
    pcUp
@@ -724,6 +770,7 @@ kcRangeLength
                 cooldownAfterDealStopInterval
                 cooldownAfterDealStartOption
                 cooldownAfterDealStopOption
+                cooldownAfterDealStopTrigger
                 moveSL
                 moveSLTrigger
                 moveSLValue
@@ -838,6 +885,7 @@ pairs
                 useDca
                 hodlAt
                 hodlHourly
+                hodlWeekdays
                 hodlDay
                 hodlNextBuy
                 maxNumberOfOpenDeals
@@ -849,6 +897,7 @@ pairs
                  logic
                  action
                  section
+                 join
                 }
                 indicators {
                     type
@@ -2656,6 +2705,7 @@ export {
   minigridSchema,
   notEnoughBalanceFragment,
   numericalBacktest,
+  orderCosts,
   orders,
   payout,
   period,

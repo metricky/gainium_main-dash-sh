@@ -9,6 +9,7 @@ import {
   dealWorkingMs,
   isLongStrategy,
 } from '@/lib/utils/tradingMetrics';
+import { getPricesFetchedAt } from '@/helper/price';
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
 import { formatDuration } from '@/utils/formatters';
 import {
@@ -27,6 +28,7 @@ import {
   type Prices,
 } from '.';
 import type { DrawerBot } from './bots/drawer';
+import type { DealPositionValue } from '@/hooks/useDealPositionValues';
 import { isCoinmExchange, isFuturesExchange } from '@/utils/exchangeUtils';
 import {
   percentBasis,
@@ -38,12 +40,17 @@ export type TradeChartPoint = {
   price: number;
 };
 
-export type TransformedTrade = {
+export type TransformedTrade = DealPositionValue & {
   active: boolean;
   id: string;
   type: 'DCA' | 'Combo' | 'Hedge DCA' | 'Hedge Combo' | 'Grid' | 'Terminal';
   /** True for terminal deals — they have no bot page, so bot links are hidden */
   terminal?: boolean;
+  /**
+   * True for a hedge bot's leg deal that is rendered under its leg's plain
+   * `type` ('DCA' / 'Combo'). The deal actions treat it as a hedge deal.
+   */
+  hedge?: boolean;
   symbol:
     | string
     | {
@@ -99,6 +106,8 @@ export type TransformedTrade = {
       }
     | undefined;
   unrealizedProfit?: number | undefined;
+  /** Open deal whose live price has not arrived yet: unrealizedProfit is the server's last saved value. */
+  unrealizedPending?: boolean | undefined;
   /**
    * What a percentage add/reduce resolves to for this deal, in base units.
    * Derived here because this is the only place that already holds every input
@@ -447,6 +456,11 @@ export const transformDealToTrade = (
     centerText: `${Math.round(usagePercentage)}%`,
     showInnerGauge: false,
     unrealizedProfit: unrealizedPnL,
+    // Not live yet: the stored value (no prices), no live value (price or fee
+    // unresolved), or priced from the previous session's price snapshot.
+    unrealizedPending:
+      isActiveDeal &&
+      (useLiveStats || livePnl === undefined || getPricesFetchedAt() === 0),
     side: deal.strategy === 'SHORT' ? 'SELL' : 'BUY',
     drawdown: deal.stats?.drawdownPercent
       ? deal.stats.drawdownPercent * 100

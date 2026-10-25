@@ -1,7 +1,9 @@
+import { useBillableIndicatorCount } from '@/hooks/bots/useBillableIndicatorCount';
 import { Button } from '@/components/ui/button';
 import WebhooksDisabledWarning from '@/components/webhook/WebhooksDisabledWarning';
 import { FieldVariableBinding } from '@/components/ui/field-variable-binding';
-import { Input } from '@/components/ui/input';
+import { DateInput } from '@/components/ui/date-input';
+import { DateTimeInput } from '@/components/ui/date-time-input';
 import { Label } from '@/components/ui/label';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
 import { NumberInput } from '@/components/ui/number-input';
@@ -28,6 +30,8 @@ import {
 } from '@/contexts/bots/form/BotFormProvider';
 import { useBotFormQuery } from '@/features/bots/widgets/BotForm/providers/BotFormQueryProvider';
 import { IndicatorGroupsManager } from '@/features/bots/shared/components/IndicatorGroupsManager';
+import { SinglePositionSettings } from '@/features/bots/bot-types/dca/form/sections/SinglePositionSettings';
+import { useSinglePositionFormState } from '@/features/bots/bot-types/dca/form/hooks/useSinglePositionFormState';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import useBotVarBinding from '@/hooks/bots/global-variables/useBotVarBinding';
 import { useFavoriteIndicators } from '@/hooks/useFavoriteIndicators';
@@ -35,6 +39,7 @@ import { useIndicatorSelector } from '@/hooks/useIndicatorSelector';
 import { useUserSettings } from '@/hooks/useUserSettings';
 import {
   CooldownOptionsEnum,
+  CooldownStopTriggerEnum,
   CooldownUnits,
   IndicatorAction,
   IndicatorEnum,
@@ -99,6 +104,12 @@ const COOLDOWN_UNITS = [
   { value: 'minutes', label: 'Minutes' },
   { value: 'hours', label: 'Hours' },
   { value: 'days', label: 'Days' },
+] as const;
+
+const COOLDOWN_STOP_TRIGGER_OPTIONS = [
+  { value: CooldownStopTriggerEnum.any, label: 'Any close' },
+  { value: CooldownStopTriggerEnum.sl, label: 'Stop loss only' },
+  { value: CooldownStopTriggerEnum.loss, label: 'Losing deals only' },
 ] as const;
 
 const COOLDOWN_SCOPE_OPTIONS = [
@@ -224,6 +235,58 @@ const SplitDealsCapInput: React.FC<{
 const toLocalDateTimeInputValue = (date: Date): string => {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+/** Timer weekdays, Monday first; values are JS weekdays (0 = Sunday). */
+const TIMER_WEEKDAYS = [
+  { value: 1, label: 'Mon' },
+  { value: 2, label: 'Tue' },
+  { value: 3, label: 'Wed' },
+  { value: 4, label: 'Thu' },
+  { value: 5, label: 'Fri' },
+  { value: 6, label: 'Sat' },
+  { value: 0, label: 'Sun' },
+];
+
+/** The days a timer may run on; an empty setting means every day. */
+const selectedTimerWeekdays = (weekdays?: number[] | null): number[] => {
+  const days = (weekdays ?? []).filter((d) => d >= 0 && d <= 6);
+  return days.length ? days : TIMER_WEEKDAYS.map((d) => d.value);
+};
+
+/** Toggles one day; all seven is stored as empty (every day). */
+const toggleTimerWeekday = (days: number[], day: number): number[] => {
+  const next = days.includes(day)
+    ? days.filter((d) => d !== day)
+    : [...days, day];
+  return next.length === 7 ? [] : [...next].sort((a, b) => a - b);
+};
+
+/**
+ * The run the bot actually makes for `nextBuy`: the same, or the first one
+ * after it on a selected weekday (a daily timer's date is read as a UTC date,
+ * an hourly one in the profile timezone — as the bot engine reads them).
+ */
+const shiftNextBuyToWeekday = (
+  nextBuy: number,
+  hourly: boolean,
+  timeZone: string,
+  days: number[]
+): number => {
+  const weekday = (t: number) =>
+    hourly
+      ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(
+          new Date(t).toLocaleDateString('en-US', {
+            timeZone,
+            weekday: 'short',
+          })
+        )
+      : new Date(t).getUTCDay();
+  let next = nextBuy;
+  for (let i = 0; i < 7 * 24 && !days.includes(weekday(next)); i++) {
+    next += hourly ? 3600e3 : 86400e3;
+  }
+  return next;
 };
 
 // Daily timers: the bot engine reads only the UTC calendar date of
@@ -421,6 +484,7 @@ export const DealStartSettings: React.FC = () => {
   const hodlDay = useBotFormSelector('hodlDay');
   const hodlAt = useBotFormSelector('hodlAt');
   const hodlHourly = useBotFormSelector('hodlHourly');
+  const hodlWeekdays = useBotFormSelector('hodlWeekdays');
   const startDealLogic = useBotFormSelector('startDealLogic');
   const maxNumberOfOpenDeals = useBotFormSelector('maxNumberOfOpenDeals');
   const pairPrioritization = useBotFormSelector('pairPrioritization');
@@ -462,7 +526,11 @@ export const DealStartSettings: React.FC = () => {
   const cooldownAfterDealStopUnits = useBotFormSelector(
     'cooldownAfterDealStopUnits'
   );
+  const cooldownAfterDealStopTrigger = useBotFormSelector(
+    'cooldownAfterDealStopTrigger'
+  );
   const isMultiBot = useMemo(() => Boolean(useMulti), [useMulti]);
+  const { active: singlePositionActive } = useSinglePositionFormState();
 
   // const isUnlimitedValue = React.useCallback((value: unknown) => {
   //   if (typeof value === 'number') {
@@ -688,15 +756,32 @@ export const DealStartSettings: React.FC = () => {
   // the centralized validation (`hotValidateDcaFormData` / `validateDcaFormData`).
   // Remove component-local error mutations to keep a single source of truth.
 
-  const totalIndicators = React.useMemo(() => {
-    return indicators.length;
-  }, [indicators.length]);
+  const totalIndicators = useBillableIndicatorCount();
 
   const startIndicatorErrorMessage = errors['indicators'];
 
   const alerts = useBotFormAlerts();
 
-  // Automatically add first indicator group when enabling technical indicators
+  // A new start group holds a default RSI rather than nothing, so it never
+  // shows up empty and failing validation. The type is swapped on its card.
+  const buildDefaultStartIndicator = React.useCallback(
+    (groupId: string): IndicatorConfig => {
+      const type = IndicatorEnum.rsi;
+      return {
+        ...buildIndicatorConfig(
+          type,
+          getIndicatorDefaultParams(type, IndicatorAction.startDeal),
+          { keepConditionBars: '0' }
+        ),
+        groupId,
+      };
+    },
+    []
+  );
+
+  // Switching to technical indicators opens a ready-to-use condition: one
+  // group holding a default RSI, so the form starts valid instead of empty
+  // with errors. The user swaps the indicator from its card.
   React.useEffect(() => {
     if (startCondition === StartConditionEnum.ti) {
       if (startIndicatorGroups.length === 0) {
@@ -706,6 +791,15 @@ export const DealStartSettings: React.FC = () => {
           action: IndicatorAction.startDeal,
         };
         updateFormData('indicatorGroups', [...indicatorGroups, newGroup]);
+        const hasStartIndicator = indicators.some(
+          (indicator) => indicator.indicatorAction === IndicatorAction.startDeal
+        );
+        if (!hasStartIndicator && totalIndicators < indicatorsLimit) {
+          updateFormData('indicators', [
+            ...indicators,
+            buildDefaultStartIndicator(newGroup.id),
+          ]);
+        }
       }
     }
   }, [
@@ -713,6 +807,9 @@ export const DealStartSettings: React.FC = () => {
     startIndicatorGroups.length,
     updateFormData,
     indicatorGroups,
+    indicators,
+    totalIndicators,
+    buildDefaultStartIndicator,
   ]);
 
   const syncStartIndicatorsGroups = React.useCallback(
@@ -727,7 +824,8 @@ export const DealStartSettings: React.FC = () => {
     [indicatorGroups, updateFormData]
   );
 
-  const handleAddStartGroup = React.useCallback(() => {
+  const handleAddStartGroup = React.useCallback(
+    (join?: IndicatorsLogicEnum) => {
     if (
       /* startIndicatorGroups.length >= MAX_START_INDICATOR_GROUPS || */
       totalIndicators >= indicatorsLimit
@@ -739,10 +837,36 @@ export const DealStartSettings: React.FC = () => {
       id: generateStartGroupId(),
       logic: IndicatorsLogicEnum.and,
       action: IndicatorAction.startDeal,
+      ...(join ? { join } : {}),
     };
 
     updateFormData('indicatorGroups', [...indicatorGroups, newGroup]);
-  }, [updateFormData, indicatorGroups, totalIndicators]);
+    updateFormData('indicators', [
+      ...indicators,
+      buildDefaultStartIndicator(newGroup.id),
+    ]);
+    },
+    [
+    updateFormData,
+    indicatorGroups,
+    indicators,
+    totalIndicators,
+    buildDefaultStartIndicator,
+  ]
+  );
+
+
+  const handleChangeGroupJoins = React.useCallback(
+    (joins: Record<string, IndicatorsLogicEnum>) => {
+      updateFormData(
+        'indicatorGroups',
+        indicatorGroups.map((group) =>
+          joins[group.id] ? { ...group, join: joins[group.id] } : group
+        )
+      );
+    },
+    [indicatorGroups, updateFormData]
+  );
 
   const handleRemoveStartGroup = React.useCallback(
     (groupId: string) => {
@@ -805,21 +929,18 @@ export const DealStartSettings: React.FC = () => {
       // Add a default RSI indicator immediately instead of forcing the user
       // through the selector first. They can swap the type afterwards via the
       // card's "change indicator" control (handleSelectIndicatorTypeInGroup).
-      const type = IndicatorEnum.rsi;
-      const defaultParams = getIndicatorDefaultParams(
-        type,
-        IndicatorAction.startDeal
-      );
-      const newIndicator = buildIndicatorConfig(type, defaultParams, {
-        keepConditionBars: '0',
-      });
-
       updateFormData('indicators', [
         ...indicators,
-        { ...newIndicator, groupId: groupId },
+        buildDefaultStartIndicator(groupId),
       ]);
     },
-    [startIndicatorGroups, totalIndicators, updateFormData, indicators]
+    [
+      startIndicatorGroups,
+      totalIndicators,
+      updateFormData,
+      indicators,
+      buildDefaultStartIndicator,
+    ]
   );
 
   const handleChangeIndicatorParamsInGroup = React.useCallback(
@@ -937,6 +1058,7 @@ export const DealStartSettings: React.FC = () => {
     if (!hodlDay || !hodlAt) {
       return {
         message: 'Configure interval and time to see preview',
+        summary: 'Set an interval and time',
       };
     }
 
@@ -944,6 +1066,7 @@ export const DealStartSettings: React.FC = () => {
     if (!Number.isFinite(interval) || interval <= 0) {
       return {
         message: 'Invalid time configuration',
+        summary: 'Invalid time configuration',
       };
     }
 
@@ -964,20 +1087,40 @@ export const DealStartSettings: React.FC = () => {
       : `${intro} at ${hodlAt} (${timezone} timezone).`;
 
     let nextRun: string | null = null;
+    let nextRunShort: string | null = null;
     if (hodlNextBuy && !Number.isNaN(new Date(hodlNextBuy).getTime())) {
-      nextRun = isHourly
-        ? `${new Date(hodlNextBuy).toLocaleString()} (${timezone} timezone)`
-        : `${nextBuyToDateValue(hodlNextBuy)} ${hodlAt} (${timezone} timezone)`;
+      // the bot moves a run on an unselected weekday to the next selected one
+      const next = shiftNextBuyToWeekday(
+        hodlNextBuy,
+        isHourly,
+        timezone,
+        selectedTimerWeekdays(hodlWeekdays)
+      );
+      nextRunShort = isHourly
+        ? new Date(next).toLocaleString()
+        : `${nextBuyToDateValue(next)} ${hodlAt}`;
+      nextRun = `${nextRunShort} (${timezone} timezone)`;
     }
 
     const nextRunText = nextRun
       ? `Next deal will start on ${nextRun}.`
       : 'Next deal timing will be determined after saving the bot.';
 
+    const days = selectedTimerWeekdays(hodlWeekdays);
+    const daysText =
+      days.length < 7
+        ? ` Only on ${TIMER_WEEKDAYS.filter((d) => days.includes(d.value))
+            .map((d) => d.label)
+            .join(', ')}; a run on another day moves to the next of these.`
+        : '';
+
     return {
-      message: `${introWithTime} ${nextRunText}`,
+      message: `${introWithTime}${daysText} ${nextRunText}`,
+      summary: nextRunShort
+        ? `Next deal: ${nextRunShort}`
+        : 'Next deal set after saving',
     };
-  }, [hodlAt, hodlDay, hodlHourly, hodlNextBuy, timezone]);
+  }, [hodlAt, hodlDay, hodlHourly, hodlNextBuy, hodlWeekdays, timezone]);
 
   const isTerminal = useMemo(() => !!formTerminal, [formTerminal]);
 
@@ -1078,10 +1221,7 @@ export const DealStartSettings: React.FC = () => {
                           </SelectContent>
                         </Select>
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        Bind interval
-                      </p>
-                    </div>
+                                    </div>
 
                     <div className="space-y-xs">
                       <Label>Open deal at</Label>
@@ -1105,18 +1245,68 @@ export const DealStartSettings: React.FC = () => {
                     </div>
 
                     <div className="space-y-xs">
-                      <Label>Next deal</Label>
+                      <div className="flex items-center gap-xs">
+                        <Label>Open deal on</Label>
+                        <Tooltip
+                          tooltip={`Days the bot may open deals, in your profile timezone (${timezone}). A run on an unselected day moves to the next selected one.`}
+                        >
+                          <InfoIcon />
+                        </Tooltip>
+                      </div>
+                      <div
+                        className="flex flex-wrap gap-xs"
+                        role="group"
+                        aria-label="Open deal on"
+                      >
+                        {TIMER_WEEKDAYS.map((day) => {
+                          const days = selectedTimerWeekdays(hodlWeekdays);
+                          const active = days.includes(day.value);
+                          return (
+                            <Button
+                              key={day.value}
+                              type="button"
+                              size="sm"
+                              variant={active ? 'default' : 'outline'}
+                              aria-pressed={active}
+                              disabled={active && days.length === 1}
+                              onClick={() =>
+                                updateFormData(
+                                  'hodlWeekdays',
+                                  toggleTimerWeekday(days, day.value)
+                                )
+                              }
+                            >
+                              {day.label}
+                            </Button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-xs">
+                      <div className="flex items-center gap-xs">
+                        <Label>Next deal</Label>
+                        <Tooltip
+                          tooltip={`${
+                            hodlHourly
+                              ? 'Next execution time, in your local timezone.'
+                              : `Day of the next deal; it opens at ${hodlAt || 'the set time'} in your profile timezone (${timezone}).`
+                          } Leave empty to let the system compute it.`}
+                        >
+                          <InfoIcon />
+                        </Tooltip>
+                      </div>
                       {hodlHourly ? (
-                        <Input
-                          type="datetime-local"
+                        <DateTimeInput
+                          aria-label="Next deal"
+                          clearable
                           value={
                             Number.isFinite(hodlNextBuy) && hodlNextBuy > 0
                               ? toLocalDateTimeInputValue(new Date(hodlNextBuy))
                               : ''
                           }
                           min={timerMinimumDateTime}
-                          onChange={(event) => {
-                            const raw = event.target.value;
+                          onChange={(raw) => {
                             const parsed = raw ? new Date(raw).getTime() : NaN;
                             updateFormData(
                               'hodlNextBuy',
@@ -1125,16 +1315,16 @@ export const DealStartSettings: React.FC = () => {
                           }}
                         />
                       ) : (
-                        <Input
-                          type="date"
+                        <DateInput
+                          aria-label="Next deal"
+                          clearable
                           value={
                             Number.isFinite(hodlNextBuy) && hodlNextBuy > 0
                               ? nextBuyToDateValue(hodlNextBuy)
                               : ''
                           }
                           min={todayInTimezone(timezone)}
-                          onChange={(event) => {
-                            const raw = event.target.value;
+                          onChange={(raw) => {
                             updateFormData(
                               'hodlNextBuy',
                               raw ? dateValueToNextBuy(raw) : NaN
@@ -1142,20 +1332,11 @@ export const DealStartSettings: React.FC = () => {
                           }}
                         />
                       )}
-                      <p className="text-xs text-muted-foreground">
-                        {hodlHourly
-                          ? 'Set the next execution time in your local timezone.'
-                          : `Day of the next deal; it opens at ${hodlAt || 'the set time'} in your profile timezone (${timezone}).`}{' '}
-                        Leave empty to let the system compute it automatically.
-                      </p>
-                      <div className="rounded-md bg-blue-500/10 p-sm">
-                        <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                          Next Execution Preview
-                        </p>
-                        <p className="text-sm text-blue-800 dark:text-blue-200">
-                          {timerPreview.message}
-                        </p>
-                      </div>
+                      <SettingsAlert
+                        variant="info"
+                        title={timerPreview.summary}
+                        description={timerPreview.message}
+                      />
                     </div>
                   </div>
                 </SettingsRow>
@@ -1184,22 +1365,13 @@ export const DealStartSettings: React.FC = () => {
                   errorMessage={startIndicatorErrorMessage}
                   totalIndicatorsAcrossBot={totalIndicators}
                   indicatorAction={IndicatorAction.startDeal}
+                  formulaLabel="Start a deal when"
                   exchange={currentExchange?.provider}
-                  globalLogicLabel="Group logic"
-                  globalLogicOptions={[
-                    {
-                      value: IndicatorsLogicEnum.and,
-                      label: 'AND',
-                    },
-                    {
-                      value: IndicatorsLogicEnum.or,
-                      label: 'OR',
-                    },
-                  ]}
                   emptyStateMessage="No indicator groups configured yet. Add a group to start building your technical start conditions."
                   emptyIndicatorsAlertTitle="No start indicators yet"
                   emptyIndicatorsAlertDescription="Add at least one indicator group to allow the bot to open deals automatically when conditions are met."
                   onAddGroup={handleAddStartGroup}
+                  onChangeGroupJoins={handleChangeGroupJoins}
                   onRemoveGroup={handleRemoveStartGroup}
                   onChangeGroupLogic={handleChangeGroupLogic}
                   onAddIndicatorToGroup={handleAddIndicatorToGroup}
@@ -1294,7 +1466,12 @@ export const DealStartSettings: React.FC = () => {
           </SettingsRow>
         )}
 
-        {isMultiBot && (
+        {/* Single position per pair (DCA only, on a backend that has it). */}
+        {!isTerminal && <SinglePositionSettings />}
+
+        {/* A single-position bot holds one deal per pair by definition, so
+            the per-pair cap is hidden (and ignored by the engine). */}
+        {isMultiBot && !singlePositionActive && (
           <SettingsRow
             name="Max open deals per pair"
             tooltip="The total number of simultaneous open deals the bot is allowed to open per token pair. Once this number is reached on a specific pair the bot won't be allowed to open new ones. With the dynamic price filter on Over and Under, turn on Over / under to set separate per-pair limits above and below the first deal's price."
@@ -1526,9 +1703,6 @@ export const DealStartSettings: React.FC = () => {
                       disabled={isMinOpenDealVarBound}
                     />
                   </FieldVariableBinding>
-                  <p className="text-xs text-muted-foreground">
-                    Bind minimum price
-                  </p>
                 </div>
                 <div className="space-y-xs">
                   <Label htmlFor="max-open-deal">
@@ -1820,9 +1994,6 @@ export const DealStartSettings: React.FC = () => {
                           showControls={false}
                         />
                       </FieldVariableBinding>
-                      <p className="text-xs text-muted-foreground">
-                        Bind cooldown interval
-                      </p>
                     </div>
                     <div className="space-y-xs">
                       <Label htmlFor="cooldown-start-units">Units</Label>
@@ -1903,6 +2074,37 @@ export const DealStartSettings: React.FC = () => {
                 {cooldownAfterDealStop && (
                   <div className="grid gap-md sm:grid-cols-3">
                     <div className="space-y-xs">
+                      <div className="flex items-center gap-xs">
+                        <Label htmlFor="cooldown-close-trigger">After</Label>
+                        <Tooltip tooltip="Which closed deals start the cooldown. Stop loss only: deals closed by a stop loss (including a moved or trailing stop loss) or a liquidation, even if the deal ended in profit. Losing deals only: any deal that closed with a net loss after fees, however it was closed. A winning close during the cooldown does not end it early.">
+                          <InfoIcon />
+                        </Tooltip>
+                      </div>
+                      <Select
+                        value={
+                          cooldownAfterDealStopTrigger ||
+                          CooldownStopTriggerEnum.any
+                        }
+                        onValueChange={(value) =>
+                          updateFormData(
+                            'cooldownAfterDealStopTrigger',
+                            value as CooldownStopTriggerEnum
+                          )
+                        }
+                      >
+                        <SelectTrigger id="cooldown-close-trigger">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {COOLDOWN_STOP_TRIGGER_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-xs">
                       <Label htmlFor="cooldown-close-interval">Interval</Label>
                       <FieldVariableBinding
                         path="cooldownAfterDealStopInterval"
@@ -1953,9 +2155,6 @@ export const DealStartSettings: React.FC = () => {
                           showControls={false}
                         />
                       </FieldVariableBinding>
-                      <p className="text-xs text-muted-foreground">
-                        Bind cooldown interval
-                      </p>
                     </div>
                     <div className="space-y-xs">
                       <Label htmlFor="cooldown-close-units">Units</Label>
@@ -2117,9 +2316,6 @@ export const DealStartSettings: React.FC = () => {
                         showControls={false}
                       />
                     </FieldVariableBinding>
-                    <p className="text-xs text-muted-foreground">
-                      Bind custom top size
-                    </p>
                   </div>
                 )}
               </div>
@@ -2232,9 +2428,6 @@ export const DealStartSettings: React.FC = () => {
                         showControls={false}
                       />
                     </FieldVariableBinding>
-                    <p className="text-xs text-muted-foreground">
-                      Bind relative volume threshold
-                    </p>
                   </div>
                 )}
               </div>

@@ -1,5 +1,6 @@
 import { ResponsiveCurrencyValue } from '@/components/ui/ResponsiveCurrencyValue';
 import { ProfitLossPercChip } from '@/components/ui/chip';
+import { InfoIcon, Tooltip } from '@/components/ui/tooltip';
 import React from 'react';
 
 export interface StatItem {
@@ -15,6 +16,8 @@ export interface StatItem {
   subLabel?: string;
   /** Explicit profit/loss coloring for `textValue` stats. */
   tone?: 'success' | 'destructive' | 'neutral';
+  /** Info icon + tooltip beside the label (the StatsBoxes pattern). */
+  labelTooltip?: string | undefined;
 }
 
 export interface WidgetStatsProps {
@@ -37,8 +40,13 @@ export const WidgetStats: React.FC<WidgetStatsProps> = ({
             {/* Label row — left-aligned label, badge (if any) right-aligned on same line */}
             <div className="flex items-center justify-between gap-1">
               <div>
-                <div className="text-muted-foreground text-xs">
+                <div className="flex items-center gap-1 text-muted-foreground text-xs">
                   {stat.label}
+                  {stat.labelTooltip && (
+                    <Tooltip tooltip={stat.labelTooltip} side="bottom">
+                      <InfoIcon className="h-3 w-3" />
+                    </Tooltip>
+                  )}
                 </div>
                 {stat.subLabel && (
                   <div className="text-muted-foreground text-xs">

@@ -13,6 +13,7 @@ import {
   ppValueEnum,
   RangeType,
   rsiValue2Enum,
+  SessionRuleEnum,
   SRCrossingEnum,
   STConditionEnum,
   StochRangeEnum,
@@ -22,6 +23,7 @@ import {
   type ChartIndicatorConfig,
   type ChartIndicatorsConfig,
 } from '@/types';
+import { resolveSmoothingCompare } from '@/utils/indicators/smoothing';
 
 // Type definitions for chart indicators based on old dashboard format
 /* export interface ChartIndicatorConfig {
@@ -186,20 +188,20 @@ const coerceBoolean = (value: unknown, fallback = false): boolean => {
 }; */
 
 /**
- * Converts DCA form indicators to chart-compatible format
- * Based on the old dashboard's chartIndicators computation pattern
+ * The form indicators the chart should show for the current settings (their
+ * group is in use and the bot acts on their action), before the timeframe
+ * filter. The chart follows these indicators' timeframe.
  */
-export function convertIndicatorConfigsToChart(
+export function selectActiveChartIndicators(
   indicators: IndicatorConfig[],
   context: ChartIndicatorsContext
-): ChartIndicatorsConfig {
+): IndicatorConfig[] {
   if (!Array.isArray(indicators) || indicators.length === 0) {
     return [];
   }
 
   const {
     useCloseIndicators,
-    chartInterval,
     indicatorGroupsToUse,
     useStartDealIndicators,
     useStartDCAIndicators,
@@ -234,9 +236,26 @@ export function convertIndicatorConfigsToChart(
         filter.push(IndicatorAction.riskReward);
       }
       return filter.includes(i.indicatorAction);
-    })
+    });
+}
+
+/**
+ * Converts DCA form indicators to chart-compatible format
+ * Based on the old dashboard's chartIndicators computation pattern
+ */
+export function convertIndicatorConfigsToChart(
+  indicators: IndicatorConfig[],
+  context: ChartIndicatorsContext
+): ChartIndicatorsConfig {
+  const { chartInterval } = context;
+  return selectActiveChartIndicators(indicators, context)
     .filter(
       (i) =>
+        // An in/out session is a time window, not a series computed on a
+        // timeframe: it applies to every chart resolution. Price levels are
+        // read from candles of the indicator's own interval.
+        (i.type === IndicatorEnum.session &&
+          i.sessionRule !== SessionRuleEnum.levels) ||
         tvIntervalMap[i.indicatorInterval] === chartInterval ||
         // The comparison MA only exists when the reference is another MA — with
         // "Current price" the stored `maCrossingInterval` is inert (it keeps
@@ -316,6 +335,9 @@ export type ChartIndicatorsContext = {
  */
 const OPEN_BAND_EDGE = 1e6;
 
+// Combined Ratings' default check level (catalog `checkLevel`).
+const TV_DEFAULT_CHECK_LEVEL = 15;
+
 // "between" draws the band from its two bounds (ATH values are negative).
 const betweenBand = (
   i: IndicatorConfig
@@ -337,13 +359,26 @@ function buildChartIndicator(
   context: ChartIndicatorsContext
 ): ChartIndicatorConfig | null {
   const { scaleAr, tpAr, slAr, chartInterval, strategy } = context;
+  // Oscillator Crossover: the chart at the primary interval draws both
+  // oscillators (the second one computed on its own interval when that
+  // differs); a chart at only the second interval draws the second one.
+  const xoSecondInterval = i.xOscillator2Interval ?? i.indicatorInterval;
+  const xoPrimaryOnChart =
+    i.type === IndicatorEnum.xo &&
+    tvIntervalMap[i.indicatorInterval] === chartInterval;
   const showXo =
     i.type === IndicatorEnum.xo &&
-    tvIntervalMap[i.xOscillator2Interval ?? i.indicatorInterval] ===
-      chartInterval;
+    (xoPrimaryOnChart || tvIntervalMap[xoSecondInterval] === chartInterval);
+  // An indicator tested against its own smoothed line has no value threshold,
+  // so there is no band to shade (the smoothed line itself is drawn instead).
+  const comparesSmoothedLine = resolveSmoothingCompare(i) === 'line';
   const chartIndicator: ChartIndicatorConfig = {
+    // Combined Ratings has no length; its study's level travels here. An
+    // unset level is the form's default (15), as the bot will save it.
     length:
-      (i.type !== IndicatorEnum.tv ? i.indicatorLength : i.checkLevel) ?? 1,
+      (i.type !== IndicatorEnum.tv
+        ? i.indicatorLength
+        : (i.checkLevel ?? TV_DEFAULT_CHECK_LEVEL)) ?? 1,
     upperLimit:
       i.indicatorAction === IndicatorAction.riskReward ||
       (i.indicatorAction === IndicatorAction.startDca && scaleAr) ||
@@ -354,17 +389,17 @@ function buildChartIndicator(
         i.section === IndicatorSection.sl &&
         slAr)
         ? undefined
-        : i.percentile
+        : i.percentile || comparesSmoothedLine
           ? undefined
           : [IndicatorEnum.stoch, IndicatorEnum.stochRSI].includes(i.type)
             ? i.rsiValue2 !== rsiValue2Enum.custom
               ? i.stochRange === StochRangeEnum.lower
-                ? +(i.stochUpper ?? '80')
+                ? +(i.stochUpper ?? '20')
                 : i.stochRange === StochRangeEnum.none
                   ? undefined
                   : i.stochRange === StochRangeEnum.upper
                     ? 100
-                    : +(i.stochUpper ?? '20')
+                    : +(i.stochUpper ?? '80')
               : i.valueInsteadof
             : i.indicatorCondition === IndicatorStartConditionEnum.bw
               ? betweenBand(i)?.upper
@@ -387,12 +422,12 @@ function buildChartIndicator(
         i.section === IndicatorSection.sl &&
         slAr)
         ? undefined
-        : i.percentile
+        : i.percentile || comparesSmoothedLine
           ? undefined
           : [IndicatorEnum.stoch, IndicatorEnum.stochRSI].includes(i.type)
             ? i.rsiValue2 !== rsiValue2Enum.custom
               ? i.stochRange === StochRangeEnum.upper
-                ? +(i.stochLower ?? '20')
+                ? +(i.stochLower ?? '80')
                 : i.stochRange === StochRangeEnum.none
                   ? undefined
                   : i.stochRange === StochRangeEnum.lower
@@ -439,18 +474,22 @@ function buildChartIndicator(
     bbwpLookback: i.bbwpLookback ?? 252,
     ecdTrigger: i.ecdTrigger ?? ECDTriggerEnum.both,
     xOscillator1:
-      showXo && chartInterval !== tvIntervalMap[i.indicatorInterval]
+      showXo && !xoPrimaryOnChart
         ? 'None'
         : (i.xOscillator1 ?? IndicatorEnum.rsi),
     xOscillator2: showXo ? (i.xOscillator2 ?? IndicatorEnum.mfi) : 'None',
     xOscillator2length: showXo ? (i.xOscillator2length ?? 14) : undefined,
-    xOscillator2Interval: showXo
-      ? (i.xOscillator2Interval ?? i.indicatorInterval)
-      : undefined,
+    // set only when the second oscillator is computed off the chart's interval
+    xOscillator2Interval:
+      xoPrimaryOnChart && tvIntervalMap[xoSecondInterval] !== chartInterval
+        ? xoSecondInterval
+        : undefined,
     xOscillator2voLong: showXo ? (i.xOscillator2voLong ?? 10) : undefined,
     xOscillator2voShort: showXo ? (i.xOscillator2voShort ?? 5) : undefined,
     percentile: i.percentile,
     percentileLookback: i.percentileLookback,
+    smoothing: i.smoothing,
+    smoothingLength: i.smoothingLength,
     percentilePercentage: i.percentilePercentage,
     percentileCondition: i.indicatorCondition,
     mar1type: i.mar1type,
@@ -594,8 +633,17 @@ function buildChartIndicator(
     obfvgRef: i.obfvgRef ?? OBFVGRefEnum.middle,
     sessionDays: i.sessionDays,
     sessionRule: i.sessionRule,
+    sessionStart: i.sessionStart,
+    sessionEnd: i.sessionEnd,
+    sessionTimezone: i.sessionTimezone,
+    sessionLevelA: i.sessionLevelA,
+    sessionLevelB: i.sessionLevelB,
     lwMaxDuration: +(i.lwMaxDuration ?? 2),
     lwThreshold: +(i.lwThreshold ?? 1000),
+    oteLeftBars: +(i.oteLeftBars || 10),
+    oteMinLegSize: +(i.oteMinLegSize || 1),
+    oteLevel: +(i.oteLevel || 0.705),
+    oteLeg: i.oteLeg,
   };
 
   return chartIndicator;

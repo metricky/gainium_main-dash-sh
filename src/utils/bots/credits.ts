@@ -1,6 +1,17 @@
-import { BotTypesEnum, DCATypeEnum } from '@/types';
+import {
+  BotTypesEnum,
+  DCAConditionEnum,
+  DCATypeEnum,
+  IndicatorAction,
+} from '@/types';
 
 const coinFactor = 0.5;
+// Each coin a combo can trade at the same time is its own market, so it is
+// priced as one combo: min(coins, max open deals) combos. Max open deals <= 0
+// is unlimited, so every coin counts. Mirrors main-app's calculateCost.
+export const comboCoinFactor = 200;
+export const comboParallelCoins = (pairs: number, deals: number): number =>
+  Math.max(1, deals > 0 ? Math.min(pairs, deals) : pairs);
 const indicatorFactor = 1;
 const dealsFactor = 1;
 export const gridBaseCost = 250;
@@ -54,11 +65,13 @@ export const calculateCost = ({
         ? _indicators * indicatorFactor
         : _indicators * _pairs * indicatorFactor;
   const pairs =
-    botType === BotTypesEnum.grid ||
-    type === DCATypeEnum.terminal ||
-    _pairs <= 1
-      ? 0
-      : (_pairs - 1) * coinFactor;
+    botType === BotTypesEnum.combo
+      ? (comboParallelCoins(_pairs, _deals) - 1) * comboCoinFactor
+      : botType === BotTypesEnum.grid ||
+          type === DCATypeEnum.terminal ||
+          _pairs <= 1
+        ? 0
+        : (_pairs - 1) * coinFactor;
 
   const deals =
     botType === BotTypesEnum.grid ||
@@ -74,4 +87,25 @@ export const calculateCost = ({
     deals,
     total: Math.floor(base + indicators + pairs + deals),
   };
+};
+
+/**
+ * How many indicators a bot counts as, for its credits and for the
+ * `indicatorsLimit` cap. With DCA by indicators each `startDca` indicator is
+ * one ladder level, and a deal only listens to its next one, so the whole
+ * ladder counts as ONE indicator. Every other indicator counts once.
+ * Mirrors main-app-sh's `billableIndicators`.
+ */
+export const billableIndicators = (
+  indicators: { indicatorAction?: IndicatorAction }[] | null | undefined,
+  dcaCondition: DCAConditionEnum | string | null | undefined,
+): number => {
+  const all = indicators ?? [];
+  if (dcaCondition !== DCAConditionEnum.indicators) {
+    return all.length;
+  }
+  const ladder = all.filter(
+    (i) => i.indicatorAction === IndicatorAction.startDca,
+  ).length;
+  return all.length - ladder + (ladder > 0 ? 1 : 0);
 };

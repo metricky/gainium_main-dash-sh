@@ -1,4 +1,5 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 import { GraphQlQuery } from '@/lib/api';
 import { CHART_COLORS } from '@/lib/colors';
 import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
@@ -20,6 +21,10 @@ import {
 import { useUIStore } from '../../../stores/uiStore';
 import CustomTooltip from '../../charts/CustomTooltip';
 import WidgetStats from '../shared/WidgetStats';
+import {
+  PROFIT_EXCHANGE_FILTER_TOOLTIP,
+  useWidgetExchangeFilter,
+} from '../shared/useWidgetExchangeFilter';
 import WidgetWrapper from '../WidgetWrapper';
 import { getWidgetMetadata } from './index';
 
@@ -108,6 +113,7 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
 
   // Get privacy mode state
   const privacyMode = useUIStore((s) => s.privacyMode);
+  const { currency, toReporting, formatUsd } = useReportingCurrency();
 
   // The day boundary every other profit surface uses — the Profit widget next
   // to this one on the same dashboard, and the Deals table's date filter. This
@@ -119,6 +125,16 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
   // Persisted settings for this widget instance
   const [timeFilter, setTimeFilter] = usePersistedState('timeFilter', '30D');
   const [customName, setCustomName] = usePersistedState('customName', '');
+  const [selectedExchanges, setSelectedExchanges] = usePersistedState(
+    'selectedExchanges',
+    ['ALL']
+  );
+  const { exchangeUUIDs, filtersActive, clearFilters, filterContent } =
+    useWidgetExchangeFilter({
+      selectedExchanges,
+      setSelectedExchanges,
+      tooltip: PROFIT_EXCHANGE_FILTER_TOOLTIP,
+    });
 
   // Local UI state (not persisted)
   const [showOptionsDialog, setShowOptionsDialog] = useState(false);
@@ -134,8 +150,9 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
       GraphQlQuery.getProfitByUser({
         timezone: userTimezone,
         timeframe,
+        ...(exchangeUUIDs ? { exchangeUUIDs } : {}),
       }),
-    [timeframe, userTimezone]
+    [timeframe, userTimezone, exchangeUUIDs]
   );
 
   // Use the same GraphQL approach as the Profit widget
@@ -154,8 +171,9 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
       GraphQlQuery.getProfitByUser({
         timezone: 'UTC',
         timeframe: TOTAL_TIMEFRAME,
+        ...(exchangeUUIDs ? { exchangeUUIDs } : {}),
       }),
-    []
+    [exchangeUUIDs]
   );
 
   const { data: totalProfitResponse, isLoading: isTotalLoading } =
@@ -411,16 +429,23 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
                       className: 'text-muted-foreground',
                     }}
                     tickFormatter={(value) =>
-                      privacyMode ? '***' : `$${(value / 1000).toFixed(1)}k`
+                      privacyMode
+                        ? '***'
+                        : `${currency.symbol}${(toReporting(value) / 1000).toFixed(1)}k`
                     }
                     width={50}
                   />
                   <Tooltip
                     content={
                       <CustomTooltip
-                        {...(privacyMode && {
-                          valueFormatter: () => ['***', ''],
-                        })}
+                        valueFormatter={
+                          privacyMode
+                            ? () => ['***', '']
+                            : (value) => [
+                                formatUsd(Number(value)),
+                                'Accumulated Profit',
+                              ]
+                        }
                       />
                     }
                   />
@@ -460,10 +485,12 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
 
   // Calculate accumulated profit value for header
   const accumulatedProfitValue = {
-    primary: privacyMode ? '***' : accumulatedProfitData.currentTotal,
-    secondary: 'USD',
+    primary: privacyMode
+      ? '***'
+      : toReporting(accumulatedProfitData.currentTotal),
+    secondary: currency.code,
     change: {
-      value: privacyMode ? '***' : accumulatedProfitData.change,
+      value: privacyMode ? '***' : toReporting(accumulatedProfitData.change),
       percentage: privacyMode
         ? '***'
         : (accumulatedProfitData.changePercent ?? '—'),
@@ -479,6 +506,10 @@ export const AccumulatedProfit: React.FC<AccumulatedProfitProps> = ({
       displayName: customName || 'Accumulated Profit',
       value: accumulatedProfitValue,
       hasOptions: true,
+      hasFilters: true,
+      filterContent,
+      filtersActive,
+      onClearFilters: clearFilters,
     },
     isEditable,
     isCollapsible,

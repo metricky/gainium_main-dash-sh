@@ -8,6 +8,7 @@
  * Overview renders, just fed each leg's transformed bot.
  */
 import { ArrowDownRight, ArrowUpRight } from 'lucide-react';
+import { formatUsdAsReporting } from '@/utils/reportingCurrency';
 import { useMemo } from 'react';
 
 import { ProfitAndPerc, ProfitLossPercChip } from '@/components/ui/chip';
@@ -30,7 +31,7 @@ const NON_OVERVIEW_WIDGETS = [
 ];
 
 const money = (value: number, privacy?: boolean): string =>
-  privacy ? '***' : `$${value.toFixed(2)}`;
+  privacy ? '***' : formatUsdAsReporting(value);
 
 const StatTile: React.FC<{
   label: string;
@@ -127,6 +128,8 @@ export interface HedgeOverviewPanelProps {
    * to summing the leg bots when undefined.
    */
   unrealizedUsd?: number;
+  /** Some open deal's unrealized is not live yet (see PendingLiveValue). */
+  unrealizedPending?: boolean;
   privacyMode?: boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onTradeSelect?: (trade: any) => void;
@@ -137,6 +140,7 @@ const HedgeOverviewPanel: React.FC<HedgeOverviewPanelProps> = ({
   shortBot,
   totalProfitUsd,
   unrealizedUsd,
+  unrealizedPending,
   privacyMode = false,
   onTradeSelect,
 }) => {
@@ -177,6 +181,11 @@ const HedgeOverviewPanel: React.FC<HedgeOverviewPanelProps> = ({
               privacyMode={privacyMode}
               chipPosition="right"
               size="sm"
+
+              pending={
+                unrealizedPending ??
+                (!!longBot?.unPnlPending || !!shortBot?.unPnlPending)
+              }
             />
           </StatTile>
           <StatTile label="Realized PnL" tooltip={BOT_METRIC_DESCRIPTIONS.hedge.realizedPnl}>

@@ -33,6 +33,7 @@ import {
   type ColumnDef,
   type ColumnFiltersState,
   type ExpandedState,
+  type FilterFn,
   type GroupingState,
   type Row,
   type RowSelectionState,
@@ -77,6 +78,7 @@ import React, {
 import { DataTableFooter } from './data-table-footer';
 import { singleFilters } from '../../../lib/botList/serverFilters';
 import { downloadCsv } from './exportCsv';
+import { usePinnedHeaderOnPageScroll } from './usePinnedHeaderOnPageScroll';
 import { ColumnFilter } from './filter-components';
 import {
   countActiveFilters,
@@ -264,6 +266,8 @@ export interface BulkAction<TData> {
   destructive?: boolean;
   /** Whether the action is disabled */
   disabled?: boolean;
+  /** Tooltip explaining why the action is disabled */
+  disabledReason?: string;
   /** Optional function to determine if this action should be shown based on selected rows */
   shouldShow?: (selectedRows: TData[]) => boolean;
 }
@@ -399,6 +403,9 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
   const thRef = useRef<HTMLTableCellElement>(null);
 
   const showControls = isHovered || controlsVisible;
+  const noHeaderControls =
+    (header.column.columnDef.meta as { headerControls?: boolean } | undefined)
+      ?.headerControls === false;
 
   const { description, descriptionUrl } = getColumnDescription(
     header.column.columnDef
@@ -554,8 +561,15 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
       }
     >
       <div className="relative flex items-center w-full h-6 px-2">
-        {/* Left controls: always overlay, shown on hover/tap */}
-        <div className="absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center gap-0.5">
+        {/* Left controls: always overlay, shown on hover/tap. A column whose
+            header IS a control (a select-all checkbox) opts out with
+            `meta.headerControls: false` — the overlay sat on top of it. */}
+        <div
+          className={clsx(
+            'absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center gap-0.5',
+            noHeaderControls && 'hidden'
+          )}
+        >
           {/* Only show drag handle for unpinned columns, left side */}
           {!isPinned && (
             <Button
@@ -651,6 +665,7 @@ const DraggableColumnHeader: React.FC<DraggableColumnHeaderProps> = ({
         <div
           className={clsx(
             'absolute right-1 top-1/2 -translate-y-1/2 z-10 flex items-center gap-0.5 transition-opacity',
+            noHeaderControls && 'hidden',
             showControls ? 'opacity-100' : 'opacity-0'
           )}
         >
@@ -1047,6 +1062,12 @@ interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   enableGlobalFilter?: boolean;
+  /**
+   * Replaces the search box's matcher (default: `fuzzyFilter`, a contains-match
+   * per column value) for a table whose rows need a different notion of "this
+   * row matches what was typed".
+   */
+  globalFilterFn?: FilterFn<TData>;
   enableColumnFilters?: boolean;
   enableSorting?: boolean;
   // External sorting state (for persistence)
@@ -1054,12 +1075,33 @@ interface DataTableProps<TData, TValue> {
   onSortingChange?: (
     updater: SortingState | ((prev: SortingState) => SortingState)
   ) => void;
+  /**
+   * Caller-owned column filters. When passed, the table filters by these
+   * instead of its persisted ones (same contract as `sorting`) — for a table
+   * whose filters come from its context, e.g. a picker seeded with the asset
+   * every candidate has to share.
+   */
+  columnFilters?: ColumnFiltersState;
+  onColumnFiltersChange?: (filters: ColumnFiltersState) => void;
+  /**
+   * Called with the rows passing every filter and the search, in display
+   * (sorted) order before pagination, whenever that list changes — for
+   * "act on what's shown".
+   */
+  onFilteredRowsChange?: (rows: TData[]) => void;
+  /** Called with the rows on the current page, in display order. */
+  onPageRowsChange?: (rows: TData[]) => void;
   enableColumnReordering?: boolean;
   enableColumnVisibility?: boolean;
   enableColumnResizing?: boolean;
   enableGrouping?: boolean;
   showPagination?: boolean;
   className?: string;
+  /**
+   * Keep the header row on screen when the page itself scrolls (phones):
+   * the page scrolls first, then the table, with its header pinned.
+   */
+  pinHeaderOnPageScroll?: boolean;
   emptyMessage?: string;
   /**
    * Rich empty-state node rendered when there are no rows. Takes precedence
@@ -1067,8 +1109,21 @@ interface DataTableProps<TData, TValue> {
    * instead of a plain string.
    */
   emptyContent?: React.ReactNode;
+  /**
+   * With no rows, render `emptyContent` in place of the table / cards body
+   * (no column headers, no totals footer) instead of inside an empty row.
+   * For page-size empty states that would otherwise be laid out across the
+   * table's full scroll width.
+   */
+  emptyReplacesBody?: boolean;
   defaultColumnVisibility?: Record<string, boolean>;
   defaultPinnedColumns?: { left: string[]; right: string[] };
+  /**
+   * Columns that are always pinned to a side — over saved preferences and on
+   * phones, where every other pin is dropped. For a column that must never
+   * scroll out of view (a picker's select checkbox).
+   */
+  lockedPinnedColumns?: { left?: string[]; right?: string[] };
   initialPageSize?: number; // Initial page size for new tables (defaults to 5)
   firstToolbarActions?: React.ReactNode; // Rendered first, before all other buttons
   /**
@@ -1089,6 +1144,11 @@ interface DataTableProps<TData, TValue> {
   betweenToolbarAndContent?: React.ReactNode;
   // Card view props
   enableCardView?: boolean;
+  /**
+   * Keep the table/cards toggle in the toolbar ahead of the caller's
+   * `firstToolbarActions` when space runs out (it normally overflows first).
+   */
+  prioritizeViewToggle?: boolean;
   defaultView?: 'table' | 'cards';
   /**
    * Component used to render each row in card view.
@@ -1316,6 +1376,7 @@ const TOOLBAR_PRIORITIES = {
 
 // Internal toolbar button row component using ResponsiveButtonRow
 interface ToolbarButtonRowProps<TData> {
+  prioritizeViewToggle?: boolean;
   enableColumnFilters: boolean;
   enableColumnResizing: boolean;
   enableColumnVisibility: boolean;
@@ -1357,6 +1418,7 @@ interface ToolbarButtonRowProps<TData> {
 }
 
 function ToolbarButtonRow<TData>({
+  prioritizeViewToggle,
   enableColumnFilters,
   enableColumnResizing,
   enableColumnVisibility,
@@ -1580,7 +1642,7 @@ function ToolbarButtonRow<TData>({
                 .map((column: any) => (
                   <DropdownMenuCheckboxItem
                     key={column.id}
-                    className="capitalize"
+                    className={columnMenuLabel(column).fromId ? 'capitalize' : ''}
                     checked={column.getIsVisible()}
                     onCheckedChange={(value) => {
                       column.toggleVisibility(!!value);
@@ -1589,7 +1651,7 @@ function ToolbarButtonRow<TData>({
                       e.preventDefault();
                     }}
                   >
-                    {column.id}
+                    {columnMenuLabel(column).text}
                   </DropdownMenuCheckboxItem>
                 ))}
               <DropdownMenuSeparator />
@@ -1627,7 +1689,7 @@ function ToolbarButtonRow<TData>({
                 .map((column: any) => (
                   <DropdownMenuCheckboxItem
                     key={column.id}
-                    className="capitalize"
+                    className={columnMenuLabel(column).fromId ? 'capitalize' : ''}
                     checked={column.getIsVisible()}
                     onCheckedChange={(value) => {
                       column.toggleVisibility(!!value);
@@ -1636,7 +1698,7 @@ function ToolbarButtonRow<TData>({
                       e.preventDefault();
                     }}
                   >
-                    {column.id}
+                    {columnMenuLabel(column).text}
                   </DropdownMenuCheckboxItem>
                 ))}
               <DropdownMenuSeparator />
@@ -1657,7 +1719,9 @@ function ToolbarButtonRow<TData>({
     if (enableCardView) {
       configs.push({
         id: 'view-toggle',
-        priority: TOOLBAR_PRIORITIES.VIEW_TOGGLE,
+        priority: prioritizeViewToggle
+          ? TOOLBAR_PRIORITIES.FIRST_ACTIONS + 5
+          : TOOLBAR_PRIORITIES.VIEW_TOGGLE,
         fullContent: (
           <Button
             variant="ghost"
@@ -1800,6 +1864,7 @@ function ToolbarButtonRow<TData>({
                     onClearSelection?.();
                   }}
                   disabled={action.disabled}
+                  title={action.disabled ? action.disabledReason : undefined}
                   className={clsx(
                     'text-sm',
                     action.destructive &&
@@ -1909,6 +1974,7 @@ function ToolbarButtonRow<TData>({
     enableColumnResizing,
     enableColumnVisibility,
     enableCardView,
+    prioritizeViewToggle,
     viewMode,
     showColumnFilters,
     showQuickFilters,
@@ -1991,6 +2057,24 @@ const touchConfig = {
 const DEFAULT_COLUMN_WIDTH = 192;
 const DEFAULT_MIN_COLUMN_WIDTH = 80;
 const COMPACT_ACTIONS_COLUMN_WIDTH = 56;
+
+/**
+ * The name a column goes by in the Columns menu: what its header says (or
+ * `meta.label` for an icon-only header), so the menu and the table use the
+ * same words. Falls back to the column id.
+ */
+const columnMenuLabel = (column: {
+  id: string;
+  columnDef: { header?: unknown; meta?: unknown };
+}): { text: string; fromId: boolean } => {
+  const label = (column.columnDef.meta as { label?: unknown } | undefined)
+    ?.label;
+  if (typeof label === 'string' && label) return { text: label, fromId: false };
+  const header = column.columnDef.header;
+  if (typeof header === 'string' && header)
+    return { text: header, fromId: false };
+  return { text: column.id, fromId: true };
+};
 
 /**
  * Re-insert the columns the user currently has HIDDEN into a reordered list of
@@ -2129,6 +2213,10 @@ function DataTableComponent<TData, TValue>(
     enableSorting,
     sorting: externalSorting,
     onSortingChange: externalOnSortingChange,
+    columnFilters: externalColumnFilters,
+    onColumnFiltersChange: externalOnColumnFiltersChange,
+    onFilteredRowsChange,
+    onPageRowsChange,
     //enableColumnReordering = true,
     enableColumnVisibility,
     enableColumnResizing,
@@ -2136,9 +2224,11 @@ function DataTableComponent<TData, TValue>(
     emptyContent,
     showPagination,
     className,
+    pinHeaderOnPageScroll,
     emptyMessage,
     defaultColumnVisibility,
     defaultPinnedColumns,
+    lockedPinnedColumns,
     initialPageSize,
     firstToolbarActions,
     firstToolbarActionsCompact,
@@ -2151,6 +2241,7 @@ function DataTableComponent<TData, TValue>(
     onColumnFiltersVisibilityChange,
     // Card view props
     enableCardView,
+    prioritizeViewToggle,
     defaultView,
     cardComponent: CardComponent,
     cardViewBreakpoints,
@@ -2196,14 +2287,20 @@ function DataTableComponent<TData, TValue>(
       enableSorting: props.enableSorting ?? true,
       sorting: props.sorting,
       onSortingChange: props.onSortingChange,
+      columnFilters: props.columnFilters,
+      onColumnFiltersChange: props.onColumnFiltersChange,
+      onFilteredRowsChange: props.onFilteredRowsChange,
+      onPageRowsChange: props.onPageRowsChange,
       enableColumnVisibility: props.enableColumnVisibility ?? true,
       enableColumnResizing: props.enableColumnResizing ?? true,
       enableGrouping: props.enableGrouping ?? false,
       showPagination: props.showPagination ?? true,
       className: props.className,
+      pinHeaderOnPageScroll: props.pinHeaderOnPageScroll ?? false,
       emptyMessage: props.emptyMessage ?? 'No results.',
       emptyContent: props.emptyContent,
       defaultColumnVisibility: props.defaultColumnVisibility ?? {},
+      lockedPinnedColumns: props.lockedPinnedColumns,
       defaultPinnedColumns: props.defaultPinnedColumns ?? {
         left: [],
         right: [],
@@ -2218,6 +2315,7 @@ function DataTableComponent<TData, TValue>(
       betweenToolbarAndContent: props.betweenToolbarAndContent,
       onColumnFiltersVisibilityChange: props.onColumnFiltersVisibilityChange,
       enableCardView: props.enableCardView ?? false,
+      prioritizeViewToggle: props.prioritizeViewToggle ?? false,
       defaultView: props.defaultView ?? 'table',
       cardComponent: props.cardComponent,
       cardViewBreakpoints: props.cardViewBreakpoints ?? {
@@ -2356,10 +2454,20 @@ function DataTableComponent<TData, TValue>(
     : stableDefaultColumnVisibility;
 
   // On mobile, never pin any columns regardless of persisted preferences
-  const effectivePinnedColumns = useMemo(
-    () => (isMobile ? { left: [], right: [] } : pinnedColumns),
-    [isMobile, pinnedColumns]
-  );
+  // …except locked pins, which apply everywhere and win over saved ones.
+  const lockedPinsKey = JSON.stringify(lockedPinnedColumns ?? null);
+  const effectivePinnedColumns = useMemo(() => {
+    const base = isMobile ? { left: [], right: [] } : pinnedColumns;
+    if (!lockedPinnedColumns) return base;
+    const lockedLeft = lockedPinnedColumns.left ?? [];
+    const lockedRight = lockedPinnedColumns.right ?? [];
+    const locked = new Set([...lockedLeft, ...lockedRight]);
+    return {
+      left: [...base.left.filter((c) => !locked.has(c)), ...lockedLeft],
+      right: [...lockedRight, ...base.right.filter((c) => !locked.has(c))],
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by value
+  }, [isMobile, pinnedColumns, lockedPinsKey]);
 
   // Sorting state - use external, persisted, or internal state
   const sorting = useMemo(
@@ -2386,8 +2494,11 @@ function DataTableComponent<TData, TValue>(
   // is marked "not applied" and left out of the query by the caller, never
   // dropped (see serverSide.filterStatus).
   const columnFilters = useMemo(
-    () => persistedColumnFilters,
-    [persistedColumnFilters]
+    () =>
+      externalColumnFilters !== undefined
+        ? externalColumnFilters
+        : persistedColumnFilters,
+    [externalColumnFilters, persistedColumnFilters]
   );
 
   // Handle column filters changes with persistence
@@ -2399,9 +2510,13 @@ function DataTableComponent<TData, TValue>(
     ) => {
       const newFilters =
         typeof updater === 'function' ? updater(columnFilters) : updater;
-      setPersistedColumnFilters(newFilters);
+      if (externalOnColumnFiltersChange) {
+        externalOnColumnFiltersChange(newFilters);
+      } else {
+        setPersistedColumnFilters(newFilters);
+      }
     },
-    [columnFilters, setPersistedColumnFilters]
+    [columnFilters, externalOnColumnFiltersChange, setPersistedColumnFilters]
   );
 
   // Global (search) filter is persisted per-tableId in the same store as
@@ -2501,15 +2616,33 @@ function DataTableComponent<TData, TValue>(
   // Scroll indicator states
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+  // The right indicator sits left of the vertical scrollbar, not over it.
+  const [vScrollbarWidth, setVScrollbarWidth] = useState(0);
+  const [canScrollVertically, setCanScrollVertically] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // The scroller mounts after the first render (rows load later), so the
+  // header pinning needs the node itself, not a ref read in an effect.
+  const [scrollContainerNode, setScrollContainerNode] =
+    useState<HTMLDivElement | null>(null);
+  const setScrollContainer = useCallback((node: HTMLDivElement | null) => {
+    scrollContainerRef.current = node;
+    setScrollContainerNode(node);
+  }, []);
+  usePinnedHeaderOnPageScroll(
+    scrollContainerNode,
+    pinHeaderOnPageScroll && (viewMode === 'table' || !enableCardView)
+  );
 
   // Row details span the visible width of the table, not its full scroll
   // width, so they stay readable while a wide table scrolls sideways.
   const [detailWidth, setDetailWidth] = useState<number | null>(null);
   const hasRowDetail = !!renderRowDetail;
+  // The empty-state row is pinned to the same visible width as row details,
+  // so it stays centred instead of spreading across the full scroll width.
+  const measureScrollport = hasRowDetail || !!emptyContent;
   useEffect(() => {
     const el = scrollContainerRef.current;
-    if (!hasRowDetail || !el || typeof ResizeObserver === 'undefined') return;
+    if (!measureScrollport || !el || typeof ResizeObserver === 'undefined') return;
     // Sticky content pins to the scrollport's padding edge.
     const update = () => {
       const cs = getComputedStyle(el);
@@ -2523,7 +2656,7 @@ function DataTableComponent<TData, TValue>(
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [hasRowDetail]);
+  }, [measureScrollport]);
 
   // Notify parent of initial view mode
   useEffect(() => {
@@ -2540,14 +2673,19 @@ function DataTableComponent<TData, TValue>(
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const { scrollLeft, scrollWidth, clientWidth } = container;
+    const { scrollLeft, scrollWidth, clientWidth, scrollHeight, clientHeight } =
+      container;
     setCanScrollLeft(scrollLeft > 0);
     setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 1);
+    setVScrollbarWidth(container.offsetWidth - clientWidth);
+    setCanScrollVertically(scrollHeight > clientHeight + 1);
   }, []);
 
-  // Handle scroll events
+  // Handle scroll events. Keyed on the node: the scroller mounts after the
+  // first render (rows load later, or card view switches to table), and a
+  // listener bound only at mount would leave the indicators frozen.
   useEffect(() => {
-    const container = scrollContainerRef.current;
+    const container = scrollContainerNode;
     if (!container) return;
 
     const handleScroll = () => checkScrollPosition();
@@ -2558,6 +2696,14 @@ function DataTableComponent<TData, TValue>(
 
     container.addEventListener('scroll', handleScroll);
     window.addEventListener('resize', handleResize);
+    // Rows loading or expanding change the scroll extents without a scroll.
+    const ro =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(checkScrollPosition);
+    ro?.observe(container);
+    const tableEl = container.querySelector('table');
+    if (tableEl) ro?.observe(tableEl);
 
     // Initial check
     checkScrollPosition();
@@ -2565,8 +2711,9 @@ function DataTableComponent<TData, TValue>(
     return () => {
       container.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', handleResize);
+      ro?.disconnect();
     };
-  }, [checkScrollPosition]);
+  }, [checkScrollPosition, scrollContainerNode]);
 
   // Check scroll when data or columns change
   useEffect(() => {
@@ -3200,7 +3347,7 @@ function DataTableComponent<TData, TValue>(
     getExpandedRowModel: getExpandedRowModel(),
     getFacetedRowModel: getFacetedRowModel(),
     getFacetedUniqueValues: getFacetedUniqueValues(),
-    globalFilterFn: fuzzyFilter,
+    globalFilterFn: props.globalFilterFn ?? fuzzyFilter,
     filterFns: {
       enhancedColumnFilter: enhancedColumnFilter,
     },
@@ -3278,6 +3425,23 @@ function DataTableComponent<TData, TValue>(
     pagination.pageIndex,
     pagination.pageSize,
   ]);
+
+  // Client mode: a search/filter change returns to page 1. autoResetPageIndex
+  // is off (live data must not jump pages), so without this a table left on
+  // page 3 keeps showing an empty page 3 when the filter narrows it to one row.
+  // Skips the first render so a persisted page index still restores.
+  const clientFilterKey = serverSide
+    ? ''
+    : JSON.stringify([columnFilters, globalFilter ?? '']);
+  const lastClientFilterKeyRef = useRef(clientFilterKey);
+  useEffect(() => {
+    if (lastClientFilterKeyRef.current === clientFilterKey) return;
+    lastClientFilterKeyRef.current = clientFilterKey;
+    if (pagination.pageIndex !== 0) {
+      setPagination({ ...pagination, pageIndex: 0 });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientFilterKey]);
 
   // Clamp pageIndex to a valid range whenever data length or pageSize changes
   useEffect(() => {
@@ -3710,9 +3874,25 @@ function DataTableComponent<TData, TValue>(
         return COMPACT_ACTIONS_COLUMN_WIDTH;
       }
 
-      return columnWidths[columnId] ?? getColumnDefaultWidth(columnId);
+      // Saved widths only exist through resizing; a table that can't be
+      // resized uses its declared sizes (a stale saved width would stick).
+      const width =
+        (enableColumnResizing ? columnWidths[columnId] : undefined) ??
+        getColumnDefaultWidth(columnId);
+      // Within the column's declared bounds, whatever was saved.
+      const max = getColumnMaxWidth(columnId);
+      return Math.max(
+        getColumnMinWidth(columnId),
+        max !== undefined ? Math.min(width, max) : width
+      );
     },
-    [columnWidths, getColumnDefaultWidth]
+    [
+      columnWidths,
+      getColumnDefaultWidth,
+      enableColumnResizing,
+      getColumnMaxWidth,
+      getColumnMinWidth,
+    ]
   );
 
   // Auto-resize columns to fit content (including header)
@@ -3724,13 +3904,18 @@ function DataTableComponent<TData, TValue>(
       if (!tableElement) return;
 
       const newWidths: Record<string, number> = {};
-      const headers = tableElement.querySelectorAll('thead th');
+      // The first header row only (the second is the filter row), mapped to
+      // the columns actually rendered: indexing ALL columns shifted every
+      // measurement onto the wrong column whenever one was hidden.
+      const headers = tableElement.querySelectorAll('thead tr:first-child th');
       const rows = tableElement.querySelectorAll(
         'tbody tr:not([data-placeholder])'
       );
+      const renderedColumnIds =
+        table.getHeaderGroups()[0]?.headers.map((h) => h.column.id) ?? [];
 
       headers.forEach((header, colIndex) => {
-        const columnId = table.getAllColumns()[colIndex]?.id;
+        const columnId = renderedColumnIds[colIndex];
         if (!columnId) return;
 
         if (columnId === 'actions') {
@@ -3791,8 +3976,8 @@ function DataTableComponent<TData, TValue>(
           }
         }
 
-        // Cap at reasonable maximum
-        maxWidth = Math.min(maxWidth, 400);
+        // Cap at reasonable maximum, and at the column's own maxSize
+        maxWidth = Math.min(maxWidth, 400, getColumnMaxWidth(columnId) ?? 400);
         newWidths[columnId] = maxWidth;
       });
 
@@ -3824,6 +4009,7 @@ function DataTableComponent<TData, TValue>(
       setColumnWidths,
       table,
       getColumnMinWidth,
+      getColumnMaxWidth,
     ]
   );
 
@@ -3969,6 +4155,23 @@ function DataTableComponent<TData, TValue>(
   // render is cheap and always reflects the current data.
   const tableState = table.getState();
   const tableFilter = table.getFilteredRowModel();
+  // Report the filtered rows in display order (sorted, pre-pagination) to a
+  // caller acting on "what's shown". The model is memoized on state, so this
+  // fires only when that list changes; the callback is read through a ref so
+  // an inline one can't loop.
+  const tableSorted = table.getSortedRowModel();
+  const onFilteredRowsChangeRef = useRef(onFilteredRowsChange);
+  onFilteredRowsChangeRef.current = onFilteredRowsChange;
+  useEffect(() => {
+    onFilteredRowsChangeRef.current?.(tableSorted.rows.map((r) => r.original));
+  }, [tableSorted]);
+  // Same for the current page (what a page-level "select all" acts on).
+  const tablePage = table.getRowModel();
+  const onPageRowsChangeRef = useRef(onPageRowsChange);
+  onPageRowsChangeRef.current = onPageRowsChange;
+  useEffect(() => {
+    onPageRowsChangeRef.current?.(tablePage.rows.map((r) => r.original));
+  }, [tablePage]);
   const { pageIndex, pageSize } = useMemo(
     () => tableState.pagination,
     [tableState?.pagination]
@@ -4101,6 +4304,7 @@ function DataTableComponent<TData, TValue>(
             enableColumnVisibility={enableColumnVisibility}
             enableExport={enableExport}
             enableCardView={enableCardView}
+            prioritizeViewToggle={prioritizeViewToggle}
             enableQuickFilterBar={enableQuickFilterBar}
             viewMode={viewMode}
             setViewMode={setViewMode}
@@ -4225,8 +4429,10 @@ function DataTableComponent<TData, TValue>(
         </div>
       )}
 
-      {/* Table or Card View */}
-      {isTableView ? (
+      {/* Table or Card View — or, opted in, the empty content alone */}
+      {props.emptyReplacesBody && !table.getRowModel().rows.length ? (
+        <div className="w-full h-full min-h-0 overflow-auto">{emptyContent}</div>
+      ) : isTableView ? (
         <div
           className="relative overflow-hidden data-table-container"
           style={{
@@ -4249,6 +4455,7 @@ function DataTableComponent<TData, TValue>(
           {canScrollRight && (
             <div
               className="absolute right-0 top-0 bottom-0 z-30 w-6 bg-background/95 flex items-center justify-center cursor-pointer hover:bg-background transition-all duration-200 border-l border-border/30"
+              style={{ right: vScrollbarWidth }}
               onClick={scrollRight}
               title="Scroll right"
             >
@@ -4257,7 +4464,7 @@ function DataTableComponent<TData, TValue>(
           )}
 
           <div
-            ref={scrollContainerRef}
+            ref={setScrollContainer}
             className={clsx(
               'overflow-auto w-full h-full custom-scrollbar',
               // Sticky elements pin to the scrollport's PADDING edge, so
@@ -4267,7 +4474,12 @@ function DataTableComponent<TData, TValue>(
               // row.
               hasTotalsFooter ? 'pb-0' : 'pb-4',
               canScrollLeft ? 'pl-6' : 'pl-0',
-              canScrollRight ? 'pr-6' : 'pr-0'
+              canScrollRight ? 'pr-6' : 'pr-0',
+              // Desktop: wheel scrolling stops at the table's ends instead of
+              // moving the page. Only while it scrolls vertically — a table
+              // with sideways overflow alone would otherwise swallow the
+              // page's wheel scroll. Phones keep page-first scrolling.
+              canScrollVertically && 'md:overscroll-y-contain'
             )}
             onMouseDown={(e) => {
               // Check if this is a drag handle interaction
@@ -4361,11 +4573,17 @@ function DataTableComponent<TData, TValue>(
                                 columnId,
                                 pinnedState
                               )}
+                              // The header sets the column's width (fixed table
+                              // layout), so it always gets the column's size —
+                              // with resizing off it used to fall back to 192px
+                              // and every declared `size` was ignored.
+                              columnWidth={getColumnWidth(columnId)}
+                              minColumnWidth={getColumnMinWidth(columnId)}
+                              {...(getColumnMaxWidth(columnId) !== undefined && {
+                                maxColumnWidth: getColumnMaxWidth(columnId),
+                              })}
                               {...(enableColumnResizing && {
                                 onResize: handleColumnResize,
-                                columnWidth: getColumnWidth(columnId),
-                                minColumnWidth: getColumnMinWidth(columnId),
-                                maxColumnWidth: getColumnMaxWidth(columnId),
                                 enableColumnResizing: true,
                               })}
                             >
@@ -4768,7 +4986,14 @@ function DataTableComponent<TData, TValue>(
                         colSpan={columns.length}
                         className="text-center text-muted-foreground"
                       >
-                        {emptyContent ?? (
+                        {emptyContent ? (
+                          <div
+                            className="sticky left-0"
+                            style={detailWidth ? { width: `${detailWidth}px` } : undefined}
+                          >
+                            {emptyContent}
+                          </div>
+                        ) : (
                           <div className="h-24 flex items-center justify-center">
                             {emptyMessage}
                           </div>

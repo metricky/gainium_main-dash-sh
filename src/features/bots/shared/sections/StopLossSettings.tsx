@@ -1,6 +1,6 @@
+import { useBillableIndicatorCount } from '@/hooks/bots/useBillableIndicatorCount';
 import { Slider } from '@/components/ui';
 import WebhooksDisabledWarning from '@/components/webhook/WebhooksDisabledWarning';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
@@ -1184,14 +1184,11 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
           />
           <BotFieldManagedFieldset path="slPerc">
             {hasAllocationOverflow ? (
-              <Alert variant="destructive" className="py-2 text-xs">
-                <AlertTitle className="text-sm font-semibold">
-                  Allocation exceeds 100%
-                </AlertTitle>
-                <AlertDescription>
-                  Adjust target allocations so the combined value is 100% or less.
-                </AlertDescription>
-              </Alert>
+              <SettingsAlert
+                variant="error"
+                title="Allocation exceeds 100%"
+                description="Adjust target allocations so the total is 100% or less."
+              />
             ) : null}
             <MasonryLayout
               gap={16}
@@ -1518,10 +1515,10 @@ const PercentageSL: React.FC<StopLossSettingsProps> = ({
               tooltip="Choose whether the stop loss percentage references the averaged filled orders or the initial entry price."
               colSpan="full"
             >
-              <div className="rounded-md border border-dashed border-muted/50 bg-muted/20 p-sm text-xs text-muted-foreground">
-                Base stop loss reference is locked while trailing or Move Stop
-                Loss is active.
-              </div>
+              <SettingsAlert
+                variant="info"
+                title="Locked while trailing or Move Stop Loss is on"
+              />
             </SettingsRow>
           ) : closeConditionSl !== CloseConditionEnum.webhook ? (
             <SettingsRow
@@ -1734,9 +1731,7 @@ const IndicatorsSL: React.FC<
     [toggleFavorite]
   );
 
-  const totalIndicatorsAcrossBot = useMemo(() => {
-    return indicators.length;
-  }, [indicators]);
+  const totalIndicatorsAcrossBot = useBillableIndicatorCount();
 
   const indicatorLimitReached = totalIndicatorsAcrossBot >= indicatorsLimit;
 
@@ -1760,31 +1755,72 @@ const IndicatorsSL: React.FC<
     [updateFormData, indicatorGroups]
   );
 
-  const handleAddStopLossGroup = useCallback(() => {
-    if (
-      indicatorLimitReached ||
-      stopLossIndicatorGroups.length >= MAX_SL_INDICATOR_GROUPS
-    ) {
-      return;
-    }
+  const handleAddStopLossGroup = useCallback(
+    (join?: IndicatorsLogicEnum) => {
+      if (
+        indicatorLimitReached ||
+        stopLossIndicatorGroups.length >= MAX_SL_INDICATOR_GROUPS
+      ) {
+        return;
+      }
 
-    const newGroup: IndicatorGroup = {
-      id: createSlGroupId(),
-      logic:
-        stopDealSlLogic === IndicatorsLogicEnum.or
-          ? IndicatorsLogicEnum.or
-          : IndicatorsLogicEnum.and,
-      action: IndicatorAction.closeDeal,
-      section: IndicatorSection.sl,
-    };
+      const newGroup: IndicatorGroup = {
+        id: createSlGroupId(),
+        logic:
+          stopDealSlLogic === IndicatorsLogicEnum.or
+            ? IndicatorsLogicEnum.or
+            : IndicatorsLogicEnum.and,
+        action: IndicatorAction.closeDeal,
+        section: IndicatorSection.sl,
+        ...(join ? { join } : {}),
+      };
 
-    syncStopLossIndicatorGroups([...stopLossIndicatorGroups, newGroup]);
-  }, [
-    stopDealSlLogic,
-    indicatorLimitReached,
-    stopLossIndicatorGroups,
-    syncStopLossIndicatorGroups,
-  ]);
+      syncStopLossIndicatorGroups([...stopLossIndicatorGroups, newGroup]);
+      // A new group starts with a default RSI rather than empty.
+      const type = IndicatorEnum.rsi;
+      const newIndicator = buildIndicatorConfig(
+        type,
+        sanitizeIndicatorParams(
+          (getIndicatorDefaultParams(
+            type,
+            IndicatorAction.closeDeal,
+            IndicatorSection.sl
+          ) ?? {}) as IndicatorParamsState
+        ),
+        {
+          uuid: createSlIndicatorId(),
+          keepConditionBars: '0',
+          indicatorAction: IndicatorAction.closeDeal,
+          section: IndicatorSection.sl,
+        }
+      );
+      updateFormData('indicators', [
+        ...indicators,
+        { ...newIndicator, groupId: newGroup.id },
+      ]);
+    },
+    [
+      stopDealSlLogic,
+      indicatorLimitReached,
+      stopLossIndicatorGroups,
+      syncStopLossIndicatorGroups,
+      updateFormData,
+      indicators,
+    ]
+  );
+
+  const handleChangeGroupJoins = useCallback(
+    (joins: Record<string, IndicatorsLogicEnum>) => {
+      updateFormData(
+        'indicatorGroups',
+        indicatorGroups.map((group) =>
+          joins[group.id] ? { ...group, join: joins[group.id] } : group
+        )
+      );
+    },
+    [indicatorGroups, updateFormData]
+  );
+
 
   const handleRemoveStopLossGroup = useCallback(
     (groupId: string) => {
@@ -1989,6 +2025,7 @@ const IndicatorsSL: React.FC<
           totalIndicatorsAcrossBot={totalIndicatorsAcrossBot}
           indicatorAction={IndicatorAction.closeDeal}
           indicatorSection={IndicatorSection.sl}
+          formulaLabel="Stop loss when"
           exchange={currentExchange?.provider}
           topTrailingContent={
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -2005,6 +2042,7 @@ const IndicatorsSL: React.FC<
           emptyIndicatorsAlertTitle="No indicators in groups"
           emptyIndicatorsAlertDescription="Add at least one indicator to each stop loss group. Groups without indicators will never trigger."
           onAddGroup={handleAddStopLossGroup}
+          onChangeGroupJoins={handleChangeGroupJoins}
           onRemoveGroup={handleRemoveStopLossGroup}
           onChangeGroupLogic={handleChangeStopLossGroupLogic}
           onAddIndicatorToGroup={handleAddIndicatorToStopLossGroup}
@@ -2084,10 +2122,9 @@ export const StopLossSettings: React.FC<StopLossSettingsRootProps> = ({
     [indicatorGroups]
   );
 
-  const currentIndicatorLimitReached = useMemo(
-    () => (indicators ?? []).length >= indicatorsLimit,
-    [indicators]
-  );
+  const billableIndicatorCount = useBillableIndicatorCount();
+  const currentIndicatorLimitReached =
+    billableIndicatorCount >= indicatorsLimit;
 
   const previousRiskRewardRef = useRef(riskRewardActive);
 
@@ -2250,16 +2287,11 @@ export const StopLossSettings: React.FC<StopLossSettingsRootProps> = ({
   const renderSLContent = (condition: CloseConditionEnum) => {
     if (isDealEdit && condition && condition !== CloseConditionEnum.tp) {
       return (
-        <Alert>
-          <AlertTitle className="text-sm font-semibold">
-            Stop loss type locked
-          </AlertTitle>
-          <AlertDescription className="text-xs leading-relaxed">
-            The stop loss type cannot be changed while editing an active deal.
-            To modify the stop loss type, please edit the bot settings outside
-            of the deal view.
-          </AlertDescription>
-        </Alert>
+        <SettingsAlert
+          variant="info"
+          title="Stop loss type locked on open deals"
+          description="Change the type in the bot's settings."
+        />
       );
     }
     switch (condition) {
@@ -2289,15 +2321,15 @@ export const StopLossSettings: React.FC<StopLossSettingsRootProps> = ({
       case CloseConditionEnum.webhook:
         return (
           <>
-            <Alert>
-              <AlertTitle className="text-sm font-semibold">
-                Webhook-managed stop loss
-              </AlertTitle>
-              <AlertDescription className="text-xs leading-relaxed">
-                Stop loss management will rely on webhook signals. Configure
-                your payload in the webhook section to control exits.
-              </AlertDescription>
-            </Alert>
+            <SettingsAlert
+              variant="info"
+              title="Closes on webhook signal"
+              description={
+                formData.terminal && mode !== 'deal-edit'
+                  ? 'The webhook UUID is created with the deal. After placing it, open Open orders → Edit → Webhooks to copy its payloads.'
+                  : 'Set up the payload in the Webhooks section.'
+              }
+            />
             <WebhooksDisabledWarning />
             <PercentageSL
               currentExchange={currentExchange}

@@ -589,9 +589,21 @@ export const mapFormDataToPayload = (
   // DCA-only settings (DECLARED_BY_DCA_ONLY) reach a combo form through the
   // DCA_FORM_DEFAULTS spread; the combo inputs do not declare them.
   if (isComboBot) {
-    delete updatePayload.allowRaiseToExchangeMin;
     delete updatePayload.reduceToAvailableBalance;
     delete updatePayload.reduceToAvailableMinSize;
+  }
+  // Single position per pair rides the same DCA_FORM_DEFAULTS spread. It is
+  // sent only for a DCA bot on a backend that has it: an older main-app
+  // rejects the whole save (BAD_USER_INPUT) on an input field it does not
+  // declare. See `singlePositionSupported`.
+  const sendSinglePosition = !isComboBot && !!formData.singlePositionSupported;
+  if (!sendSinglePosition) {
+    delete updatePayload.singlePosition;
+    delete updatePayload.maxPositionEntries;
+  }
+  // Base funding: same rule, DCA and combo. See `baseFundingSupported`.
+  if (!formData.baseFundingSupported) {
+    delete updatePayload.baseFunding;
   }
 
   const sanitizedUpdatePayload = sanitizeSettingsForApi(
@@ -665,9 +677,15 @@ export const mapFormDataToPayload = (
   if (createPayload) {
     if (isComboBot) {
       delete createPayload.importFrom;
-      delete createPayload.allowRaiseToExchangeMin;
       delete createPayload.reduceToAvailableBalance;
       delete createPayload.reduceToAvailableMinSize;
+    }
+    if (!sendSinglePosition) {
+      delete createPayload.singlePosition;
+      delete createPayload.maxPositionEntries;
+    }
+    if (!formData.baseFundingSupported) {
+      delete createPayload.baseFunding;
     }
     successResult.createPayload = createPayload;
   }

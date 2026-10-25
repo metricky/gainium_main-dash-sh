@@ -7,25 +7,11 @@ import { Tooltip as HelpTooltip } from '@/components/ui/tooltip';
 import type { DrawerBot } from '@/types/bots/drawer';
 import type { ColumnDef } from '@tanstack/react-table';
 import {
-    ArrowRightLeft,
-    BookOpen,
-    Check,
-    Edit,
-    Eye,
     Handshake,
-    MinusCircle,
     MoreHorizontal,
     PauseCircle,
     Plus,
-    PlusCircle,
-    RotateCcw,
-    Search,
-    SlidersHorizontal,
     Square,
-    X,
-    XCircle,
-    Zap,
-    RefreshCw,
 } from 'lucide-react';
 import React, {
     useCallback,
@@ -41,51 +27,33 @@ import {
 /* useComboDeals, */ type ComboDeal,
 } from '../../../../hooks/useComboDeals';
 /* import { useHedgeDeals } from '../../../../hooks/useHedgeDeals'; */
-import {
-    AdjustFundsDialog,
-    ChangeDcaLevelsDialog,
-    CloseOptionsDialog,
-    ExecuteNextDcaDialog,
-    canExecuteNextDca,
-    type AdjustFundsDialogMode,
-} from '@/features/bots/shared/runtime';
 import { formatNumber } from '@/utils/numberFormatter';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
+import { formatPairPrice } from '@/utils/formatters';
+import { ResponsiveAmount } from '@/components/ui/ResponsiveAmount';
+import { getPrecision } from '@/features/trading-terminal/components/exchangeOrderColumns';
+import { findTradingPair } from '@/utils/pairs';
+import { useTradingPairsDataStore } from '@/stores/tradingPairsDataStore';
 import { logger } from '../../../../lib/loggerInstance';
 import { toast } from '../../../../lib/toast';
-import { useTradeJournalStore } from '../../../../stores/tradeJournalStore';
-import { isDealInJournal } from '../../../../utils/journalDealDedupe';
 import {
     BotTypesEnum,
-    CloseDCATypeEnum,
     DCADealStatusEnum,
-    type AddFundsSettings,
     type DCABot,
     type DCADeals,
 } from '../../../../types';
 import { TradeCard } from '../../../trades/TradeCard';
 /* import { TradeDetailDrawer } from '../../../trades/TradeDetailDrawer'; */
-import { createSharedDealBulkActions } from '@/components/deals/actions/createSharedDealBulkActions';
-import {
-    canAdjustDealFunds,
-    type BulkAdjustFundsTarget,
-} from '@/components/deals/actions/bulkAdjustFundsTargets';
-import { useBulkAdjustFunds } from '@/components/deals/actions/useBulkAdjustFunds';
-import { useMergeSmartOrders } from '@/features/bots/widgets/BotForm/hooks/useMergeSmartOrders';
+import { buildDealBulkActions } from '@/features/deals/actions/dealActionRegistry';
+import { DealActionsContext } from '@/features/deals/actions/dealActionsContext';
+import { DealActionsMenu } from '@/features/deals/actions/DealActionsMenu';
+import { dealRefFromTrade } from '@/features/deals/actions/dealRef';
+import { useDealActionHost } from '@/features/deals/actions/useDealActionHost';
 import getLatestPrices, { getLocalPrices } from '@/helper/price';
-import {
-    useAdjustFunds,
-    useDealActions,
-    useEditDeal,
-    useExecuteNextDca,
-    useRestartDeal,
-    useMoveDealToTerminal,
-    useRestoreDeal,
-    isDealNotOpenError,
-    toastDealCloseError,
-} from '@/hooks/useDealActions';
-import { useOpenDeal } from '@/hooks/useOpenDeal';
 import { useUserFees } from '@/hooks/useUserFeesService';
 import {
+    calculateDealNetPnl,
+    calculateDealOpenPnl,
     calculatePnlPercentage,
     calculatePnlPercentageNullable,
     dealGridProfitPercentageSortValue,
@@ -106,24 +74,9 @@ import {
     StatusChip,
     StrategyChip,
 } from '../../../ui/chip';
-import { ConfirmationDialog } from '../../../ui/confirmation-dialog';
+import { PendingLiveValue } from '../../../ui/pending-live-value';
 import { DataTable, type BulkAction } from '../../../ui/data-table/data-table';
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from '../../../ui/dialog';
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuTrigger,
-} from '../../../ui/dropdown-menu';
 import { DualArcProgressGauge } from '../../../ui/DualArcProgressGauge';
-import { Input } from '../../../ui/input';
 import {
     Select,
     SelectContent,
@@ -132,6 +85,10 @@ import {
     SelectValue,
 } from '../../../ui/select';
 import { Skeleton } from '../../../ui/skeleton';
+import {
+  useDealPositionValues,
+  type DealPositionRef,
+} from '@/hooks/useDealPositionValues';
 import CoinPair from '../../../widgets/shared/CoinPair';
 import { Slot } from '../../../../lib/extensions';
 import { DealOrdersDialog } from '../../../widgets/shared/DealOrdersDialog';
@@ -140,6 +97,8 @@ import { DealsLoadingIndicator } from './DealsLoadingIndicator';
 import { DrawerSection } from './DrawerSection';
 import { useLargeAccount } from '../../../../hooks/useLargeAccount';
 import { useShareContext } from '../../../../hooks/useShareContext';
+import { DealLevelsText } from '@/components/deals/DealLevelsText';
+import { useOpenBotDeal } from '@/components/deals/useOpenBotDeal';
 import { useDealTablePaging } from '../../../../hooks/useDealTablePaging';
 import {
   DRAWER_CLOSED_DEAL_SERVER_FIELDS,
@@ -157,15 +116,7 @@ interface TradeCardWrapperProps {
   index: number;
   onTradeSelect?: (trade: any) => void;
   privacyMode?: boolean;
-  handleOpenDetailDrawer: (trade: TransformedTrade) => void;
-  filledOrders: ViewOrder[];
-  handleAdjustFundsConfirm: (
-    id: string,
-    settings: AddFundsSettings,
-    mode: AdjustFundsDialogMode
-  ) => void;
   botType: BotTypesEnum;
-  handleEdit: (trade: TransformedTrade) => void;
 }
 
 const TradeCardWrapper = React.memo<TradeCardWrapperProps>(
@@ -173,11 +124,7 @@ const TradeCardWrapper = React.memo<TradeCardWrapperProps>(
     item,
     onTradeSelect,
     privacyMode = false,
-    handleOpenDetailDrawer,
-    filledOrders,
-    handleAdjustFundsConfirm,
     botType,
-    handleEdit,
   }) => {
     const handleClick = onTradeSelect ? () => onTradeSelect(item) : undefined;
 
@@ -189,11 +136,7 @@ const TradeCardWrapper = React.memo<TradeCardWrapperProps>(
         enableEnhancedView={true}
         showChart={item.active}
         privacyMode={privacyMode}
-        handleOpenDetailDrawer={handleOpenDetailDrawer}
-        filledOrders={filledOrders}
-        handleAdjustFundsConfirm={handleAdjustFundsConfirm}
         botType={botType}
-        handleEdit={handleEdit}
         // The card's default surface (surface-muted ≈ the effective glass
         // panel color) all but vanishes inside the drawer — it's meant to
         // contrast against the darker page canvas, not a translucent surface-2
@@ -221,6 +164,14 @@ const TradeCardWrapper = React.memo<TradeCardWrapperProps>(
 );
 
 TradeCardWrapper.displayName = 'TradeCardWrapper';
+
+const transformedTradePosition = (t: TransformedTrade): DealPositionRef => ({
+  active: t.active,
+  size: Number(t.size || 0),
+  symbol: typeof t.symbol === 'string' ? t.symbol : t.symbol.symbol,
+  exchange: t.exchange,
+  quoteAsset: typeof t.symbol === 'string' ? '' : t.symbol.quoteAsset,
+});
 
 export interface DrawerDealsTableProps {
   widgetId: string;
@@ -252,600 +203,6 @@ const LOG_PREFIX = 'DrawerDealsTable';
 const drawerDealSymbol = (row: unknown): string => {
   const symbol = (row as TransformedTrade).symbol;
   return (typeof symbol === 'string' ? symbol : symbol?.symbol) || '';
-};
-
-const MOVE_TO_TERMINAL_WARNING =
-  'After moving deals to terminal, the bot may immediately start new deals if slots are available (especially with ASAP start conditions). To avoid this, adjust max open deals or max deals per pair before confirming.';
-
-const DealActionsMenu: React.FC<{
-  trade: TransformedTrade;
-  handleOpenDetailDrawer: (trade: TransformedTrade) => void;
-  filledOrders: ViewOrder[];
-  handleAdjustFundsConfirm: (
-    id: string,
-    settings: AddFundsSettings,
-    mode: AdjustFundsDialogMode
-  ) => void;
-  botType: BotTypesEnum;
-  handleEdit: (trade: TransformedTrade) => void;
-  handleMoveToTerminal: (trade: TransformedTrade) => Promise<void>;
-}> = ({
-  trade,
-  handleOpenDetailDrawer,
-  handleAdjustFundsConfirm: _handleAdjustFundsConfirm,
-  filledOrders,
-  botType,
-  handleEdit: _handleEdit,
-  handleMoveToTerminal,
-}) => {
-  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
-  const [moveDialogOpen, setMoveDialogOpen] = useState(false);
-  const [changeDcaDialogOpen, setChangeDcaDialogOpen] = useState(false);
-  const [executeNextDcaOpen, setExecuteNextDcaOpen] = useState(false);
-  const [restartDialogOpen, setRestartDialogOpen] = useState(false);
-  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false);
-  const [adjustFundsDialog, setAdjustFundsDialog] =
-    useState<AdjustFundsDialogMode | null>(null);
-
-  const addToJournal = useTradeJournalStore((state) => state.addTrade);
-
-  // Fetch orders for this deal to include as executions
-  /* const { orders: tradeOrders } = useBotOrders(
-    trade.botId || '',
-    BotTypesEnum.dca
-  ); */
-
-  const closeDealMutation = useDealActions();
-
-  const handleAddToJournal = async () => {
-    try {
-      // Filter orders for this specific deal and only FILLED orders
-      const dealOrders = filledOrders.filter(
-        (order) => order.dealId === trade.id
-      );
-
-      // Transform orders into executions
-      const executions = dealOrders.map((order) => ({
-        id: order.clientOrderId,
-        action: (order.side === 'buy' ? 'buy' : 'sell') as 'buy' | 'sell',
-        timestamp: order.time,
-        quantity: Number(order.executedQty || order.origQty || 0),
-        price: Number(order.price || 0),
-        fee: 0,
-        cost:
-          Number(order.executedQty || order.origQty || 0) *
-          Number(order.price || 0),
-      }));
-
-      const entryTime = trade.created
-        ? new Date(trade.created).getTime()
-        : Date.now();
-
-      const isOpenTrade = ['open', 'active', 'start'].includes(
-        trade.status.toLowerCase()
-      );
-      const isCancelledTrade = ['canceled', 'cancelled'].includes(
-        trade.status.toLowerCase()
-      );
-
-      const profitUsd = trade.profit?.totalUsd || 0;
-      const initialInvestment = trade.cost || 0;
-      const calculatedROI =
-        initialInvestment > 0 ? (profitUsd / initialInvestment) * 100 : 0;
-
-      const symbolString =
-        typeof trade.symbol === 'string' ? trade.symbol : trade.symbol.symbol;
-
-      if (
-        isDealInJournal(useTradeJournalStore.getState().trades, {
-          dealId: trade.id,
-          symbol: symbolString,
-          exchange: trade.exchange,
-          entryTime,
-        })
-      ) {
-        toast.info(`Deal ${symbolString} is already in your journal`);
-        return;
-      }
-
-      const journalEntry: any = {
-        sourceDealId: trade.id,
-        symbol: symbolString,
-        exchange: trade.exchange,
-        direction: (trade.side?.toUpperCase() === 'LONG' ||
-        trade.side?.toUpperCase() === 'BUY'
-          ? 'long'
-          : 'short') as 'long' | 'short',
-        entryPrice: trade.entryPrice || trade.avgPrice || 0,
-        entryTime: entryTime,
-        amount: trade.size || trade.currentBalance.base || 0,
-        pnl: profitUsd,
-        roi: calculatedROI,
-        marketType: (trade.dealType === 'FUTURES' ? 'futures' : 'spot') as
-          | 'spot'
-          | 'futures',
-        notes: `Deal from ${trade.type} bot${trade.botName ? ` (${trade.botName})` : ''}${isOpenTrade ? ' (Open - Unrealized PNL)' : ''}${isCancelledTrade ? ' (Cancelled)' : ''}`,
-        executions: executions.length > 0 ? executions : undefined,
-      };
-
-      // Note: exitPrice/exitTime not available on TransformedTrade type for deals
-      // Only add exit data if explicitly available
-
-      const journalId = addToJournal(journalEntry);
-      logger.info(`${LOG_PREFIX}: Added deal to journal`, {
-        dealId: trade.id,
-        journalId,
-        symbol: symbolString,
-        executionsCount: executions.length,
-      });
-      toast.success(
-        `Deal ${symbolString} added to journal with ${executions.length} execution(s)`
-      );
-    } catch (error) {
-      logger.error(`${LOG_PREFIX}: Failed to add deal to journal`, {
-        error,
-        dealId: trade.id,
-      });
-      toast.error('Failed to add deal to journal');
-    }
-  };
-
-  const handleAddFunds = () => {
-    setAdjustFundsDialog('add');
-  };
-
-  const handleReduceFunds = () => {
-    setAdjustFundsDialog('reduce');
-  };
-
-  const handleEdit = useCallback(() => {
-    _handleEdit(trade);
-  }, [_handleEdit, trade]);
-
-  const handleCancelConfirm = () => {
-    if (!trade.botId) {
-      logger.error(`${LOG_PREFIX}: Cannot cancel deal - missing botId`, {
-        dealId: trade.id,
-      });
-      toast.error('Cannot cancel deal - missing bot ID');
-      return;
-    }
-
-    const q =
-      botType === BotTypesEnum.combo
-        ? closeDealMutation.closeComboDeal
-        : closeDealMutation.closeDCADeal;
-
-    q(
-      { dealId: trade.id, botId: trade.botId, type: CloseDCATypeEnum.cancel },
-      {
-        onSuccess: () => {
-          logger.info(`${LOG_PREFIX}: Deal canceled successfully`, {
-            dealId: trade.id,
-            botId: trade.botId,
-          });
-          toast.success('Deal canceled successfully');
-          setCancelDialogOpen(false);
-        },
-        onError: (error) => {
-          logger.error(`${LOG_PREFIX}: Failed to cancel deal`, {
-            dealId: trade.id,
-            botId: trade.botId,
-            error,
-          });
-          toastDealCloseError(error, 'Failed to cancel deal');
-          setCancelDialogOpen(false);
-        },
-      }
-    );
-  };
-
-  const handleCloseConfirm = (type: CloseDCATypeEnum) => {
-    if (!trade.botId) {
-      logger.error(`${LOG_PREFIX}: Cannot close deal - missing botId`, {
-        dealId: trade.id,
-      });
-      toast.error('Cannot close deal - missing bot ID');
-      return;
-    }
-
-    const q =
-      botType === BotTypesEnum.combo
-        ? closeDealMutation.closeComboDeal
-        : closeDealMutation.closeDCADeal;
-
-    q(
-      { dealId: trade.id, botId: trade.botId, type },
-      {
-        onSuccess: () => {
-          logger.info(`${LOG_PREFIX}: Deal canceled successfully`, {
-            dealId: trade.id,
-            botId: trade.botId,
-          });
-          toast.success('Deal canceled successfully');
-          setCancelDialogOpen(false);
-        },
-        onError: (error) => {
-          logger.error(`${LOG_PREFIX}: Failed to cancel deal`, {
-            dealId: trade.id,
-            botId: trade.botId,
-            error,
-          });
-          toastDealCloseError(error, 'Failed to cancel deal');
-          setCancelDialogOpen(false);
-        },
-      }
-    );
-  };
-
-  const symbolString = useMemo(
-    () =>
-      typeof trade.symbol === 'string' ? trade.symbol : trade.symbol.symbol,
-    [trade.symbol]
-  );
-
-  const handleAdjustFundsConfirm = useCallback(
-    (settings: AddFundsSettings) => {
-      if (!adjustFundsDialog) {
-        return;
-      }
-      _handleAdjustFundsConfirm(trade.id, settings, adjustFundsDialog);
-      setAdjustFundsDialog(null);
-    },
-    [_handleAdjustFundsConfirm, trade.id, adjustFundsDialog]
-  );
-
-  const baseSymbol = useMemo(
-    () => (typeof trade.symbol === 'string' ? '' : trade.symbol.baseAsset),
-    [trade.symbol]
-  );
-
-  const quoteSymbol = useMemo(
-    () => (typeof trade.symbol === 'string' ? '' : trade.symbol.quoteAsset),
-    [trade.symbol]
-  );
-
-  // Move to Terminal is available to DCA and Combo bot deals (parity with
-  // legacy main-dash, which passes `combo: true` for combo deals).
-  const canShowMoveToTerminal = useMemo(
-    () =>
-      (trade.type === 'DCA' || trade.type === 'Combo') &&
-      typeof trade.botId === 'string' &&
-      trade.botId.length > 0,
-    [trade.botId, trade.type]
-  );
-
-  const isDealOpen = useMemo(
-    () => String(trade.status || '').toLowerCase() === DCADealStatusEnum.open,
-    [trade.status]
-  );
-
-  const canMoveToTerminal = useMemo(
-    () => canShowMoveToTerminal && isDealOpen,
-    [canShowMoveToTerminal, isDealOpen]
-  );
-
-  const handleMoveToTerminalConfirm = useCallback(async () => {
-    try {
-      await handleMoveToTerminal(trade);
-    } finally {
-      setMoveDialogOpen(false);
-    }
-  }, [handleMoveToTerminal, trade]);
-
-  // Restore — only for canceled DCA and Terminal deals (no other bot types,
-  // no other statuses). Re-adopts the deal's position as a bare active
-  // terminal deal (no DCA, TP or SL).
-  const restoreDealMutation = useRestoreDeal();
-  const canShowRestore = useMemo(
-    () =>
-      (trade.type === 'DCA' || trade.type === 'Terminal') &&
-      typeof trade.botId === 'string' &&
-      trade.botId.length > 0 &&
-      ['canceled', 'cancelled'].includes(
-        String(trade.status || '').toLowerCase()
-      ),
-    [trade.botId, trade.type, trade.status]
-  );
-  const handleRestoreConfirm = useCallback(async () => {
-    if (!trade.botId) {
-      toast.error('Cannot restore deal - missing bot ID');
-      return;
-    }
-    try {
-      const response = await restoreDealMutation.mutateAsync({
-        dealId: trade.id,
-        botId: trade.botId,
-      });
-      toast.success(
-        typeof response.data === 'string'
-          ? response.data
-          : 'Deal restored successfully'
-      );
-    } catch (error) {
-      logger.error('[DrawerDealsTable] Failed to restore deal', {
-        error,
-        dealId: trade.id,
-        botId: trade.botId,
-      });
-      toast.error(
-        error instanceof Error ? error.message : 'Failed to restore deal'
-      );
-    } finally {
-      setRestoreDialogOpen(false);
-    }
-  }, [restoreDealMutation, trade.botId, trade.id]);
-
-  // Change DCA levels — DCA and Combo bot deals only (not grid), disabled for
-  // risk-based deals whose levels are managed by the risk engine.
-  const canShowChangeDca = trade.type === 'DCA' || trade.type === 'Combo';
-  const canChangeDca = canShowChangeDca && isDealOpen && !trade.riskBased;
-  const changeDcaCurrentLevel = (trade.levels?.complete || 1) - 1;
-  const changeDcaMaxLevel = (trade.levels?.all || 1) - 1;
-  const changeDcaBotType =
-    trade.type === 'Combo' ? BotTypesEnum.combo : BotTypesEnum.dca;
-
-  // Execute next DCA — see canExecuteNextDca: DCA only (combo levels are
-  // minigrid-managed), open, not risk-based, and a level still left.
-  const canShowExecuteNextDca = canExecuteNextDca(trade);
-  const executeNextDcaMutation = useExecuteNextDca();
-  const handleExecuteNextDcaConfirm = useCallback(
-    (expectedLevel: number) => {
-      if (!trade.botId) {
-        toast.error('Cannot execute the next DCA - missing bot ID');
-        return;
-      }
-      executeNextDcaMutation.mutate({
-        dealId: trade.id,
-        botId: trade.botId,
-        expectedLevel,
-      });
-      setExecuteNextDcaOpen(false);
-    },
-    [executeNextDcaMutation, trade.botId, trade.id]
-  );
-
-  // Restart deal — DCA / Combo deals, hedge ones included (the backend routes
-  // a hedge deal to the long or short child that owns it); re-places this
-  // deal's orders only.
-  const canShowRestartDeal = [
-    'DCA',
-    'Combo',
-    'Hedge DCA',
-    'Hedge Combo',
-  ].includes(trade.type);
-  const restartDealMutation = useRestartDeal();
-  const handleRestartConfirm = useCallback(() => {
-    if (!trade.botId) {
-      toast.error('Cannot restart the deal - missing bot ID');
-      return;
-    }
-    restartDealMutation.mutate({
-      dealId: trade.id,
-      botId: trade.botId,
-      combo:
-        trade.type === 'Combo' ||
-        trade.type === 'Hedge Combo' ||
-        botType === BotTypesEnum.combo ||
-        botType === BotTypesEnum.hedgeCombo,
-    });
-    setRestartDialogOpen(false);
-  }, [restartDealMutation, trade.botId, trade.id, trade.type, botType]);
-
-  const editDealMutation = useEditDeal({
-    onSuccess: () => {
-      toast.success('DCA levels updated');
-      setChangeDcaDialogOpen(false);
-    },
-    onError: (e) => {
-      toast.error(
-        e instanceof Error ? e.message : 'Failed to change DCA levels'
-      );
-    },
-  });
-
-  const handleChangeDcaConfirm = useCallback(
-    (newMax: number) => {
-      if (!trade.botId) {
-        toast.error('Cannot change DCA levels - missing bot ID');
-        return;
-      }
-      editDealMutation.mutate({
-        dealId: trade.id,
-        botId: trade.botId,
-        type: changeDcaBotType,
-        terminal: false,
-        settings:
-          newMax === 0
-            ? { useDca: false }
-            : { useDca: true, ordersCount: newMax },
-      });
-    },
-    [editDealMutation, trade.botId, trade.id, changeDcaBotType]
-  );
-
-  return (
-    <>
-      <AdjustFundsDialog
-        open={!!adjustFundsDialog}
-        mode={adjustFundsDialog || 'add'}
-        onOpenChange={() => setAdjustFundsDialog(null)}
-        onConfirm={handleAdjustFundsConfirm}
-        baseAsset={baseSymbol}
-        quoteAsset={quoteSymbol}
-        symbol={symbolString}
-        exchange={trade.exchange}
-        percentBasis={trade.percentBasis}
-        exchangeUUID={trade.exchangeUUID}
-        futures={!!trade.futures}
-        long={trade.side !== 'SELL'}
-      />
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="p-1 h-8 w-8"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <MoreHorizontal className="w-4 h-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem onClick={() => handleOpenDetailDrawer(trade)}>
-            <Eye className="w-4 h-4 mr-2" />
-            View Details
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={handleAddToJournal}>
-            <BookOpen className="w-4 h-4 mr-2" />
-            Add to Journal
-          </DropdownMenuItem>
-          {botType !== BotTypesEnum.combo && (
-            <>
-              <DropdownMenuItem
-                onClick={handleAddFunds}
-                disabled={!isDealOpen}
-              >
-                <PlusCircle className="w-4 h-4 mr-2" />
-                Add Funds
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={handleReduceFunds}
-                disabled={!isDealOpen}
-              >
-                <MinusCircle className="w-4 h-4 mr-2" />
-                Reduce Funds
-              </DropdownMenuItem>
-            </>
-          )}
-          <DropdownMenuItem onClick={handleEdit} disabled={!isDealOpen}>
-            <Edit className="w-4 h-4 mr-2" />
-            Edit
-          </DropdownMenuItem>
-          {canShowExecuteNextDca && (
-            <DropdownMenuItem
-              onClick={() => setExecuteNextDcaOpen(true)}
-              disabled={!isDealOpen}
-            >
-              <Zap className="w-4 h-4 mr-2" />
-              Execute next DCA
-            </DropdownMenuItem>
-          )}
-          {canShowRestartDeal && (
-            <DropdownMenuItem
-              onClick={() => setRestartDialogOpen(true)}
-              disabled={!isDealOpen}
-            >
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Restart deal
-            </DropdownMenuItem>
-          )}
-          {canShowChangeDca && (
-            <DropdownMenuItem
-              onClick={() => setChangeDcaDialogOpen(true)}
-              disabled={!canChangeDca}
-            >
-              <SlidersHorizontal className="w-4 h-4 mr-2" />
-              Change DCA levels
-            </DropdownMenuItem>
-          )}
-          {canShowMoveToTerminal && (
-            <DropdownMenuItem
-              onClick={() => setMoveDialogOpen(true)}
-              disabled={!canMoveToTerminal}
-            >
-              <ArrowRightLeft className="w-4 h-4 mr-2" />
-              Move to Terminal
-            </DropdownMenuItem>
-          )}
-          {canShowRestore && (
-            <DropdownMenuItem onClick={() => setRestoreDialogOpen(true)}>
-              <RotateCcw className="w-4 h-4 mr-2" />
-              Restore
-            </DropdownMenuItem>
-          )}
-          <DropdownMenuItem
-            onClick={() => setCancelDialogOpen(true)}
-            disabled={!isDealOpen}
-          >
-            <X className="w-4 h-4 mr-2" />
-            Cancel
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => setCloseDialogOpen(true)}
-            className="text-destructive"
-            disabled={!isDealOpen}
-          >
-            <XCircle className="w-4 h-4 mr-2" />
-            Close
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <ConfirmationDialog
-        open={cancelDialogOpen}
-        onOpenChange={setCancelDialogOpen}
-        title="Cancel Deal"
-        description={`Are you sure you want to cancel the deal for ${symbolString}? This action cannot be undone.`}
-        confirmText="Cancel Deal"
-        cancelText="Keep Deal"
-        variant="destructive"
-        onConfirm={handleCancelConfirm}
-      />
-      <ConfirmationDialog
-        open={restartDialogOpen}
-        onOpenChange={setRestartDialogOpen}
-        title="Restart deal"
-        description={`Restart the deal for ${symbolString}? Its open safety orders and take profit are cancelled and placed again from the deal's current state. The bot's other deals are not touched.`}
-        confirmText="Restart"
-        cancelText="Cancel"
-        onConfirm={handleRestartConfirm}
-      />
-      <ConfirmationDialog
-        open={restoreDialogOpen}
-        onOpenChange={setRestoreDialogOpen}
-        title="Restore deal"
-        description={`Restore the deal for ${symbolString}? It will be added back as an active deal that holds the current position, with no DCA, take profit or stop loss.`}
-        confirmText="Restore"
-        cancelText="Cancel"
-        onConfirm={handleRestoreConfirm}
-      />
-      <CloseOptionsDialog
-        open={closeDialogOpen}
-        onOpenChange={setCloseDialogOpen}
-        onConfirm={handleCloseConfirm}
-        defaultCloseType={CloseDCATypeEnum.closeByMarket}
-        ignoreOptions={[CloseDCATypeEnum.leave]}
-        mode="deal"
-      />
-      <ConfirmationDialog
-        open={moveDialogOpen}
-        onOpenChange={setMoveDialogOpen}
-        title="Move deal to terminal"
-        description={`Are you sure you want to move the deal (${trade.id}) to the terminal? ${MOVE_TO_TERMINAL_WARNING}`}
-        confirmText="Confirm"
-        cancelText="Cancel"
-        onConfirm={handleMoveToTerminalConfirm}
-      />
-      <ChangeDcaLevelsDialog
-        open={changeDcaDialogOpen}
-        onOpenChange={setChangeDcaDialogOpen}
-        currentLevel={changeDcaCurrentLevel}
-        maxLevel={changeDcaMaxLevel}
-        onConfirm={handleChangeDcaConfirm}
-        isProcessing={editDealMutation.isPending}
-      />
-      {canShowExecuteNextDca && (
-        <ExecuteNextDcaDialog
-          open={executeNextDcaOpen}
-          onOpenChange={setExecuteNextDcaOpen}
-          trade={trade}
-          onConfirm={handleExecuteNextDcaConfirm}
-          isProcessing={executeNextDcaMutation.isPending}
-        />
-      )}
-    </>
-  );
 };
 
 export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
@@ -919,68 +276,24 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   // Detect Hedge bot types
 
   const isHedgeCombo = useMemo(() => bot?.type === 'hedgeCombo', [bot?.type]);
+  const { formatUsd } = useReportingCurrency();
+  // The asset a deal's `profit.total` is in: the bot's profit currency.
+  const botProfitBase =
+    bot?.settings?.profitCurrency === 'base' ||
+    !!(bot?.settings as { coinm?: boolean } | undefined)?.coinm;
+  const dealProfitAsset = useCallback(
+    (trade: TransformedTrade): string | undefined =>
+      !bot?.settings?.profitCurrency || typeof trade.symbol === 'string'
+        ? undefined
+        : botProfitBase
+          ? trade.symbol.baseAsset
+          : trade.symbol.quoteAsset,
+    [bot?.settings?.profitCurrency, botProfitBase]
+  );
   const isComboLike = useMemo(
     () => isComboBot || isHedgeCombo,
     [isComboBot, isHedgeCombo]
   );
-
-  // Hook for opening new deals
-  const { openDeal, isPending: isOpenDealPending } = useOpenDeal(
-    isComboBot ? BotTypesEnum.combo : BotTypesEnum.dca
-  );
-
-  // State for pair selection dialog (for multi-coin bots)
-  const [pairSelectDialogOpen, setPairSelectDialogOpen] = useState(false);
-  const [selectedPairForDeal, setSelectedPairForDeal] = useState<string | null>(
-    null
-  );
-  const [pairSearchQuery, setPairSearchQuery] = useState('');
-
-  // State for max active deals validation dialog
-  const [maxActiveDialog, setMaxActiveDialog] = useState<
-    'bot' | 'symbol' | null
-  >(null);
-
-  // Determine if bot is multi-coin and get available pairs
-  const isMultiCoin = useMemo(() => {
-    const dcaBot = bot as DCABot | undefined;
-    return dcaBot?.settings?.useMulti === true;
-  }, [bot]);
-
-  const availablePairs = useMemo(() => {
-    const dcaBot = bot as DCABot | undefined;
-    // Get pairs from bot settings or symbol array
-    const settingsPairs = dcaBot?.settings?.pair;
-    if (
-      settingsPairs &&
-      Array.isArray(settingsPairs) &&
-      settingsPairs.length > 0
-    ) {
-      return settingsPairs;
-    }
-    // Fallback to symbol array
-    const symbolPairs = dcaBot?.symbol?.map((s) => s.value?.symbol || s.key);
-    return symbolPairs || [];
-  }, [bot]);
-
-  // Filter pairs based on search query
-  const filteredPairs = useMemo(() => {
-    if (!pairSearchQuery.trim()) {
-      return availablePairs;
-    }
-    const query = pairSearchQuery.toLowerCase();
-    return availablePairs.filter((pair) => pair.toLowerCase().includes(query));
-  }, [availablePairs, pairSearchQuery]);
-
-  // Initialize selected pair when dialog opens and reset search
-  useEffect(() => {
-    if (pairSelectDialogOpen) {
-      setPairSearchQuery('');
-      if (availablePairs.length > 0 && !selectedPairForDeal) {
-        setSelectedPairForDeal(availablePairs[0]);
-      }
-    }
-  }, [pairSelectDialogOpen, availablePairs, selectedPairForDeal]);
 
   // Helper function to check if a deal is active
   /* const isActiveDeal = useCallback((deal: DCADeals): boolean => {
@@ -1002,82 +315,16 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     return (dcaBot?.dealsInBot?.all || 0) - (dcaBot?.dealsInBot?.active || 0);
   }, [bot]);
 
-  // Handler for opening a new deal - shows dialog for multi-coin bots
-  const handleOpenNewDeal = useCallback(() => {
-    if (!botId) {
-      logger.error(`${LOG_PREFIX}: Cannot open deal - missing botId`);
-      toast.error('Cannot open deal - missing bot ID');
-      return;
-    }
-
-    const dcaBot = bot as DCABot | undefined;
-    const maxNumberOfOpenDeals = dcaBot?.settings?.maxNumberOfOpenDeals;
-
-    // Check max deals per bot validation (for single-pair bots)
-    if (
-      !isMultiCoin &&
-      maxNumberOfOpenDeals &&
-      maxNumberOfOpenDeals !== '' &&
-      maxNumberOfOpenDeals !== '0' &&
-      activeDealsCount >= parseFloat(maxNumberOfOpenDeals)
-    ) {
-      logger.info(`${LOG_PREFIX}: Max active deals reached for bot`, {
-        botId,
-        activeDealsCount,
-        maxNumberOfOpenDeals,
-      });
-      setMaxActiveDialog('bot');
-      return;
-    }
-
-    // For multi-coin bots, show the pair selection dialog
-    if (isMultiCoin && availablePairs.length > 1) {
-      // Also check max deals per bot for multi-coin
-      if (
-        maxNumberOfOpenDeals &&
-        maxNumberOfOpenDeals !== '' &&
-        maxNumberOfOpenDeals !== '0' &&
-        activeDealsCount >= parseFloat(maxNumberOfOpenDeals)
-      ) {
-        logger.info(
-          `${LOG_PREFIX}: Max active deals reached for multi-coin bot`,
-          {
-            botId,
-            activeDealsCount,
-            maxNumberOfOpenDeals,
-          }
-        );
-        setMaxActiveDialog('bot');
-        return;
-      }
-
-      logger.info(
-        `${LOG_PREFIX}: Multi-coin bot - opening pair selection dialog`,
-        {
-          botId,
-          availablePairs,
-        }
-      );
-      setPairSelectDialogOpen(true);
-      return;
-    }
-
-    // For single-pair bots, open deal directly
-    logger.info(`${LOG_PREFIX}: Opening new deal`, {
-      botId,
-      isComboBot,
-    });
-
-    openDeal({ botId });
-  }, [
+  const {
+    openNewDeal: handleOpenNewDeal,
+    isPending: isOpenDealPending,
+    dialogs: openDealDialogs,
+  } = useOpenBotDeal({
     botId,
-    bot,
+    bot: bot as DCABot | undefined,
     isComboBot,
-    isMultiCoin,
-    availablePairs,
     activeDealsCount,
-    openDeal,
-  ]);
+  });
 
   const useDealsOpenInput = useMemo(
     () => ({
@@ -1148,63 +395,6 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   const dealsServerTotal = drawerServerPaged
     ? pagedDeals.total
     : specificServerTotal;
-
-  // Handler for confirming deal opening with selected pair (defined after activeDealsData)
-  const handleConfirmOpenDeal = useCallback(() => {
-    if (!botId) {
-      toast.error('Cannot open deal - missing bot ID');
-      return;
-    }
-
-    /* const dcaBot = bot as DCABot | undefined;
-    const maxDealsPerPair = dcaBot?.settings?.maxDealsPerPair;
-
-    // Check max deals per symbol validation for multi-coin bots
-    if (
-      isMultiCoin &&
-      selectedPairForDeal &&
-      maxDealsPerPair &&
-      maxDealsPerPair !== '' &&
-      String(maxDealsPerPair) !== '0'
-    ) {
-      // Count active deals for this specific symbol
-      const activeDealsForSymbol = (activeDealsData || []).filter(
-        (deal) =>
-          deal.symbol?.symbol === selectedPairForDeal && isActiveDeal(deal)
-      ).length;
-
-      if (activeDealsForSymbol >= Number(maxDealsPerPair)) {
-        logger.info(`${LOG_PREFIX}: Max active deals reached for symbol`, {
-          botId,
-          selectedPair: selectedPairForDeal,
-          activeDealsForSymbol,
-          maxDealsPerPair,
-        });
-        setPairSelectDialogOpen(false);
-        setMaxActiveDialog('symbol');
-        return;
-      }
-    } */
-
-    logger.info(`${LOG_PREFIX}: Opening deal for selected pair`, {
-      botId,
-      selectedPair: selectedPairForDeal,
-      isComboBot,
-    });
-
-    openDeal({ botId, symbol: selectedPairForDeal || undefined });
-    setPairSelectDialogOpen(false);
-    setSelectedPairForDeal(null);
-  }, [
-    botId,
-    /*  bot, */
-    selectedPairForDeal,
-    isComboBot,
-    /* isMultiCoin, */
-    /*  activeDealsData, */
-    /* isActiveDeal, */
-    openDeal,
-  ]);
 
   // Combo deals: fetch all combo deals and filter locally for resilience
   /* const {
@@ -1489,15 +679,6 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     return activeDealsRaw.map(transformDealToTradeWrapper);
   }, [activeDealsRaw, transformDealToTradeWrapper]);
 
-  const handleEdit = useCallback(
-    (trade: TransformedTrade) => {
-      const find = activeDealsRaw.find((d) => d._id === trade.id);
-      if (find && onEditDeal) {
-        onEditDeal([find]);
-      }
-    },
-    [activeDealsRaw, onEditDeal]
-  );
   const closedDeals = useMemo(() => {
     const getCreateTime = (d: DCADeals | ComboDeal): number => {
       // DCADeals may use number timestamps; ComboDeal uses string
@@ -1672,51 +853,6 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     onAutoOpenHandled,
   ]);
 
-  // Bulk Add/Reduce Funds — same shared flow the Trading page, the Trading
-  // Terminal and the dashboard Open Orders widget use.
-  const {
-    open: openBulkAdjustFunds,
-    dialog: bulkAdjustFundsDialog,
-  } = useBulkAdjustFunds();
-  const toAdjustFundsTarget = useCallback(
-    (deal: TransformedTrade): BulkAdjustFundsTarget => ({
-      dealId: deal.id,
-      botId: deal.botId ?? botId,
-      status: deal.status,
-      // The row menu hides Add/Reduce Funds on combo bots; the drawer's deals
-      // carry no bot type of their own, so it comes from the bot.
-      type: isComboBot ? 'Combo' : deal.type,
-      baseAsset:
-        typeof deal.symbol === 'string' ? undefined : deal.symbol.baseAsset,
-      quoteAsset:
-        typeof deal.symbol === 'string' ? undefined : deal.symbol.quoteAsset,
-      symbol:
-        typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol,
-      exchange: deal.exchange,
-      percentBasis: deal.percentBasis,
-    }),
-    [botId, isComboBot]
-  );
-
-  const adjustFundsMutation = useAdjustFunds();
-  const handleAdjustFundsConfirm = useCallback(
-    (
-      dealId: string,
-      settings: AddFundsSettings,
-      mode: AdjustFundsDialogMode
-    ) => {
-      if (!botId) {
-        return;
-      }
-      adjustFundsMutation.mutate({
-        dealId,
-        botId,
-        settings,
-        mode,
-      });
-    },
-    [botId, adjustFundsMutation]
-  );
   const handleRowClick = useCallback(
     (trade: TransformedTrade, onlyChart = false) => {
       onTradeSelect(trade, onlyChart);
@@ -1729,16 +865,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   onTradeSelectRef.current = onTradeSelect;
   const privacyModeCardRef = useRef(privacyMode);
   privacyModeCardRef.current = privacyMode;
-  const handleRowClickRef = useRef(handleRowClick);
-  handleRowClickRef.current = handleRowClick;
-  const completedOrdersRef = useRef(completedOrders);
-  completedOrdersRef.current = completedOrders;
-  const handleAdjustFundsConfirmRef = useRef(handleAdjustFundsConfirm);
-  handleAdjustFundsConfirmRef.current = handleAdjustFundsConfirm;
   const isComboBotRef = useRef(isComboBot);
   isComboBotRef.current = isComboBot;
-  const handleEditCardRef = useRef(handleEdit);
-  handleEditCardRef.current = handleEdit;
 
   // Stable card component wrapper — useMemo([]) so reference never changes and cards never remount
   const cardComponentWrapper = useMemo(
@@ -1747,11 +875,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         {...props}
         onTradeSelect={(t) => onTradeSelectRef.current(t, true)}
         privacyMode={privacyModeCardRef.current}
-        handleOpenDetailDrawer={handleRowClickRef.current}
-        filledOrders={completedOrdersRef.current}
-        handleAdjustFundsConfirm={handleAdjustFundsConfirmRef.current}
         botType={isComboBotRef.current ? BotTypesEnum.combo : BotTypesEnum.dca}
-        handleEdit={handleEditCardRef.current}
       />
     ),
     [] // Never recreate — refs keep values current without changing component identity
@@ -1771,511 +895,63 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
 
   // Handler for row click - only update chart symbol
 
-  // Mutation for closing/canceling deals - must be defined before DealActionsMenu
-  const bulkCloseDealMutation = useDealActions();
-  const moveDealToTerminalMutation = useMoveDealToTerminal();
-  const [moveBulkDialogOpen, setMoveBulkDialogOpen] = useState<
-    TransformedTrade[]
-  >([]);
-  const [closeBulkDialogOpen, setCloseBulkDialogOpen] = useState<
-    TransformedTrade[]
-  >([]);
-  const [cancelBulkDialogOpen, setCancelBulkDialogOpen] = useState<
-    TransformedTrade[]
-  >([]);
-  const [mergeBulkDialogOpen, setMergeBulkDialogOpen] = useState<
-    TransformedTrade[]
-  >([]);
-  const [journalBulkDialogOpen, setJournalBulkDialogOpen] = useState<
-    TransformedTrade[]
-  >([]);
-
-  const canMoveTradeToTerminal = useCallback((trade: TransformedTrade) => {
-    return (
-      (trade.type === 'DCA' || trade.type === 'Combo') &&
-      typeof trade.botId === 'string' &&
-      trade.botId.length > 0 &&
-      String(trade.status || '').toLowerCase() === DCADealStatusEnum.open
-    );
-  }, []);
-
-  const handleMoveToTerminal = useCallback(
-    async (trade: TransformedTrade) => {
-      if (!canMoveTradeToTerminal(trade) || !trade.botId) {
-        toast.error('Only open DCA or Combo bot deals can be moved to terminal');
-        return;
-      }
-
-      try {
-        const response = await moveDealToTerminalMutation.mutateAsync({
-          dealId: trade.id,
-          botId: trade.botId,
-          combo: trade.type === 'Combo',
-        });
-
-        toast.success(
-          typeof response.data === 'string'
-            ? response.data
-            : 'Deal moved to terminal successfully'
-        );
-      } catch (error) {
-        logger.error(`${LOG_PREFIX}: Failed to move deal to terminal`, {
-          error,
-          dealId: trade.id,
-          botId: trade.botId,
-        });
-        toast.error('Failed to move deal to terminal');
-      }
-    },
-    [canMoveTradeToTerminal, moveDealToTerminalMutation]
+  // Per-deal and bulk actions: one runner for this table's row menus, its
+  // cards and its bulk actions, with their dialogs mounted once.
+  const { runner: dealActions, dialogs: dealActionDialogs } = useDealActionHost(
+    {
+      onView: (deal) => {
+        if (deal.trade) handleRowClick(deal.trade);
+      },
+      onEdit: (deals) => {
+        const ids = new Set(deals.map((deal) => deal.id));
+        const found = activeDealsRaw.filter((d) => ids.has(d._id));
+        if (found.length > 0 && onEditDeal) {
+          onEditDeal(found);
+        } else {
+          toast.error('Could not find deal to edit');
+        }
+      },
+      filledOrders: completedOrders,
+    }
   );
 
-  const handleBulkMoveToTerminalConfirm = useCallback(async () => {
-    const movableDeals = moveBulkDialogOpen.filter(canMoveTradeToTerminal);
-
-    if (movableDeals.length === 0) {
-      setMoveBulkDialogOpen([]);
-      toast.info('Only open DCA or Combo bot deals can be moved to terminal');
-      return;
-    }
-
-    let successCount = 0;
-    let errorCount = 0;
-
-    for (const deal of movableDeals) {
-      try {
-        await moveDealToTerminalMutation.mutateAsync({
-          dealId: deal.id,
-          botId: deal.botId as string,
-          combo: deal.type === 'Combo',
-        });
-        successCount += 1;
-      } catch (error) {
-        errorCount += 1;
-        logger.error(`${LOG_PREFIX}: Failed bulk move to terminal`, {
-          error,
-          dealId: deal.id,
-          botId: deal.botId,
-        });
-      }
-    }
-
-    setMoveBulkDialogOpen([]);
-
-    if (successCount > 0) {
-      toast.success(`Moved ${successCount} deal(s) to terminal`);
-    }
-    if (errorCount > 0) {
-      toast.error(`Failed to move ${errorCount} deal(s) to terminal`);
-    }
-  }, [canMoveTradeToTerminal, moveBulkDialogOpen, moveDealToTerminalMutation]);
-
-  const handleBulkCloseConfirm = useCallback(
-    (closeType: CloseDCATypeEnum) => {
-      const selectedDeals = closeBulkDialogOpen;
-      setCloseBulkDialogOpen([]);
-
-      logger.info(`${LOG_PREFIX}: Bulk close deals`, {
-        count: selectedDeals.length,
-        closeType,
-        dealIds: selectedDeals.map((d) => d.id),
-      });
-
-      let successCount = 0;
-      let errorCount = 0;
-      let endedCount = 0;
-
-      const closeFn = isComboLike
-        ? bulkCloseDealMutation.closeComboDeal
-        : bulkCloseDealMutation.closeDCADeal;
-
-      selectedDeals.forEach((deal) => {
-        if (!deal.botId) {
-          logger.error(`${LOG_PREFIX}: Cannot close deal - missing botId`, {
-            dealId: deal.id,
-          });
-          errorCount++;
-          return;
-        }
-
-        try {
-          closeFn(
-            {
-              dealId: deal.id,
-              botId: deal.botId,
-              type: closeType,
-            },
-            {
-              onSuccess: () => {
-                successCount++;
-                logger.info(`${LOG_PREFIX}: Deal closed successfully`, {
-                  dealId: deal.id,
-                  botId: deal.botId,
-                });
-              },
-              onError: (error) => {
-                if (isDealNotOpenError(error)) endedCount++;
-                else errorCount++;
-                logger.error(`${LOG_PREFIX}: Failed to close deal`, {
-                  dealId: deal.id,
-                  botId: deal.botId,
-                  error,
-                });
-              },
-            }
-          );
-        } catch (error) {
-          errorCount++;
-          logger.error(`${LOG_PREFIX}: Exception closing deal`, {
-            dealId: deal.id,
-            error,
-          });
-        }
-      });
-
-      setTimeout(() => {
-        if (successCount > 0) {
-          toast.success(`Closed ${successCount} deal(s)`);
-        }
-        if (errorCount > 0) {
-          toast.error(`Failed to close ${errorCount} deal(s)`);
-        }
-        if (endedCount > 0) {
-          toast.info(
-            `${endedCount} deal(s) had already ended. The list has been refreshed.`
-          );
-        }
-      }, 500);
-    },
-    [bulkCloseDealMutation, closeBulkDialogOpen, isComboLike]
-  );
-
-  // Get journal actions
-  const addToJournalBulk = useTradeJournalStore((state) => state.addTrade);
-  const mergeSmartOrdersMutation = useMergeSmartOrders();
-
-  const handleBulkCancelConfirm = useCallback(() => {
-    const selectedDeals = cancelBulkDialogOpen;
-    setCancelBulkDialogOpen([]);
-
-    logger.info(`${LOG_PREFIX}: Bulk cancel deals`, {
-      count: selectedDeals.length,
-      dealIds: selectedDeals.map((d) => d.id),
-    });
-
-    let successCount = 0;
-    let errorCount = 0;
-    let endedCount = 0;
-
-    const closeFn = isComboLike
-      ? bulkCloseDealMutation.closeComboDeal
-      : bulkCloseDealMutation.closeDCADeal;
-
-    selectedDeals.forEach((deal) => {
-      if (!deal.botId) {
-        logger.error(`${LOG_PREFIX}: Cannot cancel deal - missing botId`, {
-          dealId: deal.id,
-        });
-        errorCount++;
-        return;
-      }
-
-      try {
-        closeFn(
-          {
-            dealId: deal.id,
-            botId: deal.botId,
-            type: CloseDCATypeEnum.cancel,
-          },
-          {
-            onSuccess: () => {
-              successCount++;
-              logger.info(`${LOG_PREFIX}: Deal canceled successfully`, {
-                dealId: deal.id,
-                botId: deal.botId,
-              });
-            },
-            onError: (error) => {
-              if (isDealNotOpenError(error)) endedCount++;
-              else errorCount++;
-              logger.error(`${LOG_PREFIX}: Failed to cancel deal`, {
-                dealId: deal.id,
-                botId: deal.botId,
-                error,
-              });
-            },
-          }
-        );
-      } catch (error) {
-        errorCount++;
-        logger.error(`${LOG_PREFIX}: Exception canceling deal`, {
-          dealId: deal.id,
-          error,
-        });
-      }
-    });
-
-    setTimeout(() => {
-      if (successCount > 0) {
-        toast.success(`Canceled ${successCount} deal(s)`);
-      }
-      if (errorCount > 0) {
-        toast.error(`Failed to cancel ${errorCount} deal(s)`);
-      }
-      if (endedCount > 0) {
-        toast.info(
-          `${endedCount} deal(s) had already ended. The list has been refreshed.`
-        );
-      }
-    }, 500);
-  }, [bulkCloseDealMutation, cancelBulkDialogOpen, isComboLike]);
-
-  const handleBulkMergeConfirm = useCallback(async () => {
-    const selectedDeals = mergeBulkDialogOpen;
-    setMergeBulkDialogOpen([]);
-
-    if (selectedDeals.length < 2) {
-      return;
-    }
-
-    const firstBotId = selectedDeals[0].botId;
-    const firstSymbol =
-      typeof selectedDeals[0].symbol === 'string'
-        ? selectedDeals[0].symbol
-        : selectedDeals[0].symbol.symbol;
-    const firstExchange = selectedDeals[0].exchange;
-
-    if (!firstBotId) {
-      toast.error('Cannot merge deals - missing bot ID');
-      return;
-    }
-
-    logger.info(`${LOG_PREFIX}: Merging deals`, {
-      count: selectedDeals.length,
-      symbol: firstSymbol,
-      exchange: firstExchange,
-      dealIds: selectedDeals.map((d) => d.id),
-    });
-
-    try {
-      await mergeSmartOrdersMutation.mutateAsync({
-        botId: firstBotId,
-        dealIds: selectedDeals.map((d) => d.id),
-      });
-    } catch (error) {
-      logger.error(`${LOG_PREFIX}: Failed to merge deals`, { error });
-    }
-  }, [mergeBulkDialogOpen, mergeSmartOrdersMutation]);
-
-  const handleBulkJournalConfirm = useCallback(async () => {
-    const selectedDeals = journalBulkDialogOpen;
-    setJournalBulkDialogOpen([]);
-
-    logger.info(`${LOG_PREFIX}: Bulk add to journal`, {
-      count: selectedDeals.length,
-    });
-
-    let successCount = 0;
-    let skippedCount = 0;
-    // Re-read after every add so a deal selected twice is only added once.
-    const getJournalTrades = () => useTradeJournalStore.getState().trades;
-
-    for (const deal of selectedDeals) {
-      try {
-        const dealOrders = completedOrders.filter(
-          (order) => order.dealId === deal.id
-        );
-
-        const executions = dealOrders.map((order) => ({
-          id: order.clientOrderId,
-          action: (order.side === 'buy' ? 'buy' : 'sell') as 'buy' | 'sell',
-          timestamp: order.updateTime || order.time || Date.now(),
-          quantity: Number(order.executedQty || order.origQty || 0),
-          price: Number(order.price || 0),
-          fee: 0,
-          cost:
-            Number(order.executedQty || order.origQty || 0) *
-            Number(order.price || 0),
-        }));
-
-        const entryTime = deal.created
-          ? new Date(deal.created).getTime()
-          : Date.now();
-
-        const isOpenTrade = ['open', 'active', 'start'].includes(
-          deal.status.toLowerCase()
-        );
-        const isCancelledTrade = ['canceled', 'cancelled'].includes(
-          deal.status.toLowerCase()
-        );
-
-        const profitUsd = deal.profit?.totalUsd || 0;
-        const initialInvestment = deal.cost || 0;
-        const calculatedROI =
-          initialInvestment > 0 ? (profitUsd / initialInvestment) * 100 : 0;
-
-        const symbolString =
-          typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol;
-
-        if (
-          isDealInJournal(getJournalTrades(), {
-            dealId: deal.id,
-            symbol: symbolString,
-            exchange: deal.exchange,
-            entryTime,
-          })
-        ) {
-          skippedCount++;
-          continue;
-        }
-
-        const journalEntry: any = {
-          sourceDealId: deal.id,
-          symbol: symbolString,
-          exchange: deal.exchange,
-          direction: (deal.side?.toUpperCase() === 'LONG' ||
-          deal.side?.toUpperCase() === 'BUY'
-            ? 'long'
-            : 'short') as 'long' | 'short',
-          entryPrice: deal.entryPrice || deal.avgPrice || 0,
-          entryTime: entryTime,
-          amount: deal.size || deal.currentBalance.base || 0,
-          pnl: profitUsd,
-          roi: calculatedROI,
-          marketType: (deal.dealType === 'FUTURES' ? 'futures' : 'spot') as
-            | 'spot'
-            | 'futures',
-          notes: `Deal from ${deal.type} bot${deal.botName ? ` (${deal.botName})` : ''}${isOpenTrade ? ' (Open - Unrealized PNL)' : ''}${isCancelledTrade ? ' (Cancelled)' : ''}`,
-          executions: executions.length > 0 ? executions : undefined,
-        };
-
-        addToJournalBulk(journalEntry);
-        successCount++;
-      } catch (error) {
-        logger.error(`${LOG_PREFIX}: Failed to add deal to journal`, {
-          error,
-          dealId: deal.id,
-        });
-      }
-    }
-
-    if (successCount > 0) {
-      toast.success(`Added ${successCount} deal(s) to journal`);
-    }
-    if (skippedCount > 0) {
-      toast.info(`${skippedCount} deal(s) already in your journal, skipped`);
-    }
-    if (successCount + skippedCount < selectedDeals.length) {
-      toast.error(
-        `Failed to add ${selectedDeals.length - successCount - skippedCount} deal(s)`
-      );
-    }
-  }, [addToJournalBulk, completedOrders, journalBulkDialogOpen]);
-
-  // Individual deal actions menu component
-
-  // Bulk actions implementation
   const bulkActions = useMemo<BulkAction<TransformedTrade>[]>(
     () =>
-      createSharedDealBulkActions<TransformedTrade>({
-        onMerge: (selectedDeals) => {
-          if (selectedDeals.length < 2) {
-            toast.error('Select at least 2 deals to merge');
-            return;
-          }
-
-          const firstSymbol =
-            typeof selectedDeals[0].symbol === 'string'
-              ? selectedDeals[0].symbol
-              : selectedDeals[0].symbol.symbol;
-          const firstExchange = selectedDeals[0].exchange;
-
-          const allSameSymbol = selectedDeals.every((deal) => {
-            const dealSymbol =
-              typeof deal.symbol === 'string'
-                ? deal.symbol
-                : deal.symbol.symbol;
-            return dealSymbol === firstSymbol;
-          });
-
-          const allSameExchange = selectedDeals.every(
-            (deal) => deal.exchange === firstExchange
-          );
-
-          if (!allSameSymbol) {
-            toast.error('All selected deals must have the same trading pair');
-            return;
-          }
-
-          if (!allSameExchange) {
-            toast.error('All selected deals must be on the same exchange');
-            return;
-          }
-
-          setMergeBulkDialogOpen(selectedDeals);
-        },
-        onAddToJournal: (selectedDeals) => {
-          setJournalBulkDialogOpen(selectedDeals);
-        },
-        onAddFunds: (selectedDeals) => {
-          openBulkAdjustFunds('add', selectedDeals.map(toAdjustFundsTarget));
-        },
-        onReduceFunds: (selectedDeals) => {
-          openBulkAdjustFunds('reduce', selectedDeals.map(toAdjustFundsTarget));
-        },
-        onEdit: (selectedDeals) => {
-          if (selectedDeals.length === 0) return;
-          const ids = selectedDeals.map((d) => d.id);
-          const find = activeDealsRaw.filter((d) => ids.includes(d._id));
-          if (find.length > 0 && onEditDeal) {
-            onEditDeal(find);
-            logger.info(
-              `${LOG_PREFIX}: Bulk edit - opening edit drawer for first deal`,
-              {
-                dealId: selectedDeals[0].id,
-                totalSelected: selectedDeals.length,
-              }
-            );
-          } else {
-            logger.info(
-              `${LOG_PREFIX}: Bulk edit - deal not found or no edit handler`,
-              {
-                dealId: selectedDeals[0].id,
-              }
-            );
-            toast.error('Could not find deal to edit');
-          }
-        },
-        onMoveToTerminal: (selectedDeals) => {
-          setMoveBulkDialogOpen(selectedDeals.filter(canMoveTradeToTerminal));
-        },
-        onCancel: (selectedDeals) => {
-          setCancelBulkDialogOpen(selectedDeals);
-        },
-        onClose: (selectedDeals) => {
-          setCloseBulkDialogOpen(selectedDeals);
-        },
-        canMoveToTerminal: canMoveTradeToTerminal,
-        canAdjustFunds: (deal) => canAdjustDealFunds(toAdjustFundsTarget(deal)),
-        getSymbol: (deal) =>
-          typeof deal.symbol === 'string' ? deal.symbol : deal.symbol.symbol,
+      buildDealBulkActions<TransformedTrade>({
+        toDeal: dealRefFromTrade,
+        run: dealActions.run,
       }),
-    [
-      activeDealsRaw,
-      onEditDeal,
-      canMoveTradeToTerminal,
-      openBulkAdjustFunds,
-      toAdjustFundsTarget,
-    ]
+    [dealActions.run]
   );
 
   // Define columns for the DataTable
   // Date columns bucket and render their day in the ACCOUNT's zone, the same
   // boundary the daily-profit surfaces use — not the browser's.
   const accountTimeZone = useAccountTimeZone();
+  // Avg / Entry price render at the pair's own price precision.
+  const pairsByProvider = useTradingPairsDataStore((s) => s.pairsByProvider);
+  const botExchange = bot?.exchange;
   const columns = useMemo<
     ColumnDef<ReturnType<typeof transformDealToTradeWrapper>>[]
   >(() => {
+    const pairOf = (trade: ReturnType<typeof transformDealToTradeWrapper>) =>
+      findTradingPair(
+        pairsByProvider,
+        trade.exchange || botExchange,
+        typeof trade.symbol === 'string' ? trade.symbol : trade.symbol?.symbol
+      );
+    const pricePrecisionOf = (
+      trade: ReturnType<typeof transformDealToTradeWrapper>
+    ) => pairOf(trade)?.priceAssetPrecision;
+    // Balances render at the pair's base / quote precision (quote ≥ 2 decimals).
+    const amountPrecisionOf = (
+      trade: ReturnType<typeof transformDealToTradeWrapper>
+    ) => {
+      const pair = pairOf(trade);
+      if (!pair) return undefined;
+      const precision = getPrecision(pair);
+      return { base: precision.base, quote: Math.max(precision.quote, 2) };
+    };
     const baseColumns: ColumnDef<
       ReturnType<typeof transformDealToTradeWrapper>
     >[] = [
@@ -2441,7 +1117,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           if (!value) return <span className="text-muted-foreground">-</span>;
           return (
             <div className="text-sm font-medium">
-              {formatNumber(value, true)} {quoteAsset}
+              {formatPairPrice(value, pricePrecisionOf(trade))} {quoteAsset}
             </div>
           );
         },
@@ -2466,7 +1142,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
           if (!value) return <span className="text-muted-foreground">-</span>;
           return (
             <div className="text-sm font-medium">
-              {formatNumber(value, true)} {quoteAsset}
+              {formatPairPrice(value, pricePrecisionOf(trade))} {quoteAsset}
             </div>
           );
         },
@@ -2555,10 +1231,9 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         meta: { filterType: 'number' },
         cell: ({ row }) => {
           const trade = row.original;
-          const levels = trade.levels;
           return (
             <span className="text-sm font-medium">
-              {levels.complete} / {levels.all}
+              <DealLevelsText dealId={trade.id} levels={trade.levels} />
             </span>
           );
         },
@@ -2656,6 +1331,49 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         enableSorting: true,
         enableColumnFilter: true,
         sortingFn: 'basic',
+      },
+      {
+        id: 'positionValue',
+        accessorKey: 'positionValue',
+        header: 'Current Value',
+        meta: {
+          description: 'Position size × current price',
+          filterType: 'number',
+          enableTotalsRow: true,
+          totalsDefaultAggregation: 'sum',
+          totalsValueFn: (trade: TransformedTrade) =>
+            trade.positionValueUsd ?? NaN,
+        },
+        aggregationFn: 'sum',
+        sortUndefined: 'last',
+        cell: ({ row }) => {
+          const trade = row.original;
+          const value = trade.positionValue;
+          if (trade.active && value === undefined && pricesLoading) {
+            return <Skeleton className="h-4 w-16" />;
+          }
+          if (!value) {
+            return <span className="text-muted-foreground">-</span>;
+          }
+          const quoteAsset =
+            typeof trade.symbol === 'string' ? '' : trade.symbol.quoteAsset;
+          return (
+            <PendingLiveValue pending={trade.positionValuePending}>
+              <div className="text-sm font-medium">
+                {privacyMode
+                  ? '***'
+                  : `${formatNumber(value, false)} ${quoteAsset}`}
+              </div>
+            </PendingLiveValue>
+          );
+        },
+        footerValue: (value: number) => (
+          <span className="font-bold">
+            {privacyMode ? '***' : formatUsd(value)}
+          </span>
+        ),
+        enableSorting: true,
+        enableColumnFilter: true,
       },
       {
         id: 'drawdown',
@@ -2768,14 +1486,22 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               : row.original.symbol?.quoteAsset || '';
           if (!balances)
             return <span className="text-muted-foreground">-</span>;
+          const precision = amountPrecisionOf(row.original);
           return (
             <div className="flex flex-col text-xs">
-              <span>
-                Base: {formatNumber(balances.base, false)} {baseAsset}
-              </span>
-              <span className="text-muted-foreground">
-                Quote: {formatNumber(balances.quote, false)} {quoteAsset}
-              </span>
+              <ResponsiveAmount
+                label="Base: "
+                value={balances.base}
+                precision={precision?.base}
+                asset={baseAsset}
+              />
+              <ResponsiveAmount
+                className="text-muted-foreground"
+                label="Quote: "
+                value={balances.quote}
+                precision={precision?.quote}
+                asset={quoteAsset}
+              />
             </div>
           );
         },
@@ -2797,14 +1523,22 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               : row.original.symbol?.quoteAsset || '';
           if (!balances)
             return <span className="text-muted-foreground">-</span>;
+          const precision = amountPrecisionOf(row.original);
           return (
             <div className="flex flex-col text-xs">
-              <span>
-                Base: {formatNumber(balances.base, false)} {baseAsset}
-              </span>
-              <span className="text-muted-foreground">
-                Quote: {formatNumber(balances.quote, false)} {quoteAsset}
-              </span>
+              <ResponsiveAmount
+                label="Base: "
+                value={balances.base}
+                precision={precision?.base}
+                asset={baseAsset}
+              />
+              <ResponsiveAmount
+                className="text-muted-foreground"
+                label="Quote: "
+                value={balances.quote}
+                precision={precision?.quote}
+                asset={quoteAsset}
+              />
             </div>
           );
         },
@@ -2847,7 +1581,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         id: 'gridProfit',
         accessorKey: 'gridProfitUsd',
         header: 'Grid Profit',
-        meta: { filterType: 'number' },
+        meta: { filterType: 'number', reportingUsd: true },
         cell: ({ row }) => {
           const type = row.original.type;
           // Only show for Combo and Hedge Combo bots
@@ -3023,13 +1757,19 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               onClick={(e) => e.stopPropagation()}
             >
               <DealActionsMenu
-                trade={trade}
-                handleOpenDetailDrawer={handleRowClick}
-                filledOrders={completedOrders}
-                handleAdjustFundsConfirm={handleAdjustFundsConfirm}
-                botType={isComboBot ? BotTypesEnum.combo : BotTypesEnum.dca}
-                handleEdit={handleEdit}
-                handleMoveToTerminal={handleMoveToTerminal}
+                deal={dealRefFromTrade(trade)}
+                surface="drawerTable"
+                trigger={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="p-1 h-8 w-8"
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label="Deal actions"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </Button>
+                }
               />
             </div>
           );
@@ -3042,7 +1782,14 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       ReturnType<typeof transformDealToTradeWrapper>
     > = {
       id: 'unrealizedPnl',
-      accessorFn: (row) => toSortableMetricValue(row.unrealizedProfit),
+      accessorFn: (row) =>
+        toSortableMetricValue(
+          calculateDealOpenPnl({
+            active: row.active,
+            unrealizedProfit: row.unrealizedProfit,
+            realizedProfit: row.profit?.totalUsd ?? row.pnl,
+          })
+        ),
       header: 'Unrealized P&L',
       meta: { filterType: 'number' },
       cell: ({ row }) => {
@@ -3054,7 +1801,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (pricesLoading) {
           return <Skeleton className="h-4 w-16" />;
         }
-        const unrealizedPnl = trade.unrealizedProfit;
+        const unrealizedPnl = calculateDealOpenPnl({
+          active: trade.active,
+          unrealizedProfit: trade.unrealizedProfit,
+          realizedProfit: trade.profit?.totalUsd ?? trade.pnl,
+        });
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
             <span className="text-sm text-muted-foreground">
@@ -3071,6 +1822,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
             privacyMode={privacyMode}
             chipPosition="right"
             size="sm"
+
+            pending={trade.active && trade.unrealizedPending}
           />
         );
       },
@@ -3085,7 +1838,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       id: 'unrealizedPnlPercentage',
       accessorFn: (row) => {
         const percentage = calculatePnlPercentageNullable(
-          row.unrealizedProfit,
+          calculateDealOpenPnl({
+            active: row.active,
+            unrealizedProfit: row.unrealizedProfit,
+            realizedProfit: row.profit?.totalUsd ?? row.pnl,
+          }),
           row.cost
         );
         return toSortableMetricValue(percentage);
@@ -3101,7 +1858,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (pricesLoading) {
           return <Skeleton className="h-4 w-12" />;
         }
-        const unrealizedPnl = trade.unrealizedProfit;
+        const unrealizedPnl = calculateDealOpenPnl({
+          active: trade.active,
+          unrealizedProfit: trade.unrealizedProfit,
+          realizedProfit: trade.profit?.totalUsd ?? trade.pnl,
+        });
         if (isMetricUnavailable(unrealizedPnl)) {
           return (
             <ProfitLossPercChip
@@ -3116,7 +1877,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (privacyMode) {
           return <ProfitLossPercChip value={0} size="sm" textValue="***" />;
         }
-        return <ProfitLossPercChip value={percentage} size="sm" />;
+        return (
+          <PendingLiveValue pending={trade.active && trade.unrealizedPending}>
+            <ProfitLossPercChip value={percentage} size="sm" />
+          </PendingLiveValue>
+        );
       },
       enableSorting: true,
       enableColumnFilter: true,
@@ -3130,7 +1895,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       id: 'realizedPnl',
       accessorKey: 'profit.totalUsd',
       header: 'Realized P&L',
-      meta: { filterType: 'number' },
+      meta: { filterType: 'number', reportingUsd: true },
       cell: ({ row }) => {
         const trade = row.original;
         const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
@@ -3139,6 +1904,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         return (
           <ProfitAndPerc
             value={realizedPnl}
+            quoteAsset={dealProfitAsset(trade)}
+            quoteValue={trade.profit?.total}
             percentage={percentage}
             privacyMode={privacyMode}
             chipPosition="right"
@@ -3187,11 +1954,12 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       ReturnType<typeof transformDealToTradeWrapper>
     > = {
       id: 'netPnl',
-      accessorFn: (row) => {
-        const unrealizedPnl = row.unrealizedProfit || 0;
-        const realizedPnl = row.profit?.totalUsd || row.pnl || 0;
-        return unrealizedPnl + realizedPnl;
-      },
+      accessorFn: (row) =>
+        calculateDealNetPnl({
+          active: row.active,
+          unrealizedProfit: row.unrealizedProfit,
+          realizedProfit: row.profit?.totalUsd ?? row.pnl,
+        }),
       header: 'Net P&L',
       meta: { filterType: 'number' },
       cell: ({ row }) => {
@@ -3199,9 +1967,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (trade.active && pricesLoading) {
           return <Skeleton className="h-4 w-16" />;
         }
-        const unrealizedPnl = trade.unrealizedProfit || 0;
-        const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
-        const netPnl = unrealizedPnl + realizedPnl;
+        const netPnl = calculateDealNetPnl({
+          active: trade.active,
+          unrealizedProfit: trade.unrealizedProfit,
+          realizedProfit: trade.profit?.totalUsd ?? trade.pnl,
+        });
         const cost = trade.cost || 0;
         const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
         return (
@@ -3211,6 +1981,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
             privacyMode={privacyMode}
             chipPosition="right"
             size="sm"
+
+            pending={trade.active && trade.unrealizedPending}
           />
         );
       },
@@ -3224,9 +1996,11 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     > = {
       id: 'netPnlPercentage',
       accessorFn: (row) => {
-        const unrealizedPnl = row.unrealizedProfit || 0;
-        const realizedPnl = row.profit?.totalUsd || row.pnl || 0;
-        const netPnl = unrealizedPnl + realizedPnl;
+        const netPnl = calculateDealNetPnl({
+          active: row.active,
+          unrealizedProfit: row.unrealizedProfit,
+          realizedProfit: row.profit?.totalUsd ?? row.pnl,
+        });
         const cost = row.cost || 0;
         return cost > 0 ? (netPnl / cost) * 100 : 0;
       },
@@ -3237,15 +2011,21 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         if (trade.active && pricesLoading) {
           return <Skeleton className="h-4 w-12" />;
         }
-        const unrealizedPnl = trade.unrealizedProfit || 0;
-        const realizedPnl = trade.profit?.totalUsd || trade.pnl || 0;
-        const netPnl = unrealizedPnl + realizedPnl;
+        const netPnl = calculateDealNetPnl({
+          active: trade.active,
+          unrealizedProfit: trade.unrealizedProfit,
+          realizedProfit: trade.profit?.totalUsd ?? trade.pnl,
+        });
         const cost = trade.cost || 0;
         const percentage = cost > 0 ? (netPnl / cost) * 100 : 0;
         if (privacyMode) {
           return <ProfitLossPercChip value={0} size="sm" textValue="***" />;
         }
-        return <ProfitLossPercChip value={percentage} size="sm" />;
+        return (
+          <PendingLiveValue pending={trade.active && trade.unrealizedPending}>
+            <ProfitLossPercChip value={percentage} size="sm" />
+          </PendingLiveValue>
+        );
       },
       enableSorting: true,
       enableColumnFilter: true,
@@ -3283,17 +2063,16 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
     return filteredColumns;
   }, [
     privacyMode,
+    formatUsd,
+    dealProfitAsset,
     pricesLoading,
     handleOpenOrdersDialog,
-    handleRowClick,
-    completedOrders,
-    handleAdjustFundsConfirm,
     isComboBot,
     selectedTab,
-    handleEdit,
-    handleMoveToTerminal,
     accountTimeZone,
     botId,
+    pairsByProvider,
+    botExchange,
   ]);
   // Server-paged drawer: only columns with a server field sort.
   const pagedFields = pagedDeals.serverPaging?.fields;
@@ -3305,6 +2084,10 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   const dealsData = useMemo(
     () => (selectedTab === 'active' ? activeDeals : closedDeals),
     [selectedTab, activeDeals, closedDeals]
+  );
+  const pricedDealsData = useDealPositionValues(
+    dealsData,
+    transformedTradePosition
   );
 
   const ordersForDealDialog = useMemo(
@@ -3332,6 +2115,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
       netPnl: false,
       netPnlPercentage: false,
       dealId: false,
+      positionValue: false,
     }),
     []
   );
@@ -3472,7 +2256,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
   }
 
   return (
-    <>
+    <DealActionsContext.Provider value={dealActions}>
       {/* DrawerSection (i.e. a headerless WidgetWrapper) is what carries the
           "Enter fullscreen" control. Without it this tab had no way into
           full-screen at all — not the button, not the triple-tap — which on a
@@ -3493,7 +2277,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
               tableId={`${widgetId}-${selectedTab}-deals`}
               columns={drawerColumns}
               serverSide={pagedDeals.serverPaging?.serverSide}
-              data={dealsData}
+              data={pricedDealsData}
               enableGlobalFilter
               enableColumnFilters
               enableSorting
@@ -3598,88 +2382,7 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         />
       )}
 
-      <ConfirmationDialog
-        open={!!moveBulkDialogOpen.length}
-        onOpenChange={() => setMoveBulkDialogOpen([])}
-        title="Move deal to terminal"
-        description={`Are you sure you want to move ${moveBulkDialogOpen.length} ${moveBulkDialogOpen.length > 1 ? 'deals' : 'deal'} to the terminal? ${MOVE_TO_TERMINAL_WARNING}`}
-        confirmText="Confirm"
-        cancelText="Cancel"
-        onConfirm={handleBulkMoveToTerminalConfirm}
-      />
-
-      <CloseOptionsDialog
-        open={!!closeBulkDialogOpen.length}
-        onOpenChange={(open) => {
-          if (!open) {
-            setCloseBulkDialogOpen([]);
-          }
-        }}
-        onConfirm={handleBulkCloseConfirm}
-        defaultCloseType={CloseDCATypeEnum.closeByMarket}
-        ignoreOptions={[CloseDCATypeEnum.leave]}
-        mode="deal"
-        count={closeBulkDialogOpen.length}
-      />
-
-      <ConfirmationDialog
-        open={!!cancelBulkDialogOpen.length}
-        onOpenChange={(open) => {
-          if (!open) {
-            setCancelBulkDialogOpen([]);
-          }
-        }}
-        title={
-          cancelBulkDialogOpen.length === 1 ? 'Cancel deal' : 'Cancel deals'
-        }
-        description={`Remove ${cancelBulkDialogOpen.length} ${cancelBulkDialogOpen.length === 1 ? 'deal' : 'deals'} from Gainium and cancel any pending exchange orders. Open positions on the exchange will be left untouched and must be managed manually.`}
-        confirmText={
-          cancelBulkDialogOpen.length === 1
-            ? 'Cancel deal'
-            : `Cancel ${cancelBulkDialogOpen.length} deals`
-        }
-        cancelText="Keep deals"
-        variant="destructive"
-        onConfirm={handleBulkCancelConfirm}
-      />
-
-      <ConfirmationDialog
-        open={!!mergeBulkDialogOpen.length}
-        onOpenChange={(open) => {
-          if (!open) {
-            setMergeBulkDialogOpen([]);
-          }
-        }}
-        title={`Merge ${mergeBulkDialogOpen.length} deals`}
-        description={`Combine ${mergeBulkDialogOpen.length} deals on ${mergeBulkDialogOpen[0]?.exchange ?? ''} ${typeof mergeBulkDialogOpen[0]?.symbol === 'string' ? mergeBulkDialogOpen[0]?.symbol : mergeBulkDialogOpen[0]?.symbol.symbol ?? ''} into a single deal. Their executed orders and balances will be consolidated.`}
-        confirmText="Merge deals"
-        cancelText="Cancel"
-        onConfirm={handleBulkMergeConfirm}
-      />
-
-      <ConfirmationDialog
-        open={!!journalBulkDialogOpen.length}
-        onOpenChange={(open) => {
-          if (!open) {
-            setJournalBulkDialogOpen([]);
-          }
-        }}
-        title={
-          journalBulkDialogOpen.length === 1
-            ? 'Add deal to journal'
-            : 'Add deals to journal'
-        }
-        description={`Create ${journalBulkDialogOpen.length} new ${journalBulkDialogOpen.length === 1 ? 'entry' : 'entries'} in your trade journal from the selected ${journalBulkDialogOpen.length === 1 ? 'deal' : 'deals'}. The original ${journalBulkDialogOpen.length === 1 ? 'deal is' : 'deals are'} not modified.`}
-        confirmText={
-          journalBulkDialogOpen.length === 1
-            ? 'Add to journal'
-            : `Add ${journalBulkDialogOpen.length} to journal`
-        }
-        cancelText="Cancel"
-        onConfirm={handleBulkJournalConfirm}
-      />
-
-      {bulkAdjustFundsDialog}
+      {dealActionDialogs}
 
       {/* Detail Drawer */}
       {/* {selectedDealForDrawer && (
@@ -3713,104 +2416,8 @@ export const DrawerDealsTable: React.FC<DrawerDealsTableProps> = ({
         </TradeDetailDrawer>
       )} */}
 
-      {/* Pair Selection Dialog for Multi-Coin Bots */}
-      <Dialog
-        open={pairSelectDialogOpen}
-        onOpenChange={setPairSelectDialogOpen}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Select Trading Pair</DialogTitle>
-            <DialogDescription>
-              Choose which trading pair to open a new deal for.
-              {availablePairs.length > 10 && (
-                <span className="text-xs ml-1">
-                  ({availablePairs.length} pairs available)
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-2">
-            {/* Search Input */}
-            <div className="mb-3">
-              <Input
-                placeholder="Search pairs..."
-                value={pairSearchQuery}
-                onChange={(e) => setPairSearchQuery(e.target.value)}
-                startAdornment={
-                  <Search className="w-4 h-4 text-muted-foreground" />
-                }
-                className="w-full"
-              />
-            </div>
-            {/* Pair List */}
-            <div className="max-h-64 overflow-y-auto border rounded-md">
-              {filteredPairs.length > 0 ? (
-                filteredPairs.map((pair) => (
-                  <div
-                    key={pair}
-                    className={`flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-accent transition-colors ${
-                      selectedPairForDeal === pair ? 'bg-accent' : ''
-                    }`}
-                    onClick={() => setSelectedPairForDeal(pair)}
-                  >
-                    <span className="font-medium text-sm">{pair}</span>
-                    {selectedPairForDeal === pair && (
-                      <Check className="w-4 h-4 text-primary" />
-                    )}
-                  </div>
-                ))
-              ) : (
-                <div className="px-3 py-4 text-center text-muted-foreground text-sm">
-                  No pairs found matching "{pairSearchQuery}"
-                </div>
-              )}
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setPairSelectDialogOpen(false);
-                setSelectedPairForDeal(null);
-                setPairSearchQuery('');
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleConfirmOpenDeal}
-              disabled={!selectedPairForDeal || isOpenDealPending}
-            >
-              {isOpenDealPending ? 'Opening...' : 'Open Deal'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Max Active Deals Reached Dialog */}
-      <Dialog
-        open={!!maxActiveDialog}
-        onOpenChange={() => setMaxActiveDialog(null)}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Information</DialogTitle>
-          </DialogHeader>
-          <div className="py-4">
-            <p className="text-sm text-muted-foreground">
-              Maximum active deals reached for this {maxActiveDialog}. You can
-              update settings to open more deals.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setMaxActiveDialog(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+      {openDealDialogs}
+    </DealActionsContext.Provider>
   );
 };
 

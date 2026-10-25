@@ -27,7 +27,12 @@ import {
   resolvePairSelectionSymbol,
 } from '@/utils/pairs';
 import { useUserFee } from '@/hooks/useUserFee';
-import type { Asset, CoinListItem, ExchangeInUser } from '@/types';
+import {
+  BotTypesEnum,
+  type Asset,
+  type CoinListItem,
+  type ExchangeInUser,
+} from '@/types';
 import { OKXSource } from '@/types/exchange.types';
 
 import { useTradingPairsFromContext } from '@/contexts/ExchangeDataContext';
@@ -83,6 +88,20 @@ export const BotFormQueryContext = createContext<
  */
 const STABLE_QUOTES = ['USDT', 'USDC', 'USD', 'BUSD', 'USDP'];
 
+/**
+ * Every key a form pair may carry and still count as listed on the venue —
+ * the `byPair` key and the exchange-native `pair`. The pair filter below drops
+ * form pairs outside this set; the save path reuses it so a pair the filter
+ * dropped is not mistaken for one the user removed.
+ */
+export const listedPairKeys = (
+  byPair: Record<string, TradingPair> | null | undefined
+): Set<string> =>
+  new Set<string>([
+    ...Object.keys(byPair ?? {}),
+    ...Object.values(byPair ?? {}).map((p) => p.pair),
+  ]);
+
 export const pickDefaultPair = (
   byPair: Record<string, TradingPair>
 ): string | null => {
@@ -107,6 +126,140 @@ export const pickDefaultPair = (
     findKey((e) => STABLE_QUOTES.includes(quoteOf(e))) ??
     keys[0]
   );
+};
+
+/**
+ * The pair-picker items for one exchange account: every pair `pairsByExchange`
+ * lists for the account's provider (OKX Europe vs global kept apart), keyed by
+ * selection symbol, plus the lookup metadata. Exported so a pair picker
+ * outside the bot form can offer exactly the bot form's list.
+ */
+export const buildExchangePairItems = (
+  pairsByExchange: Record<string, TradingPair[]> | null | undefined,
+  currentExchange: Pick<ExchangeInUser, 'provider' | 'okxSource'> | null
+): { items: CoinListItem[]; metadata: CoinFilterPairMetadata } => {
+  if (!pairsByExchange || !currentExchange) {
+    // Same mount-before-data state as above, one step downstream — and it
+    // dumped the entire pair map into every entry.
+    logger.debug(
+      '[BotFormQueryProvider] No pairsByExchange or currentExchange available — returning empty pair items',
+      {
+        exchangeCount: Object.keys(pairsByExchange ?? {}).length,
+        hasCurrentExchange: Boolean(currentExchange),
+      }
+    );
+    return {
+      items: [] as CoinListItem[],
+      metadata: {
+        bySelectionSymbol: {} as Record<string, TradingPair>,
+        byPair: {} as Record<string, TradingPair>,
+      },
+    };
+  }
+
+  const items: Map<string, CoinListItem> = new Map();
+  const bySelectionSymbol: Record<string, TradingPair> = {};
+  const byPair: Record<string, TradingPair> = {};
+
+  Object.entries(pairsByExchange).forEach(([exchangeName, pairs]) => {
+    if (
+      exchangeName.toUpperCase() !== currentExchange?.provider.toUpperCase()
+    ) {
+      return;
+    }
+
+    const accountIsOkxEu = currentExchange?.okxSource === OKXSource.my;
+    pairs.forEach((pair) => {
+      // OKX Europe (okxSource=my) accounts trade a distinct USDC/EUR universe
+      // tagged source='my'; every other account — including global OKX — uses
+      // the source-less global list. Keep the two from leaking into each other.
+      if (accountIsOkxEu !== (pair.source === OKXSource.my)) {
+        return;
+      }
+      const base = pair.baseAsset?.name?.toUpperCase?.() ?? '';
+      const quote = pair.quoteAsset?.name?.toUpperCase?.() ?? '';
+
+      if (!base || !quote) {
+        return;
+      }
+
+      // Identify the pair by its exchange-native symbol whenever that symbol
+      // can't be rebuilt from base + quote (COIN-M `BTCUSD_PERP`, dated
+      // futures `BTCUSDT_260925` / `BTCUSDT-25SEP26`, `BTCPERP`, `BTCUSDU26`,
+      // OKX X-Perps). Rebuilding those produces a symbol the candle API
+      // rejects — or one that silently resolves to the perpetual instead of
+      // the dated contract — and it also collapsed every expiry of a market
+      // onto one `BASE-QUOTE` row, so the `items.has` de-dupe below dropped
+      // all but the first from the picker entirely.
+      const selectionSymbol = resolvePairSelectionSymbol(
+        pair.pair,
+        base,
+        quote
+      );
+
+      // Avoid duplicates when multiple exchanges share the same pair
+      if (items.has(selectionSymbol)) {
+        return;
+      }
+
+      // No exchange subtitle: the selector is already scoped to the
+      // current exchange, so repeating the venue on every row is noise.
+      // The market-cap rank / curated ROI now occupy that secondary line.
+      items.set(selectionSymbol, {
+        symbol: selectionSymbol,
+        name: `${base}/${quote}`,
+        baseAsset: base,
+        quoteAsset: quote,
+        // Human-readable base-asset name for display alongside the ticker
+        // (falls back to the ticker in the UI when unresolved).
+        baseDisplayName: pair.baseAsset?.displayName,
+        // A stock keeps the exchange's own spelling on screen (Bitget's
+        // Reality `rMCD`, not `RMCD`), matching the selected-pair chip.
+        ...(pair.assetCategory === 'stock' || pair.assetCategory === 'etf'
+          ? { baseLabel: pair.baseAsset?.name }
+          : {}),
+        // Carry the venue so CoinIcon can normalize tokenized-stock tickers
+        // (the base is upper-cased here, so the lower-case wrapper hint is
+        // gone — exchange is the only signal left to strip RAAPL/AAPLX).
+        exchange: pair.exchange,
+        // Carry this pair's OWN class (already scoped to the current
+        // exchange) so the picker's Stocks/Crypto filter is exchange-correct
+        // and doesn't inherit a same-named symbol's class from another venue.
+        assetCategory: pair.assetCategory,
+        // Canonical flag → drives the picker's "Canonical only" toggle.
+        isCanonical: pair.isCanonical,
+        color: 'var(--color-primary)',
+      });
+
+      // Key off the selection symbol, not `${base}${quote}`: for a suffixed
+      // pair the latter would collapse `BTCUSD_PERP` to `BTCUSD` and collide
+      // with the venue's plain `BTCUSD` contract. Lookups all run the stored
+      // pair through `normalizePairKey`, so this stays the matching key.
+      const normalizedPairKey = normalizePairKey(selectionSymbol);
+      bySelectionSymbol[selectionSymbol] = pair;
+      if (!(normalizedPairKey in byPair)) {
+        byPair[normalizedPairKey] = pair;
+      }
+    });
+  });
+
+  // Sort alphabetically for easier navigation
+  const sortedItems = [...items.values()].sort((a, b) =>
+    a.symbol.localeCompare(b.symbol)
+  );
+
+  const result = {
+    items: sortedItems,
+    metadata: {
+      bySelectionSymbol,
+      byPair,
+    },
+  };
+  logger.debug(
+    '[BotFormQueryProvider] Computed pair items and metadata',
+    result
+  );
+  return result;
 };
 
 export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
@@ -148,130 +301,10 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
 
   const { pairsByExchange } = useTradingPairsFromContext();
 
-  const { items: pairItems, metadata: pairMetadata } = useMemo(() => {
-    if (!pairsByExchange || !currentExchange) {
-      // Same mount-before-data state as above, one step downstream — and it
-      // dumped the entire pair map into every entry.
-      logger.debug(
-        '[BotFormQueryProvider] No pairsByExchange or currentExchange available — returning empty pair items',
-        {
-          exchangeCount: Object.keys(pairsByExchange ?? {}).length,
-          hasCurrentExchange: Boolean(currentExchange),
-        }
-      );
-      return {
-        items: [] as CoinListItem[],
-        metadata: {
-          bySelectionSymbol: {} as Record<string, TradingPair>,
-          byPair: {} as Record<string, TradingPair>,
-        },
-      };
-    }
-
-    const items: Map<string, CoinListItem> = new Map();
-    const bySelectionSymbol: Record<string, TradingPair> = {};
-    const byPair: Record<string, TradingPair> = {};
-
-    Object.entries(pairsByExchange).forEach(([exchangeName, pairs]) => {
-      if (
-        exchangeName.toUpperCase() !== currentExchange?.provider.toUpperCase()
-      ) {
-        return;
-      }
-
-      const accountIsOkxEu = currentExchange?.okxSource === OKXSource.my;
-      pairs.forEach((pair) => {
-        // OKX Europe (okxSource=my) accounts trade a distinct USDC/EUR universe
-        // tagged source='my'; every other account — including global OKX — uses
-        // the source-less global list. Keep the two from leaking into each other.
-        if (accountIsOkxEu !== (pair.source === OKXSource.my)) {
-          return;
-        }
-        const base = pair.baseAsset?.name?.toUpperCase?.() ?? '';
-        const quote = pair.quoteAsset?.name?.toUpperCase?.() ?? '';
-
-        if (!base || !quote) {
-          return;
-        }
-
-        // Identify the pair by its exchange-native symbol whenever that symbol
-        // can't be rebuilt from base + quote (COIN-M `BTCUSD_PERP`, dated
-        // futures `BTCUSDT_260925` / `BTCUSDT-25SEP26`, `BTCPERP`, `BTCUSDU26`,
-        // OKX X-Perps). Rebuilding those produces a symbol the candle API
-        // rejects — or one that silently resolves to the perpetual instead of
-        // the dated contract — and it also collapsed every expiry of a market
-        // onto one `BASE-QUOTE` row, so the `items.has` de-dupe below dropped
-        // all but the first from the picker entirely.
-        const selectionSymbol = resolvePairSelectionSymbol(
-          pair.pair,
-          base,
-          quote
-        );
-
-        // Avoid duplicates when multiple exchanges share the same pair
-        if (items.has(selectionSymbol)) {
-          return;
-        }
-
-        // No exchange subtitle: the selector is already scoped to the
-        // current exchange, so repeating the venue on every row is noise.
-        // The market-cap rank / curated ROI now occupy that secondary line.
-        items.set(selectionSymbol, {
-          symbol: selectionSymbol,
-          name: `${base}/${quote}`,
-          baseAsset: base,
-          quoteAsset: quote,
-          // Human-readable base-asset name for display alongside the ticker
-          // (falls back to the ticker in the UI when unresolved).
-          baseDisplayName: pair.baseAsset?.displayName,
-          // A stock keeps the exchange's own spelling on screen (Bitget's
-          // Reality `rMCD`, not `RMCD`), matching the selected-pair chip.
-          ...(pair.assetCategory === 'stock' || pair.assetCategory === 'etf'
-            ? { baseLabel: pair.baseAsset?.name }
-            : {}),
-          // Carry the venue so CoinIcon can normalize tokenized-stock tickers
-          // (the base is upper-cased here, so the lower-case wrapper hint is
-          // gone — exchange is the only signal left to strip RAAPL/AAPLX).
-          exchange: pair.exchange,
-          // Carry this pair's OWN class (already scoped to the current
-          // exchange) so the picker's Stocks/Crypto filter is exchange-correct
-          // and doesn't inherit a same-named symbol's class from another venue.
-          assetCategory: pair.assetCategory,
-          // Canonical flag → drives the picker's "Canonical only" toggle.
-          isCanonical: pair.isCanonical,
-          color: 'var(--color-primary)',
-        });
-
-        // Key off the selection symbol, not `${base}${quote}`: for a suffixed
-        // pair the latter would collapse `BTCUSD_PERP` to `BTCUSD` and collide
-        // with the venue's plain `BTCUSD` contract. Lookups all run the stored
-        // pair through `normalizePairKey`, so this stays the matching key.
-        const normalizedPairKey = normalizePairKey(selectionSymbol);
-        bySelectionSymbol[selectionSymbol] = pair;
-        if (!(normalizedPairKey in byPair)) {
-          byPair[normalizedPairKey] = pair;
-        }
-      });
-    });
-
-    // Sort alphabetically for easier navigation
-    const sortedItems = [...items.values()].sort((a, b) =>
-      a.symbol.localeCompare(b.symbol)
-    );
-
-    const result = {
-      items: sortedItems,
-      metadata: {
-        bySelectionSymbol,
-        byPair,
-      },
-    };
-    logger.debug(
-      '[BotFormQueryProvider] Computed pair items and metadata',
-      result
-    );
-    return result;
-  }, [pairsByExchange, currentExchange]);
+  const { items: pairItems, metadata: pairMetadata } = useMemo(
+    () => buildExchangePairItems(pairsByExchange, currentExchange),
+    [pairsByExchange, currentExchange]
+  );
 
   const [shouldCheckPairs, setShouldCheckPairs] = useState(false);
 
@@ -332,10 +365,7 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
 
   useEffect(() => {
     if (shouldCheckPairs && Object.keys(pairMetadata.byPair).length > 0) {
-      const validPairKeys = new Set<string>([
-        ...Object.keys(pairMetadata.byPair),
-        ...Object.values(pairMetadata.byPair).map((p) => p.pair),
-      ]);
+      const validPairKeys = listedPairKeys(pairMetadata.byPair);
       const currentPairs = [formPair].flat().filter(Boolean);
       const filteredPairs = currentPairs.filter((p) => validPairKeys.has(p));
 
@@ -418,6 +448,7 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
   const exchangeProviderRef = useRef<string | null>(null);
   const formFutures = useBotFormSelector('futures');
   const formCoinm = useBotFormSelector('coinm');
+  const formType = useBotFormTopLevelSelector('type');
 
   useEffect(() => {
     const provider = currentExchange?.provider;
@@ -437,14 +468,28 @@ export const BotFormQueryProvider: React.FC<BotFormQueryProviderProps> = ({
     // only re-derive it when the exchange actually changes, never on a
     // drift-correcting pass, or we'd clobber the user's choice.
     if (exchangeProviderRef.current !== provider) {
+      const previousProvider = exchangeProviderRef.current;
       exchangeProviderRef.current = provider;
       updateFormData('profitCurrency', coinm ? 'base' : 'quote');
+      // A futures exchange forces a grid's `orderFixedIn` to the margin asset
+      // (`base` on linear), and nothing put it back when the user moved to a
+      // spot exchange: the spot form then sized every level in base coin,
+      // so starting the bot demanded a balance of the base asset. Re-derive
+      // it like legacy does on exchange change — but only on a real change,
+      // so the first pass doesn't overwrite a cloned bot's saved choice.
+      if (previousProvider !== null && formType === BotTypesEnum.grid) {
+        updateFormData(
+          'orderFixedIn',
+          futures && !coinm ? 'base' : 'quote'
+        );
+      }
     }
   }, [
     currentExchange?.provider,
     mode,
     formFutures,
     formCoinm,
+    formType,
     updateFormData,
   ]);
 

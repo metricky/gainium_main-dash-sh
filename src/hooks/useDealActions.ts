@@ -15,11 +15,13 @@ import {
 } from '@/lib/api/GraphQLQueries-deal-queries';
 import { toast } from '@/lib/toast';
 import type { AdjustFundsDialogMode } from '@/features/bots/shared/runtime';
+import { watchFundsRequest } from '@/features/bots/shared/runtime/dialogs/fundsRefusalWatch';
 import { useAuthStore } from '@/stores/authStore';
 import { useUIStore } from '@/stores/uiStore';
 import { useDealStore } from '@/stores/live';
 import { recordDealTombstone } from '@/stores/live/staleWriteGuard';
 import { requestDealResync } from '@/stores/live/dealResync';
+import { adoptDeals } from '@/lib/singlePosition/singlePositionApi';
 import {
   removeDealFromListCaches,
   invalidateListCaches,
@@ -76,6 +78,12 @@ interface MoveDealToBotInput {
   targetBotId: string;
   /** The terminal bot currently hosting the deal (cleaned up after the move). */
   sourceBotId: string;
+  /**
+   * Single position per pair: the target bot's open deal on this pair. When
+   * set, the deal is ADOPTED into it (`adoptDeals`, the position keeps its id)
+   * instead of becoming a new deal through `mergeDeals`.
+   */
+  targetDealId?: string;
 }
 
 /**
@@ -331,6 +339,11 @@ export function useAdjustFunds(options?: UseAdjustFundsOptions) {
 
       return { status: 'NOTOK', reason: 'Invalid operation' };
     },
+    // Before the request: a refusal the engine makes at once can be pushed
+    // over the socket before this request's own response arrives.
+    onMutate: (variables) => {
+      watchFundsRequest(variables.botId, variables.mode);
+    },
     onSuccess: (response, variables) => {
       logger.info('[useAdjustFunds] Adjust-funds request accepted:', {
         dealId: variables.dealId,
@@ -342,8 +355,8 @@ export function useAdjustFunds(options?: UseAdjustFundsOptions) {
       }
       // The OK response only means the request was QUEUED — the order is
       // placed on the exchange later and may still be rejected there (that
-      // rejection arrives asynchronously as a `bot sends message` error,
-      // surfaced by LiveMessageToaster). So echo the backend's "scheduled"
+      // rejection arrives asynchronously as a `bot sends message`, which
+      // LiveMessageToaster shows as this request's outcome). So echo the backend's "scheduled"
       // message instead of implying the funds already moved.
       const scheduledMsg =
         typeof response?.data === 'string' && response.data.trim()
@@ -440,7 +453,10 @@ export type RestartDealInput = {
  * QUEUED like execute-next-DCA: OK means the engine accepted it; the new
  * orders (or the exchange's refusal) arrive over the websocket.
  */
-export function useRestartDeal() {
+export function useRestartDeal(options?: { silent?: boolean }) {
+  // Silent: bulk callers await every deal and report one aggregate instead of
+  // a toast per deal.
+  const silent = options?.silent ?? false;
   const { tokens } = useAuthStore();
 
   const isLiveTrading = useUIStore((s) => s.isLiveTrading);
@@ -452,7 +468,7 @@ export function useRestartDeal() {
   );
 
   return useMutation<DealResponse, Error, RestartDealInput>({
-    meta: { errorToast: true },
+    ...(silent ? {} : { meta: { errorToast: true } }),
     mutationFn: async (input) => {
       logger.info('[useRestartDeal] Restarting deal:', input);
 
@@ -471,6 +487,9 @@ export function useRestartDeal() {
       return response.restartDeal;
     },
     onSuccess: (response) => {
+      if (silent) {
+        return;
+      }
       toast.info(
         typeof response?.data === 'string' && response.data.trim()
           ? response.data
@@ -823,12 +842,25 @@ export function useMoveDealToBot() {
   );
 
   return useMutation<DealResponse, Error, MoveDealToBotInput>({
-    mutationFn: async ({ dealId, targetBotId, sourceBotId }) => {
+    mutationFn: async ({ dealId, targetBotId, sourceBotId, targetDealId }) => {
       logger.info('[useMoveDealToBot] Moving terminal deal to bot:', {
         dealId,
         targetBotId,
         sourceBotId,
+        targetDealId,
       });
+
+      if (targetDealId) {
+        // Single-position bot with an open deal on this pair: fold the
+        // terminal deal into that position (spec 139 §5.2.1).
+        const adopted = await adoptDeals(client, {
+          botId: targetBotId,
+          targetDealId,
+          dealIds: [dealId],
+        });
+        void cleanupOrphanTerminalBot(client, sourceBotId);
+        return adopted as DealResponse;
+      }
 
       const { query, variables } = dealQueries.mergeDeals({
         botId: targetBotId,

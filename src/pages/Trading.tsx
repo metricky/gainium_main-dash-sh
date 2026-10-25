@@ -3,7 +3,7 @@ import { percentBasisFromDeal } from '@/types/dcaDeal';
 import { tpSLConfig } from '@/utils/bots/dca/tpSlConfig';
 import type { ColumnDef } from '@tanstack/react-table';
 import { motion } from 'framer-motion';
-import { Activity, ExternalLink, Loader2, Play, Square } from 'lucide-react';
+import { Activity, ExternalLink, Loader2 } from 'lucide-react';
 import EmptyState from '../components/ui/empty-state';
 import React, {
   useCallback,
@@ -15,10 +15,7 @@ import React, {
 import MainLayout from '../components/layout/MainLayout';
 import WidgetContainer from '../components/layout/WidgetContainer';
 import { TradeDetailDrawer } from '../components/trades/TradeDetailDrawer';
-import {
-  DataTable,
-  type BulkAction,
-} from '../components/ui/data-table/data-table';
+import { DataTable } from '../components/ui/data-table/data-table';
 import BotListStatsBoxes from '../components/ui/BotListStatsBoxes';
 import {
   combineBotListStats,
@@ -34,12 +31,8 @@ import {
   StatusChip,
   StrategyChip,
 } from '../components/ui/chip';
-import { useBotStatusToggle } from '../hooks/useBotMutations';
-import { BotStatusConfirmationModal } from '@/components/modals';
-import {
-  filterStartableBots,
-  filterStoppableBots,
-} from '@/utils/botStatusUtils';
+import { botKindFromType, toBotRef } from '@/features/bots/actions/botRef';
+import { useBulkBotRunner } from '@/hooks/useBulkBotRunner';
 // useDealActions not currently used (placeholder)
 import { buildBotViewRoute } from '@/utils/bots/navigation';
 import { formatDuration } from '@/utils/formatters';
@@ -62,13 +55,17 @@ import { useComboDeals } from '../hooks/useComboDeals';
 import { useDcaBots } from '../hooks/useDcaBots';
 import { useDcaDeals } from '../hooks/useDcaDeals';
 import { useGridBots } from '../hooks/useGridBots';
+import {
+  isDealPnlPending,
+  useDealsWithLivePnl,
+  useLiveDealPnl,
+} from '../hooks/useLiveDealPnl';
+import { isActiveDealStatus } from '../lib/utils/dealUnrealizedPnl';
 /* import { useHedgeComboBots } from '../hooks/useHedgeComboBots';
 import { useHedgeComboDeals } from '../hooks/useHedgeComboDeals';
 import { useHedgeDcaBots } from '../hooks/useHedgeDcaBots';
 import { useHedgeDcaDeals, type HedgeDcaDeal } from '../hooks/useHedgeDcaDeals'; */
-import { isReadOnly } from '../lib/demoMode';
 import { logger } from '../lib/loggerInstance';
-import { toast } from '../lib/toast';
 import { formatCurrency } from '../lib/utils';
 import {
   calculateDealCost,
@@ -92,8 +89,6 @@ import {
   type ComboBot,
   type DCABot,
   BotTypesEnum,
-  CloseDCATypeEnum,
-  CloseGRIDTypeEnum,
   DCADealStatusEnum,
   StrategyEnum,
 } from '@/types';
@@ -151,6 +146,8 @@ interface TradeItem {
       }
     | undefined;
   unrealizedProfit?: number | undefined;
+  /** Open deal whose live price has not arrived yet: unrealizedProfit is the server's last saved value. */
+  unrealizedPending?: boolean | undefined;
   avgPrice?: number | undefined;
   levels: {
     complete: number;
@@ -234,10 +231,13 @@ const Trading: React.FC = () => {
   } = useDcaDeals({ terminal: false, paperContext: currentPaperContext });
 
   const {
-    deals: comboDeals,
+    deals: comboDealsStored,
     isLoading: comboLoading,
     isError: comboError,
   } = useComboDeals({ paperContext: currentPaperContext });
+  // Live, fee-inclusive unrealized P&L for the open combo deals; the stored
+  // value with a pending mark until it is live.
+  const comboDeals = useDealsWithLivePnl(comboDealsStored, { combo: true });
 
   /* const {
     deals: hedgeComboDeals,
@@ -296,6 +296,20 @@ const Trading: React.FC = () => {
       return true;
     });
   }, [dcaDeals, terminalDealIds]);
+
+  // Live, fee-inclusive unrealized P&L for the open DCA and terminal deals,
+  // priced from the same feed the trade cards show their Current Price from.
+  // `useDcaDeals` only carries the server's stored value, which can be far
+  // older than that price — a card showed a loss at a price well above its
+  // average entry.
+  const openDcaLikeDeals = useMemo(
+    () =>
+      [...dcaDealsOnly, ...(terminalDeals || [])].filter((deal) =>
+        isActiveDealStatus(deal.status)
+      ),
+    [dcaDealsOnly, terminalDeals]
+  );
+  const liveDealPnl = useLiveDealPnl(openDcaLikeDeals);
 
   // Fetch grid bots (these are different from deals)
   // Use dynamic status based on showClosedTrades state
@@ -484,9 +498,12 @@ const Trading: React.FC = () => {
         try {
           // Get calculated unrealized PnL using actual deal ID
           const actualDealId = deal._id || deal.botId;
-          // Use hook-provided unrealizedUsd for parity with Treemap and single source of truth
-          const hookUnrealized = (deal as { unrealizedUsd?: number })
-            .unrealizedUsd;
+          // Live value when the deal is priced; else the hook's stored one.
+          const liveUnrealized = liveDealPnl.get(deal._id)?.unrealizedUsd;
+          const unrealizedPending = isDealPnlPending(deal, liveDealPnl);
+          const hookUnrealized =
+            liveUnrealized ??
+            (deal as { unrealizedUsd?: number }).unrealizedUsd;
           const unrealizedProfit =
             typeof hookUnrealized === 'number'
               ? hookUnrealized
@@ -557,6 +574,7 @@ const Trading: React.FC = () => {
               maxUsd: deal.usage?.maxUsd,
             },
             unrealizedProfit,
+            unrealizedPending,
             avgPrice,
             levels: {
               complete: deal.levels?.complete || 0,
@@ -673,6 +691,8 @@ const Trading: React.FC = () => {
               pureQuote: deal.profit?.pureQuote || 0,
             },
             unrealizedProfit,
+            unrealizedPending: (deal as { unrealizedPending?: boolean })
+              .unrealizedPending,
             avgPrice: deal.avgPrice,
             levels: {
               complete: deal.levels?.complete || 0,
@@ -873,8 +893,11 @@ const Trading: React.FC = () => {
           // Get calculated unrealized PnL using actual deal ID
           const actualDealId = deal._id || deal.botId;
           // Terminal deals are typically closed; hook returns undefined for inactive -> default to 0
-          const hookUnrealized = (deal as { unrealizedUsd?: number })
-            .unrealizedUsd;
+          const liveUnrealized = liveDealPnl.get(deal._id)?.unrealizedUsd;
+          const unrealizedPending = isDealPnlPending(deal, liveDealPnl);
+          const hookUnrealized =
+            liveUnrealized ??
+            (deal as { unrealizedUsd?: number }).unrealizedUsd;
           const unrealizedProfit =
             typeof hookUnrealized === 'number'
               ? hookUnrealized
@@ -940,6 +963,7 @@ const Trading: React.FC = () => {
                 }
               : undefined,
             unrealizedProfit,
+            unrealizedPending,
             avgPrice,
             levels: {
               complete: deal.levels?.complete || 0,
@@ -1090,6 +1114,7 @@ const Trading: React.FC = () => {
     /*  hedgeComboDeals,
     hedgeDcaDeals, */
     terminalDeals,
+    liveDealPnl,
     gridBotsForDeals,
     calculateDealGaugeValues,
     // Note: showClosedTrades is intentionally not included as dependency
@@ -1201,6 +1226,7 @@ const Trading: React.FC = () => {
       },
       funding: trade.funding,
       unrealizedProfit: trade.unrealizedProfit || 0,
+      ...(trade.unrealizedPending && { unrealizedPending: true }),
       avgPrice: trade.avgPrice || 0,
       levels: trade.levels,
       created: createdTime,
@@ -1655,7 +1681,14 @@ const Trading: React.FC = () => {
         meta: { filterType: 'array' },
         cell: ({ row }) => {
           const status = (row.getValue('status') as string) || 'unknown';
-          return <StatusChip status={status} size="xs" chipStyle="soft" />;
+          return (
+            <StatusChip
+              status={status}
+              size="xs"
+              chipStyle="soft"
+              botId={row.original.id}
+            />
+          );
         },
       },
       {
@@ -1689,120 +1722,14 @@ const Trading: React.FC = () => {
     [privacyMode]
   );
 
-  // One mutation per bot type: changeStatus takes the bot's `type`, so a
-  // combo or grid bot must not go through the DCA mutation. `mutateAsync` is
-  // a stable reference across renders; the mutation object itself is not.
-  const dcaStatusToggle = useBotStatusToggle(BotTypesEnum.dca).mutateAsync;
-  const comboStatusToggle = useBotStatusToggle(BotTypesEnum.combo).mutateAsync;
-  const gridStatusToggle = useBotStatusToggle(BotTypesEnum.grid).mutateAsync;
-
-  // Bulk start/stop confirmation — same flow as the per-type bot lists.
-  const [bulkStatus, setBulkStatus] = useState<{
-    action: 'start' | 'stop';
-    targets: BotTableRow[];
-    selectedCount: number;
-  } | null>(null);
-  const [bulkStatusLoading, setBulkStatusLoading] = useState(false);
-
-  const openBulkStatus = useCallback(
-    (selected: BotTableRow[], action: 'start' | 'stop') => {
-      const withStatus = selected.map((b) => ({
-        ...b,
-        status: b.status || '',
-      }));
-      const targets =
-        action === 'start'
-          ? filterStartableBots(withStatus)
-          : filterStoppableBots(withStatus);
-      if (targets.length === 0) {
-        toast.info(
-          action === 'start'
-            ? 'No stopped bots selected'
-            : 'No active bots selected'
-        );
-        return;
-      }
-      setBulkStatus({ action, targets, selectedCount: selected.length });
-    },
+  // Bulk toolbar: the registry's bulk actions over this mixed DCA / combo /
+  // grid list (each bot runs through its own type's mutation).
+  const toBulkRef = useCallback(
+    (row: BotTableRow) =>
+      toBotRef(row.originalBot ?? row, botKindFromType(row.botType)),
     []
   );
-
-  const bulkAllGrid =
-    !!bulkStatus &&
-    bulkStatus.targets.every((b) => b.botType === BotTypesEnum.grid);
-  const bulkHasGrid =
-    !!bulkStatus &&
-    bulkStatus.targets.some((b) => b.botType === BotTypesEnum.grid);
-  const bulkHasActiveDeals =
-    !!bulkStatus &&
-    bulkStatus.targets.some(
-      (b) =>
-        b.botType !== BotTypesEnum.grid &&
-        (b.originalBot?.dealsInBot?.active || 0) > 0
-    );
-
-  const handleConfirmBulkStatus = useCallback(
-    async (closeType?: string, cancelPartiallyFilled?: boolean) => {
-      if (!bulkStatus) return;
-      const { action, targets } = bulkStatus;
-      const status = action === 'start' ? 'open' : 'closed';
-      const isStop = action === 'stop';
-      setBulkStatusLoading(true);
-      try {
-        for (const b of targets) {
-          if (b.botType === BotTypesEnum.grid) {
-            // Grid-only selection: the dialog showed grid options. Mixed
-            // selection: the dialog showed DCA options, so grid bots take
-            // the grid default (cancel all orders).
-            await gridStatusToggle({
-              id: b.id,
-              status,
-              closeGridType: isStop
-                ? bulkAllGrid
-                  ? (closeType as CloseGRIDTypeEnum | undefined)
-                  : CloseGRIDTypeEnum.cancel
-                : undefined,
-              cancelPartiallyFilled: isStop
-                ? bulkAllGrid
-                  ? cancelPartiallyFilled
-                  : true
-                : undefined,
-            });
-          } else {
-            const toggle =
-              b.botType === BotTypesEnum.combo
-                ? comboStatusToggle
-                : dcaStatusToggle;
-            await toggle({
-              id: b.id,
-              status,
-              closeType: isStop
-                ? (closeType as CloseDCATypeEnum | undefined)
-                : undefined,
-            });
-          }
-        }
-        toast.success(
-          `${action === 'start' ? 'Started' : 'Stopped'} ${targets.length} bot(s)`
-        );
-      } catch (error) {
-        logger.error('Failed to change status for selected bots:', error);
-        toast.error('Failed to change status for selected bots');
-      } finally {
-        setBulkStatusLoading(false);
-        setBulkStatus(null);
-      }
-    },
-    [
-      bulkStatus,
-      bulkAllGrid,
-      dcaStatusToggle,
-      comboStatusToggle,
-      gridStatusToggle,
-    ]
-  );
-  // placeholder: useDealActions not required for now; kept for future trade bulk actions
-  const readOnly = isReadOnly();
+  const bulk = useBulkBotRunner(toBulkRef);
 
   // Stable refs read by the BotCardWrapper so it can stay memoised across
   // re-renders (otherwise every price tick would remount every card and the
@@ -2009,33 +1936,6 @@ const Trading: React.FC = () => {
     [] // Never recreate — privacyModeRef keeps the value current
   );
 
-  const botsBulkActions: BulkAction<BotTableRow>[] = useMemo(
-    () => [
-      {
-        id: 'start',
-        label: 'Start',
-        icon: Play,
-        destructive: false,
-        disabled: readOnly,
-        onAction: (selected) => openBulkStatus(selected, 'start'),
-      },
-      {
-        id: 'stop',
-        label: 'Stop',
-        icon: Square,
-        destructive: true,
-        disabled: readOnly,
-        onAction: (selected) => openBulkStatus(selected, 'stop'),
-      },
-    ],
-    // Depend on the stable `mutate` fn, NOT the whole mutation object —
-    // react-query returns a fresh mutation object every render, which made
-    // this memo (and therefore the data-table toolbar's button array) rebuild
-    // on every parent re-render, re-rendering ResponsiveButtonRow ~26x/s under
-    // live bot-stats churn (RenderLoopTripwire on /trading).
-    [readOnly, openBulkStatus]
-  );
-
   if (hasError) {
     return (
       <MainLayout pageTitle="Trading" activePage="/trading">
@@ -2144,7 +2044,7 @@ const Trading: React.FC = () => {
                       cardViewBreakpoints={CARD_VIEW_COLUMNS}
                       cardViewGap={16}
                       getRowId={(row) => row.id}
-                      bulkActions={botsBulkActions}
+                      bulkActions={bulk.bulkActions}
                       emptyMessage="No active bots found"
                       emptyContent={
                         <EmptyState
@@ -2238,6 +2138,7 @@ const Trading: React.FC = () => {
                   ) &&
                     originalTrade.unrealizedProfit !== undefined && {
                       unrealizedProfit: originalTrade.unrealizedProfit,
+                      unrealizedPending: originalTrade.unrealizedPending,
                     }),
                   ...(originalTrade.avgPrice !== undefined && {
                     avgPrice: originalTrade.avgPrice,
@@ -2256,28 +2157,7 @@ const Trading: React.FC = () => {
               </TradeDetailDrawer>
             );
           })()}
-        <BotStatusConfirmationModal
-          open={!!bulkStatus}
-          onOpenChange={(open) => {
-            if (!open) setBulkStatus(null);
-          }}
-          onConfirm={handleConfirmBulkStatus}
-          botName=""
-          bulkCount={bulkStatus?.targets.length ?? 0}
-          bulkSelectedCount={bulkStatus?.selectedCount}
-          currentStatus={bulkStatus?.action === 'start' ? 'closed' : 'open'}
-          targetStatus={bulkStatus?.action === 'start' ? 'open' : 'closed'}
-          hasActiveDeals={bulkHasActiveDeals}
-          botType={bulkAllGrid ? BotTypesEnum.grid : undefined}
-          gridFutures
-          gridHasOpenPosition
-          bulkNote={
-            bulkStatus?.action === 'stop' && bulkHasGrid && !bulkAllGrid
-              ? 'Grid bots in this selection stop with all their open orders cancelled.'
-              : undefined
-          }
-          isLoading={bulkStatusLoading}
-        />
+        {bulk.dialogs}
       </WidgetContainer>
     </MainLayout>
   );

@@ -18,7 +18,8 @@ import { type ColumnDef } from '@tanstack/react-table';
 import React, { useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CARD_VIEW_COLUMNS } from '../../../config/responsive';
-import { formatCurrency } from '@/lib/utils';
+import { formatQuoteAmount } from '@/utils/formatters';
+import { extractPairAssets } from '@/utils/pairs';
 import { BotTypeChip, ProfitAndPerc } from '../../ui/chip';
 import { DataTable } from '../../ui/data-table/data-table';
 import {
@@ -30,6 +31,8 @@ import {
 } from '../../ui/select';
 import EmptyState from '../../ui/empty-state';
 import { TradeCard } from '../../trades/TradeCard';
+import { DealActionsProvider } from '@/features/deals/actions/DealActionsProvider';
+import type { DealRef } from '@/features/deals/actions/dealRef';
 import { WidgetWrapper } from '../../widgets/WidgetWrapper';
 import CoinPair from '../shared/CoinPair';
 import { SYMBOL_COLUMN_FILTER_META } from '../shared/symbolColumnFilterMeta';
@@ -66,6 +69,12 @@ const getTradeRowId = (row: TransformedTrade) => row.id;
 
 const EMPTY_DCA: DCADeals[] = [];
 const EMPTY_COMBO: ComboDeals[] = [];
+
+// Cost and value are in the deal's quote asset, not USD.
+const tradeQuoteAsset = (t: TransformedTrade): string =>
+  typeof t.symbol === 'string'
+    ? extractPairAssets(t.symbol).quoteAsset
+    : t.symbol.quoteAsset;
 
 const metricValue = (t: TransformedTrade, metric: TopDealsMetric): number => {
   const cost = t.cost ?? 0;
@@ -211,6 +220,19 @@ const TopDeals: React.FC<TopDealsProps> = ({
     [navigate]
   );
 
+  const openDealBot = useCallback(
+    (deal: DealRef) => {
+      if (deal.trade) handleOpenBot(deal.trade);
+    },
+    [handleOpenBot]
+  );
+  const openFirstDealBot = useCallback(
+    (deals: DealRef[]) => {
+      if (deals[0]) openDealBot(deals[0]);
+    },
+    [openDealBot]
+  );
+
   // Render each deal with the shared TradeCard. Memoised so the component type
   // is stable across re-renders (DataTable would otherwise remount every card).
   const TopDealCard = useCallback(
@@ -221,11 +243,8 @@ const TopDeals: React.FC<TopDealsProps> = ({
         enableEnhancedView
         showChart={item.active}
         showTradeDrawer={false}
-        filledOrders={[]}
         botType={typeToBotType(item.type)}
         onClick={() => handleOpenBot(item)}
-        handleOpenDetailDrawer={handleOpenBot}
-        handleEdit={handleOpenBot}
       />
     ),
     [privacyMode, handleOpenBot]
@@ -296,7 +315,12 @@ const TopDeals: React.FC<TopDealsProps> = ({
         meta: { filterType: 'number' },
         cell: ({ row }) => (
           <div className="text-right tabular-nums">
-            {privacyMode ? '***' : formatCurrency(row.original.cost ?? 0, 2)}
+            {privacyMode
+              ? '***'
+              : formatQuoteAmount(
+                  row.original.cost ?? 0,
+                  tradeQuoteAsset(row.original)
+                )}
           </div>
         ),
         enableSorting: true,
@@ -308,7 +332,12 @@ const TopDeals: React.FC<TopDealsProps> = ({
         meta: { filterType: 'number' },
         cell: ({ row }) => (
           <div className="text-right tabular-nums">
-            {privacyMode ? '***' : formatCurrency(row.original.value ?? 0, 2)}
+            {privacyMode
+              ? '***'
+              : formatQuoteAmount(
+                  row.original.value ?? 0,
+                  tradeQuoteAsset(row.original)
+                )}
           </div>
         ),
         enableSorting: true,
@@ -327,6 +356,7 @@ const TopDeals: React.FC<TopDealsProps> = ({
               percentage={cost > 0 ? (pnl / cost) * 100 : 0}
               privacyMode={privacyMode}
               size="sm"
+              pending={row.original.unrealizedPending}
             />
           );
         },
@@ -450,7 +480,11 @@ const TopDeals: React.FC<TopDealsProps> = ({
       isEditable={isEditable ?? false}
       isCollapsible={isCollapsible}
     >
-      {content}
+      {/* View and Edit open the deal's bot page: the dashboard has no deal
+          drawer of its own. */}
+      <DealActionsProvider onView={openDealBot} onEdit={openFirstDealBot}>
+        {content}
+      </DealActionsProvider>
     </WidgetWrapper>
   );
 };

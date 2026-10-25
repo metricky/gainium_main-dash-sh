@@ -1,3 +1,15 @@
+import { isSessionActiveDuring } from '@/utils/indicators/sessionWindow';
+import {
+  SessionLevelsState,
+  sessionLevelValue,
+} from '@/utils/indicators/sessionLevels';
+import {
+  DEFAULT_OTE_LEVELS,
+  OTELevelsState,
+  oteLevelPrice,
+  parseOteLevels,
+} from '@/utils/indicators/oteLevels';
+
 const colorRipeRedA200 = '#FF5252';
 const colorMintyGreen400 = '#22AB94';
 const colorMintyGreen100 = '#ACE5DC';
@@ -175,6 +187,151 @@ const percentileBand = (usePercentile, data, lookback, r, context) =>
         r.Std.lowest(data, lookback, context),
       ]
     : [r.Std.na(), r.Std.na()];
+
+// Optional smoothing of a single-line oscillator: the bot replaces the line R
+// with S = MA(R) (or, in "line vs smoothed line" mode, compares R against S).
+// `withSmoothing` adds that to a study without touching its own script:
+//   - appends the `smoothingMa` / `smoothingMaLength` inputs AFTER every input
+//     the study already has (scripts read inputs by position, so the existing
+//     indices stay where they are);
+//   - appends an orange `plot_smoothed` after the study's existing plots;
+//   - when smoothing is on, computes S from the study's main plot (`plot_0`)
+//     and re-ranks the percentile line on S, which is what the bot ranks.
+// With smoothing off ('None', the default) the study's own outputs are
+// returned untouched plus an empty smoothed plot.
+// VWMA is not offered: an oscillator reading carries no volume.
+export const SMOOTHING_STUDY_TYPES = [
+  'SMA',
+  'EMA',
+  'WMA',
+  'DEMA',
+  'TEMA',
+  'HMA',
+  'RMA',
+];
+
+const smoothedColor = '#FF9800';
+
+const plotValue = (output) =>
+  output !== null && typeof output === 'object' ? output.value : output;
+
+// Keep the output's own shape: some studies return `{ value }`, most numbers.
+const withPlotValue = (output, value) =>
+  output !== null && typeof output === 'object' ? { ...output, value } : value;
+
+export const withSmoothing =
+  (factory) =>
+  (r, ...rest) => {
+    const study = factory(r, ...rest);
+    const { metainfo } = study;
+    const inputIndex = (id) =>
+      metainfo.inputs.findIndex((input) => input.id === id);
+    const usePercentileIndex = inputIndex('usePercentile');
+    const lookbackIndex = inputIndex('percentileLookback');
+    const percentageIndex = inputIndex('percentilePercentage');
+    const smoothingMaIndex = metainfo.inputs.length;
+    const smoothingLengthIndex = smoothingMaIndex + 1;
+    const mainPlotIndex = metainfo.plots.findIndex(
+      (plot) => plot.id === 'plot_0'
+    );
+    const percentilePlotIndex = metainfo.plots.findIndex(
+      (plot) => plot.id === 'plot_percentile'
+    );
+
+    metainfo.inputs = [
+      ...metainfo.inputs,
+      {
+        id: 'smoothingMa',
+        name: 'Smoothing',
+        defval: 'None',
+        type: 'text',
+        options: ['None', ...SMOOTHING_STUDY_TYPES],
+      },
+      {
+        id: 'smoothingMaLength',
+        name: 'Smoothing length',
+        defval: 14,
+        type: 'integer',
+        min: 1,
+        max: 1e3,
+      },
+    ];
+    metainfo.plots = [...metainfo.plots, { id: 'plot_smoothed', type: 'line' }];
+    metainfo.styles = {
+      ...metainfo.styles,
+      plot_smoothed: {
+        title: 'Smoothed',
+        histogramBase: 0,
+        joinPoints: !1,
+      },
+    };
+    metainfo.defaults = {
+      ...metainfo.defaults,
+      styles: {
+        ...metainfo.defaults.styles,
+        plot_smoothed: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 0,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: smoothedColor,
+        },
+      },
+      inputs: {
+        ...metainfo.defaults.inputs,
+        smoothingMa: 'None',
+        smoothingMaLength: 14,
+      },
+    };
+
+    const StudyConstructor = study.constructor;
+    study.constructor = function () {
+      StudyConstructor.call(this);
+      const main = this.main;
+      this.main = function (context, input) {
+        const outputs = main.call(this, context, input);
+        if (!Array.isArray(outputs)) {
+          return outputs;
+        }
+        const smoothingMa = input(smoothingMaIndex);
+        const smoothingLength = input(smoothingLengthIndex);
+        if (
+          !SMOOTHING_STUDY_TYPES.includes(smoothingMa) ||
+          !(smoothingLength >= 1)
+        ) {
+          return [...outputs, r.Std.na()];
+        }
+        const rawVar = context.new_var(plotValue(outputs[mainPlotIndex]));
+        const smoothed = getMarValue(
+          smoothingMa,
+          r,
+          rawVar,
+          smoothingLength,
+          context
+        );
+        const result = [...outputs];
+        if (
+          percentilePlotIndex >= 0 &&
+          usePercentileIndex >= 0 &&
+          input(usePercentileIndex)
+        ) {
+          result[percentilePlotIndex] = withPlotValue(
+            outputs[percentilePlotIndex],
+            percentileRank(
+              context.new_var(smoothed),
+              input(lookbackIndex),
+              input(percentageIndex),
+              r
+            )
+          );
+        }
+        return [...result, smoothed];
+      };
+    };
+    return study;
+  };
 
 const stochCalc = (i, s, n, r, context) => {
   const o = r.Std.close(context);
@@ -644,7 +801,7 @@ const crossunder = (r, val1, val2) => {
   );
 };
 
-export const MFI = (r) => ({
+export const MFI = withSmoothing((r) => ({
   name: 'Money Flow Index (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -772,8 +929,8 @@ export const MFI = (r) => ({
       ];
     };
   },
-});
-export const ADX = (r) => ({
+}));
+export const ADX = withSmoothing((r) => ({
   name: 'Average Directional Index (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -912,7 +1069,7 @@ export const ADX = (r) => ({
       ];
     };
   },
-});
+}));
 
 // Getter used by TradingView.widget option `custom_indicators_getter`
 // Returns a Promise that resolves to an array of custom indicator definitions
@@ -972,6 +1129,7 @@ export const custom_indicators_getter = (r, callback) => {
       OBFVG(r, cb),
       Session(r),
       LW(r, cb),
+      OTE(r, cb),
     ];
 
     // Filter out any undefined/null indicators and validate structure
@@ -995,7 +1153,7 @@ export const custom_indicators_getter = (r, callback) => {
   }
 };
 
-export const BBW = (r) => ({
+export const BBW = withSmoothing((r) => ({
   name: 'Bollinger Bands Width (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -1169,7 +1327,7 @@ export const BBW = (r) => ({
       ];
     };
   },
-});
+}));
 
 export const MACD = (r) => ({
   name: 'MACD (Custom)',
@@ -2068,7 +2226,7 @@ export const HMA = (r, callback) => ({
   },
 });
 
-export const RSI = (r) => ({
+export const RSI = withSmoothing((r) => ({
   name: 'Relative Strength Index (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -2202,7 +2360,7 @@ export const RSI = (r) => ({
       ];
     };
   },
-});
+}));
 
 export const TVTA = (r) => ({
   name: 'Tradingview Technical Analysis',
@@ -3932,7 +4090,7 @@ export const SotchRSI = (r) => ({
   },
 });
 
-export const VO = (r) => ({
+export const VO = withSmoothing((r) => ({
   name: 'Volume Oscillator (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4077,9 +4235,9 @@ export const VO = (r) => ({
       ];
     };
   },
-});
+}));
 
-export const CCI = (r) => ({
+export const CCI = withSmoothing((r) => ({
   name: 'Commodity Channel Index (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4256,9 +4414,9 @@ export const CCI = (r) => ({
       );
     };
   },
-});
+}));
 
-export const AO = (r) => ({
+export const AO = withSmoothing((r) => ({
   name: 'Awesome Oscillator (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4419,9 +4577,9 @@ export const AO = (r) => ({
       ];
     };
   },
-});
+}));
 
-export const WR = (r) => ({
+export const WR = withSmoothing((r) => ({
   name: 'Williams %R (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4554,9 +4712,9 @@ export const WR = (r) => ({
       ];
     };
   },
-});
+}));
 
-export const UO = (r) => ({
+export const UO = withSmoothing((r) => ({
   name: 'Ultimate Oscillator (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4707,9 +4865,9 @@ export const UO = (r) => ({
       ];
     };
   },
-});
+}));
 
-export const MOM = (r) => ({
+export const MOM = withSmoothing((r) => ({
   name: 'Momentum (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -4850,7 +5008,7 @@ export const MOM = (r) => ({
       ];
     };
   },
-});
+}));
 
 export const BBWP = (r) => ({
   name: 'Bollinger Bands Width Percentile',
@@ -5116,6 +5274,25 @@ export const ECD = (r) => ({
   },
 });
 
+// Milliseconds in one bar of a TradingView resolution ('60', '1D', '1W', '1M').
+const resolutionMs = (resolution) => {
+  const match = /^(\d*)([SDWM]?)$/i.exec(String(resolution));
+  if (!match) return 0;
+  const n = Number(match[1] || 1);
+  const unit = match[2].toUpperCase();
+  const MINUTE = 60e3;
+  const DAY = 1440 * MINUTE;
+  return unit === 'S'
+    ? n * 1e3
+    : unit === 'D'
+      ? n * DAY
+      : unit === 'W'
+        ? n * 7 * DAY
+        : unit === 'M'
+          ? n * 30 * DAY
+          : n * MINUTE;
+};
+
 export const XO = (r) => ({
   name: 'Oscillator crossover',
   metainfo: {
@@ -5154,6 +5331,7 @@ export const XO = (r) => ({
         xOscillator1voLong: 10,
         xOscillator2voShort: 5,
         xOscillator2voLong: 10,
+        xOscillator2Resolution: '',
       },
     },
     plots: [
@@ -5244,6 +5422,14 @@ export const XO = (r) => ({
         min: 1,
         max: 2e3,
       },
+      // Resolution oscillator 2 is computed on; '' = the chart's.
+      {
+        id: 'xOscillator2Resolution',
+        name: 'Oscillator 2 resolution',
+        defval: '',
+        type: 'text',
+        isHidden: true,
+      },
     ],
     id: 'Oscillator crossover@tv-basicstudies-1',
     scriptIdPart: '',
@@ -5308,6 +5494,33 @@ export const XO = (r) => ({
     this.vo = function (context, long, short) {
       return voCalc(r, context, short, long);
     };
+    this.oscillator = function (type, length, voShort, voLong, context) {
+      const closeVar = context.new_var(r.Std.close(context));
+      const hlc3Var = context.new_var(r.Std.hlc3(context));
+      return type === 'RSI'
+        ? this.rsi(closeVar, length, context)
+        : type === 'CCI'
+          ? this.cci(hlc3Var, length, context)
+          : type === 'MFI'
+            ? this.mfi(hlc3Var, length, context)
+            : type === 'VO'
+              ? this.vo(context, voLong, voShort)
+              : r.Std.na();
+    };
+    // Oscillator 2 may run on another interval than the chart (the bot
+    // compares the two intervals' oscillators). It is then computed on that
+    // resolution's own bars and each chart bar shows the value of the bar
+    // that had closed when the chart bar closed, as the bot reads it.
+    this.init = function (e, t) {
+      const resolution = String(t(8) || '');
+      const chart = r.Std.period(e);
+      this._secondaryMs = 0;
+      if (resolution && resolution !== chart) {
+        e.new_sym(r.Std.tickerid(e), resolution);
+        this._chartMs = resolutionMs(chart);
+        this._secondaryMs = resolutionMs(resolution);
+      }
+    };
     this.main = function (e, t) {
       this._context = e;
       this._input = t;
@@ -5319,10 +5532,6 @@ export const XO = (r) => ({
       const type2Length = this._input(5);
       const type2voShort = this._input(6);
       const type2voLong = this._input(7);
-      const close = r.Std.close(this._context);
-      const closeVar = this._context.new_var(close);
-      const hlc3 = r.Std.hlc3(this._context);
-      const hlc3Var = this._context.new_var(hlc3);
       this._context.setMinimumAdditionalDepth(
         Math.max(
           type1Length,
@@ -5333,26 +5542,46 @@ export const XO = (r) => ({
           type2voShort
         )
       );
-      const result1 =
-        type1 === 'RSI'
-          ? this.rsi(closeVar, type1Length, this._context)
-          : type1 === 'CCI'
-            ? this.cci(hlc3Var, type1Length, this._context)
-            : type1 === 'MFI'
-              ? this.mfi(hlc3Var, type1Length, this._context)
-              : type1 === 'VO'
-                ? this.vo(this._context, type1voLong, type1voShort)
-                : r.Std.na();
-      const result2 =
-        type2 === 'RSI'
-          ? this.rsi(closeVar, type2Length, this._context)
-          : type2 === 'CCI'
-            ? this.cci(hlc3Var, type2Length, this._context)
-            : type2 === 'MFI'
-              ? this.mfi(hlc3Var, type2Length, this._context)
-              : type2 === 'VO'
-                ? this.vo(this._context, type2voLong, type2voShort)
-                : r.Std.na();
+      if (this._secondaryMs) {
+        this._context.select_sym(1);
+        const secondaryTime = this._context.new_var(this._context.symbol.time);
+        const secondary = this._context.new_var(
+          this.oscillator(
+            type2,
+            type2Length,
+            type2voShort,
+            type2voLong,
+            this._context
+          )
+        );
+        this._context.select_sym(0);
+        const result1 = this.oscillator(
+          type1,
+          type1Length,
+          type1voShort,
+          type1voLong,
+          this._context
+        );
+        // the last secondary bar that had closed when this chart bar closed
+        const readTime = this._context.new_var(
+          this._context.symbol.time + this._chartMs - this._secondaryMs
+        );
+        return [result1, secondary.adopt(secondaryTime, readTime, 0)];
+      }
+      const result1 = this.oscillator(
+        type1,
+        type1Length,
+        type1voShort,
+        type1voLong,
+        this._context
+      );
+      const result2 = this.oscillator(
+        type2,
+        type2Length,
+        type2voShort,
+        type2voLong,
+        this._context
+      );
       return [result1, result2];
     };
   },
@@ -5412,7 +5641,7 @@ const getMarValue = (type1, r, closeVar, type1length, context) => {
   return result1;
 };
 
-export const MAR = (r) => ({
+export const MAR = withSmoothing((r) => ({
   name: 'Moving Average Ratio (MAR)',
   metainfo: {
     _metainfoVersion: 53,
@@ -5694,9 +5923,9 @@ export const MAR = (r) => ({
       ];
     };
   },
-});
+}));
 
-export const BBPB = (r) => ({
+export const BBPB = withSmoothing((r) => ({
   name: 'Bollinger Bands %B (Custom)',
   metainfo: {
     _metainfoVersion: 53,
@@ -5869,7 +6098,7 @@ export const BBPB = (r) => ({
       ];
     };
   },
-});
+}));
 
 const divBull = {
   plottype: 'shape_label_up',
@@ -10276,7 +10505,7 @@ export const KC = (r, callback) => ({
   },
 });
 
-export const KCPB = (r) => ({
+export const KCPB = withSmoothing((r) => ({
   name: 'Keltner Channel %B',
   metainfo: {
     _metainfoVersion: 53,
@@ -10460,7 +10689,7 @@ export const KCPB = (r) => ({
       ];
     };
   },
-});
+}));
 
 export const DC = (r) => ({
   name: 'Donchian Channels (Custom)',
@@ -11490,7 +11719,62 @@ export const OBFVG = (r, callback) => ({
   },
 });
 
-export const Session = () => ({
+// Length of the bar starting at `barTime`, from the chart's resolution
+// (`interval` units of `resolution`: '' minutes, S, D, W, M).
+const barDurationMs = (symbol, barTime) => {
+  const count = Number(symbol.interval) || 1;
+  switch (symbol.resolution) {
+    case 'S':
+      return count * 1000;
+    case 'D':
+      return count * 86_400_000;
+    case 'W':
+      return count * 7 * 86_400_000;
+    case 'M': {
+      const start = new Date(barTime);
+      return (
+        Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + count, 1) -
+        barTime
+      );
+    }
+    default:
+      return count * 60_000;
+  }
+};
+
+// Start of the bar `steps` bars after the one starting at `barTime`.
+const barTimeAhead = (symbol, barTime, steps) => {
+  if (symbol.resolution === 'M') {
+    const start = new Date(barTime);
+    const count = (Number(symbol.interval) || 1) * steps;
+    return Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + count, 1);
+  }
+  return barTime + steps * barDurationMs(symbol, barTime);
+};
+
+// How far ahead of the last candle the session is drawn: a week, so the next
+// session shows even across a weekend, kept between 10 and 2000 bars. Fixed
+// per resolution, as a plot's offset must be.
+const sessionLookaheadBars = (symbol, barTime) =>
+  Math.min(
+    2000,
+    Math.max(10, Math.ceil((7 * 86_400_000) / barDurationMs(symbol, barTime)))
+  );
+
+// Session "Price levels": the two compared series, A and B.
+const SESSION_LEVEL_A_COLOR = '#FF9800';
+const SESSION_LEVEL_B_COLOR = '#AB47BC';
+const sessionLevelStyle = (color) => ({
+  linestyle: 0,
+  linewidth: 2,
+  plottype: 7,
+  trackPrice: !1,
+  transparency: 0,
+  visible: !0,
+  color,
+});
+
+export const Session = (r) => ({
   name: 'Session Selector',
   metainfo: {
     _metainfoVersion: 52,
@@ -11504,6 +11788,12 @@ export const Session = () => ({
           visible: !0,
           transparency: 85,
         },
+        bgAhead: {
+          visible: !0,
+          transparency: 85,
+        },
+        levelA: sessionLevelStyle(SESSION_LEVEL_A_COLOR),
+        levelB: sessionLevelStyle(SESSION_LEVEL_B_COLOR),
       },
       palettes: {
         paletteBg: {
@@ -11521,6 +11811,11 @@ export const Session = () => ({
         fri: true,
         sat: false,
         inSession: true,
+        startMinute: -1,
+        endMinute: -1,
+        timezone: 'UTC',
+        levelA: '',
+        levelB: '',
       },
     },
     plots: [
@@ -11529,11 +11824,25 @@ export const Session = () => ({
         type: 'bg_colorer',
         palette: 'paletteBg',
       },
+      // Same shading returned N bars ahead (see main), so upcoming sessions
+      // show in the empty space right of the last candle.
+      {
+        id: 'bgAhead',
+        type: 'bg_colorer',
+        palette: 'paletteBg',
+      },
+      { id: 'levelA', type: 'line' },
+      { id: 'levelB', type: 'line' },
     ],
     styles: {
       bgColor: {
         title: 'Session background',
       },
+      bgAhead: {
+        title: 'Upcoming session background',
+      },
+      levelA: { title: 'Compare', histogramBase: 0, joinPoints: !1 },
+      levelB: { title: 'With', histogramBase: 0, joinPoints: !1 },
     },
     palettes: {
       paletteBg: {
@@ -11561,6 +11870,35 @@ export const Session = () => ({
       { id: 'fri', name: 'Friday', defval: true, type: 'bool' },
       { id: 'sat', name: 'Saturday', defval: false, type: 'bool' },
       { id: 'inSession', name: 'In session', defval: true, type: 'bool' },
+      // Set from the bot form; hidden so the legend doesn't print raw minutes.
+      {
+        id: 'startMinute',
+        name: 'Start (minute of day, -1 = all day)',
+        defval: -1,
+        type: 'integer',
+        min: -1,
+        max: 1439,
+        isHidden: true,
+      },
+      {
+        id: 'endMinute',
+        name: 'End (minute of day, -1 = all day)',
+        defval: -1,
+        type: 'integer',
+        min: -1,
+        max: 1439,
+        isHidden: true,
+      },
+      {
+        id: 'timezone',
+        name: 'Time zone',
+        defval: 'UTC',
+        type: 'text',
+        isHidden: true,
+      },
+      // Price levels: a SessionLevelEnum value each; '' draws no line.
+      { id: 'levelA', name: 'Compare', defval: '', type: 'text', isHidden: true },
+      { id: 'levelB', name: 'With', defval: '', type: 'text', isHidden: true },
     ],
   },
   constructor: function () {
@@ -11577,12 +11915,107 @@ export const Session = () => ({
         this._input(6), // sat = 6
       ];
       const inSession = this._input(7);
+      const toTime = (minute) =>
+        minute >= 0
+          ? `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`
+          : '';
+      const hours = {
+        start: toTime(this._input(8)),
+        end: toTime(this._input(9)),
+        timezone: this._input(10) || 'UTC',
+      };
+      const levelA = this._input(11);
+      const levelB = this._input(12);
       const barTime = e.symbol.time;
-      if (!barTime) return [0];
-      const utcDay = new Date(barTime).getUTCDay();
-      const dayMatch = days[utcDay];
-      const active = inSession ? dayMatch : !dayMatch;
-      return [active ? 1 : 0];
+      if (!barTime) return [0, 0, r.Std.na(), r.Std.na()];
+      // A bar is shaded when the session is active at any moment inside it,
+      // so the highlight is right on every resolution, not just intraday.
+      const activeDays = days
+        .map((on, day) => (on ? day : -1))
+        .filter((day) => day >= 0);
+      const rule = inSession ? 'in' : 'out';
+      const activeAt = (start) =>
+        isSessionActiveDuring(
+          start,
+          start + barDurationMs(e.symbol, start),
+          activeDays,
+          rule,
+          hours
+        )
+          ? 1
+          : 0;
+      // Each bar paints the bar `ahead` steps later through the offset plot,
+      // which reaches past the last candle. The plain plot only covers the
+      // first `ahead` bars, which nothing paints forward, so no bar is shaded
+      // twice.
+      const ahead = sessionLookaheadBars(e.symbol, barTime);
+      const own = e.symbol.index < ahead ? activeAt(barTime) : NaN;
+      let lineA = r.Std.na();
+      let lineB = r.Std.na();
+      if (levelA || levelB) {
+        // Same as the bot: closed candles only, the session window read at
+        // each candle's open. The study is recalculated from the first bar
+        // whenever data or inputs change. A forming candle is previewed.
+        const symbol = e.symbol;
+        this._context.setMinimumAdditionalDepth(1500);
+        if (
+          !this.levels ||
+          symbol.index === 0 ||
+          symbol.index < this.lastIndex
+        ) {
+          this.levels = new SessionLevelsState(activeDays, hours);
+          this.lastIndex = -1;
+          this.lastResult = null;
+          this.prevResult = null;
+        }
+        const candle = {
+          open: r.Std.open(this._context),
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+          time: barTime,
+        };
+        let result = this.lastResult;
+        let before = this.prevResult;
+        if (symbol.isBarClosed) {
+          if (symbol.index > this.lastIndex) {
+            this.prevResult = this.lastResult;
+            this.lastResult = this.levels.next(candle);
+            this.lastIndex = symbol.index;
+          }
+          result = this.lastResult;
+          before = this.prevResult;
+        } else {
+          result = this.levels.preview(candle);
+          before = this.lastResult;
+        }
+        // A level jumps when a new session starts: break the line on that
+        // bar instead of drawing the jump as a slope. The current session
+        // midpoint also moves inside a session, so only a new session
+        // breaks it.
+        const line = (level) => {
+          const value = sessionLevelValue(result, level);
+          if (!level || !isFinite(value)) return r.Std.na();
+          const previous = sessionLevelValue(before, level);
+          if (!isFinite(previous)) return value;
+          const jumped =
+            level === 'curMid'
+              ? before.sessionKey !== result.sessionKey
+              : level !== 'price' && previous !== value;
+          return jumped ? r.Std.na() : value;
+        };
+        lineA = line(levelA);
+        lineB = line(levelB);
+      }
+      return [
+        own,
+        {
+          value: activeAt(barTimeAhead(e.symbol, barTime, ahead)),
+          offset: ahead,
+        },
+        lineA,
+        lineB,
+      ];
     };
   },
 });
@@ -11732,6 +12165,179 @@ export const LW = (r, callback) => ({
         }
       }
       return [bull, bear];
+    };
+  },
+});
+
+// Discount / Premium OTE Levels: the retracement levels of the latest valid
+// leg, one line per level (up to 9). Colours: edge = 0, 0.5 and 1; discount =
+// beyond 0.5 towards the leg's origin (the entry side of the retracement);
+// premium = the rest. The original script draws each leg as boxed lines with
+// labels; a study can only plot series, so the latest leg's levels run from
+// the bar it was confirmed on, with a one-bar gap when the leg changes.
+const OTE_SLOTS = 9;
+const OTE_EDGE = "#787B86";
+const OTE_DISCOUNT = "#089981";
+const OTE_PREMIUM = "#F23645";
+const oteColorIndex = (level) =>
+  level === 0 || level === 0.5 || level === 1 ? 0 : level > 0.5 ? 1 : 2;
+const oteSlots = Array.from({ length: OTE_SLOTS }, (_, k) => k);
+
+export const OTE = (r, callback) => ({
+  name: "Discount/Premium OTE Levels",
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: Object.fromEntries(
+        oteSlots.map((k) => [
+          `level${k}`,
+          {
+            linestyle: 0,
+            linewidth: 1,
+            plottype: 7,
+            trackPrice: !1,
+            transparency: 0,
+            visible: !0,
+            color: OTE_EDGE,
+          },
+        ]),
+      ),
+      palettes: Object.fromEntries(
+        oteSlots.map((k) => [
+          `palette${k}`,
+          {
+            colors: {
+              0: { color: OTE_EDGE, width: 1, style: 0 },
+              1: { color: OTE_DISCOUNT, width: 1, style: 0 },
+              2: { color: OTE_PREMIUM, width: 1, style: 0 },
+            },
+          },
+        ]),
+      ),
+      inputs: {
+        leftBars: 10,
+        minLegSize: 1,
+        levels: DEFAULT_OTE_LEVELS,
+        showBullish: true,
+        showBearish: true,
+        id: "",
+      },
+    },
+    plots: oteSlots.flatMap((k) => [
+      { id: `level${k}`, type: "line" },
+      {
+        id: `level${k}Color`,
+        type: "colorer",
+        target: `level${k}`,
+        palette: `palette${k}`,
+      },
+    ]),
+    palettes: Object.fromEntries(
+      oteSlots.map((k) => [
+        `palette${k}`,
+        {
+          colors: {
+            0: { name: "Edge" },
+            1: { name: "Discount" },
+            2: { name: "Premium" },
+          },
+        },
+      ]),
+    ),
+    styles: Object.fromEntries(
+      oteSlots.map((k) => [
+        `level${k}`,
+        { title: `Level ${k + 1}`, histogramBase: 0, joinPoints: !1 },
+      ]),
+    ),
+    description: "Discount/Premium OTE Levels",
+    shortDescription: "OTE Levels",
+    is_price_study: !0,
+    linkedToSeries: true,
+    id: "Discount/Premium OTE Levels@tv-basicstudies-1",
+    scriptIdPart: "",
+    name: "Discount/Premium OTE Levels",
+    format: { type: "inherit" },
+    inputs: [
+      {
+        id: "leftBars",
+        name: "Left Swing Sensitivity (Bars)",
+        defval: 10,
+        type: "integer",
+        min: 1,
+        max: 500,
+      },
+      {
+        id: "minLegSize",
+        name: "Minimum Leg Size (%)",
+        defval: 1,
+        type: "float",
+        min: 0.01,
+        max: 100,
+        step: 0.1,
+      },
+      {
+        id: "levels",
+        name: "Levels to Draw",
+        defval: DEFAULT_OTE_LEVELS,
+        type: "text",
+      },
+      { id: "showBullish", name: "Bullish legs", defval: true, type: "bool" },
+      { id: "showBearish", name: "Bearish legs", defval: true, type: "bool" },
+      { id: "id", name: "", defval: "", type: "text", isHidden: true },
+    ],
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const leftBars = this._input(0);
+      const minLegSize = this._input(1);
+      const levels = parseOteLevels(this._input(2));
+      const showBullish = this._input(3);
+      const showBearish = this._input(4);
+      const id = this._input(5);
+      const symbol = this._context.symbol;
+      this._context.setMinimumAdditionalDepth(1000);
+      // The study is recalculated from the first bar whenever data or inputs
+      // change; legs move only on closed candles, as for the bot.
+      if (!this.ote || symbol.index === 0 || symbol.index < this.lastIndex) {
+        this.ote = new OTELevelsState(leftBars, minLegSize);
+        this.lastIndex = -1;
+        this.legKey = "";
+        this.prevLegKey = "";
+      }
+      if (symbol.isBarClosed && symbol.index > this.lastIndex) {
+        this.ote.next(r.Std.high(this._context), r.Std.low(this._context));
+        this.lastIndex = symbol.index;
+        const leg = this.ote.leg;
+        this.prevLegKey = this.legKey;
+        this.legKey = leg ? `${leg.direction}|${leg.low}|${leg.high}` : "";
+      }
+      const leg = this.ote.leg;
+      if (callback && id) {
+        callback({
+          id,
+          high: leg ? leg.high : NaN,
+          low: leg ? leg.low : NaN,
+          direction: leg ? leg.direction : NaN,
+        });
+      }
+      const shown =
+        leg &&
+        ((leg.direction === 1 && showBullish) ||
+          (leg.direction === -1 && showBearish)) &&
+        // break the lines on the bar a new leg replaces the previous one
+        !(symbol.isBarClosed && this.legKey !== this.prevLegKey);
+      return oteSlots.flatMap((k) => {
+        const level = levels[k];
+        return shown && level !== undefined
+          ? [oteLevelPrice(leg, level), oteColorIndex(level)]
+          : [r.Std.na(), 0];
+      });
     };
   },
 });

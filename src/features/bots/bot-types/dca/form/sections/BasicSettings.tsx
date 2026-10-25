@@ -1,4 +1,5 @@
 import { Chip } from '@/components/ui/chip';
+import SettingsAlert from '@/components/ui/SettingsAlert';
 import { Label } from '@/components/ui/label';
 import { MasonryLayout } from '@/components/ui/MasonryLayout';
 import { Switch } from '@/components/ui/switch';
@@ -17,8 +18,10 @@ import {
 } from '@/contexts/bots/form/BotFormProvider';
 import { NameInput } from '@/features/bots/shared/components/NameInput';
 import { useBotFormDcaTradingContext } from '@/hooks/bots/dca/useDcaTradingContext';
-import { BotTypesEnum, type ExchangeInUser } from '@/types';
+import { useHedgeBotFormOptional } from '@/contexts/bots/form/HedgeBotFormProvider';
+import { BotTypesEnum, StrategyEnum, type ExchangeInUser } from '@/types';
 import type { BotFormData } from '@/types/bots/form';
+import { Copy } from 'lucide-react';
 import React, { useCallback, useMemo, useState } from 'react';
 import ExchangeSelector from '../components/exchangeSelector';
 import { useBasicSettingsTab } from '../hooks/useBasicSettingsTab';
@@ -81,13 +84,18 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
     activeQuickSelectOption,
     pairSelectionFilter,
     handleCoinToggle,
+    handleReplacePair,
     handlePairsPaste,
     handleSelectAllMatching,
     handleClearPairs,
+    handleCopyPairs,
     handleRemovePair,
     isExchangeLocked,
     pairs,
     selectedPairSymbols,
+    handleAddPairs,
+    handleRemovePairs,
+    planMaxPairs,
   } = useBasicSettingsTab({
     currentExchange,
     formData: basicTabFormData,
@@ -153,10 +161,57 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
     ...((alerts?.pair ?? []) as any[]),
   ];
 
-  const isComboBot = useMemo(
-    () => formType === BotTypesEnum.combo,
-    [formType]
+  // A hedge combo's legs each trade one pair. A standalone combo can trade
+  // many.
+  const isSinglePairOnly = useMemo(
+    () => formType === BotTypesEnum.combo && Boolean(isNestedLeg),
+    [formType, isNestedLeg]
   );
+
+  // Hedge legs: copy the opposite leg's pairs. Each leg keeps its own
+  // exchange, so the list is re-resolved against this leg's exchange and
+  // pairs it doesn't list are reported, not copied.
+  const hedge = useHedgeBotFormOptional();
+  const strategy = useBotFormSelector('strategy');
+  const otherLeg = strategy === StrategyEnum.short ? 'long' : 'short';
+  const [copyNote, setCopyNote] = useState<{
+    copied: string;
+    skipped?: string;
+  } | null>(null);
+  const otherLegPairs = useCallback((): string[] => {
+    const data = hedge?.legFormDataReaderRef.current?.(otherLeg);
+    // The exact symbols, not BASE/QUOTE: a dated future and the perpetual
+    // share base and quote but are different markets. The paste resolver
+    // already ignores separators (BTCUSDT matches BTC-USDT).
+    const list = Array.isArray(data?.pair)
+      ? data.pair
+      : data?.pair
+        ? [data.pair]
+        : [];
+    return list.filter(Boolean);
+  }, [hedge, otherLeg]);
+  const handleCopyFromOtherLeg = useCallback(() => {
+    const source = otherLegPairs();
+    if (!source.length) {
+      setCopyNote({ copied: `The ${otherLeg} leg has no pairs yet.` });
+      return;
+    }
+    const result = handleCopyPairs(source);
+    const copied = result?.shouldUpdatePairs
+      ? (result.nextPairs?.length ?? 0)
+      : 0;
+    const missing = result?.invalidPairs ?? [];
+    const note: { copied: string; skipped?: string } = {
+      copied: `Copied ${copied} of ${source.length} ${source.length === 1 ? 'pair' : 'pairs'} from the ${otherLeg} leg.`,
+    };
+    if (missing.length) {
+      const sample = missing.slice(0, 10).join(', ');
+      note.skipped = `${missing.length} ${missing.length === 1 ? "isn't" : "aren't"} available on this leg's exchange and ${missing.length === 1 ? 'was' : 'were'} not copied: ${sample}${missing.length > 10 ? ` and ${missing.length - 10} more` : ''}.`;
+    } else if (result?.error) {
+      note.skipped = result.error;
+    }
+    setCopyNote(note);
+  }, [handleCopyPairs, otherLeg, otherLegPairs]);
 
   const PAIRS_PREVIEW_LIMIT = 10;
   const [showAllLockedPairs, setShowAllLockedPairs] = useState(false);
@@ -199,7 +254,7 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
           alerts={pairAlerts}
           navId="pair"
           trailing={
-            isComboBot ? null : (
+            isSinglePairOnly ? null : (
               <div className="flex items-center gap-xs">
                 {/* Multi-pair selections scroll out of view once the picker
                     grows, so surface the running count next to the toggle. */}
@@ -246,7 +301,7 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
               </p>
             )}
             {pairLockState.locked ? (
-              <div className="space-y-sm rounded-lg border border-border bg-muted/30 p-sm">
+              <div className="space-y-sm">
                 {pairs.length > 0 ? (
                   <>
                     <div className="flex flex-wrap gap-xs">
@@ -272,7 +327,7 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                             onClick={() => handleChartPairSelect(pair)}
                             title={`Show ${baseAsset}/${quoteAsset} on chart`}
                             aria-label={`Show ${baseAsset}/${quoteAsset} on chart`}
-                            className="flex min-w-0 cursor-pointer items-center gap-xs rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted/50"
+                            className="flex min-w-0 cursor-pointer items-center gap-xs rounded-lg bg-muted px-2.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted/70"
                           >
                             <CoinPair
                               baseAsset={baseAsset}
@@ -323,11 +378,11 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                   </div>
                 )}
                 {pairLockState.reason === 'edit-single-pair' && (
-                  <p className="text-xs text-muted-foreground/75">
-                    The trading pair is fixed for a single-pair bot. Use
-                    &ldquo;Duplicate bot&rdquo; to run the same strategy on
-                    another pair.
-                  </p>
+                  <SettingsAlert
+                    variant="info"
+                    title="Pair is fixed"
+                    description="Use Duplicate bot to run the same strategy on another pair."
+                  />
                 )}
               </div>
             ) : (
@@ -336,6 +391,7 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                   selectedCoins={selectedPairSymbols}
                   onCoinToggle={handleCoinToggle}
                   onRemoveCoin={handleRemovePair}
+                  onReplaceCoin={handleReplacePair}
                   mode="pairs"
                   {...(exchangeProvider ? { exchangeProvider } : {})}
                   onPairsPaste={handlePairsPaste}
@@ -345,9 +401,12 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                         onClearSelection: handleClearPairs,
                       }
                     : {})}
-                  shouldShowAddButton={!isComboBot}
+                  shouldShowAddButton={!isSinglePairOnly}
                   showAllOption={false}
                   onPairClick={handleChartPairSelect}
+                  maxPairs={planMaxPairs}
+                  onAddPairs={handleAddPairs}
+                  onRemovePairs={handleRemovePairs}
                 />
                 {useMulti && (
                   <div className="space-y-1">
@@ -397,6 +456,28 @@ export const BasicSettings: React.FC<BasicSettingsProps> = ({
                   >
                     {planLimitMessage}
                   </p>
+                )}
+                {isNestedLeg && hedge && (
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      onClick={handleCopyFromOtherLeg}
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Copy className="size-3" aria-hidden />
+                      Copy pairs from {otherLeg} leg
+                    </button>
+                    {copyNote && (
+                      <p className="text-xs text-muted-foreground">
+                        {copyNote.copied}
+                      </p>
+                    )}
+                    {copyNote?.skipped && (
+                      <p role="alert" className="text-xs text-warning">
+                        {copyNote.skipped}
+                      </p>
+                    )}
+                  </div>
                 )}
               </>
             )}

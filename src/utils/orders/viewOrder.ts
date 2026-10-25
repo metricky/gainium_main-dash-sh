@@ -1,7 +1,10 @@
 import { formatOrderForDisplay } from '@/hooks/useBotOrders';
 import type { OrderData } from '@/types';
 import type { ViewOrder } from '@/types/bots';
-import { getOrderTypeLabel } from '@/utils/mapOrderName';
+import {
+  baseRemainderAddFundsIds,
+  getOrderTypeLabel,
+} from '@/utils/mapOrderName';
 
 /**
  * Maps a raw `OrderData` (GraphQL / socket shape) to the `ViewOrder` shape the
@@ -13,7 +16,9 @@ import { getOrderTypeLabel } from '@/utils/mapOrderName';
  */
 export const orderDataToViewOrder = (
   order: OrderData,
-  fallbackExchange?: string
+  fallbackExchange?: string,
+  /** From `baseRemainderAddFundsIds` over the deal's orders. */
+  baseRemainderIds?: ReadonlySet<string>
 ): ViewOrder => {
   const formatted = formatOrderForDisplay(order);
   const executedQty = parseFloat(order.executedQty || '0');
@@ -27,7 +32,8 @@ export const orderDataToViewOrder = (
     order.sl || false,
     order.clientOrderId,
     order.reduceFundsId,
-    true
+    true,
+    !!order.addFundsId && !!baseRemainderIds?.has(order.addFundsId)
   );
 
   return {
@@ -57,11 +63,18 @@ export const orderDataToViewOrder = (
     sl: order.sl,
     clientOrderId: order.clientOrderId,
     reduceFundsId: order.reduceFundsId,
+    addFundsId: order.addFundsId,
     // Execution time, which chart markers are plotted on — see
     // `getOrderExecutionTime` for why neither placement time nor `updateTime`
     // is right for every order.
     time: formatted.executionTime,
     executedQty: order.executedQty,
+    slippageBps: order.slippageBps,
+    slippageQuote: order.slippageQuote,
+    slippageSource: order.slippageSource,
+    feeQuote: order.feeQuote,
+    feeEstimated: order.feeEstimated,
+    feeConverted: order.feeConverted,
   };
 };
 
@@ -71,12 +84,18 @@ export const orderDataToViewOrder = (
  */
 export const splitDealOrders = (
   orders: OrderData[] | undefined,
-  fallbackExchange?: string
+  fallbackExchange?: string,
+  deal?: Parameters<typeof baseRemainderAddFundsIds>[1]
 ): { pendingOrders: ViewOrder[]; completedOrders: ViewOrder[] } => {
   const pendingOrders: ViewOrder[] = [];
   const completedOrders: ViewOrder[] = [];
+  const baseRemainderIds = baseRemainderAddFundsIds(orders ?? [], deal);
   for (const order of orders ?? []) {
-    const view = orderDataToViewOrder(order, fallbackExchange);
+    const view = orderDataToViewOrder(
+      order,
+      fallbackExchange,
+      baseRemainderIds
+    );
     const status = String(order.status || '').toUpperCase();
     if (status === 'FILLED' || status === 'CANCELED' || status === 'CANCELLED') {
       completedOrders.push(view);

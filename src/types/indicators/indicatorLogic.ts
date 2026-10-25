@@ -1,3 +1,5 @@
+import { getActiveFavoritePreset } from '@/utils/indicators/favoritePresetScope';
+import { resolveFieldKey } from '@/utils/indicators/indicatorFieldGating';
 import {
   DONCHIAN_BAND_VALUES,
   INDICATOR_CATALOG,
@@ -27,6 +29,11 @@ import {
   ppValueTypeEnum,
   type SettingsIndicators,
 } from '..';
+import {
+  resolveSmoothingCompare,
+  resolveSmoothingLength,
+  resolveSmoothingType,
+} from '@/utils/indicators/smoothing';
 
 const collectFields = (
   definition: IndicatorDefinition
@@ -104,12 +111,16 @@ export const getIndicatorDefaultParams = (
   section?: IndicatorSection | undefined
 ): IndicatorParamsState => {
   const definition = getIndicatorDefinition(type);
-  return collectFields(definition).reduce<IndicatorParamsState>(
+  const defaults = collectFields(definition).reduce<IndicatorParamsState>(
     (acc, field) => {
-      const value = getFallbackDefault(field);
+      // A field whose key follows another field (Stochastic's bands follow
+      // Zone) seeds the key and default the seeded params bind it to; the
+      // driving field comes first in the catalog, so it is already set.
+      const { key, defaultValue } = resolveFieldKey(field, acc);
+      const value = getFallbackDefault({ ...field, defaultValue });
       if (value !== undefined) {
         (acc as Record<string, NonNullable<IndicatorParamPrimitive>>)[
-          field.key
+          key as string
         ] = value as NonNullable<IndicatorParamPrimitive>;
       }
       return acc;
@@ -126,6 +137,9 @@ export const getIndicatorDefaultParams = (
       uuid: '',
     } as IndicatorParamsState
   );
+  // A favorite being picked brings its saved settings (see favoritePresetScope).
+  const preset = getActiveFavoritePreset(type);
+  return preset ? { ...defaults, ...preset } : defaults;
 };
 
 export const validateIndicatorParams = (
@@ -231,9 +245,23 @@ export const validateIndicatorParams = (
       break;
   }
 
-  // "between" needs two numeric bounds; the API refuses it with percentile.
+  // `type` is passed separately; read the smoothing fields as this type's.
+  const smoothingParams = { ...params, type };
+  if (
+    resolveSmoothingType(smoothingParams) &&
+    resolveSmoothingLength(smoothingParams) === null
+  ) {
+    errors.push('smoothingLength');
+  }
+
+  // "between" needs two numeric bounds; the API refuses it with percentile,
+  // and when an indicator compares against its own smoothed line there is no
+  // value to be between.
   if (getParam('indicatorCondition') === IndicatorStartConditionEnum.bw) {
-    if (getParam('percentile')) {
+    if (
+      getParam('percentile') ||
+      resolveSmoothingCompare(smoothingParams) === 'line'
+    ) {
       errors.push('indicatorCondition');
     } else {
       if (!Number.isFinite(toNumber(getParam('indicatorValue')))) {

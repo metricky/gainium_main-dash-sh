@@ -11,7 +11,8 @@
  * The component owns its own indicator-selector instance and favorites,
  * so callers don't have to pass them in.
  */
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import SettingsAlert from '@/components/ui/SettingsAlert';
+import { useBillableIndicatorCount } from '@/hooks/bots/useBillableIndicatorCount';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import {
@@ -128,10 +129,8 @@ export const DynamicArIndicatorPanel: React.FC<
     [indicators, section]
   );
 
-  const indicatorLimitReached = useMemo(
-    () => indicators.length >= indicatorsLimit,
-    [indicators.length]
-  );
+  const billableIndicatorCount = useBillableIndicatorCount();
+  const indicatorLimitReached = billableIndicatorCount >= indicatorsLimit;
 
   // ─── Per-section copy ───────────────────────────────────────────
   const isTp = section === IndicatorSection.tp;
@@ -397,17 +396,11 @@ export const DynamicArIndicatorPanel: React.FC<
         </div>
 
         {closeIndicators.length === 0 ? (
-          <Alert
-            variant="destructive"
-            className="border-destructive/40 bg-destructive/10"
-          >
-            <AlertTitle className="text-sm font-semibold">
-              Add an ATR or ADR indicator
-            </AlertTitle>
-            <AlertDescription className="text-xs leading-relaxed">
-              {missingAlertDescription}
-            </AlertDescription>
-          </Alert>
+          <SettingsAlert
+            variant="error"
+            title="Add an ATR or ADR indicator"
+            description={missingAlertDescription}
+          />
         ) : null}
       </SettingsRow>
 

@@ -21,6 +21,8 @@ export interface UseGridBotProfitOptions {
   /** Timeframe: 0 = Daily, 1 = Weekly, 2 = Monthly, 3 = Total */
   timeframe?: number;
   enabled?: boolean;
+  /** Which deal/transaction source the backend aggregates. Defaults to grid. */
+  botType?: BotTypesEnum;
 }
 
 export interface UseGridBotProfitResult {
@@ -33,8 +35,9 @@ export interface UseGridBotProfitResult {
 }
 
 /**
- * Hook to fetch grid bot profit data using the getProfitByBot GraphQL query.
- * This mirrors the legacy main-dash approach (components/gridbot/index.tsx).
+ * Hook to fetch per-period bot profit using the getProfitByBot GraphQL query.
+ * This mirrors the legacy main-dash approach (components/gridbot/index.tsx for
+ * grid, components/dcabot/components/botData.tsx for DCA/Combo/Hedge).
  *
  * The backend returns an array of { profitUsd, quote, base, date } entries,
  * one per period (day/week/month), which is then used to render the profit
@@ -43,16 +46,22 @@ export interface UseGridBotProfitResult {
 export function useGridBotProfit(
   options: UseGridBotProfitOptions
 ): UseGridBotProfitResult {
-  const { botId, timezone, timeframe = 0, enabled = true } = options;
+  const {
+    botId,
+    timezone,
+    timeframe = 0,
+    enabled = true,
+    botType = BotTypesEnum.grid,
+  } = options;
 
   const input = useMemo(
     () => ({
       botId,
       timezone,
       timeframe,
-      botType: BotTypesEnum.grid,
+      botType,
     }),
-    [botId, timezone, timeframe]
+    [botId, timezone, timeframe, botType]
   );
 
   const { query, variables } = botQueries.getProfitByBot(input);
@@ -63,8 +72,14 @@ export function useGridBotProfit(
     { enabled: enabled && !!botId }
   );
 
+  // The app-wide placeholderData keeps the previous key's response on screen
+  // while a new one loads — here that is another timeframe's (or another
+  // bot's) series drawn under the new label, so treat it as still loading.
+  const isPlaceholder = queryResult.isPlaceholderData;
+
   const profitEntries = useMemo(() => {
     if (
+      isPlaceholder ||
       !queryResult.data ||
       queryResult.data.status !== 'OK' ||
       !queryResult.data.data?.result
@@ -72,12 +87,12 @@ export function useGridBotProfit(
       return [];
     }
     return queryResult.data.data.result;
-  }, [queryResult.data]);
+  }, [queryResult.data, isPlaceholder]);
 
   return {
     data: queryResult.data || null,
     profitEntries,
-    isLoading: queryResult.isLoading,
+    isLoading: queryResult.isLoading || isPlaceholder,
     isError: queryResult.isError,
     error: queryResult.error,
     refetch: queryResult.refetch,

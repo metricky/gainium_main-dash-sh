@@ -1,4 +1,5 @@
 import { useGraphQL } from '@/hooks/useGraphQL';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 import { useNowTick } from '@/hooks/useNowTick';
 import { useAccountTimeZone } from '@/hooks/useAccountTimeZone';
 import { getTzDateKey, getTzDayBounds } from '@/utils/timeUtils';
@@ -28,7 +29,12 @@ import { useUIStore } from '../../../stores/uiStore';
 import CustomTooltip from '../../charts/CustomTooltip';
 import WidgetWrapper from '../WidgetWrapper';
 import { TimeframeButtons } from '../shared/TimeframeButtons';
-import WidgetStats from '../shared/WidgetStats';
+import WidgetStats, { type StatItem } from '../shared/WidgetStats';
+import { useAccountTradingCostsTooltip } from './useAccountTradingCostsTooltip';
+import {
+  PROFIT_EXCHANGE_FILTER_TOOLTIP,
+  useWidgetExchangeFilter,
+} from '../shared/useWidgetExchangeFilter';
 import { getWidgetMetadata } from './index';
 
 type ProfitData_API = ProfitQuery;
@@ -92,6 +98,7 @@ export const Profit: React.FC<ProfitProps> = ({
 
   // Get privacy mode state
   const privacyMode = useUIStore((s) => s.privacyMode);
+  const { currency, toReporting, formatUsd } = useReportingCurrency();
 
   // The account's day boundary — the platform's one answer to "which day is
   // this instant?", shared with the Deals table and the other profit surfaces.
@@ -102,6 +109,16 @@ export const Profit: React.FC<ProfitProps> = ({
   // Persisted settings for this widget instance
   const [timeFilter, setTimeFilter] = usePersistedState('timeFilter', 'Daily');
   const [customName, setCustomName] = usePersistedState('customName', '');
+  const [selectedExchanges, setSelectedExchanges] = usePersistedState(
+    'selectedExchanges',
+    ['ALL']
+  );
+  const { exchangeUUIDs, filtersActive, clearFilters, filterContent } =
+    useWidgetExchangeFilter({
+      selectedExchanges,
+      setSelectedExchanges,
+      tooltip: PROFIT_EXCHANGE_FILTER_TOOLTIP,
+    });
 
   // Local UI state (not persisted)
   const [showOptionsDialog, setShowOptionsDialog] = useState(false);
@@ -118,10 +135,11 @@ export const Profit: React.FC<ProfitProps> = ({
         {
           timezone: userTimezone,
           timeframe,
+          ...(exchangeUUIDs ? { exchangeUUIDs } : {}),
         },
         'quote\ndate'
       ),
-    [timeframe, userTimezone]
+    [timeframe, userTimezone, exchangeUUIDs]
   );
 
   const { data: profitResponse, isLoading: profitLoading } =
@@ -626,9 +644,18 @@ export const Profit: React.FC<ProfitProps> = ({
   }, [timeframe, realProfitData.chartData, userTimezone]);
 
 
+  // Account-wide fees + slippage for the same period, as an info tooltip on
+  // the period's profit figure. Not under an exchange filter (the summary is
+  // not filtered by exchange) nor in privacy mode.
+  const costsTooltip = useAccountTradingCostsTooltip({
+    timeFilter: String(timeFilter),
+    timeZone: userTimezone,
+    enabled: !filtersActive && !privacyMode,
+  });
+
   // Create stats data array for the WidgetStats component
   const createStatsData = useMemo(() => {
-    const stats = [];
+    const stats: StatItem[] = [];
 
     // First stat - Today/This Period
     stats.push({
@@ -640,6 +667,7 @@ export const Profit: React.FC<ProfitProps> = ({
             : timeFilter === 'Weekly'
               ? 'This Week'
               : 'Today',
+      labelTooltip: costsTooltip,
       value: privacyMode ? 0 : realProfitData.today,
       ...(privacyMode && { textValue: '***' }),
     });
@@ -708,6 +736,7 @@ export const Profit: React.FC<ProfitProps> = ({
     privacyMode,
     profitResponse,
     computeTotalAverages,
+    costsTooltip,
   ]);
 
   // Distinguish initial load from "loaded but no profit history yet."
@@ -838,7 +867,11 @@ export const Profit: React.FC<ProfitProps> = ({
                   fontSize: 8,
                   className: 'text-muted-foreground',
                 }}
-                tickFormatter={(value) => (privacyMode ? '***' : `$${value}`)}
+                tickFormatter={(value) =>
+                  privacyMode
+                    ? '***'
+                    : `${currency.symbol}${Math.round(toReporting(value) * 100) / 100}`
+                }
                 width={40}
               />
               <Tooltip
@@ -846,7 +879,12 @@ export const Profit: React.FC<ProfitProps> = ({
                   <CustomTooltip
                     labelFormatter={tooltipLabelFormatter}
                     valueFormatter={
-                      privacyMode ? () => ['***', ''] as const : undefined
+                      privacyMode
+                        ? () => ['***', ''] as const
+                        : (value, name) => [
+                            formatUsd(Number(value)),
+                            name.charAt(0).toUpperCase() + name.slice(1),
+                          ]
                     }
                   />
                 }
@@ -896,21 +934,26 @@ export const Profit: React.FC<ProfitProps> = ({
       setTimeFilter,
       tooltipLabelFormatter,
       widgetId,
+      currency,
+      toReporting,
+      formatUsd,
     ]
   );
 
   // Calculate profit value for header
   const profitValue = useMemo(
     () => ({
-      primary: privacyMode ? '***' : Math.abs(realProfitData.today),
-      secondary: 'USD',
+      primary: privacyMode ? '***' : Math.abs(toReporting(realProfitData.today)),
+      secondary: currency.code,
       change: {
-        value: privacyMode ? '***' : Math.abs(realProfitData.difference),
+        value: privacyMode
+          ? '***'
+          : Math.abs(toReporting(realProfitData.difference)),
         percentage: privacyMode ? '***' : realProfitData.differencePercent,
         isPositive: realProfitData.difference >= 0,
       },
     }),
-    [privacyMode, realProfitData]
+    [privacyMode, realProfitData, currency, toReporting]
   );
 
   const metadata = useMemo(
@@ -921,8 +964,20 @@ export const Profit: React.FC<ProfitProps> = ({
       displayName: customName || 'Profit over time',
       ...(hideHeaderValue ? {} : { value: profitValue }),
       hasOptions: true,
+      hasFilters: true,
+      filterContent,
+      filtersActive,
+      onClearFilters: clearFilters,
     }),
-    [widgetId, customName, hideHeaderValue, profitValue]
+    [
+      widgetId,
+      customName,
+      hideHeaderValue,
+      profitValue,
+      filterContent,
+      filtersActive,
+      clearFilters,
+    ]
   );
 
   const renderOptionsContent = useCallback(

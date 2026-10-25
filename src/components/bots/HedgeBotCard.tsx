@@ -12,6 +12,8 @@
  * hedge id + hedge type, with optimistic store update + rollback.
  */
 import { motion } from 'framer-motion';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
+import { dcaBotProfitUsdForReporting } from '@/utils/bots/reportingProfit';
 import { ExternalLink, MoreVertical } from 'lucide-react';
 import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -19,6 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import { BotActionsMenuItems } from '@/components/bots/BotActionsMenuItems';
 import { BotActionsModals } from '@/components/bots/BotActionsModals';
 import { useBotActions } from '@/hooks/useBotActions';
+import { toBotRef } from '@/features/bots/actions/botRef';
 import { useLongPressMenu } from '@/hooks/useLongPressMenu';
 import { Button } from '@/components/ui/button';
 import {
@@ -36,7 +39,6 @@ import CoinPair from '@/components/widgets/shared/CoinPair';
 import { useResolvePairAsset } from '@/hooks/useResolvePairAsset';
 import { cardHoverVariants } from '@/lib/animations/variants';
 import { cn } from '@/lib/utils';
-import { toast } from '@/lib/toast';
 import {
   BotTypesEnum,
   StrategyEnum,
@@ -79,6 +81,9 @@ interface HedgeBotCardProps {
   /** Per-leg unrealized PnL (USD) and percentage. */
   legUnPnl?: { long?: number; short?: number };
   legUnPnlPerc?: { long?: number; short?: number };
+  /** Combined / per-leg unrealized not live yet (see PendingLiveValue). */
+  unPnlPending?: boolean | undefined;
+  legUnPnlPending?: { long?: boolean; short?: boolean };
 }
 
 const findLeg = (
@@ -115,6 +120,7 @@ const HedgeLegTile: React.FC<{
    *  own max value. */
   unPnl?: number;
   unPnlPerc?: number;
+  unPnlPending?: boolean | undefined;
 }> = ({
   leg,
   legLabel,
@@ -124,10 +130,12 @@ const HedgeLegTile: React.FC<{
   maxCost,
   unPnl,
   unPnlPerc,
+  unPnlPending,
 }) => {
+  const { formatUsd } = useReportingCurrency();
   const dealsActive = leg?.dealsInBot?.active ?? 0;
   const dealsAll = leg?.dealsInBot?.all ?? 0;
-  const profitUsd = leg?.profit?.totalUsd ?? 0;
+  const profitUsd = leg ? dcaBotProfitUsdForReporting(leg) : 0;
   // Colour the usage value to match the standalone gauge's traffic-light
   // logic: green by default, amber > 80%, red >= 100%. Skip the tint when
   // we have no usage yet to avoid drawing attention to a placeholder zero.
@@ -181,10 +189,10 @@ const HedgeLegTile: React.FC<{
           title={
             privacyMode
               ? '***'
-              : `$${(cost ?? 0).toFixed(2)} / $${(maxCost ?? 0).toFixed(2)} max`
+              : `${formatUsd(cost ?? 0)} / ${formatUsd(maxCost ?? 0)} max`
           }
         >
-          {privacyMode ? '***' : `$${(cost ?? 0).toFixed(2)}`}
+          {privacyMode ? '***' : formatUsd(cost ?? 0)}
         </span>
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-xs">
@@ -212,6 +220,7 @@ const HedgeLegTile: React.FC<{
           privacyMode={privacyMode}
           chipPosition="right"
           size="xs"
+          pending={unPnlPending}
         />
       </div>
     </div>
@@ -236,7 +245,10 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
   legMaxCost,
   legUnPnl,
   legUnPnlPerc,
+  unPnlPending,
+  legUnPnlPending,
 }) => {
+  const { formatUsd } = useReportingCurrency();
   const navigate = useNavigate();
   const resolvePairAsset = useResolvePairAsset();
 
@@ -273,32 +285,10 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
     [longLeg?.dealsInBot?.all, shortLeg?.dealsInBot?.all]
   );
 
-  // Shared bot-action orchestration. Hedge start/stop now goes through the
-  // same useBotStatusToggle as every other bot type (it optimistically
-  // updates the hedge stores), retiring this card's bespoke inline toggle.
-  // Clone opens the pre-filled create page via the canonical clone route,
-  // and Archive is owned by BotActionsMenuItems.
-  const botActions = useBotActions({
-    botId: bot._id,
-    botType,
-    botName: name,
-    status: bot.status,
-    activeDeals: totalActiveDeals,
-    currency: symbol?.quoteAsset ?? '',
-    lastActivity: bot.created || 'Unknown',
-    botData: bot,
-    deleteTitle: 'Delete hedge bot',
-    deleteDescription:
-      'Are you sure you want to delete this hedge bot? Both legs will be removed. This action cannot be undone.',
-    // Hedge bots don't support paper↔live copy yet — toast and clone on the
-    // current trading context (the canonical clone route handles hedge).
-    onCopyToLive: () => {
-      toast.info(
-        "Live↔paper copy isn't available for hedge bots yet. Cloned on the current trading context instead."
-      );
-      navigate(`${basePath}/new?load=${bot._id}`);
-    },
-  });
+  // Bot actions target the hedge wrapper (its id + hedge type). Which items
+  // the menu shows comes from the registry; the runner owns the flows.
+  const botRef = useMemo(() => toBotRef(bot, botType), [bot, botType]);
+  const botActions = useBotActions(botRef);
 
   // Mobile: a long press anywhere on the card opens the actions menu directly
   // (the floating pill's target is small on touch).
@@ -381,13 +371,8 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
               <BotActionsMenuItems
                 align="end"
                 className="w-56"
-                bot={{
-                  id: bot._id,
-                  name,
-                  type: botType,
-                  status: bot.status,
-                }}
-                {...botActions.menuProps}
+                actions={botActions}
+                surface="hedgeCard"
               />
             </DropdownMenu>
           </div>
@@ -398,6 +383,7 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <StatusChip
                 status={bot.status}
+                botId={bot._id}
                 size="xs"
                 dotOnly
                 className="shrink-0"
@@ -470,6 +456,7 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
                 privacyMode={privacyMode}
                 chipPosition="bottom"
                 size="md"
+                pending={unPnlPending}
               />
             </div>
           </div>
@@ -487,15 +474,15 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
                 title={
                   privacyMode
                     ? '***'
-                    : `$${(currentCost ?? 0).toFixed(2)}`
+                    : formatUsd(currentCost ?? 0)
                 }
               >
-                {privacyMode ? '***' : `$${(currentCost ?? 0).toFixed(2)}`}
+                {privacyMode ? '***' : formatUsd(currentCost ?? 0)}
               </div>
               <div className="text-muted-foreground text-xs truncate">
                 {privacyMode
                   ? '***'
-                  : `Max: $${(maxCost ?? 0).toFixed(2)}`}
+                  : `Max: ${formatUsd(maxCost ?? 0)}`}
               </div>
             </div>
             <div className="min-w-0">
@@ -550,6 +537,7 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
               maxCost={legMaxCost?.long}
               unPnl={legUnPnl?.long}
               unPnlPerc={legUnPnlPerc?.long}
+              unPnlPending={legUnPnlPending?.long}
             />
             <HedgeLegTile
               leg={shortLeg}
@@ -560,6 +548,7 @@ const HedgeBotCardComponent: React.FC<HedgeBotCardProps> = ({
               maxCost={legMaxCost?.short}
               unPnl={legUnPnl?.short}
               unPnlPerc={legUnPnlPerc?.short}
+              unPnlPending={legUnPnlPending?.short}
             />
           </div>
         </div>
@@ -582,6 +571,10 @@ export const HedgeBotCard = React.memo(HedgeBotCardComponent, (prev, next) => {
   if (prev.botType !== next.botType) return false;
   if (prev.unPnl !== next.unPnl) return false;
   if (prev.unPnlPerc !== next.unPnlPerc) return false;
+  if (prev.unPnlPending !== next.unPnlPending) return false;
+  if (prev.legUnPnlPending?.long !== next.legUnPnlPending?.long) return false;
+  if (prev.legUnPnlPending?.short !== next.legUnPnlPending?.short)
+    return false;
   if (prev.totalProfitUsd !== next.totalProfitUsd) return false;
   if (prev.currentCost !== next.currentCost) return false;
   if (prev.maxCost !== next.maxCost) return false;

@@ -36,7 +36,8 @@ import {
 import type { PrecisionGuard } from '@/features/bots/shared/utils/order-guard';
 import { useBotFormRegistryContext } from '@/features/bots/widgets/BotForm/context';
 import { type TradingPair } from '@/hooks/useTradingPairs';
-import { GraphQLClient, GraphQlQuery, DEFAULT_READ_TIMEOUT_MS } from '@/lib/api';
+import { GraphQLClient, DEFAULT_READ_TIMEOUT_MS } from '@/lib/api';
+import { requestFavoriteIndicators } from '@/utils/indicators/favoritePresets';
 import { toast } from '@/lib/toast';
 import { useAuthStore } from '@/stores/authStore';
 import {
@@ -76,6 +77,7 @@ import {
   handleSettingsUpdate,
   type HandleSettingsUpdateResult,
 } from '@/utils/bots/dca/handle-settings';
+import { maxOpenDealsAfterPairChange } from '@/utils/bots/dca/pair-limits';
 import { hotValidateDcaFormData } from '@/utils/bots/dca/validation';
 import { computeGridBudgetRangeFromForm } from '@/utils/bots/grid/budget-ranges';
 import { validateGridFormData } from '@/utils/bots/grid/validation';
@@ -615,13 +617,18 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
             : value;
         // setIndicators ignores the array it already holds, so a keystroke
         // that keeps the same indicators reference no longer re-renders the chart.
-        if (nextValue.dca.indicators) {
-          indicatorStore.setIndicators(nextValue.dca.indicators);
+        // A combo form keeps its indicators in the combo slice, not dca.
+        const nextIndicators =
+          botType === BotTypesEnum.combo
+            ? nextValue.combo.indicators
+            : nextValue.dca.indicators;
+        if (nextIndicators) {
+          indicatorStore.setIndicators(nextIndicators);
         }
         return { formData: nextValue };
       });
     },
-    [store, indicatorStore]
+    [store, indicatorStore, botType]
   );
   const setErrors = useCallback<Dispatch<SetStateAction<BotFormErrors>>>(
     (value) => {
@@ -890,7 +897,13 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
           ? formData.combo.orderSizeType
           : formData.dca.orderSizeType,
         coinm: isComboBot ? formData.combo.coinm : formData.dca.coinm,
-        useDca: isComboBot ? formData.combo.useDca : formData.dca.useDca,
+        // Single position per pair: entries replace safety orders, so the
+        // preview shows none (the DCA settings are kept, just unused).
+        useDca: isComboBot
+          ? formData.combo.useDca
+          : formData.singlePositionSupported && formData.dca.singlePosition
+            ? false
+            : formData.dca.useDca,
         dcaCondition: isComboBot
           ? formData.combo.dcaCondition
           : formData.dca.dcaCondition,
@@ -1018,6 +1031,25 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       let settingsUpdateResult: HandleSettingsUpdateResult = { dca: {} };
       setFormData((prev) => {
         if (field in prev) {
+          if (
+            field === 'pair' &&
+            Array.isArray(value) &&
+            (botType === BotTypesEnum.dca || botType === BotTypesEnum.combo)
+          ) {
+            const slice = botType === BotTypesEnum.combo ? 'combo' : 'dca';
+            const nextMax = maxOpenDealsAfterPairChange(
+              Array.isArray(prev.pair) ? prev.pair.length : 0,
+              value.length,
+              prev[slice].maxNumberOfOpenDeals
+            );
+            if (nextMax !== null) {
+              return {
+                ...prev,
+                pair: value,
+                [slice]: { ...prev[slice], maxNumberOfOpenDeals: nextMax },
+              } as typeof prev;
+            }
+          }
           return {
             ...prev,
             [field]: value,
@@ -1660,11 +1692,6 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
       return;
     }
 
-    const favoritesQueryFactory = GraphQlQuery.getUserFavoriteIndicators;
-    if (typeof favoritesQueryFactory !== 'function') {
-      return;
-    }
-
     favoriteIndicatorsRequestState.current.inflight = true;
     const hydrationVersion = favoriteIndicatorsVersionRef.current;
     let isActive = true;
@@ -1675,15 +1702,11 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
           import.meta.env['VITE_API_ENDPOINT'] || 'http://localhost:4000';
         const client = new GraphQLClient(endpoint, accessToken, !isLiveTrading);
 
-        const { query } = favoritesQueryFactory();
-
-        const response = await client.request<{
-          getUserFavoriteIndicators: {
-            status: string;
-            reason?: string | null;
-            data?: { indicators?: IndicatorEnum[] | null } | null;
-          };
-        }>(query, undefined, { timeoutMs: DEFAULT_READ_TIMEOUT_MS });
+        const payload = await requestFavoriteIndicators(
+          client,
+          { kind: 'get' },
+          { timeoutMs: DEFAULT_READ_TIMEOUT_MS }
+        );
 
         favoriteIndicatorsRequestState.current.inflight = false;
         favoriteIndicatorsRequestState.current.lastToken = accessToken;
@@ -1696,7 +1719,6 @@ export const BotFormProvider: React.FC<BotFormProviderProps> = (props) => {
           return;
         }
 
-        const payload = response?.getUserFavoriteIndicators ?? null;
 
         if (payload?.status === 'OK') {
           const rawIndicators = payload.data?.indicators ?? [];
@@ -2323,6 +2345,24 @@ export function useBotFormStoreSelector<T>(
   equality?: (a: T, b: T) => boolean
 ): T {
   const context = useContext(BotFormStateContext);
+  const selected = useStoreSelectorWithFallback(selector, equality);
+  if (!context) {
+    throw new Error(
+      'useBotFormStoreSelector must be used within a BotFormProvider'
+    );
+  }
+  return selected;
+}
+
+/**
+ * `useBotFormStoreSelector` that reads the empty default form outside a
+ * `BotFormProvider` instead of throwing.
+ */
+function useStoreSelectorWithFallback<T>(
+  selector: (state: BotFormStoreState) => T,
+  equality?: (a: T, b: T) => boolean
+): T {
+  const context = useContext(BotFormStateContext);
   const store = context?.store ?? EMPTY_BOT_FORM_STORE;
   const lastRef = useRef<{ value: T } | null>(null);
   const selected = useStore(store, (s) => {
@@ -2333,11 +2373,6 @@ export function useBotFormStoreSelector<T>(
     lastRef.current = { value: next };
     return next;
   });
-  if (!context) {
-    throw new Error(
-      'useBotFormStoreSelector must be used within a BotFormProvider'
-    );
-  }
   return selected;
 }
 
@@ -2458,11 +2493,33 @@ export const useBotFormPick = (
   topKeys: readonly (keyof BotFormData)[],
   sliceKeys: readonly string[]
 ): BotFormData => {
+  const context = useContext(BotFormStateContext);
+  const picked = usePickImpl(topKeys, sliceKeys);
+  if (!context) {
+    throw new Error('useBotFormPick must be used within a BotFormProvider');
+  }
+  return picked;
+};
+
+/**
+ * `useBotFormPick` that returns the picked fields of the empty default form
+ * outside a `BotFormProvider` instead of throwing — for a control shared by
+ * the bot form and standalone pages.
+ */
+export const useOptionalBotFormPick = (
+  topKeys: readonly (keyof BotFormData)[],
+  sliceKeys: readonly string[]
+): BotFormData => usePickImpl(topKeys, sliceKeys);
+
+const usePickImpl = (
+  topKeys: readonly (keyof BotFormData)[],
+  sliceKeys: readonly string[]
+): BotFormData => {
   const topRef = useRef(topKeys);
   const sliceRef = useRef(sliceKeys);
   topRef.current = topKeys;
   sliceRef.current = sliceKeys;
-  return useBotFormStoreSelector(
+  return useStoreSelectorWithFallback(
     (s) => {
       const fd = s.formData as unknown as Record<string, unknown>;
       return {

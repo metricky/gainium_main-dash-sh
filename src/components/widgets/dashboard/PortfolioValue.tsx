@@ -1,18 +1,11 @@
 import EmptyState from '@/components/ui/empty-state';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TimeframeButtons } from '@/components/widgets/shared/TimeframeButtons';
 import { LineChart } from 'lucide-react';
 import { useTransformedExchangesFromContext } from '@/contexts/ExchangeDataContext';
 import { useGraphQL } from '@/hooks/useGraphQL';
 import { useNowTick } from '@/hooks/useNowTick';
-import { currencies, getCurrencyInfo } from '@/utils/currencyUtils';
+import { useReportingCurrency } from '@/hooks/useReportingCurrency';
 import { GraphQlQuery } from '@/lib/api';
 import { axisIndexProps, withAxisIndex } from '@/lib/charts/axisIndex';
 import { logger } from '@/lib/loggerInstance';
@@ -63,9 +56,6 @@ interface PortfolioSnapshotWithExchanges {
   totalUsd: number;
   assets: PortfolioAssetWithExchanges[];
 }
-
-// Currency reference data + lookup live in `@/utils/currencyUtils` (imported
-// above as `currencies` / `getCurrencyInfo`) — do not duplicate them here.
 
 // Backend asset names are already the display symbol, bar one legacy alias.
 // Single source of truth so the chart series, the picker list and the filter
@@ -202,10 +192,7 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
 
   // Persisted settings for this widget instance (exchange/coin selections are
   // declared earlier — the fetch depends on them).
-  const [selectedCurrency, setSelectedCurrency] = usePersistedState(
-    'selectedCurrency',
-    'USD'
-  );
+  const { currency: currencyInfo, formatUsd } = useReportingCurrency();
   const [customName, setCustomName] = usePersistedState('customName', '');
   const [startYAxisAtZero, setStartYAxisAtZero] = usePersistedState(
     'startYAxisAtZero',
@@ -824,18 +811,14 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
     [getPortfolioDataForExchanges, selectedExchanges]
   );
 
-  // Calculate portfolio value and change for header. `getCurrencyInfo` is now a
-  // stable module-level import, so it is not a dependency.
-  const currencyInfo = useMemo(
-    () => getCurrencyInfo(selectedCurrency),
-    [selectedCurrency]
-  );
+  // Calculate portfolio value and change for header, in the reporting
+  // currency (history is converted at today's rate).
   const portfolioValue = useMemo(
     () => ({
       primary: privacyMode
         ? '***'
         : portfolioData.currentValue * currencyInfo.rate,
-      secondary: `${currencyInfo.symbol} ${selectedCurrency}`,
+      secondary: `${currencyInfo.symbol} ${currencyInfo.code}`,
       change: {
         value: privacyMode
           ? '***'
@@ -846,7 +829,7 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
         isPositive: portfolioData.changeValue >= 0,
       },
     }),
-    [privacyMode, portfolioData, currencyInfo, selectedCurrency]
+    [privacyMode, portfolioData, currencyInfo]
   );
 
   // Whether any filter is active (not the default state) is the same question as
@@ -1089,7 +1072,6 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
                     if (privacyMode) {
                       return '***';
                     }
-                    const currencyInfo = getCurrencyInfo(selectedCurrency);
                     const convertedValue = value * currencyInfo.rate;
                     return `${currencyInfo.symbol}${(convertedValue / 1000).toFixed(0)}k`;
                   }}
@@ -1104,7 +1086,12 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
                   content={
                     <CustomTooltip
                       valueFormatter={
-                        privacyMode ? () => ['***', ''] as const : undefined
+                        privacyMode
+                          ? () => ['***', ''] as const
+                          : (value, name) => [
+                              formatUsd(Number(value)),
+                              name.charAt(0).toUpperCase() + name.slice(1),
+                            ]
                       }
                     />
                   }
@@ -1187,7 +1174,8 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
       portfolioLoading, // drives the chart loading overlay
       fixedTimeframe, // chips are hidden when a fixed range is forced
       privacyMode,
-      selectedCurrency,
+      currencyInfo,
+      formatUsd,
       startYAxisAtZero,
       setTimeFilter,
       widgetId,
@@ -1212,28 +1200,6 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
           <p className="text-xs text-muted-foreground mt-1">
             Leave empty to use the dynamic name based on filters
           </p>
-        </div>
-
-        {/* Currency Selection */}
-        <div>
-          <label className="text-sm font-medium text-foreground mb-2 block">
-            Display Currency
-          </label>
-          <Select
-            value={selectedCurrency}
-            onValueChange={(v) => setSelectedCurrency(v)}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {currencies.map((currency) => (
-                <SelectItem key={currency.code} value={currency.code}>
-                  {currency.symbol} {currency.code} - {currency.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
 
         {/* Chart Options */}
@@ -1280,8 +1246,6 @@ export const PortfolioValue: React.FC<PortfolioValueProps> = ({
     [
       customName,
       setCustomName,
-      selectedCurrency,
-      setSelectedCurrency,
       startYAxisAtZero,
       setStartYAxisAtZero,
     ]

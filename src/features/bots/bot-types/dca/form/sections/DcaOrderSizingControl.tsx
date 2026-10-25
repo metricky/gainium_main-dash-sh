@@ -14,6 +14,7 @@ import {
 import { formatNumberWithTrim } from '@/features/bots/shared/utils/order-guard';
 import { unitAdornment } from '@/features/bots/shared/utils/unit-adornment';
 import { resolveOrderSizeIconSymbol } from '@/utils/bots/dca/order-size-icon';
+import { costReferenceMultiplier } from '@/utils/bots/dca/order-size-reference';
 import {
   resolveBaseOrderContext,
   type DcaTradingContext,
@@ -23,6 +24,7 @@ import {
   type VarBindingPath,
 } from '@/hooks/bots/global-variables/useBotVarBinding';
 import { BotTypesEnum, StrategyEnum } from '@/types';
+import { useBaseFundingState } from '@/features/bots/shared/sections/useBaseFundingState';
 import type { BotFormData, BotFormErrors } from '@/types/bots/form';
 import type { GlobalVariable } from '@/types/globalVariables';
 
@@ -125,9 +127,21 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
   );
   const strategy = useBotFormSelector('strategy');
   const futures = useBotFormSelector('futures');
+  const { active: baseFundingActive } = useBaseFundingState();
   const coinm = useBotFormSelector('coinm');
   const orderSizeType = useBotFormSelector('orderSizeType');
   const baseOrderSize = useBotFormSelector('baseOrderSize');
+  const leverage = useBotFormSelector('leverage');
+  const marginType = useBotFormSelector('marginType');
+  // With the futures "Cost" reference the amount is typed as margin and
+  // stored as notional (× leverage), like the Base Order field.
+  const costMultiplier = costReferenceMultiplier({
+    futures: Boolean(futures),
+    orderSizeType,
+    orderSizeReference: formData.orderSizeReference,
+    marginType,
+    leverage,
+  });
   const { currencyLabel, availableBalance, balanceCurrency, balanceAmount } =
     useMemo(() => {
       const params: Parameters<typeof resolveBaseOrderContext>[0] = {
@@ -193,9 +207,9 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
         updateOrderSize(0);
         return;
       }
-      updateOrderSize(value);
+      updateOrderSize(value * costMultiplier);
     },
-    [allowNegative, updateOrderSize]
+    [allowNegative, costMultiplier, updateOrderSize]
   );
 
   const handlePercentChange = useCallback(
@@ -423,7 +437,7 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
         >
           <BalanceInput
             readOnly={isSettingsReadonly}
-            value={orderSizeValue}
+            value={orderSizeValue / costMultiplier}
             onChange={
               isPercentageMode ? handlePercentChange : handleOrderSizeChange
             }
@@ -459,7 +473,9 @@ export const DcaOrderSizingControl: React.FC<DcaOrderSizingControlProps> = ({
             // false "exceeds available balance" error on the hedge-combo edit
             // form (forum #4921 / bug #94). Skip the wallet-based cap for
             // futures; the balance still displays.
-            disableBalanceValidation={Boolean(futures)}
+            // With base funding on, a short spot deal does not need the
+            // base coin in the account (main-app spec 044).
+            disableBalanceValidation={Boolean(futures) || baseFundingActive}
             errorField={errorField}
             navId={navId}
             endAdornment={

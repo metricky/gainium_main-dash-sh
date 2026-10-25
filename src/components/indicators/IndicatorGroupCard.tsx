@@ -1,14 +1,8 @@
 import { IndicatorList } from '@/components/indicators/IndicatorList';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { cn } from '@/lib/utils';
 import { IndicatorActionsToolbar } from '@/features/bots/shared/components/IndicatorActionsToolbar';
+import type { IndicatorEnum } from '@/types';
 import type { IndicatorConfig, IndicatorGroup } from '@/types/indicators';
 import { Trash2 } from 'lucide-react';
 import React, { useCallback } from 'react';
@@ -24,6 +18,8 @@ export interface IndicatorGroupCardProps {
   onEditIndicator?: (indicator: IndicatorConfig) => void;
   onRemoveIndicator: (indicatorId: string) => void;
   onSelectIndicatorType?: (indicator: IndicatorConfig) => void;
+  onToggleFavorite?: (indicator: IndicatorConfig) => void;
+  isFavorite?: (type: IndicatorEnum) => boolean;
   renderIndicatorExtras?: (
     indicator: IndicatorConfig,
     index: number
@@ -31,6 +27,15 @@ export interface IndicatorGroupCardProps {
   addIndicatorDisabledReason?: string | undefined;
   emptyState?: string;
   addButtonLabel?: string;
+  /**
+   * One fixed indicator: hides the join logic, remove group, remove
+   * indicator and add indicator controls. Default false.
+   */
+  singleIndicator?: boolean;
+  /** Draw the group as a bracket (when it is one of several). */
+  framed?: boolean;
+  /** Label in the frame's header, e.g. "Group 2". */
+  title?: string;
 }
 
 export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
@@ -43,10 +48,15 @@ export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
   onRemoveGroup: _onRemoveGroup,
   onRemoveIndicator,
   onSelectIndicatorType,
+  onToggleFavorite,
+  isFavorite,
   renderIndicatorExtras,
   addIndicatorDisabledReason,
   emptyState,
-  addButtonLabel = 'Add indicator',
+  addButtonLabel = 'Indicator',
+  singleIndicator = false,
+  framed = false,
+  title = 'Group',
 }) => {
   const addIndicatorDisabled = !canAddIndicator || disableControls;
   const addIndicatorTooltip = addIndicatorDisabled
@@ -62,70 +72,71 @@ export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
   }, [_onRemoveGroup, indicators, onRemoveIndicator]);
 
   return (
-    <div className="space-y-md rounded-lg border border-border/60 bg-inner-container p-md">
-      <div className="flex flex-wrap items-center justify-between gap-sm">
-        <div className="flex items-center gap-sm">
-          <Label
-            htmlFor={`indicator-group-logic-${group.id}`}
-            className="whitespace-nowrap"
-          >
-            Join logic
-          </Label>
-          <Select
-            value={group.logic}
-            onValueChange={(value) =>
-              onChangeLogic(value as IndicatorGroup['logic'])
-            }
+    // One of several groups: the group lifts a surface step (the bracket
+    // around "(A or B)") and its rows sink below it. A lone group renders
+    // straight in its host's flow with raised rows. No borders (§3).
+    <div
+      className={cn(
+        'min-w-0 space-y-sm',
+        framed && 'rounded-xl bg-popover p-sm shadow-sm dark:shadow-none'
+      )}
+    >
+      {framed && !singleIndicator ? (
+        <div className="flex items-center justify-between gap-sm pl-xs">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {title}
+          </span>
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            onClick={onRemoveGroup}
+            className="h-7 w-7 text-destructive hover:bg-destructive/10 hover:text-destructive"
             disabled={disableControls}
+            aria-label="Remove group"
           >
-            <SelectTrigger
-              id={`indicator-group-logic-${group.id}`}
-              className="w-[180px]"
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="and">
-                AND
-              </SelectItem>
-              <SelectItem value="or">OR</SelectItem>
-            </SelectContent>
-          </Select>
+            <Trash2 className="h-4 w-4" />
+          </Button>
         </div>
-
-        <Button
-          type="button"
-          size="icon"
-          variant="ghost"
-          onClick={onRemoveGroup}
-          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-          disabled={disableControls}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </div>
+      ) : null}
 
       <IndicatorList
         indicators={indicators}
-        onRemove={onRemoveIndicator}
+        {...(singleIndicator ? {} : { onRemove: onRemoveIndicator })}
         {...(onSelectIndicatorType
           ? { onSelectType: onSelectIndicatorType }
           : {})}
+        {...(onToggleFavorite ? { onToggleFavorite } : {})}
+        {...(isFavorite ? { isFavorite } : {})}
         {...(renderIndicatorExtras
           ? { renderExtras: renderIndicatorExtras }
           : {})}
         {...(emptyState ? { emptyState } : {})}
+        surface={framed ? 'inset' : 'raised'}
+        connector={{
+          logic: group.logic,
+          ...(disableControls
+            ? {}
+            : {
+                onToggle: () =>
+                  onChangeLogic(
+                    (group.logic === 'or'
+                      ? 'and'
+                      : 'or') as IndicatorGroup['logic']
+                  ),
+              }),
+        }}
       />
 
-      <div className="flex justify-end">
+      {!singleIndicator && (
         <IndicatorActionsToolbar
           onAddIndicator={onAddIndicator}
           addIndicatorLabel={addButtonLabel}
           addIndicatorDisabled={addIndicatorDisabled}
           addIndicatorTooltip={addIndicatorTooltip}
-          addIndicatorVariant="outline"
+          addIndicatorVariant="ghost"
         />
-      </div>
+      )}
     </div>
   );
 };
