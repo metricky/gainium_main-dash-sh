@@ -423,12 +423,41 @@ xOscillator2voShort
   oteMinLegSize
   oteLevel
   oteLeg
+  adxMode
+  kdjLength
+  kdjKSmooth
+  kdjDSmooth
+  kdjLine
+  kdjCompareTo
+  vwapAnchor
+  vwapLine
+  vwapBandMultiplier
+  candleSource
+  candleColor
+  candleCount
+  candleTrigger
+  obSwingLength
+  obSide
+  obLevel
+  sqzLength
+  sqzBBMult
+  sqzKCLength
+  sqzKCMult
+  sqzSignal
+  sqzMomentum
+  divPivotLeft
+  divPivotRight
+  divRangeLower
+  divRangeUpper
+  sessionLevelsActive
   factor
   atrLength
   pcUp
   pcDown
   pcCondition
   pcValue
+  pcCompare
+  pcValue2
   ppHighLeft
   ppHighRight
   ppLowLeft
@@ -738,12 +767,41 @@ xOscillator2voShort
   oteMinLegSize
   oteLevel
   oteLeg
+  adxMode
+  kdjLength
+  kdjKSmooth
+  kdjDSmooth
+  kdjLine
+  kdjCompareTo
+  vwapAnchor
+  vwapLine
+  vwapBandMultiplier
+  candleSource
+  candleColor
+  candleCount
+  candleTrigger
+  obSwingLength
+  obSide
+  obLevel
+  sqzLength
+  sqzBBMult
+  sqzKCLength
+  sqzKCMult
+  sqzSignal
+  sqzMomentum
+  divPivotLeft
+  divPivotRight
+  divRangeLower
+  divRangeUpper
+  sessionLevelsActive
     factor
   atrLength
    pcUp
   pcDown
   pcCondition
   pcValue
+  pcCompare
+  pcValue2
   ppHighLeft
   ppHighRight
   ppLowLeft
@@ -2195,10 +2253,12 @@ const symbolStatsBacktest = `pair
                                 deals {
                                   profit
                                   loss
+                                  open
                                 }
                                 netProfit {
                                   total
                                   totalUsd
+                                  perc
                                 }
                                 dailyReturn {
                                   total

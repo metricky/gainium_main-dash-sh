@@ -27,6 +27,20 @@ import {
   TrendFilterOperatorEnum,
   LWConditionEnum,
   OTELegEnum,
+  ADXModeEnum,
+  KDJLineEnum,
+  KDJCompareToEnum,
+  VWAPAnchorEnum,
+  VWAPLineEnum,
+  CandleSourceEnum,
+  CandleColorEnum,
+  CandleTriggerEnum,
+  OBSideEnum,
+  OBLevelEnum,
+  SqzSignalEnum,
+  SqzMomentumEnum,
+  SessionLevelsActiveEnum,
+  PCCompareEnum,
   type SettingsIndicators,
 } from '..';
 import {
@@ -41,8 +55,14 @@ import {
   deriveSmoothingGatingParams,
   resolveSmoothing,
   resolveSmoothingCompare,
+  resolveSmoothingType,
   supportsSmoothing,
 } from '@/utils/indicators/smoothing';
+import { DIV_PIVOT_DEFAULTS } from '@/utils/indicators/divergencePivots';
+import {
+  resolvePriceChangeCompare,
+  suggestPriceChangeValue2,
+} from '@/utils/indicators/priceChangeRange';
 import {
   resolveSessionPreset,
   SESSION_ALL_DAY,
@@ -222,9 +242,17 @@ const summarizeSmoothingCompare = (params: SettingsIndicators): string | null =>
         ?.label ?? null)
     : null;
 
+// The averages the Moving Average and MA Ratio lines can be. McGinley Dynamic
+// is a line of its own, not a basis for the Bollinger family, whose engines
+// would compute it as an EMA.
+const MA_LINE_OPTIONS = [
+  ...MA_TYPE_OPTIONS,
+  { value: MAEnum.mcginley, label: 'McGinley Dynamic' },
+];
+
 const MA_REFERENCE_OPTIONS = [
   { value: MAEnum.price, label: 'Current price' },
-  ...MA_TYPE_OPTIONS,
+  ...MA_LINE_OPTIONS,
 ];
 
 const INTERVAL_OPTIONS = [
@@ -316,17 +344,34 @@ export const stochZoneParams = (
 const STOCH_LOWER_BAND_DEFAULT = '20';
 const STOCH_UPPER_BAND_DEFAULT = '80';
 
-const stochZoneFields: IndicatorFieldDefinition[] = [
+// KDJ reads the same zone keys as Stochastic, with Anywhere as its default
+// zone (Stochastic's is Lower).
+const kdjZoneParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> =>
+  stochZoneParams(value, {
+    ...params,
+    stochRange: params.stochRange ?? StochRangeEnum.none,
+  });
+
+// The Zone / Lower band / Upper band fields. They do not apply while the
+// line is compared with a fixed value (`customWhen`).
+const makeStochZoneFields = (
+  customWhen: { field: keyof SettingsIndicators; equals: unknown },
+  defaultZone: StochRangeEnum,
+  setZone: typeof stochZoneParams
+): IndicatorFieldDefinition[] => [
   makeSelectField({
     key: 'stochRange',
     label: 'Zone',
-    defaultValue: StochRangeEnum.lower,
+    defaultValue: defaultZone,
     options: STOCH_RANGE_OPTIONS,
     tooltip: 'This is the area where the condition must be met',
-    hiddenWhen: [{ field: 'rsiValue2', equals: rsiValue2Enum.custom }],
+    hiddenWhen: [customWhen],
     derive: {
-      get: (params) => params.stochRange ?? StochRangeEnum.lower,
-      set: stochZoneParams,
+      get: (params) => params.stochRange ?? defaultZone,
+      set: setZone,
     },
   }),
   makeNumberField({
@@ -344,7 +389,7 @@ const stochZoneFields: IndicatorFieldDefinition[] = [
     hiddenWhen: [
       { field: 'stochRange', equals: StochRangeEnum.upper },
       { field: 'stochRange', equals: StochRangeEnum.none },
-      { field: 'rsiValue2', equals: rsiValue2Enum.custom },
+      customWhen,
     ],
   }),
   makeNumberField({
@@ -362,9 +407,201 @@ const stochZoneFields: IndicatorFieldDefinition[] = [
     hiddenWhen: [
       { field: 'stochRange', equals: StochRangeEnum.lower },
       { field: 'stochRange', equals: StochRangeEnum.none },
-      { field: 'rsiValue2', equals: rsiValue2Enum.custom },
+      customWhen,
     ],
   }),
+];
+
+const stochZoneFields = makeStochZoneFields(
+  { field: 'rsiValue2', equals: rsiValue2Enum.custom },
+  StochRangeEnum.lower,
+  stochZoneParams
+);
+
+const kdjZoneFields = makeStochZoneFields(
+  { field: 'kdjCompareTo', equals: KDJCompareToEnum.custom },
+  StochRangeEnum.none,
+  kdjZoneParams
+);
+
+const KDJ_LINE_LABELS: Record<KDJLineEnum, string> = {
+  [KDJLineEnum.k]: 'K',
+  [KDJLineEnum.d]: 'D',
+  [KDJLineEnum.j]: 'J',
+};
+
+const KDJ_LINE_OPTIONS = Object.values(KDJLineEnum).map((value) => ({
+  value,
+  label: KDJ_LINE_LABELS[value],
+}));
+
+// What the line is compared with: the other two lines or a fixed value —
+// never the line itself.
+const kdjCompareOptions = (line: KDJLineEnum) => [
+  ...KDJ_LINE_OPTIONS.filter((option) => option.value !== line),
+  { value: KDJCompareToEnum.custom, label: 'Custom value' },
+];
+
+// Picking the line the condition already compares with moves the comparison
+// to another line, so the two sides never read the same line.
+export const kdjLineParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> => {
+  const line = value as KDJLineEnum;
+  const compareTo = params.kdjCompareTo ?? KDJCompareToEnum.d;
+  return (compareTo as string) === line
+    ? {
+        kdjLine: line,
+        kdjCompareTo:
+          line === KDJLineEnum.k ? KDJCompareToEnum.d : KDJCompareToEnum.k,
+      }
+    : { kdjLine: line };
+};
+
+const VWAP_ANCHOR_OPTIONS = [
+  { value: VWAPAnchorEnum.day, label: 'Day' },
+  { value: VWAPAnchorEnum.week, label: 'Week' },
+  { value: VWAPAnchorEnum.month, label: 'Month' },
+];
+
+const VWAP_LINE_OPTIONS = [
+  { value: VWAPLineEnum.vwap, label: 'VWAP' },
+  { value: VWAPLineEnum.upper, label: 'Upper band' },
+  { value: VWAPLineEnum.lower, label: 'Lower band' },
+];
+
+// ADX in DMI mode reads +DI against −DI.
+const DMI_CONDITION_OPTIONS = [
+  { value: IndicatorStartConditionEnum.cd, label: '+DI crossing below −DI' },
+  { value: IndicatorStartConditionEnum.cu, label: '+DI crossing above −DI' },
+  { value: IndicatorStartConditionEnum.gt, label: '+DI above −DI' },
+  { value: IndicatorStartConditionEnum.lt, label: '+DI below −DI' },
+];
+
+const ADX_MODE_OPTIONS = [
+  { value: ADXModeEnum.adx, label: 'ADX' },
+  { value: ADXModeEnum.dmi, label: 'DMI (+DI vs −DI)' },
+];
+
+const DMI_MODE = { field: 'adxMode' as const, equals: ADXModeEnum.dmi };
+
+// DMI mode has no value to test and reads the DI lines as they are: choosing
+// it turns percentile and smoothing off and moves "Between" to a crossing.
+export const adxModeParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> =>
+  value === ADXModeEnum.dmi
+    ? {
+        adxMode: ADXModeEnum.dmi,
+        percentile: false,
+        smoothing: 'none',
+        indicatorCondition:
+          params.indicatorCondition === IndicatorStartConditionEnum.bw
+            ? IndicatorStartConditionEnum.cu
+            : params.indicatorCondition,
+      }
+    : { adxMode: value as ADXModeEnum };
+
+const CANDLE_SOURCE_OPTIONS = [
+  { value: CandleSourceEnum.heikinAshi, label: 'Heikin Ashi' },
+  { value: CandleSourceEnum.regular, label: 'Regular candles' },
+];
+
+const CANDLE_COLOR_OPTIONS = [
+  { value: CandleColorEnum.green, label: 'Green' },
+  { value: CandleColorEnum.red, label: 'Red' },
+];
+
+const CANDLE_TRIGGER_OPTIONS = [
+  { value: CandleTriggerEnum.streak, label: 'While in a row' },
+  { value: CandleTriggerEnum.start, label: 'Once per run' },
+];
+
+const OB_SIDE_OPTIONS = [
+  { value: OBSideEnum.bullish, label: 'Bullish block' },
+  { value: OBSideEnum.bearish, label: 'Bearish block' },
+];
+
+// A close beyond the far edge of a block ends the block on that same candle,
+// so "Price greater than" the top of a bearish block and "Price lower than"
+// the bottom of a bullish one can never be true: those pairs don't offer it.
+const OB_CONDITION_OPTIONS_WHEN = [
+  {
+    field: 'obSide' as const,
+    equals: OBSideEnum.bearish,
+    and: [{ field: 'obLevel' as const, equals: OBLevelEnum.top }],
+    options: PRICE_CONDITION_OPTIONS.filter(
+      (o) => o.value !== IndicatorStartConditionEnum.gt
+    ),
+  },
+  {
+    field: 'obSide' as const,
+    equals: OBSideEnum.bullish,
+    and: [{ field: 'obLevel' as const, equals: OBLevelEnum.bottom }],
+    options: PRICE_CONDITION_OPTIONS.filter(
+      (o) => o.value !== IndicatorStartConditionEnum.lt
+    ),
+  },
+];
+
+const OB_LEVEL_OPTIONS = [
+  { value: OBLevelEnum.top, label: 'Top' },
+  { value: OBLevelEnum.middle, label: 'Middle' },
+  { value: OBLevelEnum.bottom, label: 'Bottom' },
+];
+
+const SQZ_SIGNAL_OPTIONS = [
+  { value: SqzSignalEnum.fired, label: 'Squeeze fired' },
+  { value: SqzSignalEnum.on, label: 'In a squeeze' },
+  { value: SqzSignalEnum.off, label: 'Out of a squeeze' },
+  { value: SqzSignalEnum.any, label: 'Any' },
+];
+
+const SQZ_MOMENTUM_OPTIONS = [
+  { value: SqzMomentumEnum.positive, label: 'Positive' },
+  { value: SqzMomentumEnum.negative, label: 'Negative' },
+  { value: SqzMomentumEnum.rising, label: 'Rising' },
+  { value: SqzMomentumEnum.falling, label: 'Falling' },
+  { value: SqzMomentumEnum.crossUp, label: 'Crossing above zero' },
+  { value: SqzMomentumEnum.crossDown, label: 'Crossing below zero' },
+  { value: SqzMomentumEnum.any, label: 'Any' },
+];
+
+// Squeeze with no signal AND no momentum requirement never fires (the bot
+// engine treats it as off): picking Any on one side while the other is Any
+// moves the other back to its default.
+export const sqzSignalParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> =>
+  value === SqzSignalEnum.any &&
+  (params.sqzMomentum ?? SqzMomentumEnum.positive) === SqzMomentumEnum.any
+    ? { sqzSignal: SqzSignalEnum.any, sqzMomentum: SqzMomentumEnum.positive }
+    : { sqzSignal: value as SqzSignalEnum };
+
+export const sqzMomentumParams = (
+  value: string,
+  params: SettingsIndicators
+): Partial<SettingsIndicators> =>
+  value === SqzMomentumEnum.any &&
+  (params.sqzSignal ?? SqzSignalEnum.fired) === SqzSignalEnum.any
+    ? { sqzMomentum: SqzMomentumEnum.any, sqzSignal: SqzSignalEnum.fired }
+    : { sqzMomentum: value as SqzMomentumEnum };
+
+const PRICE_CHANGE_COMPARE_OPTIONS = [
+  { value: PCCompareEnum.gt, label: 'Greater than' },
+  { value: PCCompareEnum.lt, label: 'Lower than' },
+  { value: PCCompareEnum.bw, label: 'Between' },
+];
+
+const isUnsetValue = (v: unknown) => v === undefined || v === null || v === '';
+
+const SESSION_LEVELS_ACTIVE_OPTIONS = [
+  { value: SessionLevelsActiveEnum.session, label: 'During the session' },
+  { value: SessionLevelsActiveEnum.outside, label: 'Outside the session' },
+  { value: SessionLevelsActiveEnum.always, label: 'Any time' },
 ];
 
 const RANGE_TYPE_OPTIONS = [
@@ -557,6 +794,11 @@ export const INDICATOR_DOCUMENTATION_URLS = {
   [IndicatorEnum.session]: '/help/sessions',
   [IndicatorEnum.lw]: '/help/long-wick-detector',
   [IndicatorEnum.ote]: '/help/discount-premium-ote-levels',
+  [IndicatorEnum.vwap]: '/help/vwap',
+  [IndicatorEnum.kdj]: '/help/kdj',
+  [IndicatorEnum.candle]: '/help/candle-colour',
+  [IndicatorEnum.ob]: '/help/order-blocks',
+  [IndicatorEnum.sqz]: '/help/squeeze-momentum',
 } satisfies Partial<Record<IndicatorEnum, string>>;
 
 export const MARKET_STRUCTURE_VALUE_GROUPS = {
@@ -593,13 +835,27 @@ const INDICATOR_ACTIONS_EXCEPT_RISK_REWARD =
     (action) => action !== IndicatorAction.riskReward
   );
 
+// Card summary for percentile mode: "Percentile: 80 · 150 bars"; nothing
+// while it is off.
+const summarizePercentile = (params: SettingsIndicators): string | null =>
+  params.percentile
+    ? `${params.percentilePercentage ?? 80} · ${params.percentileLookback ?? 150} bars`
+    : null;
+
+// The two optional transforms of an indicator's line, drawn together under
+// "Modifiers" (`withModifiersSection`): Smoothing first, since the percentile
+// ranks the smoothed line when both are on, then Percentile. Each is a switch
+// that reveals its own settings.
 const percentileFields: IndicatorDefinition['fields'] = [
   makeBooleanField({
     key: 'percentile',
-    label: 'Use percentile',
+    label: 'Percentile',
     defaultValue: false,
-    tooltip: 'Enable percentile mode.',
+    section: 'modifiers',
+    tooltip:
+      'Compare the indicator with its own percentile over the lookback instead of a fixed value. With smoothing on, the smoothed line is ranked.',
     tooltipURL: '/help/indicator-percentiles',
+    summary: summarizePercentile,
   }),
   makeNumberField({
     key: 'percentileLookback',
@@ -607,43 +863,69 @@ const percentileFields: IndicatorDefinition['fields'] = [
     defaultValue: 150,
     step: 1,
     allowVariables: true,
+    section: 'modifiers',
     hiddenWhen: [{ field: 'percentile', equals: false }],
+    // Folded into the Percentile item.
+    summary: () => null,
   }),
   makeNumberField({
     key: 'percentilePercentage',
-    label: 'Percentile',
+    label: 'Threshold',
+    tooltip: 'The percentile rank the indicator is compared with, 0–100.',
     // the bot's value for a condition saved without one
     defaultValue: 80,
     step: 1,
     allowVariables: true,
+    section: 'modifiers',
     hiddenWhen: [{ field: 'percentile', equals: false }],
+    summary: () => null,
   }),
 ];
 
-// Optional smoothing of a single-line oscillator (`SMOOTHING_INDICATOR_TYPES`),
-// spread after Length / Interval so the grid reads Smoothing | Smoothing
-// length, then Compare on its own row. The line-mode rules for the entry's
-// own Condition / Value fields are added by `withSmoothingGates` below.
+// Optional smoothing of a single-line oscillator (`SMOOTHING_INDICATOR_TYPES`).
+// The switch stores nothing of its own: it reads and writes `smoothing`
+// ('none' = off), so the saved shape is the one the engine already reads. The
+// line-mode rules for the entry's own Condition / Value fields are added by
+// `withSmoothingGates` below.
 const smoothingFields: IndicatorDefinition['fields'] = [
-  makeSelectField({
-    key: 'smoothing',
+  makeBooleanField({
+    key: 'smoothingEnabled',
     label: 'Smoothing',
+    section: 'modifiers',
     tooltip:
       'Moving average applied to the indicator line. With smoothing on, the condition uses the smoothed line.',
-    defaultValue: 'none',
-    options: SMOOTHING_OPTIONS,
-    rowStart: true,
+    derive: {
+      get: (params) => String(resolveSmoothingType(params) !== null),
+      set: (value, params) =>
+        value === 'true'
+          ? {
+              smoothing: resolveSmoothingType(params) ?? 'ema',
+              smoothingLength:
+                params.smoothingLength ?? DEFAULT_SMOOTHING_LENGTH,
+            }
+          : { smoothing: 'none' },
+    },
     summary: summarizeSmoothing,
+  }),
+  makeSelectField({
+    key: 'smoothing',
+    label: 'Average',
+    defaultValue: 'none',
+    options: SMOOTHING_OPTIONS.filter((option) => option.value !== 'none'),
+    section: 'modifiers',
+    hiddenWhen: [{ field: 'smoothing', equals: 'none' }],
+    // Folded into the Smoothing item ("EMA 14").
+    summary: () => null,
   }),
   makeNumberField({
     key: 'smoothingLength',
-    label: 'Smoothing length',
+    label: 'Length',
     defaultValue: DEFAULT_SMOOTHING_LENGTH,
     min: 1,
     max: MAX_SMOOTHING_LENGTH,
     step: 1,
+    section: 'modifiers',
     hiddenWhen: [{ field: 'smoothing', equals: 'none' }],
-    // Folded into the Smoothing item ("EMA 14").
     summary: () => null,
   }),
   makeSelectField({
@@ -654,6 +936,7 @@ const smoothingFields: IndicatorDefinition['fields'] = [
     defaultValue: 'value',
     options: SMOOTHING_COMPARE_OPTIONS,
     span: 'full',
+    section: 'modifiers',
     hiddenWhen: [
       { field: 'smoothing', equals: 'none' },
       { field: 'percentile', equals: true },
@@ -661,6 +944,36 @@ const smoothingFields: IndicatorDefinition['fields'] = [
     summary: summarizeSmoothingCompare,
   }),
 ];
+
+const MODIFIER_FIELD_ORDER: readonly string[] = [
+  ...smoothingFields,
+  ...percentileFields,
+].map((field) => field.key);
+
+// Modifier fields render after the indicator's own settings, whatever order
+// the definition spreads them in.
+const withModifiersSection = (
+  definition: IndicatorDefinition
+): IndicatorDefinition => {
+  const modifiers = definition.fields
+    .filter((field) => field.section === 'modifiers')
+    .sort(
+      (a, b) =>
+        MODIFIER_FIELD_ORDER.indexOf(a.key) -
+        MODIFIER_FIELD_ORDER.indexOf(b.key)
+    );
+  return modifiers.length
+    ? {
+        ...definition,
+        fields: [
+          ...definition.fields.filter(
+            (field) => field.section !== 'modifiers'
+          ),
+          ...modifiers,
+        ],
+      }
+    : definition;
+};
 
 const SMOOTHING_LINE_CONDITION = {
   field: 'smoothingCompare' as const,
@@ -696,9 +1009,12 @@ const withSmoothingGates = (
   }),
 });
 
-// Trend filter — legacy "Use Trend Filter" block, only exposed on MAR
-// (the sole entry in the legacy `trendIndicators` list). When enabled it
+// Trend filter — legacy "Use Trend Filter" block, on MAR (the sole entry in
+// the legacy `trendIndicators` list) and the Moving Average. When enabled it
 // gates entries on the recent trend of the indicator over its own lookback.
+// No other type has a trend to read: the engines keep a condition of any
+// other type false while `trendFilter` is on, so saving clears it there
+// (`clearStrayTrendFilter`).
 const TREND_FILTER_OPERATOR_OPTIONS = [
   { value: TrendFilterOperatorEnum.lower, label: 'Lower or equal to' },
   { value: TrendFilterOperatorEnum.higher, label: 'Higher or equal to' },
@@ -740,6 +1056,15 @@ const trendFilterFields: IndicatorDefinition['fields'] = [
   }),
 ];
 
+// Fields that do not apply to ADX in DMI mode.
+const hiddenInDmi = (
+  fields: IndicatorFieldDefinition[]
+): IndicatorFieldDefinition[] =>
+  fields.map((field) => ({
+    ...field,
+    hiddenWhen: [...(field.hiddenWhen ?? []), DMI_MODE],
+  }));
+
 const keepConditionBarsField: IndicatorFieldDefinition = makeNumberField({
   key: 'keepConditionBars',
   label: 'Keep true',
@@ -749,6 +1074,11 @@ const keepConditionBarsField: IndicatorFieldDefinition = makeNumberField({
   allowVariables: true,
   tooltip:
     'This condition will remain true for a number of extra bars. Default is 0, which means it will be true only on the bar that triggered the condition.',
+  // On the card only while it extends the condition.
+  summary: (params) =>
+    Number(params.keepConditionBars) > 0
+      ? `${params.keepConditionBars} bars`
+      : null,
 });
 
 /**
@@ -762,10 +1092,23 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     shortLabel: 'ADX',
     category: IndicatorCategories.Trend,
     description:
-      'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend.',
+      'Measures the strength of a trend without regard to direction, with higher values indicating a stronger trend. In DMI mode it compares +DI with −DI, the direction of the trend.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
-      ...percentileFields,
+      ...hiddenInDmi(percentileFields),
+      makeSelectField({
+        // No default: a condition that never chose a mode stays the plain
+        // ADX and saves exactly what it saved before.
+        key: 'adxMode',
+        label: 'Mode',
+        options: ADX_MODE_OPTIONS,
+        tooltip:
+          'ADX: the trend strength line against a value. DMI: +DI against −DI, which directional line leads. Both use Length.',
+        derive: {
+          get: (params) => params.adxMode ?? ADXModeEnum.adx,
+          set: adxModeParams,
+        },
+      }),
       makeNumberField({
         key: 'indicatorLength',
         label: 'Length',
@@ -778,13 +1121,14 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
-      ...smoothingFields,
+      ...hiddenInDmi(smoothingFields),
       makeSelectField({
         key: 'indicatorCondition',
         label: 'Condition',
         defaultValue: IndicatorStartConditionEnum.cd,
         options: VALUE_CONDITION_OPTIONS,
         optionsWhen: [
+          { ...DMI_MODE, options: DMI_CONDITION_OPTIONS },
           {
             field: 'percentile',
             equals: true,
@@ -798,7 +1142,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         defaultValue: 20,
         step: 1,
         allowVariables: true,
-        hiddenWhen: [{ field: 'percentile', equals: true }],
+        hiddenWhen: [{ field: 'percentile', equals: true }, DMI_MODE],
       }),
       makeNumberField({
         key: 'indicatorValue2',
@@ -812,7 +1156,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
             equals: IndicatorStartConditionEnum.bw,
           },
         ],
-        hiddenWhen: [{ field: 'percentile', equals: true }],
+        hiddenWhen: [{ field: 'percentile', equals: true }, DMI_MODE],
       }),
       keepConditionBarsField,
     ],
@@ -834,7 +1178,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'maType',
         label: 'Moving average',
         defaultValue: MAEnum.ema,
-        options: MA_TYPE_OPTIONS,
+        options: MA_LINE_OPTIONS,
       }),
       makeNumberField({
         key: 'indicatorLength',
@@ -884,6 +1228,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         hiddenWhen: [{ field: 'maCrossingValue', equals: MAEnum.price }],
       }),
       keepConditionBarsField,
+      ...trendFilterFields,
     ],
   },
   [IndicatorEnum.st]: {
@@ -899,7 +1244,8 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'factor',
         label: 'Multiplier',
         defaultValue: 3,
-        step: 1,
+        min: 0.1,
+        step: 0.1,
         allowVariables: true,
       }),
       makeNumberField({
@@ -1005,7 +1351,10 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'bbwMult',
         label: 'Standard Deviations',
         defaultValue: 2,
-        step: 1,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: 'σ',
         allowVariables: true,
       }),
       makeIntervalField({
@@ -1070,7 +1419,10 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'bbwMult',
         label: 'Standard Deviations',
         defaultValue: 2,
-        step: 1,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: 'σ',
         allowVariables: true,
       }),
       makeIntervalField({
@@ -1626,6 +1978,40 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
     description: 'Measures candle price change as percentage or points.',
     supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
     fields: [
+      makeSelectField({
+        // No default: a Price Change that never chose stays "Greater than"
+        // and saves exactly what it saved before (gt is stripped on save).
+        key: 'pcCompare',
+        label: 'Condition',
+        options: PRICE_CHANGE_COMPARE_OPTIONS,
+        // Own row, so % change pairs with the second value under Between.
+        span: 'full',
+        tooltip:
+          'How the last closed candle\'s move from its open is compared with % change: greater than, lower than, or between % change and the second value.',
+        // On the card only when it is not the default.
+        summary: (params) =>
+          resolvePriceChangeCompare(params.pcCompare) === PCCompareEnum.gt
+            ? null
+            : (PRICE_CHANGE_COMPARE_OPTIONS.find(
+                (o) => o.value === resolvePriceChangeCompare(params.pcCompare)
+              )?.label ?? null),
+        derive: {
+          get: (params) => resolvePriceChangeCompare(params.pcCompare),
+          set: (value, params) =>
+            value === PCCompareEnum.bw
+              ? {
+                  pcCompare: PCCompareEnum.bw,
+                  pcValue2: isUnsetValue(params.pcValue2)
+                    ? suggestPriceChangeValue2(params.pcValue)
+                    : params.pcValue2,
+                }
+              : {
+                  pcCompare:
+                    value === PCCompareEnum.lt ? PCCompareEnum.lt : undefined,
+                  pcValue2: undefined,
+                },
+        },
+      }),
       makeNumberField({
         key: 'pcValue',
         label: '% change',
@@ -1633,7 +2019,16 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         step: 0.1,
         allowVariables: true,
         tooltip:
-          'The minimum price increase or decrease in the previous candle. Use a positive number for an increase and a negative number for a decrease.',
+          'The price move of the last closed candle from its open, in %. A positive number reads the move up to the high, a negative number the move down to the low.',
+      }),
+      makeNumberField({
+        key: 'pcValue2',
+        label: 'And % change',
+        step: 0.1,
+        allowVariables: true,
+        tooltip:
+          'The other end of the range, with the same sign as % change: 2 and 5 = the candle rose between 2 % and 5 %; -2 and -5 = it fell between 2 % and 5 %.',
+        shownWhen: [{ field: 'pcCompare', equals: PCCompareEnum.bw }],
       }),
       makeIntervalField({
         key: 'indicatorInterval',
@@ -1987,7 +2382,10 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'bbwMult',
         label: 'Standard Deviations',
         defaultValue: 2,
-        step: 1,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: 'σ',
         allowVariables: true,
       }),
       makeIntervalField({
@@ -2069,7 +2467,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         key: 'mar1type',
         label: 'Relative to',
         defaultValue: MAEnum.ema,
-        options: MA_TYPE_OPTIONS,
+        options: MA_LINE_OPTIONS,
       }),
       makeNumberField({
         key: 'mar1length',
@@ -2716,6 +3114,58 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         label: 'Interval',
         defaultValue: ExchangeIntervals.oneH,
       }),
+      // Saved only when they differ from these defaults
+      // (`stripDefaultDivergencePivots`), so a Divergence left alone keeps
+      // the exact condition it always had.
+      makeNumberField({
+        key: 'divPivotLeft',
+        label: 'Pivot lookback left',
+        rowStart: true,
+        defaultValue: DIV_PIVOT_DEFAULTS.divPivotLeft,
+        min: 1,
+        max: 50,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'A pivot high or low must be the highest or lowest point of this many bars to its left.',
+      }),
+      makeNumberField({
+        key: 'divPivotRight',
+        label: 'Pivot lookback right',
+        defaultValue: DIV_PIVOT_DEFAULTS.divPivotRight,
+        min: 1,
+        max: 50,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'Bars to the right of a pivot. A pivot is confirmed this many bars after it prints, so a larger value finds steadier pivots and signals later.',
+      }),
+      makeNumberField({
+        key: 'divRangeLower',
+        label: 'Min of lookback range',
+        defaultValue: DIV_PIVOT_DEFAULTS.divRangeLower,
+        min: 1,
+        max: 500,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'Fewest bars between the two pivots a divergence compares. Must be below the max.',
+      }),
+      makeNumberField({
+        key: 'divRangeUpper',
+        label: 'Max of lookback range',
+        defaultValue: DIV_PIVOT_DEFAULTS.divRangeUpper,
+        min: 2,
+        max: 500,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'Most bars between the two pivots a divergence compares. Must be above the min.',
+      }),
       keepConditionBarsField,
     ],
   },
@@ -3139,7 +3589,7 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
           set: sessionRuleParams,
         },
         tooltip:
-          'In or out of session filters by time. Price levels compares two session prices and is true only during the session.',
+          'In or out of session filters by time. Price levels compares two session prices; Active sets whether it is read during the session, outside it or any time.',
       }),
       makeIntervalField({
         key: 'indicatorInterval',
@@ -3173,6 +3623,32 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
         options: SESSION_LEVEL_OPTIONS,
         tooltip: 'The value Compare is tested against.',
         shownWhen: SESSION_LEVELS_ONLY,
+      }),
+      makeSelectField({
+        // No default: a condition that never chose stays "during the
+        // session" and saves exactly what it saved before.
+        key: 'sessionLevelsActive',
+        label: 'Active',
+        options: SESSION_LEVELS_ACTIVE_OPTIONS,
+        tooltip:
+          'When the condition is read. Outside the session the previous session values are those of the last session that ended, and current session values have none. A crossing needs two candles in the same place: both in one session, or both outside. Monday range: Session Days Monday, no hours, Outside the session, Price crossing up Previous session high.',
+        shownWhen: SESSION_LEVELS_ONLY,
+        // On the card only when it is not the default.
+        summary: (params) =>
+          params.sessionRule === SessionRuleEnum.levels &&
+          params.sessionLevelsActive &&
+          params.sessionLevelsActive !== SessionLevelsActiveEnum.session
+            ? (SESSION_LEVELS_ACTIVE_OPTIONS.find(
+                (o) => o.value === params.sessionLevelsActive
+              )?.label ?? null)
+            : null,
+        derive: {
+          get: (params) =>
+            params.sessionLevelsActive ?? SessionLevelsActiveEnum.session,
+          set: (value) => ({
+            sessionLevelsActive: value as SessionLevelsActiveEnum,
+          }),
+        },
       }),
       makeSelectField({
         key: 'sessionDays',
@@ -3313,13 +3789,341 @@ const BASE_INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> = {
       keepConditionBarsField,
     ],
   },
+  [IndicatorEnum.vwap]: {
+    type: IndicatorEnum.vwap,
+    label: 'Anchored VWAP',
+    shortLabel: 'VWAP',
+    category: IndicatorCategories.Volume,
+    description:
+      'Average price weighted by volume since the start of the day, week or month, with standard-deviation bands around it.',
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'vwapAnchor',
+        label: 'Anchor',
+        defaultValue: VWAPAnchorEnum.day,
+        options: VWAP_ANCHOR_OPTIONS,
+        tooltip:
+          'Where the VWAP restarts: every day at 00:00 UTC, every Monday at 00:00 UTC, or on the 1st of every month. Pick an interval with several candles per period.',
+      }),
+      makeSelectField({
+        key: 'vwapLine',
+        label: 'Line',
+        defaultValue: VWAPLineEnum.vwap,
+        options: VWAP_LINE_OPTIONS,
+        tooltip: 'The line the close is compared with.',
+      }),
+      makeNumberField({
+        key: 'vwapBandMultiplier',
+        label: 'Band width',
+        defaultValue: 1,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: 'σ',
+        allowVariables: true,
+        tooltip:
+          'Distance of the bands from the VWAP, in volume-weighted standard deviations of the price since the anchor.',
+        hiddenWhen: [{ field: 'vwapLine', equals: VWAPLineEnum.vwap }],
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cu,
+        options: PRICE_CONDITION_OPTIONS,
+        tooltip:
+          'Compares the close with the line. A crossing counts only within one period: the restart at the anchor is not a crossing.',
+      }),
+      keepConditionBarsField,
+    ],
+  },
+  [IndicatorEnum.kdj]: {
+    type: IndicatorEnum.kdj,
+    label: 'KDJ Indicator',
+    shortLabel: 'KDJ',
+    category: IndicatorCategories.Momentum,
+    description:
+      'Stochastic variant with a third line: K and D smoothed from where the close sits in its recent range, and J = 3K − 2D, which leads and can leave 0–100.',
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeNumberField({
+        key: 'kdjLength',
+        label: 'Length',
+        defaultValue: 9,
+        min: 1,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+        tooltip:
+          'Candles whose highest high and lowest low frame the close (RSV).',
+      }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeNumberField({
+        key: 'kdjKSmooth',
+        label: 'Smooth K',
+        defaultValue: 3,
+        min: 1,
+        max: 100,
+        step: 1,
+        allowVariables: true,
+      }),
+      makeNumberField({
+        key: 'kdjDSmooth',
+        label: 'Smooth D',
+        defaultValue: 3,
+        min: 1,
+        max: 100,
+        step: 1,
+        allowVariables: true,
+      }),
+      makeSelectField({
+        key: 'kdjLine',
+        label: 'Line',
+        defaultValue: KDJLineEnum.k,
+        options: KDJ_LINE_OPTIONS,
+        derive: {
+          get: (params) => params.kdjLine ?? KDJLineEnum.k,
+          set: kdjLineParams,
+        },
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cu,
+        options: STOCH_CONDITION_OPTIONS,
+      }),
+      makeSelectField({
+        key: 'kdjCompareTo',
+        label: 'Compared to',
+        defaultValue: KDJCompareToEnum.d,
+        options: kdjCompareOptions(KDJLineEnum.k),
+        optionsWhen: [KDJLineEnum.d, KDJLineEnum.j].map((line) => ({
+          field: 'kdjLine' as const,
+          equals: line,
+          options: kdjCompareOptions(line),
+        })),
+      }),
+      makeNumberField({
+        key: 'indicatorValue',
+        label: 'Value',
+        defaultValue: 20,
+        step: 1,
+        allowVariables: true,
+        shownWhen: [{ field: 'kdjCompareTo', equals: KDJCompareToEnum.custom }],
+      }),
+      ...kdjZoneFields,
+      keepConditionBarsField,
+    ],
+  },
+  [IndicatorEnum.candle]: {
+    type: IndicatorEnum.candle,
+    label: 'Candle Colour',
+    shortLabel: 'Candle Colour',
+    category: IndicatorCategories.Chart,
+    description:
+      'Green or red closed candles in a row, read from Heikin Ashi or regular candles. A doji breaks the run.',
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeSelectField({
+        key: 'candleSource',
+        label: 'Candles',
+        defaultValue: CandleSourceEnum.heikinAshi,
+        options: CANDLE_SOURCE_OPTIONS,
+        tooltip:
+          'Heikin Ashi averages each candle with the one before, so runs of one colour are longer and less noisy. Regular reads the exchange candles as they are.',
+      }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'candleColor',
+        label: 'Colour',
+        defaultValue: CandleColorEnum.green,
+        options: CANDLE_COLOR_OPTIONS,
+        tooltip:
+          'Green: close above open. Red: close below open. A candle that closes at its open is neither and breaks every run.',
+      }),
+      makeNumberField({
+        key: 'candleCount',
+        label: 'In a row',
+        defaultValue: 1,
+        min: 1,
+        max: 50,
+        step: 1,
+        suffix: 'candles',
+        allowVariables: true,
+        tooltip: 'How many closed candles of that colour in a row.',
+      }),
+      makeSelectField({
+        key: 'candleTrigger',
+        label: 'Trigger',
+        defaultValue: CandleTriggerEnum.streak,
+        options: CANDLE_TRIGGER_OPTIONS,
+        tooltip:
+          'While in a row: true on every candle while the last N candles are all that colour. Once per run: true only on the N-th candle of the run, once.',
+      }),
+      keepConditionBarsField,
+    ],
+  },
+  [IndicatorEnum.ob]: {
+    type: IndicatorEnum.ob,
+    label: 'Order Blocks',
+    shortLabel: 'Order Blocks',
+    category: IndicatorCategories.Chart,
+    description:
+      'Smart-money order blocks: the last opposite candle before a break of structure, kept until price closes through it.',
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeNumberField({
+        key: 'obSwingLength',
+        label: 'Swing length',
+        defaultValue: 5,
+        min: 2,
+        max: 50,
+        step: 1,
+        suffix: 'bars',
+        allowVariables: true,
+        tooltip:
+          'A swing high or low needs this many bars on each side of it, so it is confirmed this many bars after it prints. A close beyond the latest swing forms a block.',
+      }),
+      makeSelectField({
+        key: 'obSide',
+        label: 'Block',
+        defaultValue: OBSideEnum.bullish,
+        options: OB_SIDE_OPTIONS,
+        tooltip:
+          'Bullish: formed when a close breaks above a swing high; the candle with the lowest low before the break. Bearish: the mirror below a swing low. Only the latest block of each side counts; it ends when a candle closes through it.',
+      }),
+      makeSelectField({
+        key: 'obLevel',
+        label: 'Level',
+        defaultValue: OBLevelEnum.top,
+        options: OB_LEVEL_OPTIONS,
+        tooltip: 'The edge of the block the close is compared with, or its middle.',
+      }),
+      makeSelectField({
+        key: 'indicatorCondition',
+        label: 'Condition',
+        defaultValue: IndicatorStartConditionEnum.cd,
+        options: PRICE_CONDITION_OPTIONS,
+        optionsWhen: OB_CONDITION_OPTIONS_WHEN,
+        tooltip:
+          'Crossing compares two candles of the same block; a new block moving the level is not a crossing. No active block: false. Price crossing down the top of a bullish block is the retest long.',
+      }),
+      keepConditionBarsField,
+    ],
+  },
+  [IndicatorEnum.sqz]: {
+    type: IndicatorEnum.sqz,
+    label: 'Squeeze Momentum',
+    shortLabel: 'Squeeze',
+    category: IndicatorCategories.Volatility,
+    description:
+      "LazyBear's Squeeze Momentum: Bollinger Bands inside the Keltner Channels mark a squeeze, and a momentum histogram shows the direction of the breakout.",
+    supportedActions: INDICATOR_ACTIONS_EXCEPT_RISK_REWARD,
+    fields: [
+      makeNumberField({
+        key: 'sqzLength',
+        label: 'BB length',
+        defaultValue: 20,
+        min: 2,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+        tooltip: 'Candles of the Bollinger Bands.',
+      }),
+      makeNumberField({
+        key: 'sqzBBMult',
+        label: 'BB multiplier',
+        defaultValue: 1.5,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: 'σ',
+        allowVariables: true,
+        tooltip:
+          "Width of the Bollinger Bands in standard deviations. 1.5 (the default) matches the Squeeze Momentum chart TradingView shows; 2 is LazyBear's corrected version.",
+      }),
+      makeNumberField({
+        key: 'sqzKCLength',
+        label: 'KC length',
+        defaultValue: 20,
+        min: 2,
+        max: 500,
+        step: 1,
+        allowVariables: true,
+        tooltip:
+          'Candles of the Keltner Channels, also the length of the momentum.',
+      }),
+      makeNumberField({
+        key: 'sqzKCMult',
+        label: 'KC multiplier',
+        defaultValue: 1.5,
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+        suffix: '×',
+        allowVariables: true,
+        tooltip:
+          'Width of the Keltner Channels as a multiple of the average true range.',
+      }),
+      makeIntervalField({
+        key: 'indicatorInterval',
+        label: 'Interval',
+        defaultValue: ExchangeIntervals.oneH,
+      }),
+      makeSelectField({
+        key: 'sqzSignal',
+        label: 'Squeeze',
+        defaultValue: SqzSignalEnum.fired,
+        options: SQZ_SIGNAL_OPTIONS,
+        tooltip:
+          'In a squeeze: the Bollinger Bands are inside the Keltner Channels. Fired: the squeeze ended on this candle (the candle before was in one). Out of a squeeze: the bands are outside the channels.',
+        derive: {
+          get: (params) => params.sqzSignal ?? SqzSignalEnum.fired,
+          set: sqzSignalParams,
+        },
+      }),
+      makeSelectField({
+        key: 'sqzMomentum',
+        label: 'Momentum',
+        defaultValue: SqzMomentumEnum.positive,
+        options: SQZ_MOMENTUM_OPTIONS,
+        tooltip:
+          'The momentum histogram: above or below zero, higher or lower than on the candle before, or crossing zero. Both Squeeze and Momentum must hold; they cannot both be Any.',
+        derive: {
+          get: (params) => params.sqzMomentum ?? SqzMomentumEnum.positive,
+          set: sqzMomentumParams,
+        },
+      }),
+      keepConditionBarsField,
+    ],
+  },
 };
 
 export const INDICATOR_CATALOG: Record<IndicatorEnum, IndicatorDefinition> =
   Object.fromEntries(
     Object.entries(BASE_INDICATOR_CATALOG).map(([type, definition]) => [
       type,
-      supportsSmoothing(type) ? withSmoothingGates(definition) : definition,
+      withModifiersSection(
+        supportsSmoothing(type) ? withSmoothingGates(definition) : definition
+      ),
     ])
   ) as Record<IndicatorEnum, IndicatorDefinition>;
 

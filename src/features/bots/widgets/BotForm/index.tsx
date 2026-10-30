@@ -591,7 +591,7 @@ const BotForm: React.FC<BotFormProps> = ({
   const mode: BotFormMode = propMode ?? dataMode ?? 'edit';
 
   const debugEnabled =
-    debugProp ?? import.meta.env[NEW_SHELL_DEBUG_FLAG] === 'true';
+    debugProp ?? import.meta.env['VITE_BOT_FORM_DEBUG'] === 'true';
 
   // Render-loop tripwire (additive, non-fatal). This component is the innermost
   // app frame of the React #185 crashes reported as Claus #575 / #503 / #425 —
@@ -3196,8 +3196,13 @@ const BotForm: React.FC<BotFormProps> = ({
               step: step ?? 0,
             });
           };
+          // Candles that cannot be loaded stop the run: finishing on part of
+          // the period would report a result for a test that did not happen.
           const errorHandler = (msg: string) => {
             logger.error('[backtester] runtime error', { msg });
+            toast.error(`Backtest stopped: ${msg}`);
+            backtesterInstanceRef.current?.stopBacktest();
+            gridBacktesterInstanceRef.current?.stopBacktest();
           };
 
           if (isGridBot) {
@@ -3271,8 +3276,8 @@ const BotForm: React.FC<BotFormProps> = ({
                     : 'No result data',
               });
 
-              toast.success('Grid backtest finished successfully');
               if (result) {
+                toast.success('Grid backtest finished successfully');
                 try {
                   if (!persistenceSymbol || !currentExchange) {
                     throw new Error('Missing symbol metadata for persistence');
@@ -3466,8 +3471,8 @@ const BotForm: React.FC<BotFormProps> = ({
                     : 'No result data',
               });
 
-              toast.success('Local backtest finished successfully');
               if (result) {
+                toast.success('Local backtest finished successfully');
                 try {
                   if (!persistenceSymbol || !currentExchange) {
                     throw new Error('Missing symbol metadata for persistence');

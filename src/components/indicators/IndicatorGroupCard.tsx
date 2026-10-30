@@ -4,6 +4,8 @@ import { cn } from '@/lib/utils';
 import { IndicatorActionsToolbar } from '@/features/bots/shared/components/IndicatorActionsToolbar';
 import type { IndicatorEnum } from '@/types';
 import type { IndicatorConfig, IndicatorGroup } from '@/types/indicators';
+import type { EdgeApplyRequest } from '@/utils/indicators/edgeApply';
+import type { EdgeSide } from '@/utils/indicatorEdge';
 import { Trash2 } from 'lucide-react';
 import React, { useCallback } from 'react';
 
@@ -36,6 +38,13 @@ export interface IndicatorGroupCardProps {
   framed?: boolean;
   /** Label in the frame's header, e.g. "Group 2". */
   title?: string;
+  /** Apply on the help article's price-behaviour panel (see IndicatorList). */
+  onApplyEdgeSetting?: (
+    indicator: IndicatorConfig,
+    request: EdgeApplyRequest
+  ) => void;
+  /** The side these conditions trade in the bot (see IndicatorList). */
+  edgeSide?: EdgeSide | null;
 }
 
 export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
@@ -57,6 +66,8 @@ export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
   singleIndicator = false,
   framed = false,
   title = 'Group',
+  onApplyEdgeSetting,
+  edgeSide = null,
 }) => {
   const addIndicatorDisabled = !canAddIndicator || disableControls;
   const addIndicatorTooltip = addIndicatorDisabled
@@ -72,13 +83,13 @@ export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
   }, [_onRemoveGroup, indicators, onRemoveIndicator]);
 
   return (
-    // One of several groups: the group lifts a surface step (the bracket
-    // around "(A or B)") and its rows sink below it. A lone group renders
+    // One of several groups: the group is the card's inner fill (the bracket
+    // around "(A or B)") and its rows sit back on the card surface. A lone group renders
     // straight in its host's flow with raised rows. No borders (§3).
     <div
       className={cn(
         'min-w-0 space-y-sm',
-        framed && 'rounded-xl bg-popover p-sm shadow-sm dark:shadow-none'
+        framed && 'rounded-xl bg-muted p-sm'
       )}
     >
       {framed && !singleIndicator ? (
@@ -112,6 +123,8 @@ export const IndicatorGroupCard: React.FC<IndicatorGroupCardProps> = ({
           ? { renderExtras: renderIndicatorExtras }
           : {})}
         {...(emptyState ? { emptyState } : {})}
+        {...(onApplyEdgeSetting ? { onApplyEdgeSetting } : {})}
+        edgeSide={edgeSide}
         surface={framed ? 'inset' : 'raised'}
         connector={{
           logic: group.logic,

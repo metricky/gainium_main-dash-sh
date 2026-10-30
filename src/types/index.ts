@@ -734,6 +734,12 @@ export type PreparedDeal = {
     base: number;
     quote: number;
   };
+  /** Open deals only (backtester ≥ 1.22.0): P&L if closed at the last price. */
+  unrealized?: {
+    total: number;
+    totalUsd: number;
+    perc: number;
+  };
 };
 
 //TODO: install github:Gainium/backtester
@@ -1544,6 +1550,11 @@ export enum IndicatorEnum {
   session = 'SESSION',
   lw = 'LW',
   ote = 'OTE',
+  kdj = 'KDJ',
+  vwap = 'VWAP',
+  candle = 'CANDLE',
+  ob = 'OB',
+  sqz = 'SQZ',
 }
 
 export enum SessionRuleEnum {
@@ -1576,6 +1587,108 @@ export enum OTELegEnum {
   bullish = 'bullish',
   bearish = 'bearish',
   any = 'any',
+}
+
+/** ADX: what the condition reads — the ADX line (default) or +DI vs −DI. */
+export enum ADXModeEnum {
+  adx = 'adx',
+  dmi = 'dmi',
+}
+
+/** KDJ: a line the condition reads. */
+export enum KDJLineEnum {
+  k = 'k',
+  d = 'd',
+  j = 'j',
+}
+
+/** KDJ: what the chosen line is compared with — another line, or the fixed level. */
+export enum KDJCompareToEnum {
+  k = 'k',
+  d = 'd',
+  j = 'j',
+  custom = 'custom',
+}
+
+/** VWAP: where the anchored VWAP restarts, in UTC. */
+export enum VWAPAnchorEnum {
+  day = 'day',
+  week = 'week',
+  month = 'month',
+}
+
+/** VWAP: the line the close is compared with. */
+export enum VWAPLineEnum {
+  vwap = 'vwap',
+  upper = 'upper',
+  lower = 'lower',
+}
+
+/** Candle colour: the candle the colour is read from. */
+export enum CandleSourceEnum {
+  regular = 'regular',
+  heikinAshi = 'heikinAshi',
+}
+
+/** Candle colour: the colour required. */
+export enum CandleColorEnum {
+  green = 'green',
+  red = 'red',
+}
+
+/** Candle colour: while the run lasts, or only on its N-th candle. */
+export enum CandleTriggerEnum {
+  streak = 'streak',
+  start = 'start',
+}
+
+/** Order Blocks: which block the close is compared with. */
+export enum OBSideEnum {
+  bullish = 'bullish',
+  bearish = 'bearish',
+}
+
+/** Order Blocks: the level of that block (middle = halfway). */
+export enum OBLevelEnum {
+  top = 'top',
+  middle = 'middle',
+  bottom = 'bottom',
+}
+
+/** Squeeze Momentum: the squeeze state required. */
+export enum SqzSignalEnum {
+  fired = 'fired',
+  on = 'on',
+  off = 'off',
+  any = 'any',
+}
+
+/** Squeeze Momentum: the momentum required. */
+export enum SqzMomentumEnum {
+  positive = 'positive',
+  negative = 'negative',
+  rising = 'rising',
+  falling = 'falling',
+  crossUp = 'crossUp',
+  crossDown = 'crossDown',
+  any = 'any',
+}
+
+/**
+ * Price Change: how the candle's move is compared with pcValue (and pcValue2
+ * for between). Unset = gt, the behaviour before the setting existed.
+ */
+export enum PCCompareEnum {
+  gt = 'gt',
+  lt = 'lt',
+  bw = 'bw',
+}
+
+/** Session Price levels: where the condition is evaluated. */
+export enum SessionLevelsActiveEnum {
+  session = 'session',
+  outside = 'outside',
+  always = 'always',
 }
 
 export type SettingsIndicators = {
@@ -1658,6 +1771,8 @@ export type SettingsIndicators = {
   smoothingLength?: number | null;
   /** What the condition tests while smoothing is on. Unset = 'value'. */
   smoothingCompare?: IndicatorSmoothingCompare | null;
+  /** Id of the derived Smoothing switch; never stored or sent. */
+  smoothingEnabled?: string;
   mar1length?: number;
   mar1type?: MAEnum;
   mar2length?: number;
@@ -1683,6 +1798,10 @@ export type SettingsIndicators = {
   pcDown?: string;
   pcCondition?: PCConditionEnum;
   pcValue?: string;
+  /** Price Change: greater than (unset = as before) / lower than / between. */
+  pcCompare?: PCCompareEnum;
+  /** Price Change: the second bound for between, same sign as pcValue. */
+  pcValue2?: string;
   ppHighLeft?: number;
   ppHighRight?: number;
   ppLowLeft?: number;
@@ -1725,6 +1844,70 @@ export type SettingsIndicators = {
   /** OTE Levels: retracement level the close is compared with (0 = leg end, 1 = origin). */
   oteLevel?: string;
   oteLeg?: OTELegEnum;
+  /**
+   * ADX: unset / 'adx' = the ADX line; 'dmi' = +DI against −DI, where
+   * indicatorValue is not read.
+   */
+  adxMode?: ADXModeEnum;
+  /** KDJ: RSV window (default 9). */
+  kdjLength?: number;
+  /** KDJ: K smoothing (default 3). */
+  kdjKSmooth?: number;
+  /** KDJ: D smoothing (default 3). */
+  kdjDSmooth?: number;
+  /** KDJ: the line the condition reads (default k). */
+  kdjLine?: KDJLineEnum;
+  /**
+   * KDJ: what that line is compared with (default d); 'custom' = the fixed
+   * level in indicatorValue. The zone is Stochastic's stochRange /
+   * stochUpper / stochLower.
+   */
+  kdjCompareTo?: KDJCompareToEnum;
+  /** VWAP: where it restarts, UTC (default day). */
+  vwapAnchor?: VWAPAnchorEnum;
+  /** VWAP: the line the close is compared with (default vwap). */
+  vwapLine?: VWAPLineEnum;
+  /** VWAP: band width in standard deviations (default 1). */
+  vwapBandMultiplier?: number;
+  /** Candle colour: candle the colour is read from (default heikinAshi). */
+  candleSource?: CandleSourceEnum;
+  /** Candle colour: the colour required (default green). */
+  candleColor?: CandleColorEnum;
+  /** Candle colour: N candles in a row, 1..50 (default 1). */
+  candleCount?: number;
+  /** Candle colour: streak (default) = while the run lasts; start = its N-th candle only. */
+  candleTrigger?: CandleTriggerEnum;
+  /** Order Blocks: pivot bars each side of a swing, 2..50 (default 5). */
+  obSwingLength?: number;
+  /** Order Blocks: the block the close is compared with (default bullish). */
+  obSide?: OBSideEnum;
+  /** Order Blocks: the level of that block (default top). */
+  obLevel?: OBLevelEnum;
+  /** Squeeze Momentum: Bollinger length (default 20). */
+  sqzLength?: number;
+  /** Squeeze Momentum: Bollinger multiplier (default 2, decimals). */
+  sqzBBMult?: number;
+  /** Squeeze Momentum: Keltner length, also the momentum length (default 20). */
+  sqzKCLength?: number;
+  /** Squeeze Momentum: Keltner multiplier (default 1.5, decimals). */
+  sqzKCMult?: number;
+  /** Squeeze Momentum: the squeeze state required (default fired). */
+  sqzSignal?: SqzSignalEnum;
+  /** Squeeze Momentum: the momentum required (default positive). */
+  sqzMomentum?: SqzMomentumEnum;
+  /**
+   * Divergence: pivot bars left / right and the bars between two pivots.
+   * Unset = the defaults 3 / 1 / 1 / 60, and nothing is stored.
+   */
+  divPivotLeft?: number;
+  divPivotRight?: number;
+  divRangeLower?: number;
+  divRangeUpper?: number;
+  /**
+   * Session Price levels: unset / 'session' = only during the session (as
+   * before); 'outside' = only outside it; 'always' = both.
+   */
+  sessionLevelsActive?: SessionLevelsActiveEnum;
 };
 
 /**
@@ -4011,6 +4194,7 @@ export enum MAEnum {
   vwma = 'vwma',
   hma = 'hma',
   rma = 'rma',
+  mcginley = 'mcginley',
 }
 
 export enum TradingviewAnalysisSignalEnum {
@@ -4095,6 +4279,10 @@ export type CommonIndicatorSettings = {
   pcDown?: string;
   pcCondition?: PCConditionEnum;
   pcValue?: string;
+  /** Price Change: greater than (unset = as before) / lower than / between. */
+  pcCompare?: PCCompareEnum;
+  /** Price Change: the second bound for between, same sign as pcValue. */
+  pcValue2?: string;
   ppHighLeft?: number;
   ppHighRight?: number;
   ppLowLeft?: number;
@@ -4155,6 +4343,33 @@ export type CommonIndicatorSettings = {
   oteMinLegSize?: number;
   oteLevel?: number;
   oteLeg?: OTELegEnum;
+  adxMode?: ADXModeEnum;
+  kdjLength?: number;
+  kdjKSmooth?: number;
+  kdjDSmooth?: number;
+  kdjLine?: KDJLineEnum;
+  kdjCompareTo?: KDJCompareToEnum;
+  vwapAnchor?: VWAPAnchorEnum;
+  vwapLine?: VWAPLineEnum;
+  vwapBandMultiplier?: number;
+  candleSource?: CandleSourceEnum;
+  candleColor?: CandleColorEnum;
+  candleCount?: number;
+  candleTrigger?: CandleTriggerEnum;
+  obSwingLength?: number;
+  obSide?: OBSideEnum;
+  obLevel?: OBLevelEnum;
+  sqzLength?: number;
+  sqzBBMult?: number;
+  sqzKCLength?: number;
+  sqzKCMult?: number;
+  sqzSignal?: SqzSignalEnum;
+  sqzMomentum?: SqzMomentumEnum;
+  divPivotLeft?: number;
+  divPivotRight?: number;
+  divRangeLower?: number;
+  divRangeUpper?: number;
+  sessionLevelsActive?: SessionLevelsActiveEnum;
 };
 
 export enum ppValueTypeEnum {

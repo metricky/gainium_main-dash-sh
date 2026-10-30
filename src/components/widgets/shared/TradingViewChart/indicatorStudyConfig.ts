@@ -1,7 +1,12 @@
 import { logger } from '@/lib/loggerInstance';
 import {
+  ADXModeEnum,
+  CandleColorEnum,
+  CandleSourceEnum,
+  SessionLevelsActiveEnum,
   IndicatorEnum,
   MAEnum,
+  PCCompareEnum,
   StochRangeEnum,
   tvIntervalMap,
   type ChartIndicatorConfig,
@@ -15,6 +20,7 @@ import {} from '@/types/indicators/indicatorTypes';
 import { OBFVGValueEnum } from '@gainium/backtester/dist/types';
 import { parseSessionTime } from '@/utils/indicators/sessionWindow';
 import { DEFAULT_OTE_LEVELS } from '@/utils/indicators/oteLevels';
+import { resolvePriceChangeCompare } from '@/utils/indicators/priceChangeRange';
 
 type TradingViewInput = Record<string, string | number | boolean>;
 
@@ -76,7 +82,19 @@ const STUDY_NAME_MAP: Omit<
   [IndicatorEnum.session]: 'Session Selector',
   [IndicatorEnum.lw]: 'Long Wick Detector',
   [IndicatorEnum.ote]: 'Discount/Premium OTE Levels',
+  [IndicatorEnum.vwap]: 'VWAP (Custom)',
+  [IndicatorEnum.kdj]: 'KDJ (Custom)',
+  [IndicatorEnum.candle]: 'Candle Colour (Custom)',
+  [IndicatorEnum.ob]: 'Order Blocks (Custom)',
+  [IndicatorEnum.sqz]: 'Squeeze Momentum (Custom)',
 };
+
+// ADX in DMI mode draws +DI, −DI and the ADX in a study of its own.
+const DMI_STUDY_NAME = 'Directional Movement Index (Custom)';
+
+const isAdxDmi = (indicator: ChartIndicatorConfig): boolean =>
+  indicator.type === IndicatorEnum.adx &&
+  indicator.adxMode === ADXModeEnum.dmi;
 
 // AR-price variants: drawn as a price level on the candle pane when
 // indicator.arPrice === true (mirrors legacy `arPriceStudies`).
@@ -94,6 +112,7 @@ const MA_STUDY_NAME_MAP: Omit<Record<MAEnum, string>, MAEnum.price> = {
   [MAEnum.vwma]: 'VWMA (Custom)',
   [MAEnum.hma]: 'Hull Moving Average (Custom)',
   [MAEnum.rma]: 'RMA',
+  [MAEnum.mcginley]: 'McGinley Dynamic (Custom)',
 };
 
 // Studies that plot in PRICE units and therefore belong on the candle pane.
@@ -114,6 +133,8 @@ const OVERLAY_TYPES = new Set<string>([
   IndicatorEnum.sr,
   IndicatorEnum.obfvg,
   IndicatorEnum.dc,
+  IndicatorEnum.vwap,
+  IndicatorEnum.ob,
 ]);
 
 const toNumber = (value: unknown, fallback = 0): number => {
@@ -177,6 +198,7 @@ export const SUPPORTED_STUDY_NAMES = new Set<string>([
   // won't recognise/remove them on refresh and changing the Multiplier
   // stacks a duplicate study instead of replacing it.
   ...Object.values(AR_PRICE_STUDY_NAME_MAP),
+  DMI_STUDY_NAME,
   /* ...LEGACY_STUDY_ALIASES, */
 ]);
 
@@ -279,12 +301,26 @@ const buildInputs = (
     case IndicatorEnum.pc: {
       const upValue = toNumber(indicator.pcUp ?? indicator.pcValue, 5);
       const downValue = toNumber(indicator.pcDown ?? indicator.pcValue, 5);
-      const condition = String(indicator.pcCondition ?? 'up');
+      // The chart config carries PCConditionEnum ('UP' / 'DOWN').
+      const condition = String(indicator.pcCondition ?? 'up').toLowerCase();
+      // The study marks the candle after each trigger at its bound(s);
+      // between needs a second value of the same sign (else it never fires,
+      // and nothing is marked).
+      const compare = resolvePriceChangeCompare(indicator.pcCompare);
+      const second = Math.abs(toNumber(indicator.pcValue2, NaN));
+      const pcSign = condition === 'down' ? -1 : 1;
+      const secondSign = Math.sign(toNumber(indicator.pcValue2, NaN));
+      const bwInvalid =
+        compare === PCCompareEnum.bw &&
+        (!isFinite(second) || secondSign !== pcSign);
       return {
         up: upValue,
         down: downValue,
-        showUp: condition === 'up',
-        showDown: condition === 'down',
+        showUp: condition === 'up' && !bwInvalid,
+        showDown: condition === 'down' && !bwInvalid,
+        compare,
+        up2: compare === PCCompareEnum.bw && !bwInvalid ? second : upValue,
+        down2: compare === PCCompareEnum.bw && !bwInvalid ? second : downValue,
       };
     }
     case IndicatorEnum.rsi:
@@ -338,6 +374,11 @@ const buildInputs = (
         uo: contains('uo'),
         mom: contains('mom'),
         stoch: contains('stoch'),
+        // unset = the DIV defaults, as the bot runs it
+        pivotLeft: toNumber(indicator.divPivotLeft, 3),
+        pivotRight: toNumber(indicator.divPivotRight, 1),
+        rangeLower: toNumber(indicator.divRangeLower, 1),
+        rangeUpper: toNumber(indicator.divRangeUpper, 60),
       };
     }
     case IndicatorEnum.mar:
@@ -420,6 +461,9 @@ const buildInputs = (
         percentileInputs
       );
     case IndicatorEnum.adx:
+      if (isAdxDmi(indicator)) {
+        return { in_0: toNumber(indicator.length, 14) };
+      }
       return mergeInputs(
         {
           in_0: toNumber(indicator.length, 14),
@@ -600,6 +644,38 @@ const buildInputs = (
         id: '',
       };
     }
+    case IndicatorEnum.vwap:
+      return {
+        anchor: String(indicator.vwapAnchor || 'day'),
+        multiplier: toNumber(indicator.vwapBandMultiplier, 1),
+      };
+    case IndicatorEnum.kdj:
+      return {
+        in_0: toNumber(indicator.kdjLength, 9),
+        in_1: toNumber(indicator.kdjKSmooth, 3),
+        in_2: toNumber(indicator.kdjDSmooth, 3),
+      };
+    case IndicatorEnum.candle:
+      return {
+        source:
+          indicator.candleSource === CandleSourceEnum.regular
+            ? CandleSourceEnum.regular
+            : CandleSourceEnum.heikinAshi,
+        color:
+          indicator.candleColor === CandleColorEnum.red
+            ? CandleColorEnum.red
+            : CandleColorEnum.green,
+        count: toNumber(indicator.candleCount, 1),
+      };
+    case IndicatorEnum.ob:
+      return { swingLength: toNumber(indicator.obSwingLength, 5) };
+    case IndicatorEnum.sqz:
+      return {
+        length: toNumber(indicator.sqzLength, 20),
+        bbMult: toNumber(indicator.sqzBBMult, 1.5),
+        kcLength: toNumber(indicator.sqzKCLength, 20),
+        kcMult: toNumber(indicator.sqzKCMult, 1.5),
+      };
     case IndicatorEnum.session: {
       const days = indicator.sessionDays ?? [1, 2, 3, 4, 5];
       const rule = indicator.sessionRule ?? 'in';
@@ -612,8 +688,15 @@ const buildInputs = (
         thu: days.includes(4),
         fri: days.includes(5),
         sat: days.includes(6),
-        // Price levels shade the session the condition can fire in.
-        inSession: rule !== 'out',
+        // Price levels shade where the condition can fire: the session, or
+        // outside it when it is read only outside (Any time keeps the
+        // session shaded).
+        inSession:
+          rule !== 'out' &&
+          !(
+            levels &&
+            indicator.sessionLevelsActive === SessionLevelsActiveEnum.outside
+          ),
         // -1 = no hours: the whole day counts.
         startMinute: parseSessionTime(indicator.sessionStart) ?? -1,
         endMinute: parseSessionTime(indicator.sessionEnd) ?? -1,
@@ -635,7 +718,12 @@ const buildOverrides = (
   if (
     type === IndicatorEnum.st ||
     type === IndicatorEnum.dc ||
-    type === IndicatorEnum.tv
+    type === IndicatorEnum.tv ||
+    type === IndicatorEnum.vwap ||
+    type === IndicatorEnum.candle ||
+    type === IndicatorEnum.ob ||
+    type === IndicatorEnum.sqz ||
+    isAdxDmi(indicator)
   ) {
     return undefined;
   }
@@ -701,6 +789,7 @@ const buildOverrides = (
   const boundedRangeIndicators = new Set<string>([
     IndicatorEnum.stoch,
     IndicatorEnum.stochRSI,
+    IndicatorEnum.kdj,
   ]);
 
   // Stochastic's Lower&Upper zone is two bands (0 to its lower line, its
@@ -777,9 +866,12 @@ const buildOverrides = (
     overrides['mean.linewidth'] = 0;
   }
   if (
-    [IndicatorEnum.stoch, IndicatorEnum.stochRSI, IndicatorEnum.div].includes(
-      indicator.type
-    )
+    [
+      IndicatorEnum.stoch,
+      IndicatorEnum.stochRSI,
+      IndicatorEnum.kdj,
+      IndicatorEnum.div,
+    ].includes(indicator.type)
   ) {
     delete overrides['plot.linewidth'];
     delete overrides['plot'];
@@ -862,6 +954,8 @@ export function buildTradingViewStudyDescriptor(
     studyName = MA_STUDY_NAME_MAP[maType] ?? STUDY_NAME_MAP[IndicatorEnum.ma];
   } else if (isArPrice) {
     studyName = AR_PRICE_STUDY_NAME_MAP[type];
+  } else if (isAdxDmi(indicator)) {
+    studyName = DMI_STUDY_NAME;
   } else {
     studyName = STUDY_NAME_MAP[type];
   }
@@ -876,7 +970,7 @@ export function buildTradingViewStudyDescriptor(
 
   const baseInputs = buildInputs(indicator, type);
   const inputs =
-    baseInputs && supportsSmoothing(type)
+    baseInputs && supportsSmoothing(type) && !isAdxDmi(indicator)
       ? { ...baseInputs, ...buildSmoothingInputs(indicator) }
       : baseInputs;
   if (!inputs) {
@@ -913,6 +1007,7 @@ export function buildTradingViewStudyDescriptor(
     IndicatorEnum.wr,
     IndicatorEnum.stoch,
     IndicatorEnum.stochRSI,
+    IndicatorEnum.kdj,
     IndicatorEnum.ao,
     IndicatorEnum.mom,
     IndicatorEnum.vo,

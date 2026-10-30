@@ -69,6 +69,15 @@ import {
   DEFAULT_SMOOTHING_LENGTH,
   normalizeSmoothingFields,
 } from '@/utils/indicators/smoothing';
+import { clearStrayTrendFilter } from '@/utils/indicators/trendFilter';
+import {
+  divergenceRangeInvalid,
+  stripDefaultDivergencePivots,
+} from '@/utils/indicators/divergencePivots';
+import {
+  priceChangeRangeInvalid,
+  stripPriceChangeRange,
+} from '@/utils/indicators/priceChangeRange';
 import { normalizeMultiTpTargets } from '@/utils/bots/dca/take-profit';
 import { enforceMultiTargetLimit } from '@/utils/bots/dca/take-profit-behaviours';
 import {
@@ -161,6 +170,16 @@ const normalizeIndicatorParamsRecord = (
     'athLookback',
     'kcRangeLength',
     'unpnlValue',
+    'candleCount',
+    'obSwingLength',
+    'sqzLength',
+    'sqzBBMult',
+    'sqzKCLength',
+    'sqzKCMult',
+    'divPivotLeft',
+    'divPivotRight',
+    'divRangeLower',
+    'divRangeUpper',
   ];
 
   const fieldsAsString: (keyof IndicatorConfig)[] = [
@@ -179,6 +198,7 @@ const normalizeIndicatorParamsRecord = (
     'pcUp',
     'pcDown',
     'pcValue',
+    'pcValue2',
     'riskAtrMult',
     'dynamicArFactor',
   ];
@@ -4630,6 +4650,20 @@ export const mapFormDataToBackend = (
         i.oteMinLegSize = `${i.oteMinLegSize || '1'}`.trim() || undefined;
         i.oteLevel = `${i.oteLevel || '0.705'}`.trim() || undefined;
       }
+      if (i.type === IndicatorEnum.kdj || i.type === IndicatorEnum.vwap) {
+        // not read by either, but the engine subscribes a condition only
+        // when it is set
+        i.indicatorLength =
+          i.indicatorLength || (i.type === IndicatorEnum.kdj ? 9 : 20);
+      }
+      if (
+        i.type === IndicatorEnum.candle ||
+        i.type === IndicatorEnum.ob ||
+        i.type === IndicatorEnum.sqz
+      ) {
+        // not read by any of them either
+        i.indicatorLength = i.indicatorLength || 14;
+      }
       if (
         i.type === IndicatorEnum.session &&
         i.sessionRule === SessionRuleEnum.levels
@@ -4640,13 +4674,27 @@ export const mapFormDataToBackend = (
       // An entry no serializer claimed (see the merge above) still saves its
       // smoothing in the stored shape; the length the form showed is the
       // default when the row never held one.
+      // A type switched from MA / MAR keeps their trendFilter, which would
+      // keep any other type's condition false in the engines.
+      // A Divergence left at the default pivots saves none of them, so its
+      // condition stays exactly what it was before they existed.
       if (i.smoothing) {
-        return normalizeSmoothingFields({
-          ...i,
-          smoothingLength: i.smoothingLength ?? DEFAULT_SMOOTHING_LENGTH,
-        });
+        return normalizeSmoothingFields(
+          clearStrayTrendFilter(
+            stripPriceChangeRange(
+              stripDefaultDivergencePivots({
+                ...i,
+                smoothingLength: i.smoothingLength ?? DEFAULT_SMOOTHING_LENGTH,
+              })
+            )
+          )
+        );
       }
-      return normalizeSmoothingFields(i);
+      return normalizeSmoothingFields(
+        clearStrayTrendFilter(
+          stripPriceChangeRange(stripDefaultDivergencePivots(i))
+        )
+      );
     });
 
     if (result.errors) {
@@ -4678,6 +4726,20 @@ export const mapFormDataToBackend = (
   finalData.indicatorGroups = (finalData.indicatorGroups ?? []).filter((ig) =>
     (finalData.indicators ?? []).some((i) => i.groupId === ig.id)
   );
+
+  // A Price Change between with no usable second value never fires.
+  if ((finalData.indicators ?? []).some((i) => priceChangeRangeInvalid(i))) {
+    allErrors.push(
+      'Price Change: Between needs a second value with the same sign as % change and a different size'
+    );
+  }
+
+  // A Divergence whose lookback range is empty never finds a pair of pivots.
+  if ((finalData.indicators ?? []).some((i) => divergenceRangeInvalid(i))) {
+    allErrors.push(
+      'Divergences: Min of lookback range must be below Max of lookback range'
+    );
+  }
 
   finalData.pair = [formData.pair]
     .flat()

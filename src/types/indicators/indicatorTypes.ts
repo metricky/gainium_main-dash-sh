@@ -66,6 +66,8 @@ export interface IndicatorFieldDefinition {
   optionsWhen?: Array<{
     field: keyof SettingsIndicators;
     equals: unknown;
+    /** Further fields that must ALL match too (e.g. Order Blocks' side and level). */
+    and?: Array<{ field: keyof SettingsIndicators; equals: unknown }>;
     options: IndicatorFieldOption[];
   }>;
   /**
@@ -101,6 +103,12 @@ export interface IndicatorFieldDefinition {
   };
   multiple?: boolean;
   /**
+   * The form group the field renders in. Unset = the indicator's own settings;
+   * 'modifiers' = the optional transforms of its line (smoothing, percentile),
+   * drawn under their own heading after everything else.
+   */
+  section?: 'modifiers';
+  /**
    * Width in the two-column field grid. Defaults by type (see
    * `resolveFieldSpan`): toggles, checkbox groups, fields with a description
    * and selects with long option labels take the full row; numbers and short
@@ -132,9 +140,11 @@ export interface IndicatorFieldDefinition {
    */
   disabled?: boolean;
   /**
-   * A select with no stored value of its own: it shows a value read from
-   * other params and writes those params when changed (the Session preset,
-   * which fills the hour fields). Its `key` is only the control's id.
+   * A select or switch with no stored value of its own: it shows a value read
+   * from other params and writes those params when changed (the Session
+   * preset, which fills the hour fields; the Smoothing switch, which reads
+   * 'true' / 'false'). Without a `defaultValue` its `key` is only the
+   * control's id and is never seeded.
    */
   derive?: {
     get: (params: SettingsIndicators) => string;

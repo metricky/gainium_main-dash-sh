@@ -1,11 +1,16 @@
 import type { IndicatorConfig } from '@/types/indicators/indicators';
 import {
   BBCrossingEnum,
+  BotStartTypeEnum,
+  CloseConditionEnum,
+  DCAConditionEnum,
   ECDTriggerEnum,
   IndicatorAction,
   IndicatorEnum,
   IndicatorSection,
   IndicatorStartConditionEnum,
+  ADXModeEnum,
+  KDJCompareToEnum,
   MAEnum,
   OBFVGRefEnum,
   OBFVGValueEnum,
@@ -13,8 +18,10 @@ import {
   ppValueEnum,
   RangeType,
   rsiValue2Enum,
+  ScaleDcaTypeEnum,
   SessionRuleEnum,
   SRCrossingEnum,
+  StartConditionEnum,
   STConditionEnum,
   StochRangeEnum,
   StrategyEnum,
@@ -22,6 +29,7 @@ import {
   tvIntervalMap,
   type ChartIndicatorConfig,
   type ChartIndicatorsConfig,
+  type DCABotSettings,
 } from '@/types';
 import { resolveSmoothingCompare } from '@/utils/indicators/smoothing';
 
@@ -318,6 +326,59 @@ export type ChartIndicatorsContext = {
 };
 
 /**
+ * The chart context for a saved bot's settings (a bot, or the settings a
+ * backtest ran with): which indicator groups and actions the bot acts on.
+ * `chartInterval` is the chart's own and is left to the caller.
+ */
+export function chartIndicatorsContextFromSettings(
+  settings: DCABotSettings
+): Omit<ChartIndicatorsContext, 'chartInterval'> {
+  const scaleAr =
+    (settings.dcaCondition === DCAConditionEnum.percentage ||
+      !settings.dcaCondition) &&
+    [ScaleDcaTypeEnum.adr, ScaleDcaTypeEnum.atr].includes(
+      settings.scaleDcaType ?? ScaleDcaTypeEnum.percentage
+    ) &&
+    !!settings.useDca;
+  const tpAr =
+    settings.dealCloseCondition === CloseConditionEnum.dynamicAr &&
+    !!settings.useTp;
+  const slAr =
+    settings.dealCloseConditionSL === CloseConditionEnum.dynamicAr &&
+    !!settings.useSl;
+  const indicators = settings.indicators ?? [];
+  return {
+    scaleAr,
+    tpAr,
+    slAr,
+    strategy: settings.strategy,
+    indicatorGroupsToUse: (settings.indicatorGroups ?? [])
+      .filter((ig) => indicators.some((i) => i.groupId === ig.id))
+      .map((ig) => ig.id),
+    useCloseIndicators:
+      (settings.dealCloseCondition === CloseConditionEnum.techInd &&
+        (!settings.useRiskReward ||
+          (settings.useRiskReward && !settings.riskUseTpRatio))) ||
+      (settings.dealCloseConditionSL === CloseConditionEnum.techInd &&
+        !settings.useRiskReward) ||
+      tpAr ||
+      slAr,
+    useStartDealIndicators: settings.startCondition === StartConditionEnum.ti,
+    useStartDCAIndicators:
+      (settings.dcaCondition === DCAConditionEnum.indicators &&
+        !!settings.useDca) ||
+      scaleAr,
+    useStopBotIndicators:
+      settings.botStart === BotStartTypeEnum.indicators &&
+      !!settings.useBotController,
+    useStartBotIndicators:
+      settings.botActualStart === BotStartTypeEnum.indicators &&
+      !!settings.useBotController,
+    useRiskRewardIndicators: !!settings.useRiskReward,
+  };
+}
+
+/**
  * The open edge of a one-sided threshold band.
  *
  * `greater than X` is satisfied by every value above X, and `less than X` by
@@ -371,7 +432,31 @@ function buildChartIndicator(
     (xoPrimaryOnChart || tvIntervalMap[xoSecondInterval] === chartInterval);
   // An indicator tested against its own smoothed line has no value threshold,
   // so there is no band to shade (the smoothed line itself is drawn instead).
-  const comparesSmoothedLine = resolveSmoothingCompare(i) === 'line';
+  // Neither has a VWAP (the close against a line of the study), an ADX in
+  // DMI mode (+DI against −DI), nor the types whose condition reads no value
+  // (Candle Colour, Order Blocks, Squeeze Momentum).
+  const comparesSmoothedLine =
+    resolveSmoothingCompare(i) === 'line' ||
+    i.type === IndicatorEnum.vwap ||
+    i.type === IndicatorEnum.candle ||
+    i.type === IndicatorEnum.ob ||
+    i.type === IndicatorEnum.sqz ||
+    (i.type === IndicatorEnum.adx && i.adxMode === ADXModeEnum.dmi);
+  // KDJ shades Stochastic's zones (Anywhere when unset) or, against a custom
+  // value, marks that value.
+  const isKdj = i.type === IndicatorEnum.kdj;
+  const stochLike =
+    isKdj ||
+    [IndicatorEnum.stoch, IndicatorEnum.stochRSI].includes(i.type);
+  const stochCustom = isKdj
+    ? i.kdjCompareTo === KDJCompareToEnum.custom
+    : i.rsiValue2 === rsiValue2Enum.custom;
+  const stochRange = isKdj
+    ? (i.stochRange ?? StochRangeEnum.none)
+    : i.stochRange;
+  const stochCustomValue = isKdj
+    ? parseFloat(i.indicatorValue ?? '')
+    : i.valueInsteadof;
   const chartIndicator: ChartIndicatorConfig = {
     // Combined Ratings has no length; its study's level travels here. An
     // unset level is the form's default (15), as the bot will save it.
@@ -391,16 +476,16 @@ function buildChartIndicator(
         ? undefined
         : i.percentile || comparesSmoothedLine
           ? undefined
-          : [IndicatorEnum.stoch, IndicatorEnum.stochRSI].includes(i.type)
-            ? i.rsiValue2 !== rsiValue2Enum.custom
-              ? i.stochRange === StochRangeEnum.lower
+          : stochLike
+            ? !stochCustom
+              ? stochRange === StochRangeEnum.lower
                 ? +(i.stochUpper ?? '20')
-                : i.stochRange === StochRangeEnum.none
+                : stochRange === StochRangeEnum.none
                   ? undefined
-                  : i.stochRange === StochRangeEnum.upper
+                  : stochRange === StochRangeEnum.upper
                     ? 100
                     : +(i.stochUpper ?? '80')
-              : i.valueInsteadof
+              : stochCustomValue
             : i.indicatorCondition === IndicatorStartConditionEnum.bw
               ? betweenBand(i)?.upper
               : i.indicatorCondition === IndicatorStartConditionEnum.gt
@@ -424,13 +509,13 @@ function buildChartIndicator(
         ? undefined
         : i.percentile || comparesSmoothedLine
           ? undefined
-          : [IndicatorEnum.stoch, IndicatorEnum.stochRSI].includes(i.type)
-            ? i.rsiValue2 !== rsiValue2Enum.custom
-              ? i.stochRange === StochRangeEnum.upper
+          : stochLike
+            ? !stochCustom
+              ? stochRange === StochRangeEnum.upper
                 ? +(i.stochLower ?? '80')
-                : i.stochRange === StochRangeEnum.none
+                : stochRange === StochRangeEnum.none
                   ? undefined
-                  : i.stochRange === StochRangeEnum.lower
+                  : stochRange === StochRangeEnum.lower
                     ? 0
                     : +(i.stochLower ?? '20')
               : undefined
@@ -516,6 +601,8 @@ function buildChartIndicator(
     pcDown: `${Math.abs(+(i.pcValue ?? '5'))}`,
     pcCondition:
       +(i.pcValue ?? '5') > 0 ? PCConditionEnum.up : PCConditionEnum.down,
+    pcCompare: i.pcCompare,
+    pcValue2: i.pcValue2,
     ppHighLeft: +(i.ppHighLeft ?? 5),
     ppHighRight: +(i.ppHighRight ?? 5),
     ppLowLeft: +(i.ppLowLeft ?? 5),
@@ -644,6 +731,33 @@ function buildChartIndicator(
     oteMinLegSize: +(i.oteMinLegSize || 1),
     oteLevel: +(i.oteLevel || 0.705),
     oteLeg: i.oteLeg,
+    adxMode: i.adxMode,
+    kdjLength: +(i.kdjLength || 9),
+    kdjKSmooth: +(i.kdjKSmooth || 3),
+    kdjDSmooth: +(i.kdjDSmooth || 3),
+    kdjLine: i.kdjLine,
+    kdjCompareTo: i.kdjCompareTo,
+    vwapAnchor: i.vwapAnchor,
+    vwapLine: i.vwapLine,
+    vwapBandMultiplier: +(i.vwapBandMultiplier || 1),
+    candleSource: i.candleSource,
+    candleColor: i.candleColor,
+    candleCount: +(i.candleCount || 1),
+    candleTrigger: i.candleTrigger,
+    obSwingLength: +(i.obSwingLength || 5),
+    obSide: i.obSide,
+    obLevel: i.obLevel,
+    sqzLength: +(i.sqzLength || 20),
+    sqzBBMult: +(i.sqzBBMult || 1.5),
+    sqzKCLength: +(i.sqzKCLength || 20),
+    sqzKCMult: +(i.sqzKCMult || 1.5),
+    sqzSignal: i.sqzSignal,
+    sqzMomentum: i.sqzMomentum,
+    divPivotLeft: +(i.divPivotLeft || 3),
+    divPivotRight: +(i.divPivotRight || 1),
+    divRangeLower: +(i.divRangeLower || 1),
+    divRangeUpper: +(i.divRangeUpper || 60),
+    sessionLevelsActive: i.sessionLevelsActive,
   };
 
   return chartIndicator;

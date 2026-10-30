@@ -1,4 +1,5 @@
 import { isSessionActiveDuring } from '@/utils/indicators/sessionWindow';
+import { mcginleyNext } from '@/utils/indicators/mcginley';
 import {
   SessionLevelsState,
   sessionLevelValue,
@@ -9,6 +10,11 @@ import {
   oteLevelPrice,
   parseOteLevels,
 } from '@/utils/indicators/oteLevels';
+import { VWAPState } from '@/utils/indicators/vwap';
+import { KDJState } from '@/utils/indicators/kdj';
+import { CandleColourState } from '@/utils/indicators/candleColour';
+import { OrderBlocksState } from '@/utils/indicators/orderBlocks';
+import { SqueezeState } from '@/utils/indicators/squeeze';
 
 const colorRipeRedA200 = '#FF5252';
 const colorMintyGreen400 = '#22AB94';
@@ -388,7 +394,8 @@ const adxCalc = (r, context, diLength, length) => {
   const n = i[1];
   const o = s + n;
   const a = context.new_var(r.Std.abs(s - n) / (r.Std.eq(o, 0) ? 1 : o));
-  return [100 * r.Std.rma(a, length, context)];
+  // [ADX, +DI, −DI]
+  return [100 * r.Std.rma(a, length, context), s, n];
 };
 const bbwCalc = (r, context, maType, maLength, bbwLength, bbwMult) => {
   const f_0 = (e, t) => {
@@ -1096,6 +1103,7 @@ export const custom_indicators_getter = (r, callback) => {
       RSI(r),
       TVTA(r),
       RMA(r, cb),
+      McGinley(r, cb),
       SMA(r, cb),
       BB(r, cb),
       Stoch(r),
@@ -1130,6 +1138,12 @@ export const custom_indicators_getter = (r, callback) => {
       Session(r),
       LW(r, cb),
       OTE(r, cb),
+      VWAP(r),
+      KDJ(r),
+      DMI(r),
+      CandleColour(r),
+      OrderBlocks(r),
+      SqueezeMomentum(r),
     ];
 
     // Filter out any undefined/null indicators and validate structure
@@ -2943,6 +2957,91 @@ export const RMA = (r, callback) => ({
         callback(rma, id);
       }
       return [rma];
+    };
+  },
+});
+
+export const McGinley = (r, callback) => ({
+  name: 'McGinley Dynamic (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 0,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#00BCD4',
+        },
+      },
+      inputs: {
+        in_0: 14,
+        id: '',
+      },
+    },
+    plots: [
+      {
+        id: 'plot_0',
+        type: 'line',
+      },
+    ],
+    styles: {
+      plot_0: {
+        title: 'McGinley Dynamic',
+        histogramBase: 0,
+        joinPoints: !1,
+      },
+    },
+    description: 'McGinley Dynamic (Custom)',
+    shortDescription: 'McGinley',
+    is_price_study: !0,
+    linkedToSeries: true,
+    inputs: [
+      {
+        id: 'in_0',
+        name: 'Length',
+        defval: 14,
+        type: 'integer',
+        min: 1,
+        max: 2e3,
+      },
+      {
+        id: 'id',
+        name: 'ID',
+        defval: '',
+        type: 'text',
+      },
+    ],
+    id: 'McGinley Dynamic (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'McGinley Dynamic (Custom)',
+    format: {
+      type: 'inherit',
+    },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const length = this._input(0);
+      const id = this._input(1);
+      const close = r.Std.close(this._context);
+      const closeVar = this._context.new_var(close);
+      // seeded with the SMA of the first `length` closes, as the engine is
+      const seed = r.Std.sma(closeVar, length, this._context);
+      const mg = this._context.new_var();
+      const value = mcginleyNext(mg.get(1), close, seed, length);
+      mg.set(value);
+      if (callback) {
+        callback(value, id);
+      }
+      return [value];
     };
   },
 });
@@ -5632,6 +5731,13 @@ const getMarValue = (type1, r, closeVar, type1length, context) => {
     case 'RMA':
       result1 = r.Std.rma(closeVar, type1length, context);
       break;
+    case 'MCGINLEY': {
+      const seed = r.Std.sma(closeVar, type1length, context);
+      const mg = context.new_var();
+      result1 = mcginleyNext(mg.get(1), closeVar.get(), seed, type1length);
+      mg.set(result1);
+      break;
+    }
     case 'price':
       result1 = closeVar.get();
       break;
@@ -5768,7 +5874,17 @@ export const MAR = withSmoothing((r) => ({
         name: 'Type 1',
         defval: 'EMA',
         type: 'text',
-        options: ['SMA', 'EMA', 'WMA', 'DEMA', 'TEMA', 'VWMA', 'HMA', 'RMA'],
+        options: [
+          'SMA',
+          'EMA',
+          'WMA',
+          'DEMA',
+          'TEMA',
+          'VWMA',
+          'HMA',
+          'RMA',
+          'MCGINLEY',
+        ],
       },
       {
         id: 'type1length',
@@ -5792,6 +5908,7 @@ export const MAR = withSmoothing((r) => ({
           'VWMA',
           'HMA',
           'RMA',
+          'MCGINLEY',
           'price',
         ],
       },
@@ -8381,23 +8498,132 @@ export const PC = (r) => ({
     showLegendValues: false,
     defaults: {
       styles: {
-        up: {
+        // A trigger is marked on the NEXT candle (the one a deal opens on):
+        // a short line at each bound, open·(1 ± v/100) of the triggering
+        // candle, with a triangle on it. Greater than / the lower bound of
+        // Between: the triangle points the move's way (up move below the
+        // line pointing up, down move above it pointing down). Lower than /
+        // the upper bound of Between: it points the other way, so a Between
+        // pair brackets the range.
+        upTriUp: {
           plottype: 'shape_triangle_up',
-          location: 'BelowBar',
+          location: 'Absolute',
+          // on the chart only: no price-scale label, no legend value
+          display: 3,
           visible: !0,
           color: '#4caf4f',
           textColor: '#4caf4f',
           transparency: 0,
-          fontsize: 30,
         },
-        down: {
+        upTriDown: {
           plottype: 'shape_triangle_down',
-          location: 'AboveBar',
+          location: 'Absolute',
+          // on the chart only: no price-scale label, no legend value
+          display: 3,
+          visible: !0,
+          color: '#4caf4f',
+          textColor: '#4caf4f',
+          transparency: 0,
+        },
+        downTriDown: {
+          plottype: 'shape_triangle_down',
+          location: 'Absolute',
+          // on the chart only: no price-scale label, no legend value
+          display: 3,
           visible: !0,
           color: '#ff5252',
           textColor: '#ff5252',
           transparency: 0,
-          fontsize: 30,
+        },
+        downTriUp: {
+          plottype: 'shape_triangle_up',
+          location: 'Absolute',
+          // on the chart only: no price-scale label, no legend value
+          display: 3,
+          visible: !0,
+          color: '#ff5252',
+          textColor: '#ff5252',
+          transparency: 0,
+        },
+        upLineA: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#4caf4f',
+        },
+        upLineB: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#4caf4f',
+        },
+        upLine2A: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#4caf4f',
+        },
+        upLine2B: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#4caf4f',
+        },
+        downLineA: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#ff5252',
+        },
+        downLineB: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#ff5252',
+        },
+        downLine2A: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#ff5252',
+        },
+        downLine2B: {
+          linestyle: 0,
+          linewidth: 2,
+          plottype: 11,
+          display: 3,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#ff5252',
         },
         bgColor: {
           visible: !0,
@@ -8417,21 +8643,24 @@ export const PC = (r) => ({
         down: 5,
         showUp: true,
         showDown: false,
+        compare: 'gt',
+        up2: 5,
+        down2: 5,
       },
     },
     plots: [
-      {
-        id: 'up',
-        type: 'shapes',
-        plottype: 'shape_triangle_up',
-        location: 'BelowBar',
-      },
-      {
-        id: 'down',
-        type: 'shapes',
-        plottype: 'shape_triangle_down',
-        location: 'AboveBar',
-      },
+      { id: 'upTriUp', type: 'shapes' },
+      { id: 'upTriDown', type: 'shapes' },
+      { id: 'downTriDown', type: 'shapes' },
+      { id: 'downTriUp', type: 'shapes' },
+      { id: 'upLineA', type: 'line' },
+      { id: 'upLineB', type: 'line' },
+      { id: 'upLine2A', type: 'line' },
+      { id: 'upLine2B', type: 'line' },
+      { id: 'downLineA', type: 'line' },
+      { id: 'downLineB', type: 'line' },
+      { id: 'downLine2A', type: 'line' },
+      { id: 'downLine2B', type: 'line' },
       {
         id: 'bgColor',
         type: 'bg_colorer',
@@ -8439,12 +8668,18 @@ export const PC = (r) => ({
       },
     ],
     styles: {
-      up: {
-        title: 'Price increased',
-      },
-      down: {
-        title: 'Price decreased',
-      },
+      upTriUp: { title: 'Price increased', size: 'tiny' },
+      upTriDown: { title: 'Price increased, upper bound', size: 'tiny' },
+      downTriDown: { title: 'Price decreased', size: 'tiny' },
+      downTriUp: { title: 'Price decreased, lower bound', size: 'tiny' },
+      upLineA: { title: 'Up level' },
+      upLineB: { title: 'Up level' },
+      upLine2A: { title: 'Up level 2' },
+      upLine2B: { title: 'Up level 2' },
+      downLineA: { title: 'Down level' },
+      downLineB: { title: 'Down level' },
+      downLine2A: { title: 'Down level 2' },
+      downLine2B: { title: 'Down level 2' },
       bgColor: {
         title: 'Background color',
       },
@@ -8474,7 +8709,7 @@ export const PC = (r) => ({
         name: '% up',
         defval: 5,
         type: 'float',
-        min: 1,
+        min: 0,
         max: 1000,
         step: 0.1,
       },
@@ -8483,7 +8718,7 @@ export const PC = (r) => ({
         name: '% down',
         defval: 5,
         type: 'float',
-        min: 1,
+        min: 0,
         max: 1000,
         step: 0.1,
       },
@@ -8499,13 +8734,38 @@ export const PC = (r) => ({
         defval: true,
         type: 'bool',
       },
+      {
+        id: 'compare',
+        name: 'Condition',
+        defval: 'gt',
+        type: 'text',
+        options: ['gt', 'lt', 'bw'],
+      },
+      {
+        id: 'up2',
+        name: '% up (between: other bound)',
+        defval: 5,
+        type: 'float',
+        min: 0,
+        max: 1000,
+        step: 0.1,
+      },
+      {
+        id: 'down2',
+        name: '% down (between: other bound)',
+        defval: 5,
+        type: 'float',
+        min: 0,
+        max: 1000,
+        step: 0.1,
+      },
     ],
   },
   constructor: function () {
     this.main = function (e, t) {
       this._context = e;
       this._input = t;
-      this._context.setMinimumAdditionalDepth(1);
+      this._context.setMinimumAdditionalDepth(2);
       const high = r.Std.high(this._context);
       const low = r.Std.low(this._context);
       const open = r.Std.open(this._context);
@@ -8513,11 +8773,69 @@ export const PC = (r) => ({
       const downPerc = this._input(1);
       const showUp = this._input(2);
       const showDown = this._input(3);
+      // gt (the only mode before) / lt / bw (strict at both bounds), as
+      // @gainium/indicators' priceChangeCondition
+      const compare = this._input(4);
+      const upPerc2 = this._input(5);
+      const downPerc2 = this._input(6);
+      const pass = (m, a, b) =>
+        compare === 'lt'
+          ? m < a
+          : compare === 'bw'
+            ? m > Math.min(a, b) && m < Math.max(a, b)
+            : m > a;
       const _up = Math.abs((high - open) / open) * 100;
       const _down = Math.abs((low - open) / open) * 100;
-      const up = showUp && _up > upPerc ? 1 : 0;
-      const down = showDown && _down > downPerc ? 1 : 0;
-      return [up, down, up ? 1 : down ? 2 : 0];
+      const up = showUp && pass(_up, upPerc, upPerc2) ? 1 : 0;
+      const down = showDown && pass(_down, downPerc, downPerc2) ? 1 : 0;
+      // the previous candle's decision and prices, read on the candle after it
+      const upS = this._context.new_var(up);
+      const downS = this._context.new_var(down);
+      const openS = this._context.new_var(open);
+      const highS = this._context.new_var(high);
+      const lowS = this._context.new_var(low);
+      const countS = this._context.new_var(0);
+      const prevCount = countS.get(1);
+      const bar = Number.isFinite(prevCount) ? prevCount + 1 : 0;
+      countS.set(bar);
+      const prevUp = upS.get(1) === 1;
+      const prevDown = downS.get(1) === 1;
+      const prevOpen = openS.get(1);
+      // the triangle sits beside its line, a fraction of the triggering
+      // candle's range away, so the line stays visible
+      const gap = Math.abs(highS.get(1) - lowS.get(1)) * 0.04;
+      const lo = (a, b) => (compare === 'bw' ? Math.min(a, b) : a);
+      const hi = (a, b) => Math.max(a, b);
+      const at = (pct, sign) => prevOpen * (1 + (sign * pct) / 100);
+      // bound 1: gt / bw lower bound (points the move's way) or lt (opposite)
+      const upL1 = prevUp ? at(lo(upPerc, upPerc2), 1) : NaN;
+      const upL2 = prevUp && compare === 'bw' ? at(hi(upPerc, upPerc2), 1) : NaN;
+      const downL1 = prevDown ? at(lo(downPerc, downPerc2), -1) : NaN;
+      const downL2 =
+        prevDown && compare === 'bw' ? at(hi(downPerc, downPerc2), -1) : NaN;
+      const atMost = compare === 'lt';
+      // pointing up = below its line; pointing down = above it
+      const below = (v) => v - gap;
+      const above = (v) => v + gap;
+      // consecutive markers alternate between two step lines, so they are
+      // never joined by a riser
+      const even = bar % 2 === 0;
+      const split = (v) => (even ? [v, NaN] : [NaN, v]);
+      return [
+        // upTriUp: up move, pointing up
+        atMost ? NaN : below(upL1),
+        // upTriDown: up move, pointing down (lt bound, bw upper bound)
+        atMost ? above(upL1) : above(upL2),
+        // downTriDown: down move, pointing down
+        atMost ? NaN : above(downL1),
+        // downTriUp: down move, pointing up (lt bound, bw lower price)
+        atMost ? below(downL1) : below(downL2),
+        ...split(upL1),
+        ...split(upL2),
+        ...split(downL1),
+        ...split(downL2),
+        up ? 1 : down ? 2 : 0,
+      ];
     };
   },
 });
@@ -12338,6 +12656,689 @@ export const OTE = (r, callback) => ({
           ? [oteLevelPrice(leg, level), oteColorIndex(level)]
           : [r.Std.na(), 0];
       });
+    };
+  },
+});
+
+// Feeds a stateful chart copy (VWAP, KDJ) the closed candles only, as the
+// bot reads them, and previews the open candle on a copy of the state. A
+// candle seen open whose closed call never came is fed when a later candle
+// arrives. Recalculating from the first bar starts over.
+const closedCandleFeed = (study, symbol, candle, create, step) => {
+  if (!study.state || symbol.index === 0 || symbol.index < study.lastIndex) {
+    study.state = create();
+    study.lastIndex = -1;
+    study.pending = null;
+    study.lastValue = null;
+    study.prevValue = null;
+  }
+  const commit = (c) => {
+    study.prevValue = study.lastValue;
+    study.lastValue = step(study.state, c);
+    study.lastIndex = c.index;
+  };
+  if (
+    study.pending &&
+    study.pending.index > study.lastIndex &&
+    study.pending.index < candle.index
+  ) {
+    commit(study.pending);
+  }
+  study.pending = null;
+  if (symbol.isBarClosed) {
+    if (candle.index > study.lastIndex) {
+      commit(candle);
+    }
+    return { value: study.lastValue, prev: study.prevValue };
+  }
+  study.pending = candle;
+  return {
+    value: step(study.state.clone(), candle),
+    prev: study.lastValue,
+  };
+};
+
+const vwapLineStyle = (color) => ({
+  linestyle: 0,
+  linewidth: 1,
+  plottype: 7,
+  trackPrice: !1,
+  transparency: 0,
+  visible: !0,
+  color,
+});
+
+// Anchored VWAP with its standard-deviation bands: the volume-weighted hlc3
+// since the day, week or month began (UTC). The lines restart at every
+// anchor; the bar a period starts on is left empty so the jump is not drawn
+// as a slope. The calculation is `VWAPState`, a copy of the one the bot runs.
+export const VWAP = (r) => ({
+  name: 'VWAP (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: { ...vwapLineStyle('#2962FF'), linewidth: 2 },
+        plot_1: vwapLineStyle('#089981'),
+        plot_2: vwapLineStyle('#089981'),
+      },
+      filledAreasStyle: {
+        fill_0: { color: '#089981', transparency: 92, visible: !0 },
+      },
+      inputs: { anchor: 'day', multiplier: 1 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'line' },
+      { id: 'plot_2', type: 'line' },
+    ],
+    styles: {
+      plot_0: { title: 'VWAP', histogramBase: 0, joinPoints: !1 },
+      plot_1: { title: 'Upper band', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'Lower band', histogramBase: 0, joinPoints: !1 },
+    },
+    filledAreas: [
+      {
+        id: 'fill_0',
+        objAId: 'plot_1',
+        objBId: 'plot_2',
+        type: 'plot_plot',
+        title: 'Bands Background',
+      },
+    ],
+    description: 'VWAP (Custom)',
+    shortDescription: 'VWAP',
+    is_price_study: !0,
+    linkedToSeries: true,
+    inputs: [
+      {
+        id: 'anchor',
+        name: 'Anchor',
+        defval: 'day',
+        type: 'text',
+        options: ['day', 'week', 'month'],
+      },
+      {
+        id: 'multiplier',
+        name: 'Bands multiplier',
+        defval: 1,
+        type: 'float',
+        min: 0.1,
+        max: 10,
+        step: 0.1,
+      },
+    ],
+    id: 'VWAP (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'VWAP (Custom)',
+    format: { type: 'inherit' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const anchor = this._input(0);
+      const multiplier = this._input(1);
+      const symbol = this._context.symbol;
+      this._context.setMinimumAdditionalDepth(1500);
+      const { value, prev } = closedCandleFeed(
+        this,
+        symbol,
+        {
+          index: symbol.index,
+          time: symbol.time,
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+          volume: r.Std.volume(this._context),
+        },
+        () => new VWAPState(anchor, multiplier),
+        (state, c) => state.next(c.time, c.high, c.low, c.close, c.volume)
+      );
+      if (!value || !prev || value.periodStart !== prev.periodStart) {
+        return [r.Std.na(), r.Std.na(), r.Std.na()];
+      }
+      return [value.vwap, value.upper, value.lower];
+    };
+  },
+});
+
+const kdjLineStyle = (color) => ({
+  linestyle: 0,
+  linewidth: 1,
+  plottype: 0,
+  trackPrice: !1,
+  transparency: 0,
+  visible: !0,
+  color,
+});
+
+// KDJ: K, D and J (= 3K − 2D) with Stochastic's 80 / 20 guide bands, which the
+// chart moves to the condition's zone. The calculation is `KDJState`, a copy
+// of the one the bot runs.
+export const KDJ = (r) => ({
+  name: 'KDJ (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: kdjLineStyle('#2196F3'),
+        plot_1: kdjLineStyle('#FF6D00'),
+        plot_2: kdjLineStyle('#AB47BC'),
+      },
+      bands: [
+        { color: '#787B86', linestyle: 2, linewidth: 1, visible: !0, value: 80 },
+        { color: '#787B86', linestyle: 2, linewidth: 1, visible: !0, value: 20 },
+        { color: '#787B86', linestyle: 2, linewidth: 1, visible: !1, value: 100 },
+        { color: '#787B86', linestyle: 2, linewidth: 1, visible: !1, value: 0 },
+      ],
+      filledAreasStyle: {
+        fill_0: { color: '#2196F3', transparency: 90, visible: !0 },
+        fill_1: { color: '#2196F3', transparency: 90, visible: !1 },
+        fill_2: { color: '#2196F3', transparency: 90, visible: !1 },
+      },
+      inputs: { in_0: 9, in_1: 3, in_2: 3 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'line' },
+      { id: 'plot_2', type: 'line' },
+    ],
+    styles: {
+      plot_0: { title: 'K', histogramBase: 0, joinPoints: !1 },
+      plot_1: { title: 'D', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'J', histogramBase: 0, joinPoints: !1 },
+    },
+    description: 'KDJ (Custom)',
+    shortDescription: 'KDJ',
+    is_price_study: !1,
+    bands: [
+      { id: 'hline_0', name: 'UpperLimit' },
+      { id: 'hline_1', name: 'LowerLimit' },
+      { id: 'hline_3', name: 'TopLimit' },
+      { id: 'hline_4', name: 'LowLimit' },
+    ],
+    filledAreas: [
+      {
+        id: 'fill_0',
+        objAId: 'hline_0',
+        objBId: 'hline_1',
+        type: 'hline_hline',
+        title: 'Hlines Background',
+      },
+      {
+        id: 'fill_1',
+        objAId: 'hline_3',
+        objBId: 'hline_0',
+        type: 'hline_hline',
+        title: 'Hlines top Background',
+      },
+      {
+        id: 'fill_2',
+        objAId: 'hline_4',
+        objBId: 'hline_1',
+        type: 'hline_hline',
+        title: 'Hlines bottom Background',
+      },
+    ],
+    inputs: [
+      { id: 'in_0', name: 'Length', defval: 9, type: 'integer', min: 1, max: 500 },
+      { id: 'in_1', name: 'K Smoothing', defval: 3, type: 'integer', min: 1, max: 100 },
+      { id: 'in_2', name: 'D Smoothing', defval: 3, type: 'integer', min: 1, max: 100 },
+    ],
+    id: 'KDJ (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'KDJ (Custom)',
+    format: { precision: 2, type: 'price' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const length = this._input(0);
+      const kSmooth = this._input(1);
+      const dSmooth = this._input(2);
+      const symbol = this._context.symbol;
+      const { value } = closedCandleFeed(
+        this,
+        symbol,
+        {
+          index: symbol.index,
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+        },
+        () => new KDJState(length, kSmooth, dSmooth),
+        (state, c) => state.next(c.high, c.low, c.close)
+      );
+      this._context.setMinimumAdditionalDepth(this.state.warmup + 50);
+      return value
+        ? [value.k, value.d, value.j]
+        : [r.Std.na(), r.Std.na(), r.Std.na()];
+    };
+  },
+});
+
+// ADX in DMI mode: +DI and −DI (the condition compares them) with the ADX,
+// one length for the DI and the ADX smoothing, as the bot uses.
+export const DMI = (r) => ({
+  name: 'Directional Movement Index (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: kdjLineStyle('#089981'),
+        plot_1: kdjLineStyle('#F23645'),
+        plot_2: { ...kdjLineStyle('#FF9800'), transparency: 40 },
+      },
+      inputs: { in_0: 14 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'line' },
+      { id: 'plot_2', type: 'line' },
+    ],
+    styles: {
+      plot_0: { title: '+DI', histogramBase: 0, joinPoints: !1 },
+      plot_1: { title: '−DI', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'ADX', histogramBase: 0, joinPoints: !1 },
+    },
+    description: 'Directional Movement Index (Custom)',
+    shortDescription: 'DMI',
+    is_price_study: !1,
+    inputs: [
+      { id: 'in_0', name: 'Length', defval: 14, type: 'integer', min: 1, max: 1e3 },
+    ],
+    id: 'Directional Movement Index (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'Directional Movement Index (Custom)',
+    format: { precision: 2, type: 'price' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const length = this._input(0);
+      this._context.setMinimumAdditionalDepth(3 * length);
+      const [adx, pdi, mdi] = adxCalc(r, this._context, length, length);
+      return [pdi, mdi, adx];
+    };
+  },
+});
+
+const CANDLE_GREEN = '#089981';
+const CANDLE_RED = '#F23645';
+
+// Candle colour: the signed run of green (up) or red (down) closed candles,
+// read from Heikin Ashi or regular candles, as columns — +3 is the third
+// green in a row, −2 the second red, nothing on a doji. The dashed line is
+// the run the condition needs (N in a row of its colour). The calculation is
+// `CandleColourState`, a copy of the one the bot runs.
+export const CandleColour = (r) => ({
+  name: 'Candle Colour (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: {
+          linestyle: 0,
+          linewidth: 1,
+          plottype: 5,
+          trackPrice: !1,
+          transparency: 20,
+          visible: !0,
+          color: CANDLE_GREEN,
+        },
+        plot_2: {
+          linestyle: 2,
+          linewidth: 1,
+          plottype: 7,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#787B86',
+        },
+      },
+      palettes: {
+        palette_0: {
+          colors: {
+            0: { color: CANDLE_GREEN, width: 1, style: 0 },
+            1: { color: CANDLE_RED, width: 1, style: 0 },
+          },
+        },
+      },
+      inputs: { source: 'heikinAshi', color: 'green', count: 1 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'colorer', target: 'plot_0', palette: 'palette_0' },
+      { id: 'plot_2', type: 'line' },
+    ],
+    palettes: {
+      palette_0: {
+        colors: { 0: { name: 'Green run' }, 1: { name: 'Red run' } },
+      },
+    },
+    styles: {
+      plot_0: { title: 'Run', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'Required run', histogramBase: 0, joinPoints: !1 },
+    },
+    description: 'Candle Colour (Custom)',
+    shortDescription: 'Candle Colour',
+    is_price_study: !1,
+    inputs: [
+      {
+        id: 'source',
+        name: 'Candles',
+        defval: 'heikinAshi',
+        type: 'text',
+        options: ['heikinAshi', 'regular'],
+      },
+      {
+        id: 'color',
+        name: 'Colour',
+        defval: 'green',
+        type: 'text',
+        options: ['green', 'red'],
+      },
+      { id: 'count', name: 'In a row', defval: 1, type: 'integer', min: 1, max: 50 },
+    ],
+    id: 'Candle Colour (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'Candle Colour (Custom)',
+    format: { precision: 0, type: 'price' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const source = this._input(0);
+      const color = this._input(1);
+      const count = this._input(2);
+      const symbol = this._context.symbol;
+      this._context.setMinimumAdditionalDepth(100);
+      const { value } = closedCandleFeed(
+        this,
+        symbol,
+        {
+          index: symbol.index,
+          open: r.Std.open(this._context),
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+        },
+        () => new CandleColourState(source),
+        (state, c) => state.next(c.open, c.high, c.low, c.close)
+      );
+      const required = (color === 'red' ? -1 : 1) * Math.max(1, +count || 1);
+      if (!value) {
+        return [r.Std.na(), 0, required];
+      }
+      return [
+        value.streak === 0 ? r.Std.na() : value.streak,
+        value.color < 0 ? 1 : 0,
+        required,
+      ];
+    };
+  },
+});
+
+const obLineStyle = (color) => ({
+  linestyle: 0,
+  linewidth: 1,
+  plottype: 7,
+  trackPrice: !1,
+  transparency: 0,
+  visible: !0,
+  color,
+});
+
+// Order Blocks: the latest active bullish block (green) and bearish block
+// (red) as their top and bottom, shaded between. Each block is drawn from the
+// candle that broke structure until a close goes through it; the bar a new
+// block replaces the previous one is left empty so the jump is not drawn as
+// a slope. The calculation is `OrderBlocksState`, a copy of the one the bot
+// runs. (Lines, not boxes: the zone starts where the block was confirmed,
+// not at the block candle itself.)
+export const OrderBlocks = (r) => ({
+  name: 'Order Blocks (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: obLineStyle(CANDLE_GREEN),
+        plot_1: obLineStyle(CANDLE_GREEN),
+        plot_2: obLineStyle(CANDLE_RED),
+        plot_3: obLineStyle(CANDLE_RED),
+      },
+      filledAreasStyle: {
+        fill_0: { color: CANDLE_GREEN, transparency: 85, visible: !0 },
+        fill_1: { color: CANDLE_RED, transparency: 85, visible: !0 },
+      },
+      inputs: { swingLength: 5 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'line' },
+      { id: 'plot_2', type: 'line' },
+      { id: 'plot_3', type: 'line' },
+    ],
+    styles: {
+      plot_0: { title: 'Bullish block top', histogramBase: 0, joinPoints: !1 },
+      plot_1: { title: 'Bullish block bottom', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'Bearish block top', histogramBase: 0, joinPoints: !1 },
+      plot_3: { title: 'Bearish block bottom', histogramBase: 0, joinPoints: !1 },
+    },
+    filledAreas: [
+      {
+        id: 'fill_0',
+        objAId: 'plot_0',
+        objBId: 'plot_1',
+        type: 'plot_plot',
+        title: 'Bullish block',
+      },
+      {
+        id: 'fill_1',
+        objAId: 'plot_2',
+        objBId: 'plot_3',
+        type: 'plot_plot',
+        title: 'Bearish block',
+      },
+    ],
+    description: 'Order Blocks (Custom)',
+    shortDescription: 'Order Blocks',
+    is_price_study: !0,
+    linkedToSeries: true,
+    inputs: [
+      {
+        id: 'swingLength',
+        name: 'Swing length',
+        defval: 5,
+        type: 'integer',
+        min: 1,
+        max: 249,
+      },
+    ],
+    id: 'Order Blocks (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'Order Blocks (Custom)',
+    format: { type: 'inherit' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const swingLength = this._input(0);
+      const symbol = this._context.symbol;
+      this._context.setMinimumAdditionalDepth(1000);
+      const { value, prev } = closedCandleFeed(
+        this,
+        symbol,
+        {
+          index: symbol.index,
+          time: symbol.time,
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+        },
+        () => new OrderBlocksState(swingLength),
+        (state, c) => state.next(c.high, c.low, c.close, c.time)
+      );
+      const side = (top, bottom, id) =>
+        value && prev && prev[id] === value[id] && isFinite(value[top])
+          ? [value[top], value[bottom]]
+          : [r.Std.na(), r.Std.na()];
+      return [
+        ...side('bullishTop', 'bullishBottom', 'bullishId'),
+        ...side('bearishTop', 'bearishBottom', 'bearishId'),
+      ];
+    };
+  },
+});
+
+const SQZ_DOT_STYLE = {
+  linestyle: 0,
+  linewidth: 2,
+  plottype: 3,
+  trackPrice: !1,
+  transparency: 0,
+  visible: !0,
+  color: '#787B86',
+};
+
+// Squeeze Momentum (LazyBear): the momentum as columns — bright green rising
+// above zero, dark green falling above zero, bright red falling below zero,
+// dark red rising below zero — and the squeeze as marks on the zero line:
+// orange in a squeeze (Bollinger Bands inside the Keltner Channels), grey out
+// of one, blue neither. LazyBear marks the squeeze black, which a dark chart
+// cannot show. The calculation is `SqueezeState`, a copy of the one the bot
+// runs.
+export const SqueezeMomentum = (r) => ({
+  name: 'Squeeze Momentum (Custom)',
+  metainfo: {
+    _metainfoVersion: 53,
+    isTVScript: !1,
+    isTVScriptStub: !1,
+    is_hidden_study: !1,
+    defaults: {
+      styles: {
+        plot_0: {
+          linestyle: 0,
+          linewidth: 1,
+          plottype: 5,
+          trackPrice: !1,
+          transparency: 0,
+          visible: !0,
+          color: '#00E676',
+        },
+        plot_2: SQZ_DOT_STYLE,
+      },
+      palettes: {
+        palette_0: {
+          colors: {
+            0: { color: '#00E676', width: 1, style: 0 },
+            1: { color: '#1B8A3A', width: 1, style: 0 },
+            2: { color: '#FF1744', width: 1, style: 0 },
+            3: { color: '#8E1B2B', width: 1, style: 0 },
+          },
+        },
+        palette_1: {
+          colors: {
+            0: { color: '#FF9800', width: 1, style: 0 },
+            1: { color: '#787B86', width: 1, style: 0 },
+            2: { color: '#2962FF', width: 1, style: 0 },
+          },
+        },
+      },
+      inputs: { length: 20, bbMult: 1.5, kcLength: 20, kcMult: 1.5 },
+    },
+    plots: [
+      { id: 'plot_0', type: 'line' },
+      { id: 'plot_1', type: 'colorer', target: 'plot_0', palette: 'palette_0' },
+      { id: 'plot_2', type: 'line' },
+      { id: 'plot_3', type: 'colorer', target: 'plot_2', palette: 'palette_1' },
+    ],
+    palettes: {
+      palette_0: {
+        colors: {
+          0: { name: 'Above zero, rising' },
+          1: { name: 'Above zero, falling' },
+          2: { name: 'Below zero, falling' },
+          3: { name: 'Below zero, rising' },
+        },
+      },
+      palette_1: {
+        colors: {
+          0: { name: 'In a squeeze' },
+          1: { name: 'Out of a squeeze' },
+          2: { name: 'Neither' },
+        },
+      },
+    },
+    styles: {
+      plot_0: { title: 'Momentum', histogramBase: 0, joinPoints: !1 },
+      plot_2: { title: 'Squeeze', histogramBase: 0, joinPoints: !1 },
+    },
+    description: 'Squeeze Momentum (Custom)',
+    shortDescription: 'Squeeze',
+    is_price_study: !1,
+    inputs: [
+      { id: 'length', name: 'BB length', defval: 20, type: 'integer', min: 1, max: 500 },
+      { id: 'bbMult', name: 'BB multiplier', defval: 1.5, type: 'float', min: 0.1, max: 10, step: 0.1 },
+      { id: 'kcLength', name: 'KC length', defval: 20, type: 'integer', min: 1, max: 500 },
+      { id: 'kcMult', name: 'KC multiplier', defval: 1.5, type: 'float', min: 0.1, max: 10, step: 0.1 },
+    ],
+    id: 'Squeeze Momentum (Custom)@tv-basicstudies-1',
+    scriptIdPart: '',
+    name: 'Squeeze Momentum (Custom)',
+    format: { type: 'inherit' },
+  },
+  constructor: function () {
+    this.main = function (e, t) {
+      this._context = e;
+      this._input = t;
+      const length = this._input(0);
+      const bbMult = this._input(1);
+      const kcLength = this._input(2);
+      const kcMult = this._input(3);
+      const symbol = this._context.symbol;
+      const { value, prev } = closedCandleFeed(
+        this,
+        symbol,
+        {
+          index: symbol.index,
+          high: r.Std.high(this._context),
+          low: r.Std.low(this._context),
+          close: r.Std.close(this._context),
+        },
+        () => new SqueezeState(length, bbMult, kcLength, kcMult),
+        (state, c) => state.next(c.high, c.low, c.close)
+      );
+      this._context.setMinimumAdditionalDepth(this.state.warmup + 50);
+      if (!value) {
+        return [r.Std.na(), 0, r.Std.na(), 2];
+      }
+      const m = value.momentum;
+      const before = prev ? prev.momentum : 0;
+      const momentumColor = m > 0 ? (m > before ? 0 : 1) : m < before ? 2 : 3;
+      const squeezeColor =
+        value.squeeze === 1 ? 0 : value.squeeze === -1 ? 1 : 2;
+      return [m, momentumColor, 0, squeezeColor];
     };
   },
 });

@@ -1,5 +1,179 @@
 # Changelog
 
+## [2.126.4] - 2026-10-30
+
+### Fixed
+
+- Grid bot form: the order preview for a grid that takes profit in the quote currency with order size fixed in quote now fits the budget. Each sell level holds the coin bought one level below it but was reserved at its own sell price, so the preview, like the bot, committed about one grid step too much on every sell level.
+
+## [2.126.3] - 2026-10-30
+
+### Changed
+
+- Portfolio Balances: the out-of-date balance clock says when the balance was last confirmed and no longer says live updates have stopped, since a holding whose amount has not changed receives no live update even while the connection is working.
+
+## [2.126.2] - 2026-10-30
+
+### Fixed
+
+- Bot deals table: the Take Profit column shows the target percentage for deals saved without an explicit close condition (it showed only the type), plus the price of the resting take-profit order, or "No TP order on exchange" when take profit is on but no TP order is resting.
+
+## [2.126.1] - 2026-10-30
+
+### Fixed
+
+- Portfolio Balances: "Refresh balance" now reloads the balances shown, so the out-of-date clock clears without reloading the page.
+
+## [2.126.0] - 2026-10-29
+
+### Changed
+
+- Squeeze Momentum: the BB multiplier defaults to 1.5 (was 2), so a new Squeeze Momentum condition and its chart match the Squeeze Momentum chart TradingView shows. Saved conditions keep their value.
+
+## [2.125.1] - 2026-10-29
+
+### Fixed
+
+- Security hardening across several areas of the dashboard
+
+## [2.125.0] - 2026-10-29
+### Added
+- Price Change indicator: a Condition setting — Greater than (as before), Lower than, or Between with a second % value of the same sign (2 and 5 = the candle rose 2–5 % from its open; −2 and −5 = it fell 2–5 %). A Price Change left on Greater than saves exactly the settings it saved before.
+- Price Change chart study: each trigger is marked on the next candle with a short line at the bound (the triggering candle's open ± the %) and a triangle on it pointing the move's way; Lower than points the other way, and Between marks both bounds so the pair brackets the range.
+
+### Fixed
+- Price Change chart study: the triggering candles were never marked on the bot chart.
+
+## [2.124.4] - 2026-10-29
+### Fixed
+- Bot settings import: a bot identifier carried in the imported settings is no longer sent when the bot is created or saved; the server assigns it.
+
+## [2.124.3] - 2026-10-29
+### Added
+- Backtests table (DCA, Combo, Grid and Hedge bots): a rename icon next to each backtest's name renames it in place, without opening it.
+
+## [2.124.2] - 2026-10-29
+### Fixed
+- Backtests: a candle request that fails while the data loads is retried instead of ending the load early, which made the backtest run on a shorter period than the one picked. If it keeps failing, DCA, Combo and Grid backtests (and the Analysis random-entry comparison) stop and show the error instead of finishing on part of the period.
+- Backtests: a stopped or cancelled backtest no longer shows "finished successfully".
+
+## [2.124.1] - 2026-10-29
+### Fixed
+- Backtests: a period that starts before a pair was listed no longer downloads the empty stretch before the listing again on every run. The first run records where the pair's history begins, and later runs start there.
+
+## [2.124.0] - 2026-10-29
+### Added
+- Backtest results, Overview: a per-pair table for multi-pair backtests, the same one multi-pair bots show — deals, win rate, realized P&L, return on capital, profit factor, durations and open deals for each pair, sortable, searchable and exportable to CSV.
+
+## [2.123.0] - 2026-10-29
+### Added
+- Candle Colour indicator: green or red closed candles in a row, read from Heikin Ashi or regular candles, either while the run lasts or once on its N-th candle. The chart draws the run as columns with the run the condition needs, with the same calculation the bot and the backtest use.
+- Order Blocks indicator: the latest bullish and bearish smart-money order block, kept until a close goes through it, with the close compared with its top, middle or bottom. The chart draws each active block as its top and bottom lines, shaded between, with the same calculation the bot and the backtest use.
+- Squeeze Momentum indicator (LazyBear): Bollinger Bands inside the Keltner Channels mark a squeeze; the condition combines the squeeze (fired, on, off) with the momentum (positive, negative, rising, falling, crossing zero). The chart draws the momentum histogram and the squeeze marks on the zero line, with the same calculation the bot and the backtest use.
+- Divergences: pivot lookback left / right and the min / max of the lookback range, also passed to the chart study. Left at the defaults, nothing new is saved.
+- Session Selector, Price levels: Active — during the session (as before), outside the session or any time, e.g. for a Monday range breakout. Outside the session the chart shades where the condition is read.
+
+### Changed
+- Bollinger Bands, BB Width and BB %B: Standard Deviations accept decimals (step 0.1). SuperTrend's Multiplier too.
+
+## [2.122.0] - 2026-10-29
+### Added
+- VWAP indicator: anchored to the day, week or month (UTC), with the close compared with the VWAP or one of its standard-deviation bands. The chart draws the VWAP and both bands, restarting at each anchor, with the same calculation the bot and the backtest use.
+- KDJ indicator: K, D or J against another line or a custom value, with Stochastic's zone filter. The chart draws K, D and J with the same calculation the bot and the backtest use.
+- ADX: DMI mode, where the condition compares +DI with −DI; the chart draws +DI, −DI and the ADX.
+- Moving Averages: the trend filter MA Ratio has (the average's own move over a lookback), shown when it is switched on.
+
+### Fixed
+- Bot form: a condition whose type was changed from one with the trend filter on (MA Ratio, Moving Averages) to another type no longer saves the filter, which would have kept that condition from ever firing.
+- Indicator cards: the summary names a setting by the option the form shows for the current settings (e.g. ADX's DMI conditions).
+
+## [2.121.1] - 2026-10-29
+### Fixed
+- Backtest results, Deals tab: the chart draws the indicators the bot's conditions use, picked the same way as on the bot chart. When the backtest ran on a different candle timeframe than its indicators, the chart opens on the indicators' timeframe.
+
+## [2.121.0] - 2026-10-29
+### Added
+- Moving Averages and MA Ratio: McGinley Dynamic as a moving average type, in the bot form and on the chart. The chart line follows the same calculation the bot and the backtest use.
+
+## [2.120.3] - 2026-10-28
+### Fixed
+- Grid bot form: pairs whose concatenated symbol reads two ways (BATUSD, QNTUSD) name their assets from the pair itself, so the investment field asks for USD instead of TUSD.
+
+## [2.120.2] - 2026-10-28
+### Fixed
+- Hedge backtest results: the Stats tab of the Combined, Long and Short views shows when the backtest ran instead of 1 Jan 1970.
+
+## [2.120.1] - 2026-10-28
+### Fixed
+- Pair picker: pairs the bot can't trade with its current settings (order below the exchange minimum, leverage above the pair's maximum, not enough free balance) are always listed, greyed out, with the reason written on the row. The "Fits this bot" switch, which hid them and could leave the list empty, is removed.
+
+## [2.120.0] - 2026-10-26
+### Added
+- Combo bots: Close by timer in the take profit section's More Settings, as on DCA bots.
+
+## [2.119.5] - 2026-10-26
+### Changed
+- Backtest results: open deals in the deals list show their unrealized P&L at the last price instead of 0.00%, also when several deals are open.
+- Backtest results: the Net Result tile shows the unrealized P&L of open deals beneath the realized result.
+
+## [2.119.4] - 2026-10-26
+### Fixed
+- Bitget tokenized ETFs keep live chart updates when the pair is classified as an ETF rather than a stock.
+
+## [2.119.3] - 2026-10-26
+### Security
+- Update the HTML sanitizer used for rich notification messages and the markdown library to their patched releases. Nothing changes in what you see.
+
+## [2.119.2] - 2026-10-26
+### Changed
+- Price behaviour verdicts say what happened against random entries: "Beat random", "Beat random, fragile", "Same as random", "Worse than random", "Worse, fragile". This applies to the bot form, the indicator help panel and the backtest Analysis tab.
+- The indicator editor's button that lists tested settings is now "Price behaviour", and the chip under the fields shows the verdict on its own.
+
+## [2.119.1] - 2026-10-26
+### Fixed
+- Bot form tested settings: the verdict chip and the Tested list now read each result from the side the condition trades in your bot (your side for start conditions, the opposite for close and stop-loss conditions). A setting tested on the other side is shown mirrored, and its tooltip says so.
+
+## [2.119.0] - 2026-10-26
+### Added
+- Bot form indicator settings: when the settings match a tested setting, a "Tested" verdict chip with its uptrend/downtrend results appears under the fields and follows each edit; its tooltip has the numbers and a link to the full analysis.
+- Bot form indicator settings: a "Tested" button opens the indicator's tested settings, and Apply fills one into that indicator, including the candle interval when the bot's exchange offers it.
+### Changed
+- Indicator help articles keep the price behaviour panel but no longer apply settings; applying happens from the bot form.
+
+## [2.118.0] - 2026-10-26
+### Added
+- Indicator help articles: a "Price behaviour vs random entries" panel shows how price moved after each tested setting on 1h, 4h and 1d candles, with its verdict and uptrend/downtrend results. Opened from an indicator's settings in the bot form, each tested setting has an Apply button that fills it into that indicator, including the candle interval when the bot's exchange offers it.
+
+## [2.117.4] - 2026-10-26
+### Added
+- Overview: an Equity line under Total Balance while futures positions are open, adding their unrealized P&L to the balance. Futures boxes in Portfolio → My Accounts show the same Equity line.
+
+## [2.117.3] - 2026-10-26
+### Changed
+- Trades page: closed trades have their own Closed trades tab next to Trades, replacing the Closed button in the table toolbar. Links to the old closed view open the tab.
+
+## [2.117.2] - 2026-10-26
+### Fixed
+- Trades page: DCA deals showed a Realized P&L of $0.00 (open and closed lists); they now show the deal's realized profit and funding.
+
+## [2.117.1] - 2026-10-26
+### Added
+- Alert template editor: a Table button inserts a markdown table; the preview shows it aligned as Telegram will, and warns when a table may wrap on a phone or a message is over Telegram's length limit.
+
+## [2.117.0] - 2026-10-26
+### Added
+- Trades page: a Closed button in the trades toolbar shows closed trades of every kind (DCA, terminal, combo deals and stopped grid bots) in one list, paged, sorted and searched on the server.
+- Sidebar: All Trades now has All bots and Closed trades submenus.
+### Changed
+- Trades page opens on the Trades tab instead of Bots.
+- Sidebar: a submenu link to one view of a page highlights only while that view is open.
+
+## [2.116.3] - 2026-10-26
+### Changed
+- Indicator settings: Smoothing and Percentile now sit together under a Modifiers heading, each as a switch that reveals its own settings (Average and Length; Lookback and Threshold). Both can be on at once; the percentile then ranks the smoothed line, as the bot does.
+- Indicator cards: Percentile and Keep true appear in the summary only while they are in use.
+- Indicator cards in the bot form use the inner-fill surface instead of the lighter overlay surface; grouped indicators sit on the card surface inside their group.
+
 ## [2.116.2] - 2026-10-25
 ### Fixed
 - Backtest Analysis, Price behaviour: the random-entry average is now taken from every bar of the window (a large random sample only on very long windows). The 5,000-bar sample it used before could be off by as much as the effects the chart measures, a few bars after entry.

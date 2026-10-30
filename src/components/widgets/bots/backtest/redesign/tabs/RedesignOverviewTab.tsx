@@ -17,8 +17,9 @@
  * separation; the only hairline is the metrics-list divider.
  */
 
-import type React from 'react';
+import React, { useMemo } from 'react';
 import { formatUsdAsReporting } from '@/utils/reportingCurrency';
+import { Tooltip } from '@/components/ui/tooltip';
 
 import {
   Donut,
@@ -26,6 +27,8 @@ import {
   MetricRow,
   Panel,
 } from '@/components/widgets/bots/statsPrimitives';
+import { BotPairStatsTable } from '@/components/widgets/bots/stats/BotPairStatsTable';
+import { buildPairStatsRowsFromBacktest } from '@/components/widgets/bots/stats/pairStatsViewModel';
 
 import { EquityChart } from '../charts';
 import type { BacktestViewModel, DealVM } from '../viewModel';
@@ -125,6 +128,12 @@ export interface RedesignOverviewTabProps {
 export const RedesignOverviewTab: React.FC<RedesignOverviewTabProps> = ({
   vm,
 }) => {
+  const pairRows = useMemo(
+    () => buildPairStatsRowsFromBacktest(vm.raw.symbolStats, vm.raw.deals),
+    [vm.raw.symbolStats, vm.raw.deals]
+  );
+  const multiPair = pairRows.length > 1;
+
   const profitFactorLabel =
     vm.profitFactor != null ? vm.profitFactor.toFixed(2) : '∞';
 
@@ -143,7 +152,9 @@ export const RedesignOverviewTab: React.FC<RedesignOverviewTabProps> = ({
       : null;
 
   return (
-    <div className="flex h-full flex-col gap-md">
+    <div
+      className={`flex flex-col gap-md ${multiPair ? 'min-h-full' : 'h-full'}`}
+    >
       {/* KPI row */}
       <div className="flex flex-wrap gap-sm">
         <Kpi
@@ -152,6 +163,26 @@ export const RedesignOverviewTab: React.FC<RedesignOverviewTabProps> = ({
           sub={fmtUsd(vm.netUsd)}
           tone={vm.netPerc >= 0 ? 'up' : 'down'}
           big
+          extra={
+            vm.open > 0 ? (
+              <Tooltip tooltip="Open deals valued at the last price. The % is of the funds those deals use.">
+                <div className="mt-1 flex items-baseline gap-1.5 text-xs tabular-nums">
+                  <span className="text-muted-foreground">Unrealized</span>
+                  <span
+                    className={
+                      vm.unrealizedUsd > 0
+                        ? 'text-profit'
+                        : vm.unrealizedUsd < 0
+                          ? 'text-loss'
+                          : 'text-muted-foreground'
+                    }
+                  >
+                    {fmtPct(vm.unrealizedPerc)} · {fmtUsd(vm.unrealizedUsd)}
+                  </span>
+                </div>
+              </Tooltip>
+            ) : undefined
+          }
         />
         <Kpi
           label="Avg Daily Return"
@@ -265,6 +296,8 @@ export const RedesignOverviewTab: React.FC<RedesignOverviewTabProps> = ({
           </div>
         )}
       </div>
+
+      {multiPair && <BotPairStatsTable rows={pairRows} range={null} />}
     </div>
   );
 };

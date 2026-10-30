@@ -46,8 +46,10 @@ import {
   hedgeDealBadge,
   type HedgeCloseIndex,
 } from '@/components/widgets/bots/backtest/HedgeClosesTab';
+import { useRenameBacktest } from '@/hooks/useRenameBacktest';
 import { useSetBacktestNote } from '@/hooks/useSetBacktestNote';
 import type { BacktestDealsExtension } from '@/lib/extensions/backtestSources';
+import { isStoredBacktest } from '@/lib/shareLinks';
 import type {
   DCABacktestingResultHistory,
   DCABotSettings,
@@ -77,6 +79,7 @@ const buildLegHistory = (
     exchange: string;
     exchangeUUID?: string;
     settings?: unknown;
+    time?: number;
   }
 ): DCABacktestingResultHistory =>
   ({
@@ -87,7 +90,7 @@ const buildLegHistory = (
     quoteAsset: meta.quoteAsset,
     exchange: meta.exchange,
     exchangeUUID: meta.exchangeUUID ?? '',
-    time: 0,
+    time: meta.time ?? 0,
     userId: 'local',
     savePermanent: false,
     serverSide: false,
@@ -201,10 +204,11 @@ export const HedgeBacktestActiveView: React.FC<
               exchange: meta?.long.exchange ?? '',
               exchangeUUID: meta?.long.exchangeUUID,
               settings: (meta?.long as { settings?: unknown })?.settings,
+              time: meta?.time,
             }
           )
         : null,
-    [longSource, meta?.long]
+    [longSource, meta?.long, meta?.time]
   );
   const shortHistory = useMemo(
     () =>
@@ -218,10 +222,11 @@ export const HedgeBacktestActiveView: React.FC<
               exchange: meta?.short.exchange ?? '',
               exchangeUUID: meta?.short.exchangeUUID,
               settings: (meta?.short as { settings?: unknown })?.settings,
+              time: meta?.time,
             }
           )
         : null,
-    [shortSource, meta?.short]
+    [shortSource, meta?.short, meta?.time]
   );
   const combinedHistory = useMemo(
     () =>
@@ -240,10 +245,11 @@ export const HedgeBacktestActiveView: React.FC<
               exchange: meta?.long.exchange ?? '',
               exchangeUUID: meta?.long.exchangeUUID,
               settings: (meta?.long as { settings?: unknown })?.settings,
+              time: meta?.time,
             }
           )
         : null,
-    [hedgeSource, meta?.long, meta?.short]
+    [hedgeSource, meta?.long, meta?.short, meta?.time]
   );
 
   // Per-leg Deals only available locally.
@@ -368,12 +374,39 @@ export const HedgeBacktestListView: React.FC<HedgeBacktestListViewProps> = ({
     [setBacktestNoteMutation, hedgeBotType]
   );
 
+  const renameBacktestMutation = useRenameBacktest();
+  const [backtestNameOverrides, setBacktestNameOverrides] = useState<
+    Record<string, string>
+  >({});
+
+  const handleRename = useCallback(
+    (id: string, next: string, prev: string) => {
+      setBacktestNameOverrides((o) => ({ ...o, [id]: next }));
+      renameBacktestMutation.mutate(
+        {
+          id,
+          name: next,
+          type: hedgeBotType,
+          stored: isStoredBacktest({ _id: id }),
+        },
+        {
+          onError: () => {
+            setBacktestNameOverrides((o) => ({ ...o, [id]: prev }));
+          },
+        }
+      );
+    },
+    [renameBacktestMutation, hedgeBotType]
+  );
+
   const columns = useMemo(
     () =>
       buildHedgeBacktestColumns({
         hedgeBotType,
         backtestNoteOverrides,
         onSaveNote: handleSaveNote,
+        backtestNameOverrides,
+        onRename: handleRename,
         onToggleSavePermanent: patchHistorySavePermanent,
         // No-op-safe fallback when the host doesn't provide a reseed handler.
         onLoadIntoForm: onLoadIntoForm ?? (() => {}),
@@ -390,6 +423,8 @@ export const HedgeBacktestListView: React.FC<HedgeBacktestListViewProps> = ({
       hedgeBotType,
       backtestNoteOverrides,
       handleSaveNote,
+      backtestNameOverrides,
+      handleRename,
       patchHistorySavePermanent,
       onLoadIntoForm,
       onSelect,

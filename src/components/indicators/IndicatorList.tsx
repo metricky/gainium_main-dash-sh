@@ -1,5 +1,6 @@
 import { Button } from '@/components/ui/button';
 import { HelpArticlePill } from '@/components/ui/HelpArticlePill';
+import { TestedSettingsButton } from '@/components/indicators/IndicatorEdgeControls';
 import { parseHelpUrl, Tooltip } from '@/components/ui/tooltip';
 import { HelpArticleModal } from '@/components/modals/HelpArticleModal';
 import { LogicPill } from '@/components/indicators/LogicPill';
@@ -7,6 +8,8 @@ import { cn } from '@/lib/utils';
 import { getIndicatorDefinition } from '@/types/indicators/indicatorLogic';
 import type { IndicatorEnum } from '@/types';
 import type { IndicatorConfig } from '@/types/indicators/indicators';
+import type { EdgeApplyRequest } from '@/utils/indicators/edgeApply';
+import type { EdgeSide } from '@/utils/indicatorEdge';
 import { buildIndicatorSummary } from '@/utils/indicators/indicatorFormatting';
 import { Pencil, Star, Trash2 } from 'lucide-react';
 import React from 'react';
@@ -24,10 +27,21 @@ interface IndicatorListProps {
   /** The AND/OR drawn between consecutive indicators. */
   connector?: { logic: string | undefined; onToggle?: () => void };
   /**
-   * Row surface. 'raised' lifts rows one step above their container;
-   * 'inset' sinks them below it, for rows inside an already-raised group.
+   * Row surface. 'raised' fills rows one step above their card;
+   * 'inset' puts them back on the card surface, for rows inside a group
+   * that is itself the fill.
    */
   surface?: 'raised' | 'inset';
+  /**
+   * Apply a tested setting (the open editor's "Tested" picker) to that
+   * indicator. Without it the picker is not offered.
+   */
+  onApplyEdgeSetting?: (
+    indicator: IndicatorConfig,
+    request: EdgeApplyRequest
+  ) => void;
+  /** The side these conditions trade in the bot, for the tested settings. */
+  edgeSide?: EdgeSide | null;
 }
 
 /**
@@ -46,6 +60,8 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
   isFavorite,
   connector,
   surface = 'raised',
+  onApplyEdgeSetting,
+  edgeSide = null,
 }) => {
   const [helpSlug, setHelpSlug] = React.useState<string | null>(null);
   const [openId, setOpenId] = React.useState<string | null>(null);
@@ -86,12 +102,12 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
               ) : null}
               <div
                 // No border: the surface step separates the row from its
-                // container (DESIGN_SYSTEM §2-3).
+                // container (DESIGN_SYSTEM §2-3). The inner fill, like a
+                // toggle group's track; inside a group (itself the fill) the
+                // rows take the card surface, like a toggle's selected item.
                 className={cn(
                   'min-w-0 rounded-lg transition-colors',
-                  surface === 'raised'
-                    ? 'bg-popover shadow-sm dark:shadow-none'
-                    : 'bg-muted'
+                  surface === 'raised' ? 'bg-muted' : 'bg-card'
                 )}
               >
                 {/* Mouse: anywhere on the row opens it. Keyboard and screen
@@ -131,6 +147,16 @@ export const IndicatorList: React.FC<IndicatorListProps> = ({
                       >
                         Change indicator
                       </Button>
+                    ) : null}
+                    {isOpen && onApplyEdgeSetting ? (
+                      <TestedSettingsButton
+                        definition={definition}
+                        interval={indicator.indicatorInterval}
+                        side={edgeSide}
+                        onApply={(request) =>
+                          onApplyEdgeSetting(indicator, request)
+                        }
+                      />
                     ) : null}
                     {open ? (
                       <Button

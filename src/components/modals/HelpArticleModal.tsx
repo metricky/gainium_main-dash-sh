@@ -5,6 +5,7 @@
  * without navigating away from the current page.
  */
 
+import { IndicatorEdgePanel } from '@/components/indicators/IndicatorEdgePanel';
 import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
@@ -392,6 +393,15 @@ export const HelpArticleModal: React.FC<HelpArticleModalProps> = ({
 
           {!loading && article && metadata && (
             <div className="p-md space-y-md">
+              {/* Read-only here: the bot form's indicator editors apply. */}
+              {article.edge ? (
+                <IndicatorEdgePanel
+                  key={metadata.slug}
+                  edge={article.edge}
+                  slug={metadata.slug}
+                />
+              ) : null}
+
               {/* TL;DR */}
               {metadata.tldr && (
                 <div className="flex items-start gap-sm p-sm bg-muted/30 border border-primary/20 rounded-lg">
