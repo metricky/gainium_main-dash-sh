@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.126.7] - 2026-10-31
+
+### Fixed
+
+- Bot forms: the base and quote assets of a pair now always come from the exchange's own pair list. A concatenated symbol that reads two ways (`NIGHTUSD` as NIGHT/USD or NIGH/TUSD) is no longer guessed, so the grid and DCA forms can no longer show the investment, balance or profit currency in the wrong asset. Every bot-form copy of the old quote-suffix guessing was replaced by one resolver, and a test now fails if a new copy is added.
+
+## [2.126.6] - 2026-10-31
+
+### Fixed
+
+- DCA bot form: with order size set in USD, the DCA order amount field now labels its unit USD, the same as the Base Order Size field, instead of USDT.
+
+## [2.126.5] - 2026-10-31
+
+### Fixed
+
+- Tables: hovering a clickable row no longer makes the table shake sideways. The hover zoom made the row a little wider than a table that fits, the table then reserved a scroll-indicator gutter and shrank, the overflow went away, the gutter was dropped and the cycle repeated on every frame. Rows no longer zoom on hover, and the scroll indicators now overlay the table instead of reserving space beside it.
+
 ## [2.126.4] - 2026-10-30
 
 ### Fixed
