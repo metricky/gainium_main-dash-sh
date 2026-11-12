@@ -715,6 +715,15 @@ export function transformDcaBotToBot(
 
   const ex = userExchanges?.find((e) => e.uuid === res.exchangeUUID);
 
+  // Combo `unPnl` is the open deals' DEAL-WIDE P&L, so the grid profit those
+  // deals already banked is inside it. Deal cards report that part as
+  // Realized (`calculateDealOpenPnl`); expose it so the bot Overview can make
+  // the same split. The percent is on unPnlPerc's own basis.
+  const openDealsRealizedUsd = combo ? comboOpenDealsRealizedUsd(res) : 0;
+  const openDealsRealizedPerc =
+    openDealsRealizedUsd && unPnl
+      ? (unPnlPerc * openDealsRealizedUsd) / unPnl
+      : 0;
   unPnl = active ? math.round(unPnl, 2, unPnl < 0, unPnl > 0) : 0;
   res.usage = {
     current: {
@@ -805,6 +814,8 @@ export function transformDcaBotToBot(
     workingTimeNumber: workingTime,
     workingTime: resWork,
     unPnl,
+    openDealsRealizedUsd,
+    openDealsRealizedPerc,
     unPnlPending:
       active &&
       (useLiveStats || !botHasUsablePrices || getPricesFetchedAt() === 0),
@@ -886,4 +897,61 @@ export function transformDcaBotToBot(
   };
 
   return res;
+}
+
+/**
+ * Grid profit a combo bot's open deals have already banked (the sum of
+ * `dealsStatsForBot[].profit.totalUsd`), 0 when the bot holds nothing.
+ * Single source for every surface that counts it as Realized: the list
+ * rows/cards (via `transformDcaBotToBot`) and the list header totals.
+ */
+export function comboOpenDealsRealizedUsd(bot: {
+  usage?: { current?: { base?: number; quote?: number } };
+  dealsStatsForBot?: ReadonlyArray<{ profit?: { totalUsd?: number } }>;
+}): number {
+  const active =
+    (bot.usage?.current?.quote ?? 0) !== 0 ||
+    (bot.usage?.current?.base ?? 0) !== 0;
+  if (!active || !bot.dealsStatsForBot) return 0;
+  return math.round(
+    bot.dealsStatsForBot.reduce(
+      (sum, d) => sum + (Number(d.profit?.totalUsd) || 0),
+      0
+    ),
+    2
+  );
+}
+
+/**
+ * Realized / Unrealized as the bot lists show them. A combo bot's `unPnl` is
+ * its open deals' deal-wide P&L, so the grid profit those deals already
+ * banked (`openDealsRealizedUsd`) is inside it; the deal cards and the bot
+ * Overview count that part as Realized. Move it the same way here: Realized
+ * gains it, Unrealized loses it, Net (their sum) is unchanged. Bots with
+ * nothing banked in open deals (DCA) come back unchanged.
+ */
+export function splitBankedOpenDealProfit(bot: {
+  totalProfitUsd?: number;
+  profitPerc?: number;
+  unPnl?: number;
+  unPnlPerc?: number;
+  maxValue?: number;
+  openDealsRealizedUsd?: number;
+  openDealsRealizedPerc?: number;
+}): {
+  realizedUsd: number;
+  realizedPerc: number;
+  unrealizedUsd: number;
+  unrealizedPerc: number;
+} {
+  const banked = bot.openDealsRealizedUsd || 0;
+  const maxValue = bot.maxValue || 0;
+  return {
+    realizedUsd: (bot.totalProfitUsd || 0) + banked,
+    // Same basis as the Overview: `profitPerc` is realized ÷ max cost.
+    realizedPerc:
+      (bot.profitPerc || 0) + (maxValue > 0 ? (banked / maxValue) * 100 : 0),
+    unrealizedUsd: (bot.unPnl || 0) - banked,
+    unrealizedPerc: (bot.unPnlPerc || 0) - (bot.openDealsRealizedPerc || 0),
+  };
 }

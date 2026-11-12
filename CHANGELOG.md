@@ -1,5 +1,123 @@
 # Changelog
 
+## [2.132.1] - 2026-11-12
+
+### Fixed
+
+- Trading page: a Trading Terminal deal's trade drawer chart now draws its stop-loss line, like bot deals do.
+
+## [2.132.0] - 2026-11-12
+
+### Added
+
+- Deal details: a Skipped DCA levels card lists ladder levels the price moved past before they could be placed, each with an Execute button to fill it at the current market price.
+
+## [2.131.3] - 2026-11-12
+
+### Fixed
+
+- Charts on the same page no longer borrow each other's slice colors
+
+## [2.131.2] - 2026-11-12
+
+### Added
+
+- Unlimited badge for free users: in the Add Exchange picker for exchanges that offer unlimited trading, and on connected accounts verified for it
+
+## [2.131.1] - 2026-11-12
+
+### Added
+
+- Add Exchange: a 'Create one' link for users without an account on the selected exchange
+
+## [2.131.0] - 2026-11-11
+
+### Added
+
+- Backtest equity curve: a band of the same bot rerun 100 times in your browser with its entries moved to random times, with the median run, so you can see whether the strategy's entries beat random timing
+
+### Removed
+
+- Backtest Analysis: the Strategy vs Random card, replaced by the random-entry band on the equity curve
+
+## [2.130.7] - 2026-11-11
+
+### Changed
+
+- Backtesting an existing DCA, Combo, Grid or Hedge bot now opens on the period from the bot's start date to now, instead of the last 30 days.
+
+## [2.130.6] - 2026-11-09
+
+### Fixed
+
+- DCA bot form: on futures, the "% Free / % Total" order-size options now name the margin coin the bot sizes from (the quote on USD-margined, the base on COIN-M) in both directions
+
+## [2.130.5] - 2026-11-09
+
+### Fixed
+
+- Exchange cards: the fullscreen button no longer sits on top of the card's menu on hover
+
+## [2.130.4] - 2026-11-08
+
+### Fixed
+
+- Combo bots and Hedge Combo bots lists: grid profit already taken by running deals now counts under Realized PnL instead of Unrealized PnL on the cards and in the table (values, sorting, totals and the profitability filter), matching the bot Overview and the deal cards (Net PnL unchanged)
+
+## [2.130.3] - 2026-11-08
+
+### Fixed
+
+- Combo bot Overview: grid profit already taken by running deals now counts under Realized PnL instead of Unrealized PnL, so the Overview splits profit the same way as the deal cards (Net PnL unchanged)
+
+## [2.130.2] - 2026-11-08
+
+### Fixed
+
+- Deal tables of large accounts: sorting open deals by Unrealized P&L or Unrealized P&L % now orders each page by the live values shown on its rows
+
+## [2.130.1] - 2026-11-06
+
+### Fixed
+
+- Sign-in code screen: after a wrong code the cursor returns to the code field so it can be retyped straight away
+
+## [2.130.0] - 2026-11-06
+
+### Added
+
+- Settings: Known devices card listing the browsers that have signed in to the account, with Forget to sign one out and require the emailed code next time (cloud edition)
+
+## [2.129.0] - 2026-11-06
+
+### Added
+
+- Sign-in code step: when the server asks to confirm a password sign-in from a new browser, the login page asks for the code sent by email (cloud edition)
+
+## [2.128.1] - 2026-11-05
+
+### Fixed
+
+- Grid bot start dialog showed a zero balance and no option to buy the missing coin on exchanges whose pairs contain a dash (Hyperliquid, Kraken, Coinbase, KuCoin, OKX).
+
+## [2.128.0] - 2026-11-05
+
+### Added
+
+- Self-hosted: a one-line notice on every page when newer images are published for this installation, with the dashboard version you are running and a link to Admin → Updates. Dismissing it hides it until a further version is published. Cloud never shows it.
+
+## [2.127.1] - 2026-11-04
+
+### Fixed
+
+- Backtest results Deals tab: entry, average, close and DCA ladder prices now show the pair's own price decimals instead of rounding every price to one decimal, so sub-dollar pairs no longer read as 0.3.
+
+## [2.127.0] - 2026-11-01
+
+### Removed
+
+- The "Switch to V1" link on the sign-in and sign-up pages and in the account menu. The V1 dashboard has been retired, and its address now redirects to the current app.
+
 ## [2.126.7] - 2026-10-31
 
 ### Fixed

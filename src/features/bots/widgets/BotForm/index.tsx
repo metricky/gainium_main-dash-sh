@@ -119,7 +119,7 @@ import DCABacktesting from '@/lib/backtester/wrapper';
 import {
   rememberRandomTestSource,
   type RandomTestSource,
-} from '@/components/widgets/bots/backtest/analysis/useRandomEdgeRun';
+} from '@/lib/backtester/randomRuns/client';
 import logger from '@/lib/loggerInstance';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -171,6 +171,7 @@ import {
   localBacktestBalances,
   localDcaBacktestSettings,
 } from './localBacktestSettings';
+import { botStartTime } from './botStartBacktestPeriod';
 import type { ComboBot } from '@/types/comboBot';
 import type { GridBot } from '@/types/gridBot';
 import { useExampleOrdersStore } from '@/contexts/bots/form/formStoreContexts';
@@ -292,7 +293,7 @@ interface BacktestResultCapture {
   settings: DCABotSettings;
   meta: BacktestViewModelMeta;
   summary: { netPerc: number; winRate: number; deals: number };
-  /** DCA only: the run's engine input + result, for Strategy vs Random. */
+  /** DCA only: the run's engine input + result, for the random-entry band (spec 150). */
   randomTest?: RandomTestSource;
 }
 
@@ -2139,6 +2140,12 @@ const BotForm: React.FC<BotFormProps> = ({
     gridPlacementProgress.total > 0 &&
     gridPlacementProgress.stage !== gridPlacementProgress.total;
 
+  // Saved bot's start, for the backtest bar's default period (edit only).
+  const botBacktestStart = useMemo(
+    () => (mode === 'edit' ? botStartTime(bot) : null),
+    [mode, bot]
+  );
+
   const botForOperations = useMemo(() => {
     if (isDcaBotEntity(bot)) {
       return bot as DCABot;
@@ -3508,7 +3515,7 @@ const BotForm: React.FC<BotFormProps> = ({
                     historySettings,
                     dcaMeta
                   );
-                  // Strategy vs Random reruns this input (DCA only)
+                  // the random-entry band reruns this input (DCA only)
                   const randomTest: RandomTestSource | undefined =
                     isComboBacktest
                       ? undefined
@@ -3965,6 +3972,9 @@ const BotForm: React.FC<BotFormProps> = ({
                   footerOverride ? undefined : extraBacktestActions
                 }
                 getBacktestSnapshot={getBacktestSnapshot}
+                backtestPeriodStart={
+                  footerOverride?.backtestPeriodStart ?? botBacktestStart
+                }
                 backtestProgress={
                   footerOverride?.backtestProgress ?? backtestProgress
                 }
@@ -4459,6 +4469,9 @@ const BotForm: React.FC<BotFormProps> = ({
               footerOverride ? undefined : extraBacktestActions
             }
             getBacktestSnapshot={getBacktestSnapshot}
+            backtestPeriodStart={
+              footerOverride?.backtestPeriodStart ?? botBacktestStart
+            }
             backtestProgress={
               footerOverride?.backtestProgress ?? backtestProgress
             }

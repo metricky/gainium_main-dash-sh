@@ -257,10 +257,14 @@ const HedgeComboBots = () => {
           const u = unPnlMap.get(bot._id);
           return {
             status: bot.status,
-            totalProfitUsd: legs.reduce(
-              (sum, leg) => sum + dcaBotProfitUsdForReporting(leg),
-              0
-            ),
+            // Grid profit banked by open deals is Realized, as in the table.
+            totalProfitUsd:
+              legs.reduce(
+                (sum, leg) => sum + dcaBotProfitUsdForReporting(leg),
+                0
+              ) +
+              (u?.legOpenDealsRealizedUsd?.long ?? 0) +
+              (u?.legOpenDealsRealizedUsd?.short ?? 0),
             todayProfitUsd: legs.reduce(
               (sum, leg) => sum + (leg.profitToday?.totalTodayUsd || 0),
               0
@@ -297,8 +301,19 @@ const HedgeComboBots = () => {
         const shortLeg = (bot.bots ?? []).find(
           (l) => l.settings?.strategy === StrategyEnum.short
         );
-        const longUn = longLeg ? (legUnrealized.byLeg.get(longLeg._id) ?? 0) : 0;
-        const shortUn = shortLeg ? (legUnrealized.byLeg.get(shortLeg._id) ?? 0) : 0;
+        // A combo deal's unrealized is deal-wide: the grid profit it already
+        // banked is inside. Move that part to Realized per leg, as the
+        // standalone combo list and the deal cards do. Net is unchanged.
+        const longBanked = longLeg ? (u?.legOpenDealsRealizedUsd?.long ?? 0) : 0;
+        const shortBanked = shortLeg
+          ? (u?.legOpenDealsRealizedUsd?.short ?? 0)
+          : 0;
+        const longUn = longLeg
+          ? (legUnrealized.byLeg.get(longLeg._id) ?? 0) - longBanked
+          : 0;
+        const shortUn = shortLeg
+          ? (legUnrealized.byLeg.get(shortLeg._id) ?? 0) - shortBanked
+          : 0;
         const combinedUn = longUn + shortUn;
         const longPending = !!longLeg && legUnrealized.pending.has(longLeg._id);
         const shortPending =
@@ -311,7 +326,7 @@ const HedgeComboBots = () => {
           __unPnl: combinedUn,
           __unPnlPerc:
             currentCost > 0 ? (combinedUn / currentCost) * 100 : 0,
-          __totalProfitUsd: totalProfitUsd,
+          __totalProfitUsd: totalProfitUsd + longBanked + shortBanked,
           __currentCost: u?.currentValue,
           __positionValue: u?.positionValue,
           __maxCost: u?.maxValue,
@@ -675,7 +690,7 @@ const HedgeComboBots = () => {
           />
         ),
         meta: {
-          description: BOT_METRIC_DESCRIPTIONS.hedge.realizedPnl,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.comboRealizedPnl,
           filterType: 'number', reportingUsd: true as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -711,7 +726,7 @@ const HedgeComboBots = () => {
           />
         ),
         meta: {
-          description: BOT_METRIC_DESCRIPTIONS.hedge.unrealizedPnl,
+          description: BOT_METRIC_DESCRIPTIONS.hedge.comboUnrealizedPnl,
           filterType: 'number' as const,
           enableTotalsRow: true,
           totalsDefaultAggregation: 'sum',
@@ -976,6 +991,9 @@ const HedgeComboBots = () => {
                       stats={botListStats}
                       privacyMode={privacyMode}
                       isLoading={isLoading}
+                      realizedTooltip={
+                        BOT_METRIC_DESCRIPTIONS.hedge.comboRealizedPnl
+                      }
                       className="w-full"
                     />
                   </div>
@@ -998,6 +1016,9 @@ const HedgeComboBots = () => {
                         stats={botListStats}
                         privacyMode={privacyMode}
                         isLoading={isLoading}
+                        realizedTooltip={
+                          BOT_METRIC_DESCRIPTIONS.hedge.comboRealizedPnl
+                        }
                       />
                     </div>
                     {readOnly ? (

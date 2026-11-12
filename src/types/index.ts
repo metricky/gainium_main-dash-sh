@@ -3770,6 +3770,8 @@ export type DCADeals = {
   combo?: boolean;
   pendingAddFunds?: PendingAddFundsEntry[];
   pendingReduceFunds?: (AddFundsSettings & { id: string })[];
+  /** Ladder levels the bot skipped and will not place by itself. */
+  missedLevels?: { level: number; price: number; qty: number }[] | null;
   blockOrders?: BlockOrder[];
   moveSlActivated?: boolean;
   parent?: boolean;
@@ -4045,6 +4047,10 @@ export type AdditionalBotData = {
   fullProfitPerc?: number;
   unPnl?: number;
   unPnlPerc?: number;
+  /** Combo: grid profit already banked by the open deals (inside `unPnl`), USD. */
+  openDealsRealizedUsd?: number;
+  /** `openDealsRealizedUsd` as a percent on `unPnlPerc`'s basis. */
+  openDealsRealizedPerc?: number;
   /** Open bot whose unPnl is the server's saved value or priced from the persisted price snapshot, not a live price yet. */
   unPnlPending?: boolean;
   maxValue?: number;
