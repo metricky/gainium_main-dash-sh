@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.132.3] - 2026-11-13
+
+### Fixed
+
+- Indicator summaries show the value of a linked global variable instead of the value the field had before it was linked
+
+## [2.132.2] - 2026-11-12
+
+### Fixed
+
+- Combo bots: the Unrealized percentage now matches the Unrealized amount when open deals with banked grid profit sit at or near breakeven
+
 ## [2.132.1] - 2026-11-12
 
 ### Fixed
